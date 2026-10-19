@@ -119,18 +119,14 @@ This is a pnpm workspace with three published packages:
 
 5. **Submit a pull request**
 
-   Push your branch and open a PR against **`main`**. Ordinary PRs are **squash-merged**,
-   so the squash subject is what Release Please sees — make sure it is a valid
-   Conventional Commit (CI validates the PR title for you).
+   Push your branch and open a PR against **`main`**. Every PR is **squash-merged**
+   through the merge queue, so the squash subject is what Release Please sees —
+   make sure it is a valid Conventional Commit (CI validates the PR title for you).
 
-   Requirements to merge: one approving review, all review threads resolved, and
-   the `ci-status` check green once the repository ruleset rollout is complete.
-   Until then, maintainers must verify it manually; merging this file does not
-   change GitHub's external ruleset.
-
-   A reviewed migration plan may explicitly require preserved commits for
-   bisectability or staged proof. Such a PR is an exception to squash merging and
-   must use an allowed history-preserving merge method documented in that plan.
+   Requirements to merge: one approving review from a code owner
+   (`.github/CODEOWNERS`; code owners' own PRs need none), all review threads
+   resolved, and the `ci-status` and `Validate PR Title` checks green. The queue
+   then re-runs those checks against the latest `main` before merging.
 
 ## Pull Request Guidelines
 
@@ -159,10 +155,9 @@ produce no update. Nothing publishes until a maintainer merges that release PR.
 Merging it tags whichever package releases are ready and triggers `release.yml`,
 which publishes each selected package independently to npm with provenance.
 
-Merge release PRs with a merge commit or squash merge, never rebase merge, so
-the release remains easy to audit. The safety guard also compares the full PR or
-push range against its authoritative base SHA, so a multi-commit topology cannot
-hide an earlier version transition.
+Release PRs merge through the queue like any other PR (squash). The safety
+guard also compares the full PR or push range against its authoritative base
+SHA, so a multi-commit topology cannot hide an earlier version transition.
 
 ### Independent package releases
 

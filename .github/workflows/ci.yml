@@ -12,6 +12,8 @@ on:
     branches: [main, dev]
   push:
     branches: [main]
+  # The merge queue re-runs the required `ci-status` on each merge group.
+  merge_group:
 
 # Checkout reads repository contents; paths-filter reads the PR file list.
 # No CI job needs write access to repository or pull-request state.
@@ -30,21 +32,22 @@ jobs:
 
   # Detect which packages changed to skip unnecessary builds.
   #
-  # On a push to `main` both outputs are forced true: trunk validation must
-  # exercise the whole tree, not the slice one merge happened to touch, or a
-  # green `ci-status` would again say nothing about `main`'s actual state.
+  # On a push to `main` or a merge group every output is forced true: trunk
+  # validation must exercise the whole tree, not the slice one merge happened
+  # to touch, or a green `ci-status` would again say nothing about `main`'s
+  # actual state.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      sdk: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.sdk }}
-      openclaw: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.openclaw }}
-      claude-code: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.claude-code }}
+      sdk: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.sdk }}
+      openclaw: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.openclaw }}
+      claude-code: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.claude-code }}
       # Any package selected: gates the jobs and steps every package shares.
-      any: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.changes != '[]' }}
+      any: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.changes != '[]' }}
     steps:
       # Only feeds paths-filter below, which itself only runs on pull_request —
-      # skip the checkout too on push so a trunk run doesn't pay for a step with
-      # nothing downstream to use it.
+      # skip the checkout too on push and merge group so a full-tree run doesn't
+      # pay for a step with nothing downstream to use it.
       - name: Checkout code
         if: github.event_name == 'pull_request'
         uses: actions/checkout@v7
