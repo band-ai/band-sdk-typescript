@@ -11,6 +11,7 @@ import { FakeRestApi, RecordLog } from "../testUtils";
 export async function scopedActivity(rest: AgentToolsRestApi = new FakeRestApi(), capabilities?: Partial<AgentToolsCapabilities>) {
   const reports = new RecordLog<Activity | false>();
   let gate: Promise<void> | undefined;
+  let releaseGate = () => {};
   const context = new ExecutionContext({ roomId: "room", maxContextMessages: 100, link: { rest, capabilities } });
   const lease = context.openWorkingCycle(async (working, options) => {
     await gate;
@@ -22,10 +23,11 @@ export async function scopedActivity(rest: AgentToolsRestApi = new FakeRestApi()
   const hold = (): (() => void) => {
     const held = createDeferred();
     gate = held.promise;
-    return () => held.resolve();
+    releaseGate = () => held.resolve();
+    return releaseGate;
   };
   return {
     tools, reports, context, lease, hold,
-    async [Symbol.asyncDispose]() { await lease.end(); await context.closeWorkingState(); },
+    async [Symbol.asyncDispose]() { releaseGate(); await lease.end(); await context.closeWorkingState(); },
   };
 }

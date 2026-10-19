@@ -26,7 +26,6 @@ import {
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
-import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
@@ -196,10 +195,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         finalText = consumed.finalText;
         resultFailure = consumed.resultFailure;
       } catch (error) {
-        if (this.settleIfRetired(context.roomId, tools)) {
-          this.logger.debug("Claude turn retired; its outcome is discarded", { roomId: context.roomId, error });
-          return;
-        }
+        if (this.settleIfRetired(context.roomId, tools, error)) return;
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
       }
       if (this.settleIfRetired(context.roomId, tools)) return;
@@ -212,9 +208,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       try {
         await relayReply(tools, replyText, mention);
       } catch (error) {
+        if (this.settleIfRetired(context.roomId, tools, error)) return;
         if (failure) await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
         throw error;
       }
+      if (this.settleIfRetired(context.roomId, tools)) return;
       // Posting preceding text must not turn a failed provider result into success.
       if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     } finally {
@@ -227,9 +225,12 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   /** Only the room's current turn may write; a retired one (reset, stop) is settled so it ends without a report. */
-  private settleIfRetired(roomId: string, tools: TurnTools): boolean {
+  private settleIfRetired(roomId: string, tools: TurnTools, error?: unknown): boolean {
     const retired = !this.ownsRoom(roomId, tools);
-    if (retired) tools.turn.settle();
+    if (retired) {
+      tools.turn.settle();
+      this.logger.debug("Claude turn retired; its outcome is discarded", { roomId, error });
+    }
     return retired;
   }
 
@@ -242,8 +243,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     return { registrations, custom };
   }
 
-  /** A bridge whose tools resolve only for the room's current turn, and only until `retire`. */
-  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools) {
+  /** A bridge whose tools resolve only for the room's current turn, and only until it is retired. */
+  private async openBridge(roomId: string, tools: TurnTools, checkOwner: () => void) {
+    const createBridge = await this.sdkMcpBridgeLoader.get();
+    checkOwner();
     let live = true;
     const resolve = (id: string): TurnTools | undefined => live && id === roomId && this.ownsRoom(id, tools) ? tools : undefined;
     const { registrations, custom } = this.buildRegistrations(resolve);
@@ -255,6 +258,21 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         await bridge.serverConfig.instance.close();
       },
     };
+  }
+
+  /** The one idempotent close of a room's query: retire its bridge, abort it, and stop tracking it. */
+  private registerQuery(roomId: string, abortController: AbortController, retireBridge: () => Promise<void>): () => Promise<void> {
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      closing ??= retireBridge().catch((error: unknown) => {
+        this.logger.warn("Claude SDK MCP bridge close failed", { roomId, error });
+      });
+      abortController.abort();
+      if (this.activeQueries.get(roomId) === close) this.activeQueries.delete(roomId);
+      return closing;
+    };
+    this.activeQueries.set(roomId, close);
+    return close;
   }
 
   private queryOptions(abortController: AbortController, resume: string | null): ClaudeQueryOptions {
@@ -303,25 +321,12 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       abortController,
       this.sessionIds.get(roomId) ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null),
     );
-    let retireBridge = async (): Promise<void> => undefined;
-    if (this.enableMcpTools) {
-      const createBridge = await this.sdkMcpBridgeLoader.get();
-      checkOwner();
-      const { bridge, retire } = this.openBridge(createBridge, roomId, tools);
-      options.mcpServers = { [MCP_SERVER_NAME]: bridge.serverConfig };
-      options.allowedTools = bridge.allowedTools;
-      retireBridge = retire;
+    const mcp = this.enableMcpTools ? await this.openBridge(roomId, tools, checkOwner) : undefined;
+    if (mcp) {
+      options.mcpServers = { [MCP_SERVER_NAME]: mcp.bridge.serverConfig };
+      options.allowedTools = mcp.bridge.allowedTools;
     }
-    let closing: Promise<void> | undefined;
-    const close = (): Promise<void> => {
-      closing ??= retireBridge().catch((error: unknown) => {
-        this.logger.warn("Claude SDK MCP bridge close failed", { roomId, error });
-      });
-      abortController.abort();
-      if (this.activeQueries.get(roomId) === close) this.activeQueries.delete(roomId);
-      return closing;
-    };
-    this.activeQueries.set(roomId, close);
+    const close = this.registerQuery(roomId, abortController, mcp?.retire ?? (async () => undefined));
 
     const roomToolHint = this.enableMcpTools
       ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${roomId}".`
@@ -345,13 +350,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       await close();
       throw error;
     }
-    return (async function* () {
-      try {
-        yield* query;
-      } finally {
-        await close();
-      }
-    })();
+    return closeAfter(query, close);
   }
 
   private async consumeQueryEvents(
@@ -431,6 +430,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         error,
       });
     }
+  }
+}
+
+async function* closeAfter<T>(query: AsyncIterable<T>, close: () => Promise<void>): AsyncGenerator<T> {
+  try {
+    yield* query;
+  } finally {
+    await close();
   }
 }
 

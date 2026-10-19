@@ -234,6 +234,31 @@ describe("Claude scoped MCP activity", () => {
     expect(resumes[1]).toBeUndefined();
   });
 
+  it("keeps a turn retired while its reply is being posted from reporting its failure", async () => {
+    const adapter = new ClaudeSDKAdapter({ queryFn: async function* () {
+      yield { type: "assistant", session_id: "session", message: { content: [{ type: "text", text: "partial answer" }] } } as never;
+      yield { type: "result", subtype: "error_max_turns", is_error: true, session_id: "session", errors: ["max turns reached"] } as never;
+    } });
+    const turns: Promise<void>[] = [];
+    const onMessage = adapter.onMessage.bind(adapter);
+    adapter.onMessage = (...args) => { const turn = onMessage(...args); turns.push(turn); return turn; };
+    await using platform = BandPlatform.host([person("owner")]);
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    const reply = room.holdMessage((content) => content.includes("partial answer"));
+    onTestFinished(async () => { reply.release(); await runtime.stop(0); });
+    await room.say("owner", "first");
+    await reply.sending;
+    const posted = platform.rest.posted.entries.length;
+    await runtime.resetRoomSession("room", 0);
+    reply.release();
+    await Promise.all(turns);
+    expect(platform.rest.posted.entries.slice(posted).filter((entry) => entry.messageType === "error")).toEqual([]);
+  });
+
   it("logs a failed query-owned MCP close with its room and keeps the completed turn's outcome", async () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const adapter = new ClaudeSDKAdapter({ logger, queryFn: async function* (params) {

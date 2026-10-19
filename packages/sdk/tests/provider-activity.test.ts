@@ -63,9 +63,10 @@ async function heldWeatherTurn(create: (tool: CustomToolDef, narration: boolean)
   onTestFinished(() => release.resolve());
   const reports = recordRuntimeActivity();
   const tool: CustomToolDef = { name: NAME, description: "Weather lookup", schema: z.object({ query: z.string() }),
-    handler: async ({ query }) => { expect(query).toBe(MARKER); entered.resolve(); await release.promise; return RESULT; },
+    handler: async ({ query }) => { entered.resolve(); await release.promise; expect(query).toBe(MARKER); return RESULT; },
   };
   const platform = await BandPlatform.start(create(tool, !workingState), [person("owner")], undefined, { enableWorkingState: workingState });
+  onTestFinished(() => platform[Symbol.asyncDispose]());
   const room = await platform.room("room-1");
   const message = await room.say("owner", "weather?");
   await entered.promise;
@@ -76,13 +77,12 @@ async function heldWeatherTurn(create: (tool: CustomToolDef, narration: boolean)
       expect(await room.outcome(message)).toBe("processed");
       expect(room.messages.map(({ content }) => content)).toEqual([ANSWER]);
     },
-    async [Symbol.asyncDispose]() { await platform[Symbol.asyncDispose](); },
   };
 }
 
 describe.each(families)("$name scoped custom execution", ({ create }) => {
   it("reports scoped activity instead of narrating the tool", async () => {
-    await using turn = await heldWeatherTurn(create, true);
+    const turn = await heldWeatherTurn(create, true);
     await turn.reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === NAME);
     await turn.finish();
     expect(turn.reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
@@ -93,7 +93,7 @@ describe.each(families)("$name scoped custom execution", ({ create }) => {
   });
 
   it("narrates the tool and reports nothing with working state off", async () => {
-    await using turn = await heldWeatherTurn(create, false);
+    const turn = await heldWeatherTurn(create, false);
     expect(turn.reports.entries).toEqual([]);
     await turn.finish();
     expect(turn.reports.entries).toEqual([]);

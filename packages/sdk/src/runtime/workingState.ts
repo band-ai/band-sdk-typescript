@@ -94,6 +94,8 @@ export class WorkingStateReporter {
   private current: Activity = REASONING;
   private invalidObservationLogged = false;
   private period?: object;
+  /** The send that opened the current period: all a joining lease waits for, never the queue behind it. */
+  private opening = Promise.resolve();
   private startedAt = 0;
   private closePromise?: Promise<void>;
   private failureStreak = false;
@@ -119,9 +121,9 @@ export class WorkingStateReporter {
         this.current = REASONING;
         const period = this.period = {};
         this.startedAt = performance.now();
-        ready = this.enqueue(() => this.refresh(period));
+        ready = this.opening = this.enqueue(() => this.refresh(period));
       } else {
-        ready = this.tail;
+        ready = this.opening;
       }
     }
     const release = async (): Promise<void> => {

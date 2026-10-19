@@ -60,7 +60,6 @@ describe("scoped custom execution", () => {
   it("runs the handler and returns its result while activity delivery is stalled", async () => {
     await using scope = await scopedActivity();
     const release = scope.hold();
-    onTestFinished(release);
     const definition: CustomToolDef = { name: "custom_lookup", schema: z.object({}), handler: async () => "done" };
     expect(await executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).toBe("done");
     expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);

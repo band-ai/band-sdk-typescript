@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { WorkingStateReporter, bindWorkingCycle, retainWorkingCycleUntil, reportToolActivity, endToolActivity, setPermissionActivity, reportMemoryActivity } from "../src/runtime/workingState";
 import { overrideTools } from "../src/core/overrideTools";
 import { trackTurn } from "../src/core/turn";
@@ -106,6 +106,24 @@ describe("working state", () => {
     expect(sends).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "retiring" }, { kind: "reasoning" }]);
     await control.end();
     expect(sends.at(-1)).toBe(false);
+  });
+
+  it("lets a joining lease start without waiting for sends another lease queued", async () => {
+    const stalled = createDeferred();
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => {
+      sends.push(working ? options.activity : false);
+      if (sends.length > 1) await stalled.promise;
+    }, parseSessionConfig(), "room");
+    onTestFinished(() => stalled.resolve());
+    const retained = reporter.open();
+    await retained.ready;
+    retained.observe({ kind: "tool_call", name: "first" });
+    retained.observe({ kind: "reasoning" });
+    retained.observe({ kind: "tool_call", name: "second" });
+    const joining = reporter.open();
+    await joining.ready;
+    expect(sends).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "first" }]);
   });
 
   it("drops a queued observation whose lease ended first", async () => {

@@ -49,13 +49,9 @@ describe("activity detail generated HTTP boundary", () => {
     expect(peer.requests.entries.map(({ body }) => body)).toEqual([{ working: true }]);
   });
 
-  it("looks the version up through the REST base URL a gateway host serves, from a default-built link", async () => {
+  it("looks the version up at the health path of the REST base URL, from a default-built link", async () => {
     await using peer = await activityPeer((entry) => {
       if (entry.request.url === HEALTH) return json(entry.response, { api_version: "1.26.1" });
-      if (entry.request.url === "/api/version") {
-        entry.response.writeHead(200, { "Content-Type": "text/html" });
-        return void entry.response.end("<!DOCTYPE html><html></html>");
-      }
       echoWorking(entry);
     });
     const link = new BandLink({ agentId: "agent", apiKey: "secret-test-key", restUrl: peer.origin, transport: new FakeTransport() });

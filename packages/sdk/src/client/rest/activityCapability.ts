@@ -62,8 +62,9 @@ export class ActivityCapability {
       const response = await fetch(this.healthUrl, { signal: controller.signal });
       const text = await response.text();
       if (response.status >= HTTP_SERVER_ERROR || response.status === HTTP_TOO_MANY_REQUESTS) return this.retryLater(`HTTP ${response.status}`);
-      const supported = response.ok && isSupportedRelease(parseApiVersion(text));
-      return this.settle(supported ? "supported" : "unsupported", `HTTP ${response.status}`);
+      const apiVersion = parseApiVersion(text);
+      const supported = response.ok && isSupportedRelease(apiVersion);
+      return this.settle(supported ? "supported" : "unsupported", `HTTP ${response.status}, api_version ${typeof apiVersion === "string" ? apiVersion : "unparseable"}`);
     } catch (error) {
       return this.retryLater(error instanceof Error ? error.name : "failed");
     } finally {

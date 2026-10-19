@@ -2,10 +2,12 @@ import { z } from "zod";
 import type { Band } from "@band-ai/rest-client";
 
 export const DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS = 2;
+/** The SDK's bound on a tool name in activity detail; the platform truncates names itself. */
+export const MAX_ACTIVITY_TOOL_NAME_LENGTH = 1024;
 
 export const activitySchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("reasoning") }),
-  z.strictObject({ kind: z.literal("tool_call"), name: z.string().min(1).max(1024) }),
+  z.strictObject({ kind: z.literal("tool_call"), name: z.string().min(1).max(MAX_ACTIVITY_TOOL_NAME_LENGTH) }),
   z.strictObject({ kind: z.literal("memory") }),
   z.strictObject({ kind: z.literal("permission") }),
 ]) satisfies z.ZodType<Band.AgentActivityDetail>;

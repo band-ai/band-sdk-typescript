@@ -239,6 +239,7 @@ describe("AgentTools", () => {
       await Promise.resolve();
       await scope.tools.executeToolCall("band_send_message", { content: "second", mentions: ["@jane"] });
     });
+    await scope.lease.flush();
     expect(scope.reports.entries).toHaveLength(count);
     expect(rest.chatMessages.map((message) => message.content)).toEqual(["sentinel", "second"]);
     expect(JSON.stringify(scope.reports.entries)).not.toContain("sentinel");
@@ -248,7 +249,6 @@ describe("AgentTools", () => {
     const rest = new FakeRestApi();
     await using scope = await scopedActivity(rest);
     const release = scope.hold();
-    onTestFinished(release);
     await scope.tools.executeToolCall("band_send_message", { content: "hello", mentions: ["@jane"] });
     expect(rest.chatMessages.map((message) => message.content)).toEqual(["hello"]);
     expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
@@ -262,6 +262,7 @@ describe("AgentTools", () => {
     for (const [name, args] of [["band_send_message", {}], ["missing", {}], ["band_list_memories", {}]] as const) {
       expect(isToolExecutorError(await scope.tools.executeToolCall(name, args))).toBe(true);
     }
+    await scope.lease.flush();
     expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
     await scope.context.closeWorkingState();
     const count = scope.reports.entries.length;
