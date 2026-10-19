@@ -161,10 +161,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
     if (this.enableMcpTools) {
       await this.sdkMcpBridgeLoader.get();
-      const registrations = buildRoomScopedRegistrations(() => undefined, {
-        enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
-      });
-      assertCustomToolNamesAvailable(this.customTools.map((tool) => tool.name), registrations.map((registration) => registration.name));
+      this.buildRegistrations(() => undefined);
     }
   }
 
@@ -198,8 +195,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         finalText = consumed.finalText;
         resultFailure = consumed.resultFailure;
       } catch (error) {
+        if (this.settleIfRetired(context.roomId, tools)) return;
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
       }
+      if (this.settleIfRetired(context.roomId, tools)) return;
 
       const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
       const replyText = finalText.trim();
@@ -219,22 +218,42 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
   }
 
-  private async startQuery(
-    message: PlatformMessage,
-    tools: TurnTools,
-    history: HistoryProvider,
-    participantsMessage: string | null,
-    contactsMessage: string | null,
-    context: { isSessionBootstrap: boolean; roomId: string },
-  ): Promise<AsyncIterable<SDKMessage>> {
-    const checkOwner = (): void => {
-      if (this.roomTools.get(context.roomId) !== tools) throw new RuntimeStateError("Claude query was retired before admission");
-    };
-    checkOwner();
-    const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
-    checkOwner();
+  private ownsRoom(roomId: string, tools: TurnTools): boolean {
+    return this.roomTools.get(roomId) === tools;
+  }
 
-    const abortController = new AbortController();
+  /** Only the room's current turn may write; a retired one (reset, stop) is settled so it ends without a report. */
+  private settleIfRetired(roomId: string, tools: TurnTools): boolean {
+    const retired = !this.ownsRoom(roomId, tools);
+    if (retired) tools.turn.settle();
+    return retired;
+  }
+
+  private buildRegistrations(resolve: (roomId: string) => TurnTools | undefined) {
+    const registrations = buildRoomScopedRegistrations(resolve, {
+      enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
+    });
+    const custom = buildCustomMcpRegistrations(this.customTools, resolve);
+    assertCustomToolNamesAvailable(custom.map((registration) => registration.name), registrations.map((registration) => registration.name));
+    return { registrations, custom };
+  }
+
+  /** A bridge whose tools resolve only for the room's current turn, and only until `retire`. */
+  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools) {
+    let live = true;
+    const resolve = (id: string): TurnTools | undefined => live && id === roomId && this.ownsRoom(id, tools) ? tools : undefined;
+    const { registrations, custom } = this.buildRegistrations(resolve);
+    const bridge = createBridge(registrations, custom);
+    return {
+      bridge,
+      retire: async (): Promise<void> => {
+        live = false;
+        await bridge.serverConfig.instance.close();
+      },
+    };
+  }
+
+  private queryOptions(abortController: AbortController, resume: string | null): ClaudeQueryOptions {
     const options: ClaudeQueryOptions = {
       abortController,
       model: this.model,
@@ -253,40 +272,55 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     if (this.cwd) {
       options.cwd = this.cwd;
     }
-    const existingSession = this.sessionIds.get(context.roomId)
-      ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null);
-    if (existingSession) {
-      options.resume = existingSession;
+    if (resume) {
+      options.resume = resume;
     }
+    return options;
+  }
 
-    let live = true;
-    let bridge: ReturnType<typeof createSdkMcpBridge> | undefined;
+  private async startQuery(
+    message: PlatformMessage,
+    tools: TurnTools,
+    history: HistoryProvider,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<AsyncIterable<SDKMessage>> {
+    const { roomId } = context;
+    const checkOwner = (): void => {
+      if (!this.ownsRoom(roomId, tools)) throw new RuntimeStateError("Claude query was retired before admission");
+    };
+    checkOwner();
+    const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
+    checkOwner();
+
+    const abortController = new AbortController();
+    const options = this.queryOptions(
+      abortController,
+      this.sessionIds.get(roomId) ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null),
+    );
+    let retireBridge = async (): Promise<void> => undefined;
     if (this.enableMcpTools) {
       const createBridge = await this.sdkMcpBridgeLoader.get();
       checkOwner();
-      const resolve = (roomId: string): TurnTools | undefined => live && roomId === context.roomId && this.roomTools.get(roomId) === tools ? tools : undefined;
-      const registrations = buildRoomScopedRegistrations(resolve, {
-        enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
-      });
-      const custom = buildCustomMcpRegistrations(this.customTools, resolve);
-      assertCustomToolNamesAvailable(custom.map((registration) => registration.name), registrations.map((registration) => registration.name));
-      bridge = createBridge(registrations, custom);
+      const { bridge, retire } = this.openBridge(createBridge, roomId, tools);
       options.mcpServers = { [MCP_SERVER_NAME]: bridge.serverConfig };
       options.allowedTools = bridge.allowedTools;
+      retireBridge = retire;
     }
     let closing: Promise<void> | undefined;
     const close = (): Promise<void> => {
-      live = false;
+      closing ??= retireBridge().catch((error: unknown) => {
+        this.logger.warn("Claude SDK MCP bridge close failed", { roomId, error });
+      });
       abortController.abort();
-      if (this.activeQueries.get(context.roomId) === close) this.activeQueries.delete(context.roomId);
-      return closing ??= (async () => {
-        await bridge?.serverConfig.instance.close();
-      })();
+      if (this.activeQueries.get(roomId) === close) this.activeQueries.delete(roomId);
+      return closing;
     };
-    this.activeQueries.set(context.roomId, close);
+    this.activeQueries.set(roomId, close);
 
     const roomToolHint = this.enableMcpTools
-      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
+      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${roomId}".`
       : "";
 
     let query: AsyncIterable<SDKMessage>;

@@ -27,6 +27,9 @@ import { BandLink } from "../src/platform/BandLink";
 import { recordRuntimeActivity } from "./support/activityReports";
 import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
+/** What the MCP client throws once the query-owned server is closed. */
+const TRANSPORT_CLOSED = /Not connected|Connection closed/;
+
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
     for (const item of items) {
@@ -118,17 +121,56 @@ describe("Claude scoped MCP activity", () => {
     expect((await first.listTools()).tools.length).toBeGreaterThan(0);
     await runtime.resetRoomSession("room", 0);
     expect(options[0]!.abortController!.signal.aborted).toBe(true);
-    await expect(first.listTools()).rejects.toThrow(/closed|connected/i);
+    await expect(first.listTools()).rejects.toThrow(TRANSPORT_CLOSED);
     await room.say("owner", "replacement");
     await started[1]!.promise;
     const second = await connect(1);
     expect((await second.listTools()).tools.length).toBeGreaterThan(0);
     await runtime.stop(0);
     expect(options[1]!.abortController!.signal.aborted).toBe(true);
-    await expect(second.listTools()).rejects.toThrow(/closed|connected/i);
+    await expect(second.listTools()).rejects.toThrow(TRANSPORT_CLOSED);
   });
 
+  it("ends a turn retired by a forced reset without writing into the room", async () => {
+    const started = createDeferred();
+    const adapter = new ClaudeSDKAdapter({ queryFn: async function* (params) {
+      started.resolve();
+      const signal = params.options!.abortController!.signal;
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw Object.assign(new Error("Claude Code process aborted by user"), { name: "AbortError" });
+      yield undefined as never;
+    } });
+    const turns: Promise<void>[] = [];
+    const onMessage = adapter.onMessage.bind(adapter);
+    adapter.onMessage = (...args) => { const turn = onMessage(...args); turns.push(turn); return turn; };
+    await using platform = BandPlatform.host([person("owner")]);
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    onTestFinished(async () => { await runtime.stop(0); });
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    await room.say("owner", "first");
+    await started.promise;
+    const posted = platform.rest.posted.entries.length;
+    await runtime.resetRoomSession("room", 0);
+    await Promise.all(turns);
+    expect(platform.rest.posted.entries.slice(posted)).toEqual([]);
+  });
 
+  it("logs a failed query-owned MCP close with its room and keeps the completed turn's outcome", async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const adapter = new ClaudeSDKAdapter({ logger, queryFn: async function* (params) {
+      const server = params.options!.mcpServers![MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+      vi.spyOn(server.instance, "close").mockRejectedValueOnce(new Error("close failed"));
+      yield { type: "result", subtype: "success", result: "Done." } as never;
+    } });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "hello");
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+    expect(logger.warn).toHaveBeenCalledWith("Claude SDK MCP bridge close failed", expect.objectContaining({ roomId: session.room.id }));
+  });
 });
 
 describe("ClaudeSDKAdapter", () => {
@@ -972,7 +1014,7 @@ describe("ClaudeSDKAdapter", () => {
       await callMcpTool(options, "write_marker", { room_id: "second" });
       release.resolve();
       await Promise.all(turns);
-      await expect(callMcpTool(optionsByRoom.get("first"), "write_marker", { room_id: "first" })).rejects.toThrow(/Not connected|Connection closed/);
+      await expect(callMcpTool(optionsByRoom.get("first"), "write_marker", { room_id: "first" })).rejects.toThrow(TRANSPORT_CLOSED);
       expect(handler).toHaveBeenCalledTimes(2);
     });
 
@@ -999,10 +1041,10 @@ describe("ClaudeSDKAdapter", () => {
       await adapter.onStarted("Parity Agent", "Parity test agent");
       const first = trackTurn(new FakeTools());
       const second = trackTurn(new FakeTools());
-      const pending = expectTurnFailed(startMessage(adapter, first));
+      const pending = startMessage(adapter, first);
       await handlerStarted.promise;
       await adapter.onCleanup(ROOM_ID);
-      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(/Not connected|Connection closed/);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(TRANSPORT_CLOSED);
       const replacement = startMessage(adapter, second);
       await replacementStarted.promise;
       releaseHandler.resolve();
@@ -1012,7 +1054,7 @@ describe("ClaudeSDKAdapter", () => {
       await replacement;
       expect(first.turn.verdict()).toBe("complete");
       expect(second.turn.verdict()).toBe("complete");
-      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(/Not connected|Connection closed/);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(TRANSPORT_CLOSED);
     });
 
     it("does not reinstall a cleaned-up binding when query loading finishes", async () => {
@@ -1032,7 +1074,7 @@ describe("ClaudeSDKAdapter", () => {
         await releaseLoad.promise;
         return original(...args);
       });
-      const pending = expectTurnFailed(startMessage(adapter, trackTurn(new FakeTools())));
+      const pending = startMessage(adapter, trackTurn(new FakeTools()));
       await loading.promise;
       await adapter.onCleanup(ROOM_ID);
       releaseLoad.resolve();
@@ -1061,10 +1103,10 @@ describe("ClaudeSDKAdapter", () => {
       if (exit === "relay") await expect(first).rejects.toBeInstanceOf(DeliveryFailedError);
       else await expectTurnFailed(first);
       if (exit === "query") expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
-      else await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(/Not connected|Connection closed/);
+      else await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
       await adapter.onEvent(turnInput(new FakeTools(), SENDER));
       expect(calls).toBe(2);
-      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(/Not connected|Connection closed/);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
     });
 
     it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
