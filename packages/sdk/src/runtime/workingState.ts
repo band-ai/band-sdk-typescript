@@ -4,12 +4,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { activitySchema, MEMORY, PERMISSION, REASONING, sameActivity, toolCall, type Activity } from "../contracts/activity";
 import type { MetadataMap } from "../contracts/dtos";
 import { overrideTools } from "../core/overrideTools";
-import { hasStatusCode } from "../core/errors";
+import { hasStatusCode, HTTP_NOT_FOUND } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import type { ResolvedSessionConfig } from "./types";
 
 export type ReportFn = (working: boolean, options: ReportActivityOptions) => Promise<unknown>;
-const HTTP_NOT_FOUND = 404;
 const WORKING_CYCLE = Symbol("workingCycle");
 export const SCOPED_TOOL_EXECUTOR = Symbol("scopedToolExecutor");
 const suppressed = new AsyncLocalStorage<boolean>();
@@ -204,7 +203,7 @@ export class WorkingStateReporter {
       }
     }
     if (!refresh && sameActivity(this.current, selected)) return;
-    this.current = Object.freeze(selected);
+    this.current = selected;
     await this.send(true);
   }
 

@@ -147,7 +147,7 @@ describe("activity detail generated HTTP boundary", () => {
     const deadline = new AbortController();
     setTimeout(() => deadline.abort(), 2000);
     const report = peer.rest.reportActivity("room", true, { activity: { kind: "reasoning" }, maxRetries: 0, abortSignal: deadline.signal });
-    const rejected = expect(report).rejects.toBeDefined();
+    const rejected = expect(report).rejects.toThrow("The user aborted a request");
     await stalled.promise;
     await vi.advanceTimersByTimeAsync(2000);
     await rejected;

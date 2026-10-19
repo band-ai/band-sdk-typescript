@@ -1,4 +1,5 @@
 import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../../contracts/activity";
+import { HTTP_SERVER_ERROR, HTTP_TOO_MANY_REQUESTS } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { SingleFlight } from "../../core/singleFlight";
 
@@ -43,8 +44,8 @@ export class ActivityCapability {
   }
 
   /** The platform rejected a detail-bearing report: stop sending detail on this endpoint. */
-  public markUnsupported(): void {
-    if (this.support !== "unsupported") this.resolve("unsupported", "rejected by the platform");
+  public markUnsupported(reason = "rejected by the platform"): void {
+    if (this.support !== "unsupported") this.resolve("unsupported", reason);
   }
 
   /** The current answer, or the one shared in-flight lookup that will settle it. */
@@ -60,7 +61,7 @@ export class ActivityCapability {
     try {
       const response = await fetch(this.healthUrl, { signal: controller.signal });
       const text = await response.text();
-      if (response.status >= 500 || response.status === 429) return this.retryLater(`HTTP ${response.status}`);
+      if (response.status >= HTTP_SERVER_ERROR || response.status === HTTP_TOO_MANY_REQUESTS) return this.retryLater(`HTTP ${response.status}`);
       const supported = response.ok && isSupportedRelease(parseApiVersion(text));
       return this.settle(supported ? "supported" : "unsupported", `HTTP ${response.status}`);
     } catch (error) {

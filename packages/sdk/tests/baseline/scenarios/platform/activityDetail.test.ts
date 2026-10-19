@@ -40,8 +40,8 @@ async function observeCycle(cast: Cast, { phases, tool, marker, toolEntered, rel
   await room.activity.next((frame) => frame.agentId === agent.id && frame.executionId === active.executionId &&
     frame.event === ACTIVITY_EVENT.stopped, room.activity.entries.indexOf(resumed) + 1);
   assertDeliveryStatus(await observeAgent(agent, room).untilProcessed(sent), DELIVERY_STATUS.processed);
-  expect(room.activity.entries.filter((frame) => frame.agentId === agent.id && frame.executionId === active.executionId)
-    .every((frame) => !JSON.stringify(frame.raw).includes(marker))).toBe(true);
+  expect(room.activity.entries.filter((frame) => frame.agentId === agent.id && frame.executionId === active.executionId &&
+    JSON.stringify(frame.raw).includes(marker))).toEqual([]);
   expect(room.messages.entries.filter((message) => message.sender_id === agent.id &&
     (message.message_type === "tool_call" || message.message_type === "tool_result"))).toEqual([]);
 }

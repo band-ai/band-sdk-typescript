@@ -4,7 +4,7 @@ import { BandClient } from "@band-ai/rest-client";
 import { ActivityCapability } from "../../src/client/rest/activityCapability";
 import { FernRestAdapter } from "../../src/client/rest/FernRestAdapter";
 import { RestFacade } from "../../src/client/rest/RestFacade";
-import { FakeTransport, RecordLog } from "../testUtils";
+import { RecordLog } from "../testUtils";
 
 export interface ActivityRequest {
   request: IncomingMessage;
@@ -32,7 +32,6 @@ export async function activityPeer(handle: (request: ActivityRequest) => void | 
   });
   return {
     origin, rest, capability, requests,
-    linkOptions: { agentId: "agent", apiKey: "secret-test-key", restUrl: origin, restApi: rest, transport: new FakeTransport() },
     async [Symbol.asyncDispose]() {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -16,16 +16,15 @@ describe("activity capability lookup", () => {
     [{ api_version: "1.25.0+build" }, "unsupported"],
     [{ agent_version: "9.0.0", version: "9.0.0" }, "unsupported"],
   ])("decides from the ordinary api_version release only: %j", async (body, expected) => {
-    await using peer = await activityPeer(({ request, response }) => {
-      expect(request.url).toBe("/api/v1/health");
-      expect(request.headers.authorization).toBeUndefined();
-      expect(request.headers["x-api-key"]).toBeUndefined();
-      json(response, body);
-    });
+    await using peer = await activityPeer(({ response }) => json(response, body));
     const capability = new ActivityCapability({ origin: peer.origin });
     expect(await capability.lookup()).toBe(expected);
     expect(await capability.lookup()).toBe(expected);
+    const [{ request }] = peer.requests.entries;
     expect(peer.requests.entries).toHaveLength(1);
+    expect(request.url).toBe("/api/v1/health");
+    expect(request.headers.authorization).toBeUndefined();
+    expect(request.headers["x-api-key"]).toBeUndefined();
   });
 
   it("finds support on a gateway host that serves HTML at /api/version", async () => {

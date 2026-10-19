@@ -35,6 +35,7 @@ describe("baseline narration preference", () => {
     finally { await adapter.onCleanup("room"); await adapter.onRuntimeStop?.(); }
     expect(handler).toHaveBeenCalledWith({ query: "private-marker" });
     expect(requests).toBe(2);
+    await scope.lease.flush();
     expect(scope.reports.entries).toContainEqual({ kind: "tool_call", name: "lookup" });
     const narrated = events.mock.calls.map(([, event]) => event.messageType).filter((type) => type === "tool_call" || type === "tool_result");
     expect(narrated).toEqual(narration);

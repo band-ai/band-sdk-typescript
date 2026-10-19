@@ -5,7 +5,7 @@ import { ACTIVITY_EVENT, Room } from "./baseline/toolkit/rooms";
 
 describe("baseline activity observer", () => {
   it("normalizes starts, replaces changes and removes stopped executions while retaining raw extensions", async () => {
-    const peer = await FakePhoenixPeer.start();
+    await using peer = await FakePhoenixPeer.start();
     const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "observer" });
     try {
       const room = await Room.observing("room", transport);
@@ -24,7 +24,6 @@ describe("baseline activity observer", () => {
       expect((await send(ACTIVITY_EVENT.started, { activity: { kind: "memory" } })).activity).toEqual({ kind: "memory" });
     } finally {
       await transport.disconnect();
-      await peer.stop();
     }
   });
 });

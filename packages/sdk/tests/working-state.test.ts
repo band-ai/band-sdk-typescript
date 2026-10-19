@@ -108,29 +108,43 @@ describe("working state", () => {
     expect(sends.at(-1)).toBe(false);
   });
 
-  it("drops queued retired updates and cannot revive capped or closed reporting", async () => {
+  it("drops a queued observation whose lease ended first", async () => {
     const held = createDeferred();
     const sends: unknown[] = [];
     const reporter = new WorkingStateReporter(async (working, options) => {
       sends.push({ working, activity: options.activity });
       if (sends.length === 1) await held.promise;
-    }, parseSessionConfig({ maxWorkingStateSeconds: 4 }), "room");
-    const first = reporter.open();
-    first.observe({ kind: "tool_call", name: "stale" });
-    const end = first.end();
+    }, parseSessionConfig(), "room");
+    const lease = reporter.open();
+    lease.observe({ kind: "tool_call", name: "stale" });
+    const end = lease.end();
     held.resolve();
-    await Promise.all([first.ready, end]);
-    expect(sends.map((s) => (s as { activity?: { name?: string } }).activity?.name)).not.toContain("stale");
-    const second = reporter.open();
-    await second.ready;
+    await Promise.all([lease.ready, end]);
+    expect(sends.map((sent) => (sent as { activity?: { name?: string } }).activity?.name)).not.toContain("stale");
+  });
+
+  it("stops observing once the working-state cap is reached", async () => {
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => { sends.push({ working, activity: options.activity }); },
+      parseSessionConfig({ maxWorkingStateSeconds: 4 }), "room");
+    const lease = reporter.open();
+    await lease.ready;
     await vi.advanceTimersByTimeAsync(4000);
     const count = sends.length;
-    second.observe({ kind: "memory" });
-    await second.flush();
+    lease.observe({ kind: "memory" });
+    await lease.flush();
     expect(sends).toHaveLength(count);
+  });
+
+  it("ignores observations after the reporter is closed", async () => {
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => { sends.push({ working, activity: options.activity }); },
+      parseSessionConfig(), "room");
+    const lease = reporter.open();
+    await lease.ready;
     await reporter.close();
-    second.observe({ kind: "tool_call", name: "late" });
-    await second.flush();
+    lease.observe({ kind: "tool_call", name: "late" });
+    await lease.flush();
     expect(sends.at(-1)).toEqual({ working: false, activity: undefined });
   });
 
