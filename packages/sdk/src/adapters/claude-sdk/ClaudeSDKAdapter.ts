@@ -26,6 +26,7 @@ import {
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
+import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
@@ -259,17 +260,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
 
     let live = true;
-    let bridge: ReturnType<typeof import("../../mcp/sdkTools").createSdkMcpBridge> | undefined;
+    let bridge: ReturnType<typeof createSdkMcpBridge> | undefined;
     if (this.enableMcpTools) {
       const createBridge = await this.sdkMcpBridgeLoader.get();
       checkOwner();
       const resolve = (roomId: string): TurnTools | undefined => live && roomId === context.roomId && this.roomTools.get(roomId) === tools ? tools : undefined;
       const registrations = buildRoomScopedRegistrations(resolve, {
-        enableMemoryTools: this.enableMemoryTools, enableContactTools: true,
+        enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
       });
       const custom = buildCustomMcpRegistrations(this.customTools, resolve);
-      assertCustomToolNamesAvailable(custom.map((registration) => registration.name), [...registrations, ...this.additionalMcpTools].map((registration) => registration.name));
-      bridge = createBridge([...registrations, ...this.additionalMcpTools], custom);
+      assertCustomToolNamesAvailable(custom.map((registration) => registration.name), registrations.map((registration) => registration.name));
+      bridge = createBridge(registrations, custom);
       options.mcpServers = { [MCP_SERVER_NAME]: bridge.serverConfig };
       options.allowedTools = bridge.allowedTools;
     }
@@ -291,23 +292,27 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     let query: AsyncIterable<SDKMessage>;
     try {
       query = queryFn({
-      prompt: buildConversationPrompt({
-        history,
-        isSessionBootstrap: context.isSessionBootstrap,
-        participantsMessage,
-        contactsMessage,
-        historyHeader: "[Previous conversation context]",
-        currentMessage: message.content,
-        maxHistoryMessages: 50,
-      }) + roomToolHint,
-      options,
+        prompt: buildConversationPrompt({
+          history,
+          isSessionBootstrap: context.isSessionBootstrap,
+          participantsMessage,
+          contactsMessage,
+          historyHeader: "[Previous conversation context]",
+          currentMessage: message.content,
+          maxHistoryMessages: 50,
+        }) + roomToolHint,
+        options,
       });
     } catch (error) {
       await close();
       throw error;
     }
     return (async function* () {
-      try { yield* query; } finally { await close(); }
+      try {
+        yield* query;
+      } finally {
+        await close();
+      }
     })();
   }
 

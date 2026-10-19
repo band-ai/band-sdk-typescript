@@ -37,16 +37,20 @@ export function suppressToolActivity<T>(work: () => Promise<T>): Promise<T> {
   return suppressed.run(true, work);
 }
 
+async function observeUnlessSuppressed(tools: object, activity: unknown): Promise<void> {
+  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.observe(activity);
+}
+
 export async function reportToolActivity(tools: object, name: string): Promise<void> {
-  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.observe({ kind: "tool_call", name });
+  await observeUnlessSuppressed(tools, { kind: "tool_call", name });
 }
 
 export async function endToolActivity(tools: object): Promise<void> {
-  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.observe(REASONING);
+  await observeUnlessSuppressed(tools, REASONING);
 }
 
 export async function reportMemoryActivity(tools: object, active: boolean): Promise<void> {
-  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.observe(active ? { kind: "memory" } : REASONING);
+  await observeUnlessSuppressed(tools, active ? { kind: "memory" } : REASONING);
 }
 
 export async function setPermissionActivity(tools: object, waiting: boolean): Promise<void> {

@@ -542,7 +542,7 @@ export interface FernBandClientLike {
   agentApiActivity?: {
     reportAgentChatActivity?(
       chatId: string,
-      request: { working: boolean; activity?: import("@band-ai/rest-client").Band.AgentActivityDetail },
+      request: { working: boolean; activity?: ReportActivityOptions["activity"] },
       options?: RestRequestOptions,
     ): Promise<unknown>;
   };

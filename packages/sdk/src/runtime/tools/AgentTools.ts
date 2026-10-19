@@ -378,9 +378,7 @@ export class AgentTools implements AgentToolsProtocol {
       });
     }
 
-    const observed = tools && this.getToolSchemas("openai", { includeMemory: true }).some(
-      (schema) => (schema as { function?: { name?: unknown } }).function?.name === toolName,
-    );
+    const observed = tools && this.getToolSchemas("anthropic", { includeMemory: true }).some((schema) => schema.name === toolName);
     if (observed) await reportToolActivity(tools, toolName);
     try {
       const result = await handler(arguments_);
