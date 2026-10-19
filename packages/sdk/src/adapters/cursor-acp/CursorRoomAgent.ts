@@ -352,17 +352,21 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   protected override isHumanDecision(method: string, params: Record<string, unknown>): boolean {
     if (method === ACP_PERMISSION_METHOD) return this.approvalMode === "manual" && super.isHumanDecision(method, params);
-    if (method === CURSOR_ASK_QUESTION_METHOD) return this.questionMode === "manual" && questionChoices(params.questions).choices.size > 0;
+    if (method === CURSOR_ASK_QUESTION_METHOD) return this.asksRoom(questionChoices(params.questions));
     return method === CURSOR_CREATE_PLAN_METHOD && this.planMode === "manual";
+  }
+
+  /** A question reaches the room only in manual mode, and only when there is something to choose. */
+  private asksRoom(questions: ReturnType<typeof questionChoices>): boolean {
+    return this.questionMode === "manual" && questions.choices.size > 0;
   }
 
   private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const questions = questionChoices(params.questions);
-    if (questions.choices.size === 0 || this.questionMode === "autoCancel") {
-      return CANCELLED;
-    }
-    if (this.questionMode === "autoFirst") {
-      return answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])));
+    if (!this.asksRoom(questions)) {
+      return this.questionMode === "autoFirst" && questions.choices.size > 0
+        ? answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])))
+        : CANCELLED;
     }
     const result = await this.waitForDecision(turn, { kind: DECISION_KIND.question, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
     return isRecord(result) ? result : CANCELLED;

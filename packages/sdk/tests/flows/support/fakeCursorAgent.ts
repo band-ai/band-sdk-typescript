@@ -9,6 +9,7 @@ import path from "node:path";
 import { AgentSideConnection, ClientSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 
+import { BandACPClient } from "../../../src/adapters/acp/client";
 import type { ACPClientConnectionFactory } from "../../../src/adapters/acp/types";
 import { MCP_SERVER_NAME } from "../../../src/contracts/toolSchemas";
 import { createDeferred, type Deferred } from "../../../src/core/deferred";
@@ -120,7 +121,9 @@ export class FakeCursorRoom {
     const toAgent = pipe();
     const toClient = pipe();
     this.peer = new AgentSideConnection(() => this.agent(), ndJsonStream(toClient.writable, toAgent.readable));
-    const connection = new ClientSideConnection(() => client, ndJsonStream(toAgent.writable, toClient.readable));
+    const wire = ndJsonStream(toAgent.writable, toClient.readable);
+    // As for a real `cursor-agent` process, the client sees the wire its waits are held through.
+    const connection = new ClientSideConnection(() => client, client instanceof BandACPClient ? client.observeStream(wire) : wire);
     return Promise.resolve({
       connection,
       stop: async () => {

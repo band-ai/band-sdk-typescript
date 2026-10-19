@@ -565,6 +565,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     if (owner) {
       const key = this.sessionKey(owner.generation, owner.sessionId)
       owner.client?.resetChunks(owner.sessionId)
+      owner.client?.forgetSession(owner.sessionId)
       this.activeSessions.delete(key)
       this.bootstrappedSessions.delete(key)
       this.cancelPendingPermissions(key, "room-closed")

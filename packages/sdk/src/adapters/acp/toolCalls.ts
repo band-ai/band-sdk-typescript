@@ -84,10 +84,11 @@ export function recordBandToolCalls(chunks: readonly CollectedChunk[], turn: Tur
 
 /**
  * Reports a runtime's own tool calls by id, and ends each on its terminal status.
- * With `bandToolsAreLocal`, a call naming a Band tool is skipped: Band executes it and reports itself.
+ * With `bandToolsAreLocal`, a call that names a Band tool is skipped from then on, whichever frame names it:
+ * Band executes it and reports itself, and the runtime may name it only in a later update.
  */
 export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal: boolean): (chunk: CollectedChunk) => void {
-  const calls = new Map<string, { name: string; status: string }>();
+  const calls = new Map<string, { name: string; status: string; local: boolean }>();
   return (chunk) => {
     const id = toolCallId(chunk);
     if (!id) return;
@@ -98,8 +99,12 @@ export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal
     // ACP titles can contain commands; only structured tool names or categories are public detail.
     const name = named || kind || previous?.name || "";
     const status = typeof chunk.metadata.status === "string" ? chunk.metadata.status : previous?.status ?? "pending";
-    calls.set(id, { name, status });
-    if (bandToolsAreLocal && namedBandTool(chunk)) return;
+    const local = previous?.local || (bandToolsAreLocal && namedBandTool(chunk) !== undefined);
+    calls.set(id, { name, status, local });
+    if (local) {
+      native.end(id); // a call first reported by kind, then named, stops being a native tool
+      return;
+    }
     if (isTerminalToolStatus(status)) native.end(id);
     else native.tool(id, name);
   };

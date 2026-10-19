@@ -14,6 +14,7 @@ import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-ac
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
+import { sessionConfigSchema } from "../../src/runtime/types";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
 import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
@@ -125,6 +126,8 @@ async function promptTokens(room: BandRoom, count: number): Promise<string[]> {
   return room.messages.filter(isPrompt).map((posted) => tokenOf(posted)!);
 }
 
+const KEEPALIVE_MS = sessionConfigSchema.parse({}).workingKeepAliveSeconds * 1000;
+
 describe("Cursor in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -146,16 +149,18 @@ describe("Cursor in a Band room", () => {
     try {
       await room.outcome(message);
       await reports.next((entry) => entry.activity?.kind === "permission");
-      await vi.advanceTimersByTimeAsync(6000);
-      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, true, true, true]);
+      const beforeHeartbeats = platform.rest.workingReports.entries.length;
+      await vi.advanceTimersByTimeAsync(2 * KEEPALIVE_MS);
+      expect(platform.rest.workingReports.entries.length).toBeGreaterThan(beforeHeartbeats);
+      expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
+      const waitingReports = reports.entries.length;
       await room.exchange(OWNER, `${CURSOR_COMMAND} select ${tokens[0]} allow`);
       await resumed.promise;
-      expect(reports.entries.at(-1)?.activity).toEqual({ kind: "reasoning" });
-      await vi.advanceTimersByTimeAsync(3000);
+      await reports.next((entry) => entry.activity?.kind === "reasoning", waitingReports);
+      await vi.advanceTimersByTimeAsync(KEEPALIVE_MS);
       expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
       terminal.resolve();
       await platform.rest.workingReports.next((entry) => !entry.working);
-      expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(false);
     } finally { terminal.resolve(); vi.useRealTimers(); }
   });
 

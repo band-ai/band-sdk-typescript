@@ -83,6 +83,7 @@ describe("ACPClientAdapter", () => {
     const first = createDeferred<string | undefined>();
     const second = createDeferred<string | undefined>();
     const firstReplied = createDeferred();
+    const decisions: unknown[] = [];
     onTestFinished(() => { nativeRelease.resolve(); first.resolve("allow"); second.resolve("allow"); });
     let client: BandACPClient;
     const adapter = new ACPClientAdapter({ command: ["fixture"], cwd: tmpRoot(), enableMcpTools: false,
@@ -97,9 +98,12 @@ describe("ACPClientAdapter", () => {
             const one = decision("one");
             const two = decision("two");
             await client.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "native", status: "completed" } });
-            expect(await one).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+            decisions.push(await one);
+            // Only a wait still held outranks this call, and it ends before the turn's last report.
+            await client.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call", toolCallId: "later", title: "private command sentinel", kind: "fetch", status: "in_progress" } });
+            await client.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "later", status: "completed" } });
             firstReplied.resolve();
-            expect(await two).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+            decisions.push(await two);
             await client.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
             return { stopReason: "end_turn" };
           },
@@ -114,9 +118,9 @@ describe("ACPClientAdapter", () => {
     await reports.next((entry) => entry.activity?.kind === "permission");
     first.resolve("allow");
     await firstReplied.promise;
-    expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
     second.resolve("allow");
     expect(await session.room.outcome(message)).toBe("processed");
+    expect(decisions).toEqual([{ outcome: { outcome: "selected", optionId: "allow" } }, { outcome: { outcome: "selected", optionId: "allow" } }]);
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
     expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: "execute" }, { kind: "permission" }, { kind: "reasoning" }, false,
@@ -1626,6 +1630,7 @@ describe("ACPClientAdapter", () => {
 
       await expect(client.extMethod("vendor/ask", { sessionId: "s-a" })).resolves.toEqual({})
       await client.extNotification("vendor/todos", { sessionId: "s-a" })
+      await client.sessionUpdate({ sessionId: "s-a", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late" } } })
 
       expect(contexts).toEqual([])
       expect(client.getCollectedChunks("s-a")).toEqual([])

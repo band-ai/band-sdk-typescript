@@ -12,6 +12,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 import type { Logger } from "../../core/logger";
+import { asOptionalRecord } from "../shared/coercion";
 import { toolCallId } from "./toolCalls";
 import type {
   ACPClientExtensionHandler,
@@ -38,9 +39,9 @@ export class BandACPClient implements Client {
   private nextPromptToken = 0
   private readonly promptsInFlight = new Map<number, string>()
   private readonly activities = new Map<number, PromptActivity>()
-  // First prompt to report a tool call owns it for the life of this client, so a
-  // call replayed on a later prompt of the session is not reported again.
-  private readonly callOwners = new Map<string, number>()
+  // First prompt to report a tool call owns it for its session's life, so a call
+  // replayed on a later prompt of the session is not reported again.
+  private readonly callOwners = new Map<string, Map<string, number>>()
   // Prompts the turn stopped waiting on while still running: their late
   // notifications cannot be told from a new prompt's, so the session reports nothing.
   private readonly abandonedPrompts = new Map<number, string>()
@@ -76,6 +77,11 @@ export class BandACPClient implements Client {
 
   public beginSession(sessionId: string): void {
     this.sessionChunks.set(sessionId, [])
+  }
+
+  /** The room has closed the session: nothing can replay its calls any more. */
+  public forgetSession(sessionId: string): void {
+    this.callOwners.delete(sessionId)
   }
 
   // One token per call. `release` drops that token only, so a turn that
@@ -152,12 +158,18 @@ export class BandACPClient implements Client {
   }
 
   private async observeDecision<T>(method: string, params: Record<string, unknown>, sessionId: string | null, work: () => Promise<T>): Promise<T> {
-    const token = sessionId ? this.promptToken(sessionId) : undefined
-    if (token === undefined || this.wireObserved || !this.humanDecision?.(method, params) || !this.activities.has(token)) return await work()
+    const token = this.wireObserved ? undefined : this.waitingPrompt(method, params, sessionId)
+    if (token === undefined) return await work()
     const request = {}
     this.beginWait(request, token)
     try { return await work() }
     finally { this.endWait(request) }
+  }
+
+  /** The prompt a human decision holds a wait for: one that is in flight and reports activity. */
+  private waitingPrompt(method: string, params: Record<string, unknown>, sessionId: string | null): number | undefined {
+    const token = sessionId ? this.promptToken(sessionId) : undefined
+    return token !== undefined && this.humanDecision?.(method, params) && this.activities.has(token) ? token : undefined
   }
 
   private beginWait(request: JsonRpcId | object, token: number): void {
@@ -183,26 +195,31 @@ export class BandACPClient implements Client {
     return {
       readable: stream.readable.pipeThrough(new TransformStream<AnyMessage, AnyMessage>({
         transform: (message, controller) => {
-          if ("method" in message && "id" in message && typeof message.params === "object" && message.params !== null) {
-            const params = message.params as Record<string, unknown>
-            const sessionId = this.attributableSession(sessionIdFrom(params))
-            const token = sessionId && this.humanDecision?.(message.method, params) ? this.promptToken(sessionId) : undefined
-            if (token !== undefined && this.activities.has(token)) this.beginWait(message.id, token)
-          }
+          this.openWaitFor(message)
           controller.enqueue(message)
         },
       })),
       writable: new WritableStream<AnyMessage>({
         write: async (message) => {
           try { await writer.write(message) }
-          finally {
-            if (!("method" in message) && "id" in message) this.endWait(message.id)
-          }
+          finally { this.closeWaitFor(message) }
         },
         close: () => writer.close(),
         abort: (reason: unknown) => writer.abort(reason),
       }),
     }
+  }
+
+  private openWaitFor(message: AnyMessage): void {
+    if (!("method" in message && "id" in message)) return
+    const params = asOptionalRecord(message.params)
+    if (!params) return
+    const token = this.waitingPrompt(message.method, params, this.attributableSession(sessionIdFrom(params)))
+    if (token !== undefined) this.beginWait(message.id, token)
+  }
+
+  private closeWaitFor(message: AnyMessage): void {
+    if (!("method" in message) && "id" in message) this.endWait(message.id)
   }
 
   // Named for the one thing it clears: collected chunks are per-turn, and a
@@ -294,10 +311,11 @@ export class BandACPClient implements Client {
     if (this.retired) return undefined
     const id = toolCallId(chunk)
     if (!id || token === undefined || this.isAmbiguous(sessionId)) return undefined
-    const key = JSON.stringify([sessionId, id])
-    const owner = this.callOwners.get(key)
+    let owners = this.callOwners.get(sessionId)
+    if (!owners) this.callOwners.set(sessionId, owners = new Map<string, number>())
+    const owner = owners.get(id)
     if (owner !== undefined && owner !== token) return undefined
-    this.callOwners.set(key, token)
+    owners.set(id, token)
     return this.activities.get(token)
   }
 
