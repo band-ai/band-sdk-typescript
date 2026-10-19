@@ -1041,6 +1041,15 @@ test("CI validates every merge group and re-validates the trunk, over the whole 
   );
 });
 
+test("CI skips draft pull requests and starts when one is marked ready", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/);
+  // Both root jobs carry the guard; lint and test hang off `changes`.
+  assert.match(workflow, /\n {2}changes:\n(?: {4}#[^\n]*\n)* {4}if: &not-draft github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\n/);
+  assert.match(workflow, /\n {2}packaging:\n {4}if: \*not-draft\n/);
+});
+
 test("PR title check reports in the merge queue without a PR to validate", async () => {
   const workflow = await readFile(join(root, ".github/workflows/pr-title.yml"), "utf8");
 
@@ -1126,8 +1135,12 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   const block = workflow.slice(start);
 
   // The aggregate must always report one stable context even when its
-  // intentionally conditional lint/test dependencies are skipped.
-  assert.match(block, /^    if: always\(\)$/m);
+  // intentionally conditional lint/test dependencies are skipped -- except on
+  // a draft, where nothing ran and a verdict would be a false failure.
+  assert.match(
+    block,
+    /^    if: always\(\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\)$/m,
+  );
   assert.match(block, /changes:\$\{\{ needs\.changes\.result \}\}:success/);
   assert.match(block, /packaging:\$\{\{ needs\.packaging\.result \}\}:success/);
   assert.match(block, /lint:\$\{\{ needs\.lint\.result \}\}:success\|skipped/);

@@ -10,6 +10,7 @@ name: CI
 on:
   pull_request:
     branches: [main, dev]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   # The merge queue re-runs the required `ci-status` on each merge group.
@@ -37,6 +38,8 @@ jobs:
   # to touch, or a green `ci-status` would again say nothing about `main`'s
   # actual state.
   changes:
+    # Drafts get no CI; ready_for_review above fires the first real run.
+    if: &not-draft github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
       sdk: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.sdk }}
@@ -203,6 +206,7 @@ jobs:
         run: pnpm test:baseline-scorecard-comment
 
   packaging:
+    if: *not-draft
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -308,7 +312,7 @@ jobs:
   # requires editing the ruleset.
   ci-status:
     needs: [changes, lint, test, packaging]
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     steps:
       - name: Verify every CI job passed or was skipped

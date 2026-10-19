@@ -30,6 +30,7 @@ on:
     - cron: "47 20 * * 0" # Sunday night: 23:47 Israel summer time, 22:47 winter time
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'packages/sdk/**'
       - 'pnpm-lock.yaml'
@@ -49,6 +50,8 @@ concurrency:
 
 jobs:
   coverage:
+    # Drafts get no CI; ready_for_review above fires the first real run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
