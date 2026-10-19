@@ -1,13 +1,15 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { ReportActivityOptions } from "../client/rest/requestOptions";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { activitySchema, REASONING, sameActivity, type Activity } from "../contracts/activity";
+import { activitySchema, MEMORY, PERMISSION, REASONING, sameActivity, toolCall, type Activity } from "../contracts/activity";
 import type { MetadataMap } from "../contracts/dtos";
 import { overrideTools } from "../core/overrideTools";
+import { hasStatusCode } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import type { ResolvedSessionConfig } from "./types";
 
 export type ReportFn = (working: boolean, options: ReportActivityOptions) => Promise<unknown>;
+const HTTP_NOT_FOUND = 404;
 const WORKING_CYCLE = Symbol("workingCycle");
 export const SCOPED_TOOL_EXECUTOR = Symbol("scopedToolExecutor");
 const suppressed = new AsyncLocalStorage<boolean>();
@@ -16,12 +18,18 @@ interface CycleTools extends AdapterToolsProtocol {
   [SCOPED_TOOL_EXECUTOR]?: (tools: AdapterToolsProtocol, name: string, args: MetadataMap) => Promise<unknown>;
 }
 
+/**
+ * `observe` and `permission` apply a scope's activity in the reporter's queue order and never wait for
+ * delivery, so the provider or tool they describe is not held behind the activity endpoint.
+ * `flush`, `end` and the reporter's `close` are where delivery is awaited.
+ */
 export interface WorkingLease {
   ready: Promise<void>;
   end(): Promise<void>;
   retain(): () => Promise<void>;
-  observe(activity: unknown): Promise<void>;
-  permission(waiting: boolean): Promise<void>;
+  observe(activity: unknown): void;
+  permission(waiting: boolean): void;
+  flush(): Promise<void>;
 }
 
 export function bindWorkingCycle(tools: AdapterToolsProtocol, lease: WorkingLease): AdapterToolsProtocol {
@@ -37,24 +45,36 @@ export function suppressToolActivity<T>(work: () => Promise<T>): Promise<T> {
   return suppressed.run(true, work);
 }
 
-async function observeUnlessSuppressed(tools: object, activity: unknown): Promise<void> {
-  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.observe(activity);
+/** Adapters hold different tool interfaces, so any object may carry a scope; only bound tools do. */
+function scopeLease(tools: object): WorkingLease | undefined {
+  return suppressed.getStore() ? undefined : (tools as CycleTools)[WORKING_CYCLE];
 }
 
-export async function reportToolActivity(tools: object, name: string): Promise<void> {
-  await observeUnlessSuppressed(tools, { kind: "tool_call", name });
+export function reportToolActivity(tools: object, name: string): void {
+  scopeLease(tools)?.observe(toolCall(name));
 }
 
-export async function endToolActivity(tools: object): Promise<void> {
-  await observeUnlessSuppressed(tools, REASONING);
+export function endToolActivity(tools: object): void {
+  scopeLease(tools)?.observe(REASONING);
 }
 
-export async function reportMemoryActivity(tools: object, active: boolean): Promise<void> {
-  await observeUnlessSuppressed(tools, active ? { kind: "memory" } : REASONING);
+export function reportMemoryActivity(tools: object, active: boolean): void {
+  scopeLease(tools)?.observe(active ? MEMORY : REASONING);
 }
 
-export async function setPermissionActivity(tools: object, waiting: boolean): Promise<void> {
-  if (!suppressed.getStore()) await (tools as CycleTools)[WORKING_CYCLE]?.permission(waiting);
+export function setPermissionActivity(tools: object, waiting: boolean): void {
+  scopeLease(tools)?.permission(waiting);
+}
+
+/** Brackets `work` with the tool's activity; without a scope there is nothing to report. */
+export async function withToolActivity<T>(tools: object | undefined, name: string, work: () => Promise<T>): Promise<T> {
+  if (!tools) return await work();
+  reportToolActivity(tools, name);
+  try {
+    return await work();
+  } finally {
+    endToolActivity(tools);
+  }
 }
 
 /** Preserve the provider outcome while retaining its originating handler's lease. */
@@ -116,7 +136,7 @@ export class WorkingStateReporter {
     };
     return {
       ready,
-      observe: async (value) => {
+      observe: (value) => {
         if (!this.active(token)) return;
         const parsed = activitySchema.safeParse(value);
         if (!parsed.success) {
@@ -125,7 +145,7 @@ export class WorkingStateReporter {
           return;
         }
         const activity = Object.freeze(parsed.data);
-        await this.enqueue(async () => {
+        void this.enqueue(async () => {
           if (!this.active(token)) return;
           const contribution = this.leases.get(token)!;
           if (sameActivity(contribution.activity, activity)) return;
@@ -134,8 +154,8 @@ export class WorkingStateReporter {
           await this.publishSelection();
         });
       },
-      permission: async (waiting) => {
-        await this.enqueue(async () => {
+      permission: (waiting) => {
+        void this.enqueue(async () => {
           if (!this.active(token)) return;
           const contribution = this.leases.get(token)!;
           if (contribution.permission === waiting) return;
@@ -143,6 +163,7 @@ export class WorkingStateReporter {
           await this.publishSelection();
         });
       },
+      flush: () => this.tail,
       end: () => ended ??= release(),
       retain: () => {
         if (!this.leases.has(token)) return async () => undefined;
@@ -176,7 +197,7 @@ export class WorkingStateReporter {
     let selected = REASONING;
     let order = -1;
     for (const contribution of this.leases.values()) {
-      if (contribution.permission) { selected = { kind: "permission" }; break; }
+      if (contribution.permission) { selected = PERMISSION; break; }
       if (contribution.activity.kind !== "reasoning" && contribution.order > order) {
         selected = contribution.activity;
         order = contribution.order;
@@ -225,7 +246,7 @@ export class WorkingStateReporter {
       if (this.failureStreak) this.logger.info("Working-state reporting recovered", { roomId: this.roomId });
       this.failureStreak = false;
     } catch (error) {
-      if (typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 404) {
+      if (hasStatusCode(error, HTTP_NOT_FOUND)) {
         this.logger.debug("Working-state execution state unavailable", { roomId: this.roomId });
       } else {
         this.logger[this.failureStreak ? "debug" : "warn"]("Working-state reporting failed", { roomId: this.roomId, error });

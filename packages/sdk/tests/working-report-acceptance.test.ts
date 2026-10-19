@@ -56,12 +56,9 @@ describe("automatic working-report acceptance", () => {
       if (enabled) {
         expect(reports.entries.slice(0, reportReleaseIndex)).toContainEqual({ roomId: room.id, working: true });
         expect(reports.entries.slice(reportReleaseIndex)).toContainEqual({ roomId: room.id, working: false });
-        expect(generated.calls.map(({ method, url }) => ({ method, url }))).toEqual([
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-        ]);
+        // A report queued behind an in-flight one is dropped once its scope ends, so only the endpoint is fixed.
+        expect(new Set(generated.calls.map(({ method, url }) => `${method} ${url}`)))
+          .toEqual(new Set(["POST http://fake-band.test/api/v1/agent/chats/room/activity"]));
       } else {
         // Both original observer checks passed, but neither required successful report exists.
         expect(reports.entries).toEqual([]);

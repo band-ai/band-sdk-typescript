@@ -227,9 +227,11 @@ describe("AgentTools", () => {
     await using scope = await scopedActivity(rest);
     const pending = scope.tools.executeToolCall("band_send_message", { content: "sentinel", mentions: ["@jane"] });
     await entered.promise;
+    await scope.lease.flush();
     expect(scope.reports.entries.at(-1)).toEqual({ kind: "tool_call", name: "band_send_message" });
     release.resolve();
     await pending;
+    await scope.lease.flush();
     expect(scope.reports.entries.at(-1)).toEqual({ kind: "reasoning" });
     expect(scope.tools.turn.verdict()).toBe("complete");
     const count = scope.reports.entries.length;
@@ -240,6 +242,19 @@ describe("AgentTools", () => {
     expect(scope.reports.entries).toHaveLength(count);
     expect(rest.chatMessages.map((message) => message.content)).toEqual(["sentinel", "second"]);
     expect(JSON.stringify(scope.reports.entries)).not.toContain("sentinel");
+  });
+
+  it("runs a Band tool and returns its result while activity delivery is stalled", async () => {
+    const rest = new FakeRestApi();
+    await using scope = await scopedActivity(rest);
+    const release = scope.hold();
+    onTestFinished(release);
+    await scope.tools.executeToolCall("band_send_message", { content: "hello", mentions: ["@jane"] });
+    expect(rest.chatMessages.map((message) => message.content)).toEqual(["hello"]);
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
+    release();
+    await scope.lease.flush();
+    expect(scope.reports.entries.slice(1)).toEqual([{ kind: "tool_call", name: "band_send_message" }, { kind: "reasoning" }]);
   });
 
   it("does not observe invalid, absent or capability-rejected calls, and retires a facade on context close", async () => {

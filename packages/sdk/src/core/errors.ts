@@ -65,3 +65,8 @@ export function rethrowIfRecoverableTurnFailure(error: unknown): void {
     throw error;
   }
 }
+
+/** Whether `error` is an HTTP failure from the REST client carrying `statusCode`. */
+export function hasStatusCode(error: unknown, statusCode: number): boolean {
+  return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === statusCode;
+}

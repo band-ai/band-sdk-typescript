@@ -12,6 +12,12 @@ export const activitySchema = z.discriminatedUnion("kind", [
 
 export type Activity = Readonly<z.infer<typeof activitySchema>>;
 export const REASONING: Activity = Object.freeze({ kind: "reasoning" });
+export const MEMORY: Activity = Object.freeze({ kind: "memory" });
+export const PERMISSION: Activity = Object.freeze({ kind: "permission" });
+
+export function toolCall(name: string): Activity {
+  return Object.freeze({ kind: "tool_call", name });
+}
 
 export function sameActivity(left: Activity, right: Activity): boolean {
   return left.kind === right.kind &&

@@ -36,15 +36,30 @@ describe("scoped custom execution", () => {
     const run = executeCustomTool(definition, { query: "private-argument" }, scope.tools.turn, scope.tools);
     const result = outcome === "throw" ? expect(run).rejects.toThrow("original failure") : expect(run).resolves.toBe(output);
     await entered.promise;
+    await scope.lease.flush();
     expect(scope.reports.entries.at(-1)).toEqual({ kind: "tool_call", name: "custom_lookup" });
     release.resolve();
     await result;
+    await scope.lease.flush();
     expect(scope.reports.entries.at(-1)).toEqual({ kind: "reasoning" });
     expect(scope.tools.turn.verdict()).toBe(outcome === "success" ? "complete" : "missing_reply");
     expect(JSON.stringify(scope.reports.entries)).not.toContain("private-");
     const count = scope.reports.entries.length;
     await expect(executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).rejects.toThrow("query");
+    await scope.lease.flush();
     expect(scope.reports.entries).toHaveLength(count);
+  });
+
+  it("runs the handler and returns its result while activity delivery is stalled", async () => {
+    await using scope = await scopedActivity();
+    const release = scope.hold();
+    onTestFinished(release);
+    const definition: CustomToolDef = { name: "custom_lookup", schema: z.object({}), handler: async () => "done" };
+    expect(await executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).toBe("done");
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
+    release();
+    await scope.lease.flush();
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "custom_lookup" }, { kind: "reasoning" }]);
   });
 });
 

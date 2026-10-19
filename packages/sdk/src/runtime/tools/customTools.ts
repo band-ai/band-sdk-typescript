@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { isFailedToolOutput } from "../../contracts/protocols";
 import type { Turn } from "../../core/turn";
-import { reportToolActivity, endToolActivity } from "../workingState";
+import { withToolActivity } from "../workingState";
 
 const DEFAULT_CUSTOM_TOOL_EFFECT: TurnEffect = "observe";
 const TURN_EFFECTS: ReadonlySet<string> = new Set(turnEffects());
@@ -180,9 +180,8 @@ export async function executeCustomTool(
     throw new CustomToolValidationError(toolName, errors);
   }
 
-  if (tools) await reportToolActivity(tools, toolName);
   try {
-    const output: unknown = await def.handler(result.data);
+    const output: unknown = await withToolActivity(tools, toolName, async () => await def.handler(result.data));
     if (!isFailedToolOutput(output)) {
       turn?.record(effect);
     }
@@ -192,8 +191,6 @@ export async function executeCustomTool(
       throw error;
     }
     throw new CustomToolExecutionError(toolName, error);
-  } finally {
-    if (tools) await endToolActivity(tools);
   }
 }
 

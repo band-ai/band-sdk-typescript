@@ -1,4 +1,4 @@
-import { UnsupportedFeatureError } from "../../core/errors";
+import { hasStatusCode, UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -376,13 +376,11 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
   };
 }
 
+const HTTP_UNPROCESSABLE = 422;
+
 export interface FernRestAdapterOptions {
   /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
   activityCapability?: ActivityCapability;
-}
-
-function isUnprocessable(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 422;
 }
 
 export class FernRestAdapter implements RestApi {
@@ -577,7 +575,7 @@ export class FernRestAdapter implements RestApi {
     try {
       return await send(detail);
     } catch (error) {
-      if (!detail || !isUnprocessable(error)) throw error;
+      if (!detail || !hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
       // Older platforms reject the field; the caller's one abort signal still bounds both attempts.
       capability?.markUnsupported();
       return await send(undefined);
