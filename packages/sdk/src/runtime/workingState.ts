@@ -66,7 +66,7 @@ export function setPermissionActivity(tools: object, waiting: boolean): void {
 }
 
 /** Provider-native work by id: a start is reported once, and only a tracked end restores reasoning. */
-function trackNativeActivity(tools: object, localNames: ReadonlySet<string>) {
+export function trackNativeActivity(tools: object, localNames: ReadonlySet<string>) {
   const open = new Set<string>();
   const begin = (id: string, activity: Activity): void => {
     if (!id || open.has(id)) return;
