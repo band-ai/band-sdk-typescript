@@ -4,7 +4,10 @@ import path from "node:path";
 import type { Client, SessionNotification } from "@agentclientprotocol/sdk";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../src/core/deferred";
+import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { recordRuntimeActivity } from "./support/activityReports";
 
 import {
   ACPClientAdapter,
@@ -74,6 +77,73 @@ function buildMockConnection(spies: {
 }
 
 describe("ACPClientAdapter", () => {
+  it("observes native starts before buffered output and keeps permission until both human decisions settle", async () => {
+    const reports = recordRuntimeActivity();
+    const nativeRelease = createDeferred();
+    const first = createDeferred<string | undefined>();
+    const second = createDeferred<string | undefined>();
+    const firstReplied = createDeferred();
+    onTestFinished(() => { nativeRelease.resolve(); first.resolve("allow"); second.resolve("allow"); });
+    let client: BandACPClient;
+    const adapter = new ACPClientAdapter({ command: ["fixture"], cwd: tmpRoot(), enableMcpTools: false,
+      resolvePermission: async ({ toolCall }) => toolCall.toolCallId === "one" ? first.promise : second.promise,
+      connectionFactory: async (given) => {
+        client = given as BandACPClient;
+        return buildMockConnection({ loadSession: async () => ({}), newSession: async () => ({ sessionId: "session" }),
+          prompt: async ({ sessionId }) => {
+            await client.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call", toolCallId: "native", title: "private command sentinel", kind: "execute", status: "in_progress" } });
+            await nativeRelease.promise;
+            const decision = (id: string) => client.requestPermission({ sessionId, toolCall: { toolCallId: id, title: "private approval prompt" }, options: [{ kind: "allow_once", name: "Allow", optionId: "allow" }] });
+            const one = decision("one");
+            const two = decision("two");
+            await client.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "native", status: "completed" } });
+            expect(await one).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+            firstReplied.resolve();
+            expect(await two).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+            await client.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+            return { stopReason: "end_turn" };
+          },
+        });
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "run it");
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    expect(session.room.messages).toEqual([]);
+    nativeRelease.resolve();
+    await reports.next((entry) => entry.activity?.kind === "permission");
+    first.resolve("allow");
+    await firstReplied.promise;
+    expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
+    second.resolve("allow");
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      { kind: "reasoning" }, { kind: "tool_call", name: "execute" }, { kind: "permission" }, { kind: "reasoning" }, false,
+    ]);
+    expect(JSON.stringify(reports.entries)).not.toContain("private");
+  });
+
+  it.each([
+    { case: "an automatic approval", adapterOptions: {}, options: [{ kind: "allow_once" as const, name: "Allow", optionId: "allow" }] },
+    { case: "a manual approval with no options to choose", adapterOptions: { resolvePermission: async () => "allow" }, options: [] },
+  ])("reports no wait for $case", async ({ adapterOptions, options }) => {
+    const reports = recordRuntimeActivity();
+    const adapter = new ACPClientAdapter({ command: ["fixture"], cwd: tmpRoot(), enableMcpTools: false, ...adapterOptions,
+      connectionFactory: async (given) => buildMockConnection({ loadSession: async () => ({}), newSession: async () => ({ sessionId: "session" }),
+        prompt: async ({ sessionId }) => {
+          await (given as BandACPClient).requestPermission({ sessionId, toolCall: { toolCallId: "ask", title: "approval" }, options });
+          await (given as BandACPClient).sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+          return { stopReason: "end_turn" };
+        },
+      }),
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(reports.entries.some((entry) => entry.activity?.kind === "permission")).toBe(false);
+  });
+
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;

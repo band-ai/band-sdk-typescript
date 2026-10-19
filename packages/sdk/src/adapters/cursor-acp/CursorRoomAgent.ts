@@ -15,6 +15,8 @@ import type {
   ACPPermissionRequest,
 } from "../acp";
 import { ACPRoomAgent, type ACPRoomAgentOptions } from "../acp/ACPRoomAgent";
+import { ACP_PERMISSION_METHOD } from "../acp/client";
+import { CURSOR_ASK_QUESTION_METHOD, CURSOR_CREATE_PLAN_METHOD } from "../acp/cursorExtensions";
 import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
@@ -322,10 +324,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     if (!turn || !sessionId || turn.sessionId !== sessionId) {
       return CANCELLED;
     }
-    if (method === "cursor/ask_question") {
+    if (method === CURSOR_ASK_QUESTION_METHOD) {
       return this.resolveQuestion(turn, params);
     }
-    if (method === "cursor/create_plan") {
+    if (method === CURSOR_CREATE_PLAN_METHOD) {
       return this.resolvePlan(turn, params);
     }
     return {};
@@ -346,6 +348,12 @@ export class CursorRoomAgent extends ACPRoomAgent {
     const options = request.options.map((option) => option.optionId);
     const token = await this.waitForDecision(turn, { kind: DECISION_KIND.permission, choices: new Map([[PERMISSION_CHOICE, options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
+  }
+
+  protected override isHumanDecision(method: string, params: Record<string, unknown>): boolean {
+    if (method === ACP_PERMISSION_METHOD) return this.approvalMode === "manual" && super.isHumanDecision(method, params);
+    if (method === CURSOR_ASK_QUESTION_METHOD) return this.questionMode === "manual" && questionChoices(params.questions).choices.size > 0;
+    return method === CURSOR_CREATE_PLAN_METHOD && this.planMode === "manual";
   }
 
   private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {

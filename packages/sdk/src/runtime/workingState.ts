@@ -65,12 +65,13 @@ export function setPermissionActivity(tools: object, waiting: boolean): void {
   scopeLease(tools)?.permission(waiting);
 }
 
-/** Provider-native work by id: a start is reported once, and only a tracked end restores reasoning. */
+/** Provider-native work by id: a start is reported once per activity, and only a tracked end restores reasoning. */
 export function trackNativeActivity(tools: object, localNames: ReadonlySet<string>) {
-  const open = new Set<string>();
+  const open = new Map<string, Activity>();
   const begin = (id: string, activity: Activity): void => {
-    if (!id || open.has(id)) return;
-    open.add(id);
+    const current = open.get(id);
+    if (!id || (current && sameActivity(current, activity))) return;
+    open.set(id, activity);
     scopeLease(tools)?.observe(activity);
   };
   return {
