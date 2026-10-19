@@ -23,6 +23,7 @@ import {
   type RestRequestOptions,
   type ReportActivityOptions,
 } from "./requestOptions";
+import type { ActivityCapability } from "./activityCapability";
 import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
@@ -375,11 +376,22 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
   };
 }
 
+export interface FernRestAdapterOptions {
+  /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
+  activityCapability?: ActivityCapability;
+}
+
+function isUnprocessable(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 422;
+}
+
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
+  private readonly activityCapability?: ActivityCapability;
 
-  public constructor(client: FernBandClientLike) {
+  public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
+    this.activityCapability = options.activityCapability;
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -551,12 +563,25 @@ export class FernRestAdapter implements RestApi {
     }
 
     const { activity, ...requestOptions } = options ?? {};
-    const body = { working, ...(working && activity ? { activity } : {}) };
-    const payload = asMetadataMap(extractEnvelopeData(await api(chatId, body, mergeOptions(requestOptions))));
-    if (typeof payload?.working !== "boolean") {
-      throw new UnsupportedFeatureError("Activity response did not include the working state");
+    const send = async (detail: typeof activity): Promise<{ working: boolean }> => {
+      const body = { working, ...(detail ? { activity: detail } : {}) };
+      const payload = asMetadataMap(extractEnvelopeData(await api(chatId, body, mergeOptions(requestOptions))));
+      if (typeof payload?.working !== "boolean") {
+        throw new UnsupportedFeatureError("Activity response did not include the working state");
+      }
+      return { working: payload.working };
+    };
+
+    const capability = this.activityCapability;
+    const detail = working && capability?.allowsDetail(requestOptions.timeoutInSeconds) ? activity : undefined;
+    try {
+      return await send(detail);
+    } catch (error) {
+      if (!detail || !isUnprocessable(error)) throw error;
+      // Older platforms reject the field; the caller's one abort signal still bounds both attempts.
+      capability?.markUnsupported();
+      return await send(undefined);
     }
-    return { working: payload.working };
   }
 
   public async listChatParticipants(

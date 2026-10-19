@@ -484,13 +484,18 @@ execution. Uncorrelated shared OpenCode MCP requests remain at reasoning.
 Native provider events, compaction and human-decision detail are supplied by the
 dependent provider layers; opaque remote work remains reasoning.
 
-Compatibility is automatic: one lazy, unauthenticated `/api/version` lookup uses
-`agent_version`; older, missing, malformed, prerelease or unreachable versions keep
-boolean reporting. The first reporting origin defines discovery process-wide.
-A detail-bearing 422 permanently disables detail process-wide and permits one
-boolean resend within the original request budget. Other failures do not downgrade.
-There is no second reporting switch. When injecting `restApi`, explicitly supply
-its matching `restUrl` to enable discovery; otherwise that link remains boolean-only.
+Compatibility is automatic and owned by each REST client: an unauthenticated
+`GET <restUrl>/api/v1/health` reads `api_version` (the agent API release), so it
+works on any host that serves REST, including `app.band.ai`. Reports never wait
+for it: until the answer is known they go out without detail, and the next
+keep-alive carries it. A definitive answer is final; older, missing, malformed or
+prerelease versions keep boolean reporting, while a timeout or server error is
+asked again on a later report. A detail-bearing 422 disables detail for that
+client and permits one boolean resend within the original request budget. Other
+failures do not downgrade. There is no second reporting switch. A `FernRestAdapter`
+you build yourself and inject as `restApi` reports detail only when given
+`{ activityCapability: new ActivityCapability({ origin: restUrl }) }` from
+`@band-ai/sdk/rest`; otherwise that link remains boolean-only.
 
 `SessionConfig` remains optional input; `ResolvedSessionConfig` now includes the
 three defaulted working-state fields and the optional duration cap. Callers that

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { BandClient } from "@band-ai/rest-client";
+import { ActivityCapability } from "../../src/client/rest/activityCapability";
 import { FernRestAdapter } from "../../src/client/rest/FernRestAdapter";
 import { RestFacade } from "../../src/client/rest/RestFacade";
 import { FakeTransport, RecordLog } from "../testUtils";
@@ -25,9 +26,12 @@ export async function activityPeer(handle: (request: ActivityRequest) => void | 
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No activity peer port");
   const origin = `http://127.0.0.1:${address.port}`;
-  const rest = new RestFacade({ api: new FernRestAdapter(new BandClient({ apiKey: "secret-test-key", baseUrl: origin })) });
+  const capability = new ActivityCapability({ origin });
+  const rest = new RestFacade({
+    api: new FernRestAdapter(new BandClient({ apiKey: "secret-test-key", baseUrl: origin }), { activityCapability: capability }),
+  });
   return {
-    origin, rest, requests,
+    origin, rest, capability, requests,
     linkOptions: { agentId: "agent", apiKey: "secret-test-key", restUrl: origin, restApi: rest, transport: new FakeTransport() },
     async [Symbol.asyncDispose]() {
       server.closeAllConnections();
