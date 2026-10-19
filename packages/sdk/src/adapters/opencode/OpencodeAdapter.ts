@@ -1,4 +1,5 @@
-import { retainWorkingCycleUntil, suppressToolActivity } from "../../runtime/workingState";
+import { retainWorkingCycleUntil, reportToolActivity, endToolActivity, setPermissionActivity, suppressToolActivity } from "../../runtime/workingState";
+import { opencodeMessageId } from "./messageId";
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
@@ -124,6 +125,19 @@ interface AskLifecycle<T> {
 /** One turn's state. A turn is still current while `room.turn` is this object. */
 class OpencodeTurn {
   public constructor(public readonly tools: TurnTools) {}
+  public readonly messageId = opencodeMessageId();
+  public readonly activityMessages = new Set<string>();
+  public readonly activityCalls = new Set<string>();
+  public readonly completedActivityCalls = new Set<string>();
+
+  /** Ends the running tool and human wait the turn left open, so neither outlives the provider's side of it. */
+  public endActivity(): void {
+    if (this.activityCalls.size > 0) {
+      this.activityCalls.clear();
+      endToolActivity(this.tools);
+    }
+    setPermissionActivity(this.tools, false);
+  }
 
   public readonly textParts = new Map<string, string>();
   public readonly assistantMessageIds = new Set<string>();
@@ -375,6 +389,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     roomState.requesterMentions = [{ id: message.senderId }];
     try {
       await client.promptAsync(sessionId, {
+        messageID: turn.messageId,
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
           replayMessages: needsHistoryReplay ? history.replayMessages : null,
         }),
@@ -569,6 +584,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       const messageId = typeof info.id === "string" ? info.id : null;
       if (info.role === "assistant" && messageId) {
         turn.assistantMessageIds.add(messageId);
+        if (info.parentID === turn.messageId) turn.activityMessages.add(messageId);
       }
       const error = info.error;
       if (info.role === "assistant" && error) {
@@ -657,7 +673,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return;
     }
 
-    if (partType !== "tool" || !this.config.enableExecutionReporting) {
+    if (partType !== "tool") {
       return;
     }
 
@@ -665,14 +681,27 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     const toolName = typeof part.tool === "string" ? part.tool : "unknown";
     const callId = typeof part.callID === "string" && part.callID.length > 0 ? part.callID : partId;
     const status = String(state.status ?? "");
+    const isActive = status === "pending" || status === "running";
+    const isTerminal = status === "completed" || status === "error";
 
-    if ((status === "pending" || status === "running") && !turn.reportedToolCalls.has(callId)) {
+    if (messageId && turn.activityMessages.has(messageId)) {
+      if (isActive && !turn.activityCalls.has(partId) && !turn.completedActivityCalls.has(partId)) {
+        turn.activityCalls.add(partId);
+        reportToolActivity(turn.tools, toolName);
+      } else if (isTerminal && turn.activityCalls.delete(partId)) {
+        turn.completedActivityCalls.add(partId);
+        endToolActivity(turn.tools);
+      }
+    }
+    if (!this.config.enableExecutionReporting) return;
+
+    if (isActive && !turn.reportedToolCalls.has(callId)) {
       turn.reportedToolCalls.add(callId);
       await this.reportToolCall(roomState, toolName, state, callId);
       return;
     }
 
-    if ((status === "completed" || status === "error")) {
+    if (isTerminal) {
       if (!turn.reportedToolCalls.has(callId)) {
         turn.reportedToolCalls.add(callId);
         await this.reportToolCall(roomState, toolName, state, callId);
@@ -762,6 +791,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       await this.replyInBackground(roomState, registry.tryClaim(entry.token)!, ask.autoReply);
       return;
     }
+    if (roomState.turn) setPermissionActivity(roomState.turn.tools, true);
     registry.startTimeout(entry, ask.timeoutMs, async (expired) => {
       if (await this.replyInBackground(roomState, expired, ask.timeoutReply)) {
         await roomState.tools.sendEvent(ask.timedOutNotice, "error");
@@ -894,7 +924,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     } finally {
       // A failed reply leaves the ask unanswerable, so it must not linger claimed.
       registry.forget(entry);
+      if (turn) setPermissionActivity(turn.tools, this.awaitsHuman(roomState));
     }
+  }
+
+  private awaitsHuman({ decisions }: RoomState): boolean {
+    return (this.config.approvalMode === "manual" && decisions.permissions.size > 0) ||
+      (this.config.questionMode === "manual" && decisions.questions.size > 0);
   }
 
   private async failTurnOnReply(roomState: RoomState, turn: OpencodeTurn | null, error: unknown): Promise<ProviderTurnFailedError> {
@@ -1068,6 +1104,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
   }
 
   private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
+    roomState.turn?.endActivity();
     // Best-effort: failing to report the failure must not leave the room's turn wait released forever.
     await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
     // Thrown, not returned: PlatformRuntime marks a message failed only when
