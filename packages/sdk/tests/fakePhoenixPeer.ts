@@ -169,12 +169,12 @@ export class FakePhoenixPeer implements AsyncDisposable {
     this.reply(pending.socket, pending.joinRef, pending.ref, request.topic, outcome, response);
   }
 
-  public settleJoin(topic: string, outcome: Exclude<ReplyOutcome, "pending">, response: unknown = responseFor(outcome)): void {
+  public settleJoin(topic: string, outcome: Exclude<ReplyOutcome, "pending">): void {
     const pending = [...this.pendingRequests.values()].reverse().find((request) => request.event === "phx_join" && request.topic === topic);
     if (!pending) {
       throw new Error(`No pending join for ${topic}`);
     }
-    this.settleRequest(pending, outcome, response);
+    this.settleRequest(pending, outcome, responseFor(outcome));
   }
 
   public push(topic: string, event: string, payload: unknown): void {

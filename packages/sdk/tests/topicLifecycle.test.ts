@@ -181,8 +181,10 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
   });
 });
 
+const isN = (n: number) => (value: unknown): boolean => (value as { n?: number }).n === n;
+
 /** One topic owner's view: its snapshots, events and losses, in the order the transport delivered them. */
-function owner({ optional: independent = true } = {}) {
+function owner({ mandatory = false } = {}) {
   const seen = new RecordLog<unknown>();
   const callbacks = { onJoined: (reply: unknown) => seen.record(reply), onUnavailable: () => seen.record("unavailable") };
   return {
@@ -191,7 +193,7 @@ function owner({ optional: independent = true } = {}) {
     get data() { return seen.entries.filter((value) => value !== "unavailable"); },
     get lost() { return seen.entries.at(-1) === "unavailable"; },
     handlers: { changed: (payload: unknown) => seen.record(payload) },
-    options: independent ? { blocksReconnect: false, exemptFromBuffering: true, ...callbacks } : callbacks,
+    options: mandatory ? callbacks : { blocksReconnect: false, exemptFromBuffering: true, ...callbacks },
   };
 }
 
@@ -221,7 +223,7 @@ describe("optional topic ownership on the Phoenix wire", () => {
     peer.settleRequest(request, "ok", { owner: "first" });
     await Promise.all(joining);
     peer.push(optional, "changed", { n: 1 });
-    await first.seen.next((value) => (value as { n?: number }).n === 1);
+    await first.seen.next(isN(1));
     expect(first.data).toEqual([{ owner: "first" }, { n: 1 }]);
     expect(second.seen.entries).toEqual([]);
     expect(peer.joins.entries.filter((entry) => entry.topic === optional)).toHaveLength(1);
@@ -246,11 +248,11 @@ describe("optional topic ownership on the Phoenix wire", () => {
     const newJoin = peer.joins.entries.filter((entry) => entry.topic === optional)[1]!;
     expect(newJoin.joinRef).not.toBe(oldJoin!.joinRef);
     peer.push(optional, "changed", { n: 1 });
-    await live.seen.next((value) => (value as { n?: number }).n === 1);
+    await live.seen.next(isN(1));
 
     peer.settleRequest(oldLeave, "error", { reason: "rejected" });
     peer.push(optional, "changed", { n: 2 });
-    await live.seen.next((value) => (value as { n?: number }).n === 2);
+    await live.seen.next(isN(2));
     expect(live.data).toEqual([{ owner: "replacement" }, { n: 1 }, { n: 2 }]);
     expect(live.lost).toBe(false);
     expect(retired.data).toEqual([{}]);
@@ -276,7 +278,7 @@ describe("optional topic ownership on the Phoenix wire", () => {
     peer.settleRequest(leaves[1]!, "error");
     peer.settleRequest(leaves[0]!, "ok");
     peer.push(optional, "changed", { n: 1 });
-    await live.seen.next((value) => (value as { n?: number }).n === 1);
+    await live.seen.next(isN(1));
     expect(live.data).toEqual([{ owner: "live" }, { n: 1 }]);
     expect([first.lost, second.lost, live.lost]).toEqual([true, true, false]);
     await transport.leave(optional);
@@ -335,7 +337,7 @@ describe("lifecycle callbacks on a mandatory topic", () => {
   it("reports the loss, then the rejoin snapshot, while the topic stays in the reconnect set", async () => {
     await using kit = await connected();
     const { peer, transport } = kit;
-    const view = owner({ optional: false });
+    const view = owner({ mandatory: true });
     const attempted = new RecordLog<ReadonlySet<string>>();
     transport.onReconnected((snapshot) => attempted.record(snapshot.attemptedTopics));
     peer.queueJoinPayloads(chat, [{ version: 1 }]);
@@ -385,16 +387,16 @@ describe("optional recovery against mandatory delivery", () => {
     await using kit = await connected();
     const { peer, transport } = kit;
     const view = owner();
-    const recovery = createDeferred<void>();
     const delivered = new RecordLog<string>();
-    transport.onReconnected(() => recovery.resolve());
     await transport.join(chat, { message: () => delivered.record("message") });
     await transport.join(optional, view.handlers, view.options);
     // The retry stays held, so nothing can make the optional topic live again during the test.
     peer.queueJoinOutcomes(optional, ["error", "pending"]);
-    peer.severAllConnections();
-    await recovery.promise;
-    await view.seen.next((value) => value === "unavailable");
+    const cursor = peer.joins.entries.length;
+    peer.push(optional, "phx_error", {});
+    // The rejected rejoin is the first retry; the next one is the held retry that Phoenix schedules after the rejection.
+    await peer.joins.next((entry) => entry.topic === optional, cursor + 1);
+    expect(view.seen.entries.filter((value) => value === "unavailable")).toHaveLength(2);
     peer.push(chat, "message", {});
     await delivered.next(() => true);
     expect(view.data).toEqual([{}]);

@@ -49,7 +49,7 @@ export interface ChannelRegistryHooks {
    * this can fire again long after the join() call that created it returned.
    */
   onJoinSettled(topic: string, joined: boolean): void;
-  /** Called once a topic has fully and successfully left. */
+  /** Called once the registry no longer owns a topic: left, a failed optional leave retired, or a pending join abandoned. */
   onLeft(topic: string): void;
 }
 
@@ -62,8 +62,9 @@ export function supersededJoinError(topic: string): TransportError {
  * and leave coalescing (concurrent calls for the same topic share one
  * physical operation), and tracking a join from the moment its Channel is
  * created — before its join Push settles — so a teardown mid-join can still
- * find and detach it. What happens with a topic's delivered events or a
- * join's settlement outcome is entirely up to the injected hooks.
+ * find and detach it. It also applies the optional-topic policy and runs a
+ * topic's lifecycle callbacks; what happens with its delivered events or a
+ * join's settlement outcome is up to the injected hooks.
  */
 export class ChannelRegistry {
   private readonly channels = new Map<string, TrackedChannel>();
@@ -173,6 +174,11 @@ export class ChannelRegistry {
     const unavailable = (): void => {
       if (current()) this.notifyLost(topic, options);
     };
+    const live = (reply: string): boolean => {
+      if (current()) return true;
+      this.logger.debug("Ignored stale join reply", { topic, reply });
+      return false;
+    };
     const refs: Array<[string, number]> = [
       ["phx_error", channel.on("phx_error", unavailable)],
       ["phx_close", channel.on("phx_close", unavailable)],
@@ -194,20 +200,20 @@ export class ChannelRegistry {
         this.pendingChannels.set(topic, { channel, refs, options, reject });
         joinPush
           .receive("ok", (reply: unknown) => {
-            if (!current()) return;
+            if (!live("ok")) return;
             this.observe(topic, "onJoined", () => options.onJoined?.(reply));
             this.settleJoin(topic, "ok");
             resolve();
           })
           .receive("error", (error: unknown) => {
-            if (!current()) return;
-            unavailable();
+            if (!live("error")) return;
+            this.notifyLost(topic, options);
             this.settleJoin(topic, "error");
             reject(new TransportError(`Failed to join topic ${topic}`, error));
           })
           .receive("timeout", () => {
-            if (!current()) return;
-            unavailable();
+            if (!live("timeout")) return;
+            this.notifyLost(topic, options);
             this.settleJoin(topic, "timeout");
             reject(new TransportError(`Timeout joining topic ${topic}`));
           });

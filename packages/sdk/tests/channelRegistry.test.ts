@@ -244,3 +244,27 @@ describe("ChannelRegistry leave of a join still in flight", () => {
     expect(kit.registry.isJoined("t")).toBe(true);
   });
 });
+
+describe("ChannelRegistry loss notices", () => {
+  it("reports a channel error and a channel close to the owner synchronously", async () => {
+    const kit = registryKit();
+    const lost = new RecordLog<string>();
+    const channel = await joined(kit, "t", { ...optional, onUnavailable: () => lost.record("lost") });
+
+    channel.deliver("phx_error");
+    expect(lost.entries).toEqual(["lost"]);
+    channel.deliver("phx_close");
+    expect(lost.entries).toEqual(["lost", "lost"]);
+  });
+
+  it.each(["error", "timeout"] as const)("reports a rejected join (%s) to the owner synchronously", async (status) => {
+    const kit = registryKit();
+    const lost = new RecordLog<string>();
+    const joining = kit.registry.join("t", {}, { ...optional, onUnavailable: () => lost.record("lost") });
+    const rejected = expect(joining).rejects.toThrow(/join(ing)? topic t/);
+
+    kit.socket.channels[0]!.joinPush.settle(status);
+    expect(lost.entries).toEqual(["lost"]);
+    await rejected;
+  });
+});

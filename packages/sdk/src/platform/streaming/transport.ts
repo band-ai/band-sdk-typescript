@@ -7,7 +7,11 @@ export interface JoinOptions {
   onJoined?: (reply: unknown) => void;
   /** Called synchronously when the channel is lost, errored, closed or left. May repeat for one loss. */
   onUnavailable?: () => void;
-  /** Independent optional topics do not hold mandatory recovery or admission. */
+  /**
+   * `false` makes the topic optional: its join does not wait on the reconnect
+   * barrier, it is left out of the reconnect snapshot, and leaving it while
+   * its join is in flight abandons that join. Defaults to `true`.
+   */
   blocksReconnect?: boolean;
   /**
    * Exempts this topic's event delivery from any reconnect-buffering window
