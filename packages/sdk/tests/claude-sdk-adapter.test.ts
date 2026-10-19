@@ -124,7 +124,7 @@ describe("Claude scoped activity", () => {
     const message = await session.room.say("owner", "look up status");
     try {
       await entered.promise;
-      expect(reports.entries.at(-1)?.activity).toEqual({ kind: "tool_call", name: "mcp__band__native_lookup" });
+      await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "mcp__band__native_lookup");
       release.resolve();
       expect(await session.room.outcome(message)).toBe("failed");
       expect(session.room.failures).toEqual([MISSING_REPLY]);
@@ -154,17 +154,19 @@ describe("Claude scoped activity", () => {
         const client = new Client({ name: "scoped-mcp-test", version: "1" });
         onTestFinished(() => client.close());
         await client.connect(clientTransport);
-        const invoke = (event: "PreToolUse" | "PostToolUse") => callHook(options, event, {
-          tool_name: "mcp__band__lookup_status", tool_input: {}, tool_response: "ready", tool_use_id: "local",
+        const invoke = (event: "PreToolUse" | "PostToolUse", name: string) => callHook(options, event, {
+          tool_name: `mcp__band__${name}`, tool_input: {}, tool_response: "ready", tool_use_id: name,
         });
-        await invoke("PreToolUse");
+        await invoke("PreToolUse", "lookup_status");
         const custom = await client.callTool({ name: "lookup_status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
         expect(custom.isError).toBeUndefined();
         expect(JSON.stringify(custom.content)).toContain("ready");
-        await invoke("PostToolUse");
+        await invoke("PostToolUse", "lookup_status");
+        await invoke("PreToolUse", "band_get_participants");
         const band = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } });
         expect(band.isError).toBeUndefined();
         expect(JSON.stringify(band.content)).toContain("owner");
+        await invoke("PostToolUse", "band_get_participants");
         yield { type: "result", subtype: "success", result: "Done." } as never;
       },
     });
@@ -364,6 +366,26 @@ describe("Claude scoped activity", () => {
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
     expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
     expect(JSON.stringify(reports.entries)).not.toContain("private-marker");
+  });
+
+  it("reports a compaction that starts after one that failed without a PostCompact", async () => {
+    const reports = recordRuntimeActivity();
+    const tool = { tool_name: "Bash", tool_input: {}, tool_use_id: "after-failure" };
+    const compact = { trigger: "auto", custom_instructions: null };
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        await reported(reports, "memory", () => callHook(options, "PreCompact", compact));
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
+        await reported(reports, "reasoning", () => callHook(options, "PostToolUse", { ...tool, tool_response: "ok" }));
+        await reported(reports, "memory", () => callHook(options, "PreCompact", compact));
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      { kind: "reasoning" }, { kind: "memory" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false,
+    ]);
   });
 
   it("ends a native tool whose call was denied, which runs no hook after it", async () => {

@@ -258,9 +258,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     return {
       bridge,
       local: new Set(mcpToolNames(local)),
-      retire: async (): Promise<void> => {
-        await bridge.serverConfig.instance.close();
-      },
+      retire: () => bridge.serverConfig.instance.close(),
     };
   }
 
@@ -296,7 +294,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       }),
       PostToolUse: toolEnd,
       PostToolUseFailure: toolEnd,
-      PreCompact: on(() => native.memory(COMPACTION_ID)),
+      // The CLI fires no PostCompact for a compaction that fails, and a query compacts one at a time.
+      PreCompact: on(() => {
+        native.end(COMPACTION_ID);
+        native.memory(COMPACTION_ID);
+      }),
       PostCompact: on(() => native.end(COMPACTION_ID)),
     };
   }
