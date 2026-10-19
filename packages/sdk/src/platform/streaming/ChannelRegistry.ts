@@ -85,6 +85,7 @@ export class ChannelRegistry {
     private readonly hooks: ChannelRegistryHooks,
   ) {}
 
+  /** The joined topics a reconnect waits on; optional topics (`blocksReconnect: false`) are left out. */
   public *topics(): IterableIterator<string> {
     for (const [topic, tracked] of this.channels) {
       if (tracked.options.blocksReconnect !== false) yield topic;
@@ -93,7 +94,7 @@ export class ChannelRegistry {
 
   public notifyUnavailable(): void {
     for (const [topic, tracked] of [...this.channels, ...this.pendingChannels]) {
-      this.observe(topic, () => tracked.options.onUnavailable?.());
+      this.notifyLost(topic, tracked.options);
     }
   }
 
@@ -105,13 +106,17 @@ export class ChannelRegistry {
     );
   }
 
+  private notifyLost(topic: string, options: JoinOptions): void {
+    this.observe(topic, () => options.onUnavailable?.());
+  }
+
+  /** Runs a feature callback, containing a throw or a rejection so it never reaches Phoenix or the registry. */
   private observe(topic: string, callback: () => void): void {
+    const failed = (): void => this.logger.error("Topic lifecycle observer failed", { topic });
     try {
-      void Promise.resolve(callback()).catch(() => {
-        this.logger.error("Topic lifecycle observer failed", { topic });
-      });
+      void Promise.resolve(callback()).catch(failed);
     } catch {
-      this.logger.error("Topic lifecycle observer failed", { topic });
+      failed();
     }
   }
 
@@ -156,7 +161,7 @@ export class ChannelRegistry {
 
     const current = (): boolean => !this.epoch.isStale(epoch) && this.owns(topic, channel);
     const unavailable = (): void => {
-      if (current()) this.observe(topic, () => options.onUnavailable?.());
+      if (current()) this.notifyLost(topic, options);
     };
     const refs: Array<[string, number]> = [
       ["phx_error", channel.on("phx_error", unavailable)],
@@ -283,7 +288,7 @@ export class ChannelRegistry {
 
   /** Abandons an optional join still in flight; a mandatory one is left to settle, as it always was. */
   private async leavePending(topic: string, pending: PendingJoin): Promise<void> {
-    this.observe(topic, () => pending.options.onUnavailable?.());
+    this.notifyLost(topic, pending.options);
     this.pendingChannels.delete(topic);
     this.abandonChannel(topic, pending);
     await this.joinFlights.current(topic)?.catch(() => undefined);
@@ -292,7 +297,7 @@ export class ChannelRegistry {
 
   private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
     const { channel, refs, options } = tracked;
-    this.observe(topic, () => options.onUnavailable?.());
+    this.notifyLost(topic, options);
     for (const [event, ref] of refs) {
       channel.off(event, ref);
     }
