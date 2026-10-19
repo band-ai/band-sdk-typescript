@@ -53,12 +53,10 @@ export async function nativeToolBarrier(workDir: string, marker: string) {
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No native activity barrier port");
-  let closing: Promise<void> | undefined;
-  const close = () => closing ??= (async () => {
+  onTestFinished(async () => {
     release.resolve();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-  })();
-  onTestFinished(close);
+  });
   const path = join(workDir, "activity-barrier.mjs");
   await copyFile(BARRIER_HELPER, path);
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -66,6 +64,5 @@ export async function nativeToolBarrier(workDir: string, marker: string) {
     command: `node ${quote(path)} http://127.0.0.1:${address.port}/ready ${ACTIVITY_MARKER_HEADER} ${quote(marker)}`,
     entered: entered.promise,
     release: () => release.resolve(),
-    close,
   };
 }
