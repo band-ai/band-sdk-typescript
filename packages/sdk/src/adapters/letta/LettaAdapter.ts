@@ -939,14 +939,14 @@ export class LettaAdapter extends SimpleAdapter<
               messages.push(message);
               if (type === "tool_call_message" && message.tool_call?.name && !active.has(message.tool_call.tool_call_id)) {
                 active.add(message.tool_call.tool_call_id);
-                await reportToolActivity(tools, message.tool_call.name);
+                reportToolActivity(tools, message.tool_call.name);
               } else if (type === "tool_return_message" && message.tool_call_id && active.delete(message.tool_call_id)) {
-                await endToolActivity(tools);
+                endToolActivity(tools);
               }
             }
           }
         } finally {
-          if (active.size > 0) await endToolActivity(tools);
+          if (active.size > 0) endToolActivity(tools);
         }
         if (!stopReason) throw new Error("Letta stream ended without a stop reason");
         return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };

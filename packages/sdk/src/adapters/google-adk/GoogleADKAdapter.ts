@@ -339,11 +339,11 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         for (const call of sdk.getFunctionCalls(event)) {
           if (call.id && call.name && !built.observedNames.has(call.name) && !nativeCalls.has(call.id)) {
             nativeCalls.add(call.id);
-            await reportToolActivity(tools, call.name);
+            reportToolActivity(tools, call.name);
           }
         }
         for (const response of sdk.getFunctionResponses(event)) {
-          if (response.id && nativeCalls.delete(response.id)) await endToolActivity(tools);
+          if (response.id && nativeCalls.delete(response.id)) endToolActivity(tools);
         }
         if (this.enableExecutionReporting) {
           await this.reportExecutionEvent(sdk, event, tools);

@@ -317,10 +317,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       const id = typeof data.run_id === "string" ? data.run_id : "";
       if (eventType === "on_tool_start" && name && id && !observedNames.has(name) && !active.has(id)) {
         active.add(id);
-        await reportToolActivity(tools, name);
+        reportToolActivity(tools, name);
       }
       if ((eventType === "on_tool_end" || eventType === "on_tool_error") && active.delete(id)) {
-        await endToolActivity(tools);
+        endToolActivity(tools);
       }
       if (this.emitExecutionEvents && eventType === "on_tool_start") {
         // The run ID pairs both events; the model's call ID arrives only at tool end.

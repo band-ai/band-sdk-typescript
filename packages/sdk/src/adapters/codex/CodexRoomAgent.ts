@@ -480,10 +480,10 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         if (item && typeof item.id === "string" && !activityItems.has(item.id)) {
           if (isToolLikeItem(item)) {
             activityItems.add(item.id);
-            await reportToolActivity(tools, this.extractToolItem(item)[0]);
+            reportToolActivity(tools, this.extractToolItem(item)[0]);
           } else if (item.type === "contextCompaction") {
             activityItems.add(item.id);
-            await reportMemoryActivity(tools, true);
+            reportMemoryActivity(tools, true);
           }
         }
         continue;
@@ -520,8 +520,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
           continue;
         }
         if (typeof item.id === "string" && activityItems.delete(item.id)) {
-          if (item.type === "contextCompaction") await reportMemoryActivity(tools, false);
-          else await endToolActivity(tools);
+          if (item.type === "contextCompaction") reportMemoryActivity(tools, false);
+          else endToolActivity(tools);
         }
 
         if (item.type === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
