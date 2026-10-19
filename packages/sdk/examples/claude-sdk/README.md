@@ -65,5 +65,5 @@ const agent = Agent.create({
 Ask for an allowed native Bash operation, such as `pwd`. Existing permission policy
 still applies. Native start/end hooks report `tool_call/Bash` then reasoning on a
 compatible agent API, with no command in activity or tool narration in chat.
-Compaction hooks report memory. This adapter does not expose an interactive
+The main thread's compaction status reports memory. This adapter does not expose an interactive
 approval resolver, so SDK policy checks alone do not establish a human wait.

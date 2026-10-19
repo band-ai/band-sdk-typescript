@@ -17,7 +17,7 @@ import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { MCP_SERVER_NAME, mcpToolNames } from "../../contracts/toolSchemas";
+import { claudeHookToolName, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -32,7 +32,7 @@ import { buildCustomMcpRegistrations } from "../../mcp/customTools";
 import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
-/** Compaction has no provider id, so every compaction in a query shares this one. */
+/** Compaction has no provider id; the main thread compacts one at a time, so a query uses this one. */
 const COMPACTION_ID = "compaction";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
@@ -257,7 +257,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     const bridge = createBridge(registrations, custom);
     return {
       bridge,
-      localToolNames: new Set(mcpToolNames(localNames)),
+      localToolNames: new Set([...localNames].map(claudeHookToolName)),
       retire: () => bridge.serverConfig.instance.close(),
     };
   }
@@ -294,7 +294,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       }),
       PostToolUse: toolEnd,
       PostToolUseFailure: toolEnd,
-      PreCompact: on(() => native.memory(COMPACTION_ID)),
     };
   }
 
@@ -377,7 +376,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       await close();
       throw error;
     }
-    return closeAfter(endFinishedActivity(query, native), close);
+    return closeAfter(trackStreamActivity(query, native), close);
   }
 
   private async consumeQueryEvents(
@@ -461,12 +460,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 }
 
 /**
- * Ends what the stream shows finished: a tool the model is handed a result for, whether it ran, failed or was
- * denied with no hook, and a compaction the CLI reports done. It fires no PostCompact for one that fails.
+ * Reports what the stream shows: a tool the model is handed a result for has ended, whether it ran, failed or
+ * was denied with no hook, and the main thread's compaction runs between its `compacting` and null statuses.
+ * Hooks cannot tell those from a subagent's compaction, which sends no status.
  */
-async function* endFinishedActivity(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
+async function* trackStreamActivity(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
   for await (const event of query) {
-    if (event.type === "system" && event.subtype === "status" && event.status === null) native.end(COMPACTION_ID);
+    if (event.type === "system" && event.subtype === "status") {
+      if (event.status === "compacting") native.memory(COMPACTION_ID);
+      else if (event.status === null) native.end(COMPACTION_ID);
+    }
     if (event.type === "user" && Array.isArray(event.message.content)) {
       for (const block of event.message.content) {
         if (block.type === "tool_result") native.end(block.tool_use_id);

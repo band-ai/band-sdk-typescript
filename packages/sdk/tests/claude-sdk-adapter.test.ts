@@ -142,7 +142,7 @@ describe("Claude scoped activity", () => {
     onTestFinished(() => release.resolve());
     const reports = recordRuntimeActivity();
     const adapter = new ClaudeSDKAdapter({ enableExecutionReporting: false,
-      customTools: [{ name: "lookup_status", schema: z.object({ query: z.string() }), handler: async ({ query }) => {
+      customTools: [{ name: "lookup.status", schema: z.object({ query: z.string() }), handler: async ({ query }) => {
         expect(query).toBe("private-mcp-marker");
         await release.promise;
         return "ready";
@@ -154,29 +154,30 @@ describe("Claude scoped activity", () => {
         const client = new Client({ name: "scoped-mcp-test", version: "1" });
         onTestFinished(() => client.close());
         await client.connect(clientTransport);
-        const invoke = (event: "PreToolUse" | "PostToolUse", name: string) => callHook(options, event, {
-          tool_name: `mcp__band__${name}`, tool_input: {}, tool_response: "ready", tool_use_id: name,
+        // Claude Code spells the dotted custom tool's name in its hooks with an underscore.
+        const invoke = (event: "PreToolUse" | "PostToolUse", hookName: string) => callHook(options, event, {
+          tool_name: hookName, tool_input: {}, tool_response: "ready", tool_use_id: hookName,
         });
-        await invoke("PreToolUse", "lookup_status");
-        const custom = await client.callTool({ name: "lookup_status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
+        await invoke("PreToolUse", "mcp__band__lookup_status");
+        const custom = await client.callTool({ name: "lookup.status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
         expect(custom.isError).toBeUndefined();
         expect(JSON.stringify(custom.content)).toContain("ready");
-        await invoke("PostToolUse", "lookup_status");
-        await invoke("PreToolUse", "band_get_participants");
+        await invoke("PostToolUse", "mcp__band__lookup_status");
+        await invoke("PreToolUse", "mcp__band__band_get_participants");
         const band = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } });
         expect(band.isError).toBeUndefined();
         expect(JSON.stringify(band.content)).toContain("owner");
-        await invoke("PostToolUse", "band_get_participants");
+        await invoke("PostToolUse", "mcp__band__band_get_participants");
         yield { type: "result", subtype: "success", result: "Done." } as never;
       },
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     const message = await session.room.say("owner", "look up status");
-    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup_status");
+    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup.status");
     release.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
     expect(activitySequence(reports)).toEqual([
-      { kind: "reasoning" }, { kind: "tool_call", name: "lookup_status" }, { kind: "reasoning" },
+      { kind: "reasoning" }, { kind: "tool_call", name: "lookup.status" }, { kind: "reasoning" },
       { kind: "tool_call", name: "band_get_participants" }, { kind: "reasoning" }, false,
     ]);
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
@@ -364,22 +365,44 @@ describe("Claude scoped activity", () => {
     expect(JSON.stringify(reports.entries)).not.toContain("private-marker");
   });
 
-  it.each(["failed", "success"] as const)("ends a compaction the CLI reports %s, with or without a PostCompact", async (result) => {
+  const status = (state: "compacting" | "requesting" | null) => ({ type: "system", subtype: "status", status: state, uuid: `status-${state}`, session_id: "session" }) as never;
+
+  it("reports the main thread's compaction between its compacting and null statuses, each time", async () => {
     const reports = recordRuntimeActivity();
-    const compacted = { type: "system", subtype: "status", status: null, compact_result: result, uuid: "status", session_id: "session" };
     const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
-      queryFn: async function* ({ options }) {
-        await reported(reports, "memory", () => callHook(options, "PreCompact", { trigger: "auto", custom_instructions: null }));
-        const from = reports.entries.length;
-        yield compacted as never;
-        await reports.next((entry) => entry.activity?.kind === "reasoning", from);
-        await reported(reports, "memory", () => callHook(options, "PreCompact", { trigger: "auto", custom_instructions: null }));
+      queryFn: async function* () {
+        for (let compaction = 0; compaction < 2; compaction++) {
+          const from = reports.entries.length;
+          yield status("compacting");
+          await reports.next((entry) => entry.activity?.kind === "memory", from);
+          const ending = reports.entries.length;
+          yield status(null);
+          await reports.next((entry) => entry.activity?.kind === "reasoning", ending);
+        }
         yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
       },
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
     expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false]);
+  });
+
+  it("keeps a compaction running through a status that is neither compacting nor null", async () => {
+    const reports = recordRuntimeActivity();
+    const tool = { tool_name: "Bash", tool_input: {}, tool_use_id: "during-compaction" };
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        const from = reports.entries.length;
+        yield status("compacting");
+        await reports.next((entry) => entry.activity?.kind === "memory", from);
+        yield status("requesting");
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "memory" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false]);
   });
 
   it("ends a native tool whose call was denied, which runs no hook after it", async () => {
