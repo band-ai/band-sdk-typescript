@@ -91,13 +91,17 @@ function registryKit() {
   const socket = new FakeSocket();
   const epoch = new Epoch();
   const left = new RecordLog<string>();
+  const joinInFlightWhenLeft = new RecordLog<boolean>();
   const settled = new RecordLog<string>();
   const registry = new ChannelRegistry(socket as unknown as Socket, epoch, new NoopLogger(), {
     wrapHandler: (_topic, _event, handler) => (payload) => void handler(payload),
     onJoinSettled: (topic, joined) => settled.record(`${topic}:${joined}`),
-    onLeft: (topic) => left.record(topic),
+    onLeft: (topic) => {
+      left.record(topic);
+      joinInFlightWhenLeft.record(registry.existingJoin(topic) !== undefined);
+    },
   });
-  return { socket, registry, left, settled };
+  return { socket, registry, left, joinInFlightWhenLeft, settled };
 }
 
 async function joined(kit: ReturnType<typeof registryKit>, topic: string, options: JoinOptions, handlers: Record<string, () => void> = {}) {
@@ -229,6 +233,8 @@ describe("ChannelRegistry leave of a join still in flight", () => {
     expect(kit.socket.removed).toEqual([channel]);
     expect(kit.registry.isJoined("t")).toBe(false);
     expect(kit.left.entries).toEqual(["t"]);
+    // The owner learns the topic is gone only once the abandoned join has settled.
+    expect(kit.joinInFlightWhenLeft.entries).toEqual([false]);
   });
 
   it("leaves a mandatory pending join alone, as before", async () => {

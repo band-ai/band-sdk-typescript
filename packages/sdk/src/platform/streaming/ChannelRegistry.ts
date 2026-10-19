@@ -5,6 +5,8 @@ import { KeyedSingleFlight } from "../../core/singleFlight";
 import { Epoch } from "../../core/epoch";
 import { isOptionalTopic, type JoinOptions, type TopicHandlers } from "./transport";
 
+type JoinOutcome = "ok" | "error" | "timeout";
+
 interface TrackedChannel {
   channel: Channel;
   refs: Array<[string, number]>;
@@ -104,7 +106,7 @@ export class ChannelRegistry {
   private owns(topic: string, channel: Channel): boolean {
     return (
       this.pendingChannels.get(topic)?.channel === channel ||
-      (this.channels.get(topic)?.channel === channel && !this.leaveFlights.current(topic))
+      (this.channels.get(topic)?.channel === channel && this.isJoined(topic))
     );
   }
 
@@ -174,15 +176,12 @@ export class ChannelRegistry {
     const unavailable = (): void => {
       if (current()) this.notifyLost(topic, options);
     };
-    const live = (reply: string): boolean => {
+    const live = (outcome: JoinOutcome): boolean => {
       if (current()) return true;
-      this.logger.debug("Ignored stale join reply", { topic, reply });
+      this.logger.debug("Ignored stale join reply", { topic, outcome });
       return false;
     };
-    const refs: Array<[string, number]> = [
-      ["phx_error", channel.on("phx_error", unavailable)],
-      ["phx_close", channel.on("phx_close", unavailable)],
-    ];
+    const refs: Array<[string, number]> = (["phx_error", "phx_close"] as const).map((event) => [event, channel.on(event, unavailable)]);
     for (const [event, handler] of Object.entries(handlers)) {
       const ref = channel.on(event, this.hooks.wrapHandler(topic, event, (payload) => {
         if (current()) return handler(payload);
@@ -198,6 +197,12 @@ export class ChannelRegistry {
     try {
       await new Promise<void>((resolve, reject) => {
         this.pendingChannels.set(topic, { channel, refs, options, reject });
+        const fail = (outcome: Exclude<JoinOutcome, "ok">, failure: TransportError): void => {
+          if (!live(outcome)) return;
+          this.notifyLost(topic, options);
+          this.settleJoin(topic, outcome);
+          reject(failure);
+        };
         joinPush
           .receive("ok", (reply: unknown) => {
             if (!live("ok")) return;
@@ -205,18 +210,8 @@ export class ChannelRegistry {
             this.settleJoin(topic, "ok");
             resolve();
           })
-          .receive("error", (error: unknown) => {
-            if (!live("error")) return;
-            this.notifyLost(topic, options);
-            this.settleJoin(topic, "error");
-            reject(new TransportError(`Failed to join topic ${topic}`, error));
-          })
-          .receive("timeout", () => {
-            if (!live("timeout")) return;
-            this.notifyLost(topic, options);
-            this.settleJoin(topic, "timeout");
-            reject(new TransportError(`Timeout joining topic ${topic}`));
-          });
+          .receive("error", (error: unknown) => fail("error", new TransportError(`Failed to join topic ${topic}`, error)))
+          .receive("timeout", () => fail("timeout", new TransportError(`Timeout joining topic ${topic}`)));
       });
     } catch (error) {
       // Leave and remove the channel so it doesn't get rejoined on reconnect
@@ -246,7 +241,7 @@ export class ChannelRegistry {
   }
 
   /** Runs on every settlement of the join Push, automatic rejoins included. */
-  private settleJoin(topic: string, outcome: "ok" | "error" | "timeout"): void {
+  private settleJoin(topic: string, outcome: JoinOutcome): void {
     this.logger.debug("Join settled", { topic, outcome });
     this.hooks.onJoinSettled(topic, outcome === "ok");
   }
@@ -305,7 +300,8 @@ export class ChannelRegistry {
   /** Abandons an optional join still in flight; a mandatory join is left to settle so reconnect recovery still awaits it. */
   private async leavePending(topic: string, pending: PendingJoin): Promise<void> {
     this.notifyLost(topic, pending.options);
-    this.pendingChannels.delete(topic);
+    this.forgetPendingChannel(topic, pending.channel);
+    this.logger.debug("Abandoning pending optional join", { topic });
     this.abandonChannel(topic, pending);
     await this.joinFlights.current(topic)?.catch(() => undefined);
     this.hooks.onLeft(topic);
