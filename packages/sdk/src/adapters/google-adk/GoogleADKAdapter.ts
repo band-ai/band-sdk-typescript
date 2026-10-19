@@ -6,7 +6,8 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { isFailedToolOutput } from "../../contracts/protocols";
 import { relayReply, type TurnTools } from "../../core/turn";
-import { reportToolActivity, endToolActivity } from "../../runtime/workingState";
+import { trackNativeActivity } from "../../runtime/workingState";
+import { toolCall } from "../../contracts/activity";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
@@ -326,31 +327,32 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         sessionId,
       });
 
-      const nativeCalls = new Set<string>();
-      for await (const event of runner.runAsync({
-        userId: context.roomId,
-        sessionId,
-        newMessage: {
-          role: "user",
-          parts: [{ text: prompt }],
-        },
-      })) {
-        throwIfModelError(event);
-        for (const call of sdk.getFunctionCalls(event)) {
-          if (call.id && call.name && !built.observedNames.has(call.name) && !nativeCalls.has(call.id)) {
-            nativeCalls.add(call.id);
-            reportToolActivity(tools, call.name);
+      const native = trackNativeActivity(tools);
+      try {
+        for await (const event of runner.runAsync({
+          userId: context.roomId,
+          sessionId,
+          newMessage: {
+            role: "user",
+            parts: [{ text: prompt }],
+          },
+        })) {
+          throwIfModelError(event);
+          for (const call of sdk.getFunctionCalls(event)) {
+            if (call.id && call.name && !built.observedNames.has(call.name)) native.start(call.id, toolCall(call.name));
+          }
+          for (const response of sdk.getFunctionResponses(event)) {
+            if (response.id) native.end(response.id);
+          }
+          if (this.enableExecutionReporting) {
+            await this.reportExecutionEvent(sdk, event, tools);
+          }
+          if (sdk.isFinalResponse(event)) {
+            finalResponseText = sdk.stringifyContent(event);
           }
         }
-        for (const response of sdk.getFunctionResponses(event)) {
-          if (response.id && nativeCalls.delete(response.id)) endToolActivity(tools);
-        }
-        if (this.enableExecutionReporting) {
-          await this.reportExecutionEvent(sdk, event, tools);
-        }
-        if (sdk.isFinalResponse(event)) {
-          finalResponseText = sdk.stringifyContent(event);
-        }
+      } finally {
+        native.endAll();
       }
     } catch (error) {
       // The sends that landed before the failure belong in the next turn, or it answers them again.
@@ -446,14 +448,15 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       return null;
     }
 
-    return { name, tool: sdk.createFunctionTool({
+    const tool = sdk.createFunctionTool({
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
         return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
       },
-    }) };
+    });
+    return { name, tool };
   }
 
   private buildCustomTool(
@@ -464,12 +467,13 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = String(functionDef.name ?? customTool.name);
-    return { name, tool: sdk.createFunctionTool({
+    const tool = sdk.createFunctionTool({
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
-    }) };
+    });
+    return { name, tool };
   }
 
   private buildPrompt(

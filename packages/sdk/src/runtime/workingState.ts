@@ -65,6 +65,30 @@ export function setPermissionActivity(tools: object, waiting: boolean): void {
   scopeLease(tools)?.permission(waiting);
 }
 
+/** Tracks provider-native work by id: a start is reported once, and only a tracked end restores reasoning. */
+export function trackNativeActivity(tools: object) {
+  const open = new Set<string>();
+  const observe = (activity: Activity): void => scopeLease(tools)?.observe(activity);
+  return {
+    start(id: string, activity: Activity): void {
+      if (open.has(id)) return;
+      open.add(id);
+      observe(activity);
+    },
+    end(id: string): void {
+      if (open.delete(id)) observe(REASONING);
+    },
+    /** Ends whatever is still open, so work cut short does not outlive the turn's failure report. */
+    endAll(): void {
+      if (open.size === 0) return;
+      open.clear();
+      observe(REASONING);
+    },
+  };
+}
+
+export type NativeActivity = ReturnType<typeof trackNativeActivity>;
+
 /** Brackets `work` with the tool's activity; without a scope there is nothing to report. */
 export async function withToolActivity<T>(tools: object | undefined, name: string, work: () => Promise<T>): Promise<T> {
   if (!tools) return await work();

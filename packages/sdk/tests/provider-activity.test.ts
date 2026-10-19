@@ -1,6 +1,7 @@
 import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
-import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
+import { Annotation, StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
+import { RunnableLambda } from "@langchain/core/runnables";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { tool } from "@langchain/core/tools";
 import { AIMessage } from "@langchain/core/messages";
@@ -9,15 +10,17 @@ import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { GoogleADKAdapter } from "../src/adapters/google-adk";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
-import { createDeferred } from "../src/core/deferred";
+import { createDeferred, type Deferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { recordRuntimeActivity } from "./support/activityReports";
-import { createFakeGoogleAdkSdk } from "./helpers/fakeGoogleAdkSdk";
+import { SlowFailureRest } from "./support/slowFailureRest";
+import { createFakeGoogleAdkSdk, createRealEventGoogleAdkSdk } from "./helpers/fakeGoogleAdkSdk";
 
 const NAME = "lookup_weather";
 const MARKER = "private-argument-sentinel";
 const RESULT = "12C";
 const ANSWER = "The weather is 12C.";
+const ROOT_START = { event: "on_chain_start", name: "graph", run_id: "root" };
 
 const families: Array<{ name: string; create: (tool: CustomToolDef, narration: boolean) => FrameworkAdapter }> = [
   { name: "Anthropic", create: (tool, narration) => {
@@ -75,10 +78,11 @@ const families: Array<{ name: string; create: (tool: CustomToolDef, narration: b
     customTools: [tool], emitExecutionEvents: narration,
     graphFactory: (tools) => ({ async *streamEvents() {
       const local = (tools as Array<{ name: string; invoke: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
+      yield ROOT_START;
       yield { event: "on_tool_start", name: NAME, run_id: "local", data: { input: { query: MARKER } } };
       expect(await local.invoke({ query: MARKER })).toBe(RESULT);
       yield { event: "on_tool_end", name: NAME, run_id: "local", data: { output: RESULT } };
-      yield { event: "on_chain_end", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
+      yield { event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
     } }),
   }) },
 ];
@@ -158,15 +162,12 @@ describe("streamed native tool activity", () => {
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     const message = await session.room.say("owner", "lookup participants");
     await entered.promise;
-    // Narration follows the activity branch, so sampling cannot race that observation.
-    await session.room.until(() => session.room.events("tool_call").some((event) => JSON.parse(event.content).name === name));
-    const during = reports.entries.at(-1)?.activity;
+    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === name);
     release.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
     expect(calls).toBe(1);
     expect(session.room.messages.map(({ content }) => content)).toEqual([ANSWER]);
     expect(session.room.events("tool_result").some((event) => JSON.parse(event.content).output === RESULT)).toBe(true);
-    expect(during).toEqual({ kind: "tool_call", name });
     expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name }, { kind: "reasoning" }, false,
     ]);
@@ -179,10 +180,11 @@ describe("streamed native tool activity", () => {
     const reports = recordRuntimeActivity();
     const adapter = new LangGraphAdapter({ emitExecutionEvents: false, graph: {
       async *streamEvents() {
+        yield ROOT_START;
         yield { event: "on_tool_start", name: "native_lookup", run_id: "native", data: { input: { query: MARKER } } };
         await release.promise;
         yield { event: terminal, name: "native_lookup", run_id: "native", data: { output: RESULT } };
-        yield { event: "on_chain_end", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
+        yield { event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
       },
       async invoke() { throw new Error("stream-capable graph must not be invoked a second time"); },
     } });
@@ -198,39 +200,142 @@ describe("streamed native tool activity", () => {
     expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
     expect(JSON.stringify(reports.entries)).not.toContain(MARKER);
   });
+});
 
-  it("ADK observes native runner events without replaying completed history as execution", async () => {
+const NATIVE = "native_lookup";
+/** A heartbeat republishes the current activity, which is how a test reads the slot without waiting on a timer of its own. */
+const KEEPALIVE = { workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 };
+const activitySequence = (reports: ReturnType<typeof recordRuntimeActivity>) => reports.entries.map(({ working, activity }) => working ? activity : false);
+
+interface NativeEvents { start: unknown[]; unrelatedEnd: unknown; end: unknown; answer: unknown[] }
+interface NativeGates { processed: Deferred; release: Deferred; fail: boolean }
+
+/** A provider turn that starts native work, passes an unrelated end, holds, then finishes or fails. */
+async function* nativeTurn(events: NativeEvents, gates: NativeGates) {
+  yield* events.start;
+  yield events.unrelatedEnd;
+  gates.processed.resolve();
+  await gates.release.promise;
+  if (gates.fail) throw new Error("provider connection reset");
+  yield events.end;
+  yield* events.answer;
+}
+
+const nativeFamilies: Array<{ name: string; create: (events: NativeEvents, gates: NativeGates) => FrameworkAdapter }> = [
+  { name: "Google ADK", create: (events, gates) => new GoogleADKAdapter({ enableExecutionReporting: false,
+    sdkFactory: createRealEventGoogleAdkSdk(() => nativeTurn(events, gates)) }) },
+  { name: "LangGraph", create: (events, gates) => new LangGraphAdapter({ emitExecutionEvents: false,
+    graph: { streamEvents: () => nativeTurn(events, gates) } }) },
+];
+
+const adkEvent = (part: unknown) => ({ actions: {}, content: { parts: [part] } });
+const nativeEvents: Record<string, NativeEvents> = {
+  "Google ADK": {
+    start: [adkEvent({ functionCall: { id: "native", name: NATIVE, args: { query: MARKER } } })],
+    unrelatedEnd: adkEvent({ functionResponse: { id: "unrelated", name: "old_lookup", response: {} } }),
+    end: adkEvent({ functionResponse: { id: "native", name: NATIVE, response: { result: RESULT } } }),
+    answer: [adkEvent({ text: ANSWER })],
+  },
+  LangGraph: {
+    start: [ROOT_START, { event: "on_tool_start", name: NATIVE, run_id: "native", data: { input: { query: MARKER } } }],
+    unrelatedEnd: { event: "on_tool_end", name: "other_tool", run_id: "unrelated", data: { output: RESULT } },
+    end: { event: "on_tool_end", name: NATIVE, run_id: "native", data: { output: RESULT } },
+    answer: [{ event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } }],
+  },
+};
+
+describe.each(nativeFamilies)("$name native activity across a turn", ({ name, create }) => {
+  const events = nativeEvents[name]!;
+  const gates = (fail: boolean): NativeGates => {
     const release = createDeferred();
     onTestFinished(() => release.resolve());
+    return { processed: createDeferred(), release, fail };
+  };
+
+  it("keeps a native tool active when an unrelated call ends, and ends it with its own response", async () => {
+    const held = gates(false);
     const reports = recordRuntimeActivity();
-    const runner = createFakeGoogleAdkSdk(async function* () {
-        yield { actions: {}, content: { parts: [{ functionResponse: { id: "historical", name: "old_lookup", response: {} } }] } };
-        yield { actions: {}, content: { parts: [{ functionCall: { id: "native", name: "native_lookup", args: { query: MARKER } } }] } };
-        await release.promise;
-        yield { actions: {}, content: { parts: [{ functionResponse: { id: "native", name: "native_lookup", response: { result: RESULT } } }] } };
-        yield { actions: {}, content: { parts: [{ text: ANSWER }] } };
-    });
-    const adapter = new GoogleADKAdapter({ enableExecutionReporting: false,
-      sdkFactory: async () => {
-        const sdk = await import("@google/adk");
-        return { ...await runner(),
-          getFunctionCalls: (event) => sdk.getFunctionCalls(event as never),
-          getFunctionResponses: (event) => sdk.getFunctionResponses(event as never),
-          isFinalResponse: (event) => sdk.isFinalResponse(event as never),
-          stringifyContent: (event) => sdk.stringifyContent(event as never),
-        };
-      },
-    });
+    const platform = await BandPlatform.start(create(events, held), [person("owner")], undefined, { enableWorkingState: true, ...KEEPALIVE });
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    const room = await platform.room("room-1");
+    const message = await room.say("owner", "weather?");
+    await held.processed.promise;
+    const heartbeat = await reports.next(() => true, reports.entries.length);
+    expect(heartbeat.activity).toEqual({ kind: "tool_call", name: NATIVE });
+    held.release.resolve();
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.map(({ content }) => content)).toEqual([ANSWER]);
+    expect(activitySequence(reports).at(-2)).toEqual({ kind: "reasoning" });
+  });
+
+  it("ends a native tool the provider never finished before the failure is reported", async () => {
+    const held = gates(true);
+    const reports = recordRuntimeActivity();
+    const rest = new SlowFailureRest([person("owner")]);
+    onTestFinished(() => rest.gate.resolve());
+    const platform = await BandPlatform.start(create(events, held), [person("owner")], rest, { enableWorkingState: true, ...KEEPALIVE });
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    const room = await platform.room("room-1");
+    const message = await room.say("owner", "weather?");
+    await held.processed.promise;
+    held.release.resolve();
+    await rest.failurePosting.promise;
+    const heartbeat = await reports.next(() => true, reports.entries.length);
+    expect(heartbeat.activity).toEqual({ kind: "reasoning" });
+    rest.gate.resolve();
+    expect(await room.outcome(message)).toBe("failed");
+  });
+});
+
+describe("a local wrapper that rejects before running", () => {
+  const localFamilies: Array<{ name: string; create: (tool: CustomToolDef, rejected: Deferred, hold: Deferred) => FrameworkAdapter }> = [
+    { name: "Google ADK", create: (tool, rejected, hold) => new GoogleADKAdapter({ additionalTools: [tool], enableExecutionReporting: false,
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
+        const local = (agent.tools as Array<{ name: string; execute: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
+        yield { functionCalls: [{ id: "local", name: NAME, args: {} }] };
+        await expect(local.execute({})).rejects.toThrow();
+        rejected.resolve();
+        await hold.promise;
+      }) }) },
+    { name: "LangGraph", create: (tool, rejected, hold) => new LangGraphAdapter({ customTools: [tool], emitExecutionEvents: false,
+      graphFactory: (tools) => ({ async *streamEvents() {
+        const local = (tools as Array<{ name: string; invoke: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
+        yield ROOT_START;
+        yield { event: "on_tool_start", name: NAME, run_id: "local", data: { input: {} } };
+        await expect(local.invoke({})).rejects.toThrow();
+        rejected.resolve();
+        await hold.promise;
+      } }) }) },
+  ];
+
+  it.each(localFamilies)("$name reports no native activity for it", async ({ create }) => {
+    const rejected = createDeferred();
+    const hold = createDeferred();
+    const reports = recordRuntimeActivity();
+    const tool: CustomToolDef = { name: NAME, description: "Weather lookup", schema: z.object({ query: z.string() }), handler: async () => RESULT };
+    const platform = await BandPlatform.start(create(tool, rejected, hold), [person("owner")], undefined, { enableWorkingState: true, ...KEEPALIVE });
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    onTestFinished(() => hold.resolve());
+    const room = await platform.room("room-1");
+    await room.say("owner", "weather?");
+    await rejected.promise;
+    const heartbeat = await reports.next(() => true, reports.entries.length);
+    expect(heartbeat.activity).toEqual({ kind: "reasoning" });
+  });
+});
+
+describe("LangGraph reply from the stream", () => {
+  it("posts what invoke would, not the output of a nested chain", async () => {
+    const State = Annotation.Root({ ...MessagesAnnotation.spec, answer: Annotation<string>() });
+    const router = RunnableLambda.from(async () => "billing");
+    const graph = new StateGraph(State)
+      .addNode("route", async (_state, config) => { await router.invoke("question", config); return {}; })
+      .addNode("respond", () => ({ answer: "Your invoice is attached." }))
+      .addEdge(START, "route").addEdge("route", "respond").addEdge("respond", END).compile();
+    const adapter = new LangGraphAdapter({ graph, emitExecutionEvents: false });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
-    const message = await session.room.say("owner", "weather?");
-    await reports.next((entry) => entry.activity?.kind === "tool_call");
-    release.resolve();
+    const message = await session.room.say("owner", "invoice?");
     expect(await session.room.outcome(message)).toBe("processed");
-    expect(session.room.messages.map(({ content }) => content)).toEqual([ANSWER]);
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
-      { kind: "reasoning" }, { kind: "tool_call", name: "native_lookup" }, { kind: "reasoning" }, false,
-    ]);
-    expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
-    expect(JSON.stringify(reports.entries)).not.toContain(MARKER);
+    expect(session.room.messages).toEqual([]);
   });
 });

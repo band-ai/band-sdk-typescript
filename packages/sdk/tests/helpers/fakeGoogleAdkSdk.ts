@@ -38,3 +38,17 @@ export function createFakeGoogleAdkSdk(
     stringifyContent: (event: Record<string, unknown>) => String(event.text ?? ""),
   });
 }
+
+/** The fake runner, but event inspection goes through the real `@google/adk` helpers, so events take the shape the real runner yields. */
+export function createRealEventGoogleAdkSdk(run: Parameters<typeof createFakeGoogleAdkSdk>[0]): SdkFactory {
+  return async () => {
+    const sdk = await import("@google/adk");
+    return {
+      ...await createFakeGoogleAdkSdk(run)(),
+      getFunctionCalls: (event) => sdk.getFunctionCalls(event as never),
+      getFunctionResponses: (event) => sdk.getFunctionResponses(event as never),
+      isFinalResponse: (event) => sdk.isFinalResponse(event as never),
+      stringifyContent: (event) => sdk.stringifyContent(event as never),
+    };
+  };
+}

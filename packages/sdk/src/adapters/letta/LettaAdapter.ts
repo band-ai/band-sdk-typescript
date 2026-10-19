@@ -12,7 +12,8 @@ import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
-import { reportToolActivity, endToolActivity } from "../../runtime/workingState";
+import { trackNativeActivity } from "../../runtime/workingState";
+import { toolCall } from "../../contracts/activity";
 
 // ---------------------------------------------------------------------------
 // Minimal Letta client surface
@@ -1047,7 +1048,7 @@ async function collectLettaStream(
   tools: AdapterToolsProtocol,
 ): Promise<LettaResponse> {
   const messages: LettaResponseMessage[] = [];
-  const active = new Set<string>();
+  const native = trackNativeActivity(tools);
   let stopReason: string | undefined;
   let usage: Record<string, unknown> | undefined;
   try {
@@ -1061,21 +1062,19 @@ async function collectLettaStream(
       else if (typeof type === "string" && type !== "ping") {
         const message = event as unknown as LettaResponseMessage;
         messages.push(message);
-        if (type === "tool_call_message" && message.tool_call?.name && !active.has(message.tool_call.tool_call_id)) {
-          active.add(message.tool_call.tool_call_id);
-          reportToolActivity(tools, message.tool_call.name);
-        } else if (type === "tool_return_message" && message.tool_call_id && active.delete(message.tool_call_id)) {
-          endToolActivity(tools);
-        }
+        if (type === "tool_call_message" && message.tool_call?.name) native.start(message.tool_call.tool_call_id, toolCall(message.tool_call.name));
+        else if (type === "tool_return_message" && message.tool_call_id) native.end(message.tool_call_id);
       }
     }
   } finally {
-    if (active.size > 0) endToolActivity(tools);
+    native.endAll();
   }
   if (!stopReason) throw new Error("Letta stream ended without a stop reason");
   return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };
 }
 
+type LettaClientCtor = typeof import("@letta-ai/letta-client/client").Letta;
+type CreateParams = import("@letta-ai/letta-client/resources/agents/messages").MessageCreateParamsNonStreaming;
 
 async function loadLettaClientFactory(config: {
   apiKey?: string;
@@ -1087,7 +1086,7 @@ async function loadLettaClientFactory(config: {
     );
   });
 
-  const loaded = module as { default?: typeof import("@letta-ai/letta-client/client").Letta; Letta?: typeof import("@letta-ai/letta-client/client").Letta };
+  const loaded = module as { default?: LettaClientCtor; Letta?: LettaClientCtor };
   const LettaCtor = loaded.default ?? loaded.Letta;
   if (!LettaCtor) {
     throw new UnsupportedFeatureError(
@@ -1100,7 +1099,6 @@ async function loadLettaClientFactory(config: {
       ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
     });
-    type CreateParams = import("@letta-ai/letta-client/resources/agents/messages").MessageCreateParamsNonStreaming;
     return {
       agents: {
         create: async (params, options) => await client.agents.create(params, options),

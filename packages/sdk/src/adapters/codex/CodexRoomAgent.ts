@@ -2,7 +2,8 @@ import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { reportToolActivity, endToolActivity, reportMemoryActivity } from "../../runtime/workingState";
+import { trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
+import { MEMORY, toolCall } from "../../contracts/activity";
 import {
   isStructuredToolFailure,
   isToolExecutorError,
@@ -286,6 +287,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     });
 
     const turnId = turnStarted.turn.id;
+    const native = trackNativeActivity(tools);
     const { finalText, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
       client,
       threadId,
@@ -293,7 +295,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
       tools,
       config,
       context.roomId,
-    );
+      native,
+    ).finally(() => native.endAll());
 
     await this.emitTurnOutcome({
       tools,
@@ -377,6 +380,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     tools: TurnTools,
     config: CodexAdapterConfig,
     roomId: string,
+    native: NativeActivity,
   ): Promise<{
     finalText: string;
     turnStatus: TurnStatus;
@@ -387,7 +391,6 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     let turnStatus: TurnStatus = "failed";
     let turnError = "";
     let reportedFailureInLoop = false;
-    const activityItems = new Set<string>();
 
     while (true) {
       let event: CodexRpcEvent;
@@ -477,14 +480,9 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
 
       if (event.method === "item/started") {
         const item = parseThreadItem(params.item);
-        if (item && typeof item.id === "string" && !activityItems.has(item.id)) {
-          if (isToolLikeItem(item)) {
-            activityItems.add(item.id);
-            reportToolActivity(tools, this.extractToolItem(item)[0]);
-          } else if (item.type === "contextCompaction") {
-            activityItems.add(item.id);
-            reportMemoryActivity(tools, true);
-          }
+        if (item && typeof item.id === "string") {
+          if (isToolLikeItem(item)) native.start(item.id, toolCall(toolItemName(item)));
+          else if (item.type === "contextCompaction") native.start(item.id, MEMORY);
         }
         continue;
       }
@@ -519,10 +517,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         if (!item) {
           continue;
         }
-        if (typeof item.id === "string" && activityItems.delete(item.id)) {
-          if (item.type === "contextCompaction") reportMemoryActivity(tools, false);
-          else endToolActivity(tools);
-        }
+        if (typeof item.id === "string") native.end(item.id);
 
         if (item.type === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
           finalText = item.text;
@@ -1137,6 +1132,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
   }
 
   private extractToolItem(item: ToolLikeItem): [string, Record<string, unknown>, string] {
+    const name = toolItemName(item);
     if (item.type === "commandExecution") {
       const args = {
         command: item.command,
@@ -1149,12 +1145,12 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
       if (item.exitCode !== null) {
         outputParts.push(`exit_code=${item.exitCode}`);
       }
-      return ["exec", args, outputParts.join("\n") || item.status];
+      return [name, args, outputParts.join("\n") || item.status];
     }
 
     if (item.type === "fileChange") {
       return [
-        "file_edit",
+        name,
         { files: item.changes.map((change) => change.path) },
         item.status,
       ];
@@ -1163,19 +1159,19 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     if (item.type === "mcpToolCall") {
       const args = asOptionalRecord(item.arguments) ?? {};
       const output = item.result ?? item.error ?? "completed";
-      return [`mcp:${item.server}/${item.tool}`, args, toWireString(output)];
+      return [name, args, toWireString(output)];
     }
 
     if (item.type === "webSearch") {
-      return ["web_search", { query: item.query }, toWireString(item.action ?? "completed")];
+      return [name, { query: item.query }, toWireString(item.action ?? "completed")];
     }
 
     if (item.type === "imageView") {
-      return ["view_image", { path: item.path }, "viewed"];
+      return [name, { path: item.path }, "viewed"];
     }
 
     return [
-      `collab:${item.tool}`,
+      name,
       {
         ...(item.prompt ? { prompt: item.prompt } : {}),
         ...(item.agents ? { agents: item.agents } : {}),
@@ -1480,6 +1476,18 @@ function isToolLikeItem(item: ThreadItem): item is ToolLikeItem {
     "imageView",
     "collabAgentToolCall",
   ].includes(item.type);
+}
+
+/** The activity name of a tool item; it needs only the item's identity, so it is valid before the item completes. */
+function toolItemName(item: ToolLikeItem): string {
+  switch (item.type) {
+    case "commandExecution": return "exec";
+    case "fileChange": return "file_edit";
+    case "mcpToolCall": return `mcp:${item.server}/${item.tool}`;
+    case "webSearch": return "web_search";
+    case "imageView": return "view_image";
+    default: return `collab:${item.tool}`;
+  }
 }
 
 function isThoughtLikeItem(item: ThreadItem): item is ThoughtLikeItem {
