@@ -23,12 +23,9 @@ vi.mock("@langchain/core/tools", () => ({
   tool: langGraphMocks.tool,
 }));
 
-const ROOT_START = { event: "on_chain_start", name: "graph", run_id: "root" };
-
-/** A stream as LangGraph emits it: the root run starts first, and only its end carries the reply. */
-function streamFrom<T>(items: T[]): AsyncGenerator<T | typeof ROOT_START, void> {
-  return (async function* generator(): AsyncGenerator<T | typeof ROOT_START, void> {
-    for (const item of [ROOT_START, ...items]) {
+function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
+  return (async function* generator(): AsyncGenerator<T, void> {
+    for (const item of items) {
       yield item;
     }
   })();
@@ -405,7 +402,6 @@ describe("LangGraphAdapter", () => {
           { event: "on_chain_end", name: "RunnableLambda", data: { output: "__end__" } },
           {
             event: "on_chain_end",
-            run_id: "root",
             name: "my_graph",
             data: { output: { messages: [["assistant", "custom graph reply"]] } },
           },
@@ -442,7 +438,6 @@ describe("LangGraphAdapter", () => {
           },
           {
             event: "on_chain_end",
-            run_id: "root",
             name: "LangGraph",
             data: {
               output: {
@@ -522,7 +517,6 @@ describe("LangGraphAdapter", () => {
           circularEvent,
           {
             event: "on_chain_end",
-            run_id: "root",
             name: "LangGraph",
             data: { output: { messages: [["assistant", "done"]] } },
           },
@@ -586,7 +580,6 @@ describe("LangGraphAdapter", () => {
           },
           {
             event: "on_chain_end",
-            run_id: "root",
             name: "LangGraph",
             data: { output: { messages: [aiMessage] } },
           },

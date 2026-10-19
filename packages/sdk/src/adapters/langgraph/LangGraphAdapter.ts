@@ -11,8 +11,7 @@ import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
 import { relayReply, type TurnTools } from "../../core/turn";
-import { trackNativeActivity } from "../../runtime/workingState";
-import { toolCall } from "../../contracts/activity";
+import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 
 import {
   buildCustomToolIndex,
@@ -192,13 +191,14 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         recursion_limit: this.recursionLimit,
       };
 
-      if (graph.streamEvents) {
-        text = await this.forwardStreamEvents(graph, input, graphConfig, tools, observedNames);
-      } else if (!graph.invoke) {
-        return;
-      } else {
-        const result = await graph.invoke(input, graphConfig);
+      if (this.emitExecutionEvents && graph.streamEvents) {
+        text = await withNativeActivity(tools, observedNames, (native) => this.forwardStreamEvents(graph, input, graphConfig, tools, native));
+      } else if (graph.invoke) {
+        const invoke = graph.invoke.bind(graph);
+        const result = await withNativeActivity(tools, observedNames, (native) => invoke(input, { ...graphConfig, callbacks: [toolActivityCallbacks(native)] }));
         text = extractAssistantText(result);
+      } else {
+        return;
       }
     } catch (error) {
       await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
@@ -299,7 +299,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     input: Record<string, unknown>,
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
-    observedNames: ReadonlySet<string>,
+    native: NativeActivity,
   ): Promise<string | null> {
     // version belongs on config (arg 2), not the optional third arg.
     const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
@@ -308,65 +308,72 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
 
     let lastAssistantText: string | null = null;
-    let rootRunId: string | undefined;
-    const native = trackNativeActivity(tools);
 
-    try {
-      for await (const event of stream) {
-        const data = asOptionalRecord(event) ?? {};
-        const eventType = String(data.event ?? "");
-        const details = asOptionalRecord(data.data) ?? {};
-        const name = typeof data.name === "string" ? data.name : "";
-        const id = typeof data.run_id === "string" ? data.run_id : "";
-        if (eventType === "on_tool_start" && name && id && !observedNames.has(name)) native.start(id, toolCall(name));
-        if (eventType === "on_tool_end" || eventType === "on_tool_error") native.end(id);
-        if (this.emitExecutionEvents && eventType === "on_tool_start") {
-          // The run ID pairs both events; the model's call ID arrives only at tool end.
-          await tools.sendEvent(
-            stringifyJsonWithFallback({
-              ...data,
-              tool_call_id: data.run_id,
-              args: streamToolArgs(details.input),
-            }, this.logger, {
-              label: "LangGraph event",
-              eventType,
-            }),
-            "tool_call",
-          );
+    for await (const event of stream) {
+      const data = asOptionalRecord(event) ?? {};
+      const eventType = String(data.event ?? "");
+      const details = asOptionalRecord(data.data) ?? {};
+      const runId = typeof data.run_id === "string" ? data.run_id : "";
+      if (eventType === "on_tool_start") native.tool(runId, typeof data.name === "string" ? data.name : "");
+      if (eventType === "on_tool_end" || eventType === "on_tool_error") native.end(runId);
+      if (eventType === "on_tool_start") {
+        // The run ID pairs both events; the model's call ID arrives only at tool end.
+        await tools.sendEvent(
+          stringifyJsonWithFallback({
+            ...data,
+            tool_call_id: data.run_id,
+            args: streamToolArgs(details.input),
+          }, this.logger, {
+            label: "LangGraph event",
+            eventType,
+          }),
+          "tool_call",
+        );
+      }
+      if (eventType === "on_tool_end") {
+        const message = asOptionalRecord(details.output);
+        const output = typeof message?.tool_call_id === "string" ? message.content : details.output;
+        const parsedOutput = typeof output === "string" ? parseToolPayload(output) ?? output : output;
+        await tools.sendEvent(
+          stringifyJsonWithFallback({
+            ...data,
+            tool_call_id: data.run_id,
+            output,
+            is_error: message?.status === "error" || isFailedToolOutput(parsedOutput),
+          }, this.logger, {
+            label: "LangGraph event",
+            eventType,
+          }),
+          "tool_result",
+        );
+      }
+      if (eventType === "on_chain_end") {
+        const chainName = String(data.name ?? "");
+        // For the built-in createReactAgent path, ignore intermediate chains that emit routing
+        // markers rather than replies. Custom graphs use arbitrary chain names, so don't filter them.
+        if (!this.usesCustomGraph && chainName !== "LangGraph" && chainName !== "agent") {
+          continue;
         }
-        if (this.emitExecutionEvents && eventType === "on_tool_end") {
-          const message = asOptionalRecord(details.output);
-          const output = typeof message?.tool_call_id === "string" ? message.content : details.output;
-          const parsedOutput = typeof output === "string" ? parseToolPayload(output) ?? output : output;
-          await tools.sendEvent(
-            stringifyJsonWithFallback({
-              ...data,
-              tool_call_id: data.run_id,
-              output,
-              is_error: message?.status === "error" || isFailedToolOutput(parsedOutput),
-            }, this.logger, {
-              label: "LangGraph event",
-              eventType,
-            }),
-            "tool_result",
-          );
-        }
-        if (eventType === "on_chain_start") rootRunId ??= id;
-        // The root run's output is what `invoke` returns; nested chains emit routing markers and
-        // intermediate strings that are not the reply.
-        if (eventType === "on_chain_end" && id === rootRunId) {
-          const text = extractAssistantText(asOptionalRecord(data.data)?.output);
-          if (text) {
-            lastAssistantText = text;
-          }
+        const output = asOptionalRecord(data.data) ?? {};
+        const text = extractAssistantText(output.output);
+        if (text) {
+          lastAssistantText = text;
         }
       }
-    } finally {
-      native.endAll();
     }
 
     return lastAssistantText;
   }
+}
+
+/** A LangChain callback handler that reports the tools a graph runs natively; it is awaited so no report trails `invoke`. */
+function toolActivityCallbacks(native: NativeActivity) {
+  return {
+    awaitHandlers: true,
+    handleToolStart: (_tool: unknown, _input: string, runId: string, _parentRunId?: string, _tags?: string[], _metadata?: Record<string, unknown>, runName?: string): void => native.tool(runId, runName ?? ""),
+    handleToolEnd: (_output: unknown, runId: string): void => native.end(runId),
+    handleToolError: (_error: unknown, runId: string): void => native.end(runId),
+  };
 }
 
 function streamToolArgs(input: unknown): Record<string, unknown> {

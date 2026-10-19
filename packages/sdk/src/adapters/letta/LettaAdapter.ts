@@ -12,8 +12,7 @@ import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
-import { trackNativeActivity } from "../../runtime/workingState";
-import { toolCall } from "../../contracts/activity";
+import { withNativeActivity } from "../../runtime/workingState";
 
 // ---------------------------------------------------------------------------
 // Minimal Letta client surface
@@ -1048,27 +1047,32 @@ async function collectLettaStream(
   tools: AdapterToolsProtocol,
 ): Promise<LettaResponse> {
   const messages: LettaResponseMessage[] = [];
-  const native = trackNativeActivity(tools);
   let stopReason: string | undefined;
   let usage: Record<string, unknown> | undefined;
-  try {
+  await withNativeActivity(tools, new Set(), async (native) => {
     for await (const value of stream) {
       const event = asOptionalRecord(value);
-      if (!event) continue;
-      const type = event.message_type;
-      if (type === "error_message") throw new Error(typeof event.message === "string" ? event.message : "Letta stream failed");
-      if (type === "stop_reason" && typeof event.stop_reason === "string") stopReason = event.stop_reason;
-      else if (type === "usage_statistics") usage = event;
-      else if (typeof type === "string" && type !== "ping") {
-        const message = event as unknown as LettaResponseMessage;
-        messages.push(message);
-        if (type === "tool_call_message" && message.tool_call?.name) native.start(message.tool_call.tool_call_id, toolCall(message.tool_call.name));
-        else if (type === "tool_return_message" && message.tool_call_id) native.end(message.tool_call_id);
+      if (!event || typeof event.message_type !== "string") continue;
+      switch (event.message_type) {
+        case "error_message":
+          throw new Error(typeof event.message === "string" ? event.message : "Letta stream failed");
+        case "stop_reason":
+          if (typeof event.stop_reason === "string") stopReason = event.stop_reason;
+          break;
+        case "usage_statistics":
+          usage = event;
+          break;
+        case "ping":
+          break;
+        default: {
+          const message = event as unknown as LettaResponseMessage;
+          messages.push(message);
+          if (message.message_type === "tool_call_message" && message.tool_call?.name) native.tool(message.tool_call.tool_call_id, message.tool_call.name);
+          else if (message.message_type === "tool_return_message" && message.tool_call_id) native.end(message.tool_call_id);
+        }
       }
     }
-  } finally {
-    native.endAll();
-  }
+  });
   if (!stopReason) throw new Error("Letta stream ended without a stop reason");
   return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };
 }

@@ -65,29 +65,48 @@ export function setPermissionActivity(tools: object, waiting: boolean): void {
   scopeLease(tools)?.permission(waiting);
 }
 
-/** Tracks provider-native work by id: a start is reported once, and only a tracked end restores reasoning. */
-export function trackNativeActivity(tools: object) {
+/** Provider-native work by id: a start is reported once, and only a tracked end restores reasoning. */
+function trackNativeActivity(tools: object, localNames: ReadonlySet<string>) {
   const open = new Set<string>();
-  const observe = (activity: Activity): void => scopeLease(tools)?.observe(activity);
+  const begin = (id: string, activity: Activity): void => {
+    if (!id || open.has(id)) return;
+    open.add(id);
+    scopeLease(tools)?.observe(activity);
+  };
   return {
-    start(id: string, activity: Activity): void {
-      if (open.has(id)) return;
-      open.add(id);
-      observe(activity);
+    /** Tools Band executes itself report from their own execution, so `localNames` are skipped here. */
+    tool(id: string, name: string): void {
+      if (name && !localNames.has(name)) begin(id, toolCall(name));
+    },
+    memory(id: string): void {
+      begin(id, MEMORY);
     },
     end(id: string): void {
-      if (open.delete(id)) observe(REASONING);
+      if (open.delete(id)) endToolActivity(tools);
     },
-    /** Ends whatever is still open, so work cut short does not outlive the turn's failure report. */
     endAll(): void {
       if (open.size === 0) return;
       open.clear();
-      observe(REASONING);
+      endToolActivity(tools);
     },
   };
 }
 
 export type NativeActivity = ReturnType<typeof trackNativeActivity>;
+
+/** Runs `work` with native activity tracking, and ends whatever it left open so it cannot outlive the turn's failure report. */
+export async function withNativeActivity<T>(
+  tools: object,
+  localNames: ReadonlySet<string>,
+  work: (native: NativeActivity) => Promise<T>,
+): Promise<T> {
+  const native = trackNativeActivity(tools, localNames);
+  try {
+    return await work(native);
+  } finally {
+    native.endAll();
+  }
+}
 
 /** Brackets `work` with the tool's activity; without a scope there is nothing to report. */
 export async function withToolActivity<T>(tools: object | undefined, name: string, work: () => Promise<T>): Promise<T> {

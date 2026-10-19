@@ -6,8 +6,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { isFailedToolOutput } from "../../contracts/protocols";
 import { relayReply, type TurnTools } from "../../core/turn";
-import { trackNativeActivity } from "../../runtime/workingState";
-import { toolCall } from "../../contracts/activity";
+import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
@@ -327,8 +326,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         sessionId,
       });
 
-      const native = trackNativeActivity(tools);
-      try {
+      await withNativeActivity(tools, built.observedNames, async (native) => {
         for await (const event of runner.runAsync({
           userId: context.roomId,
           sessionId,
@@ -338,12 +336,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
           },
         })) {
           throwIfModelError(event);
-          for (const call of sdk.getFunctionCalls(event)) {
-            if (call.id && call.name && !built.observedNames.has(call.name)) native.start(call.id, toolCall(call.name));
-          }
-          for (const response of sdk.getFunctionResponses(event)) {
-            if (response.id) native.end(response.id);
-          }
+          this.trackNativeEvent(sdk, event, native);
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(sdk, event, tools);
           }
@@ -351,9 +344,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             finalResponseText = sdk.stringifyContent(event);
           }
         }
-      } finally {
-        native.endAll();
-      }
+      });
     } catch (error) {
       // The sends that landed before the failure belong in the next turn, or it answers them again.
       this.rememberExchange(context.roomId, roomHistory, message, tools.turn.posted);
@@ -511,6 +502,15 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     return formatted.sender_name
       ? `[${formatted.sender_name}]: ${formattedContent}`
       : formattedContent;
+  }
+
+  private trackNativeEvent(sdk: GoogleAdkSdkLike, event: unknown, native: NativeActivity): void {
+    for (const call of sdk.getFunctionCalls(event)) {
+      if (call.id && call.name) native.tool(call.id, call.name);
+    }
+    for (const response of sdk.getFunctionResponses(event)) {
+      if (response.id) native.end(response.id);
+    }
   }
 
   private async reportExecutionEvent(

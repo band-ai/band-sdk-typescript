@@ -1,6 +1,6 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { activityPeer, json } from "./support/activityPeer";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { createDeferred } from "../src/core/deferred";
 
@@ -21,7 +21,6 @@ const AGENT_ID = "letta-agent";
 const NATIVE_TOOL = "run_test";
 const sse = (event: unknown): string => `data: ${JSON.stringify(event)}\n\n`;
 const nativeToolCall = (id: string, args = "{}") => ({ message_type: "tool_call_message", tool_call: { name: NATIVE_TOOL, arguments: args, tool_call_id: id } });
-const activitySequence = (reports: ReturnType<typeof recordRuntimeActivity>) => reports.entries.map(({ working, activity }) => working ? activity : false);
 
 describe("Letta generated step stream", () => {
   it.each(["error", "cleanup"])("releases the real SSE stream and owned agent on %s", async (ending) => {
@@ -108,6 +107,20 @@ describe("Letta generated step stream", () => {
     }
     expect(deleted).toBe(true);
     expect(rounds).toBe(2);
+  });
+
+  it("reports the provider's own error text when the stream carries an error message", async () => {
+    await using peer = await activityPeer(async ({ request, response }) => {
+      if (request.url === "/v1/agents/") return json(response, { id: AGENT_ID });
+      if (request.method === "DELETE") { response.writeHead(204); response.end(); return; }
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`${sse({ message_type: "error_message", message: "native execution failed" })}data: [DONE]\n\n`);
+    });
+    const adapter = new LettaAdapter({ lettaBaseUrl: peer.origin, lettaApiKey: "test" });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "hello");
+    expect(await session.room.outcome(message)).toBe("failed");
+    expect(session.room.failures.map(({ content }) => content).join("\n")).toContain("native execution failed");
   });
 
   it("fails the turn when the stream ends without a stop reason", async () => {

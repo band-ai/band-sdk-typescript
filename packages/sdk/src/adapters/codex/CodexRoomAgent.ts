@@ -2,8 +2,7 @@ import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
-import { MEMORY, toolCall } from "../../contracts/activity";
+import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import {
   isStructuredToolFailure,
   isToolExecutorError,
@@ -287,16 +286,11 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     });
 
     const turnId = turnStarted.turn.id;
-    const native = trackNativeActivity(tools);
-    const { finalText, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
-      client,
-      threadId,
-      turnId,
+    const { finalText, turnStatus, turnError, reportedFailureInLoop } = await withNativeActivity(
       tools,
-      config,
-      context.roomId,
-      native,
-    ).finally(() => native.endAll());
+      new Set(),
+      (native) => this.runEventLoop(client, threadId, turnId, tools, config, context.roomId, native),
+    );
 
     await this.emitTurnOutcome({
       tools,
@@ -439,6 +433,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
           break;
         }
         this.abandonClient(client);
+        native.endAll();
         return reportTurnFailure(
           tools,
           agentFailure(this.provider, asErrorMessage(error)),
@@ -459,6 +454,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         } catch (error) {
           rethrowIfRecoverableTurnFailure(error);
           await this.evictOnTransportFailure(error, client);
+          native.endAll();
           return reportTurnFailure(
             tools,
             agentFailure(this.provider, asErrorMessage(error)),
@@ -481,8 +477,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
       if (event.method === "item/started") {
         const item = parseThreadItem(params.item);
         if (item && typeof item.id === "string") {
-          if (isToolLikeItem(item)) native.start(item.id, toolCall(toolItemName(item)));
-          else if (item.type === "contextCompaction") native.start(item.id, MEMORY);
+          if (isToolLikeItem(item)) native.tool(item.id, toolItemName(item));
+          else if (item.type === "contextCompaction") native.memory(item.id);
         }
         continue;
       }

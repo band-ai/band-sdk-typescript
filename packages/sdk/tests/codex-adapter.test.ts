@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import { createDeferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 import { SlowFailureRest } from "./support/slowFailureRest";
 
 import { CodexAdapter } from "../src/adapters/codex";
@@ -210,7 +210,7 @@ describe("CodexAdapter", () => {
       release.resolve();
       expect(await session.room.outcome(message)).toBe("processed");
       expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
-      expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      expect(activitySequence(reports)).toEqual([
         { kind: "reasoning" }, { kind: "tool_call", name: "exec" }, { kind: "reasoning" },
         { kind: "memory" }, { kind: "reasoning" }, false,
       ]);
@@ -235,34 +235,42 @@ describe("CodexAdapter", () => {
     await reports.next((entry) => entry.activity?.kind === "tool_call");
     release.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: ACT_TOOL }, { kind: "reasoning" }, false,
     ]);
     expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
     expect(JSON.stringify(reports.entries)).not.toContain("private-argument-marker");
   });
 
-  it("ends a native tool the transport dropped under before the failure is reported", async () => {
-    const reports = recordRuntimeActivity();
-    const rest = new SlowFailureRest([person("owner")]);
-    onTestFinished(() => rest.gate.resolve());
+  describe("a native tool still open when the turn fails", () => {
     const item = { type: "commandExecution", id: "native", command: "ls", cwd: "/tmp", processId: null,
       status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null };
-    const client = new FakeCodexClient({ events: [
-      { kind: "notification", method: "item/started", params: { item } },
-      { kind: "notification", method: "transport/closed", params: {} },
-    ] });
-    const adapter = new CodexAdapter({ factory: async () => client, config: { cwd: tmpRoot(), enableExecutionReporting: false } });
-    const platform = await BandPlatform.start(adapter, [person("owner")], rest,
-      { enableWorkingState: true, workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 });
-    onTestFinished(() => platform[Symbol.asyncDispose]());
-    const room = await platform.room("room-1");
-    const message = await room.say("owner", "run it");
-    await rest.failurePosting.promise;
-    const heartbeat = await reports.next(() => true, reports.entries.length);
-    expect(heartbeat.activity).toEqual({ kind: "reasoning" });
-    rest.gate.resolve();
-    expect(await room.outcome(message)).toBe("failed");
+    const started: CodexRpcEvent = { kind: "notification", method: "item/started", params: { item } };
+    class UnansweringClient extends FakeCodexClient {
+      public override async respond(): Promise<void> { throw new Error("Codex app-server is not connected"); }
+    }
+    const endings: Array<[string, () => CodexClientLike]> = [
+      ["the transport closes", () => new FakeCodexClient({ events: [started, { kind: "notification", method: "transport/closed", params: {} }] })],
+      ["the app-server dies while the loop waits", () => new FakeCodexClient({ events: [started] })],
+      ["a server request cannot be answered", () => new UnansweringClient({ events: [started, scriptedToolCall(SEND_MESSAGE_TOOL_NAME, { content: "hi", mentions: [] })] })],
+    ];
+
+    it.each(endings)("is ended before the failure is reported when %s", async (_ending, client) => {
+      const reports = recordRuntimeActivity();
+      const rest = new SlowFailureRest([person("owner")]);
+      onTestFinished(() => rest.gate.resolve());
+      const adapter = new CodexAdapter({ factory: async () => client(), config: { cwd: tmpRoot(), enableExecutionReporting: false } });
+      const platform = await BandPlatform.start(adapter, [person("owner")], rest,
+        { enableWorkingState: true, workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 });
+      onTestFinished(() => platform[Symbol.asyncDispose]());
+      const room = await platform.room("room-1");
+      const message = await room.say("owner", "run it");
+      await rest.failurePosting.promise;
+      const heartbeat = await reports.next(() => true, reports.entries.length);
+      expect(heartbeat.activity).toEqual({ kind: "reasoning" });
+      rest.gate.resolve();
+      expect(await room.outcome(message)).toBe("failed");
+    });
   });
 
   it("a /model list against a downed app server reports a failure and fails only that turn", async () => {

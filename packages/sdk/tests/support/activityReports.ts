@@ -21,3 +21,8 @@ export function recordRuntimeActivity(): RecordLog<RuntimeActivityReport> {
   onTestFinished(() => spy.mockRestore());
   return reports;
 }
+
+/** The activity each report published, with `false` standing for a stop. */
+export function activitySequence(reports: RecordLog<RuntimeActivityReport>): Array<Activity | false | undefined> {
+  return reports.entries.map(({ working, activity }) => working ? activity : false);
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { Annotation, StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
+import { RemoteGraph } from "@langchain/langgraph/remote";
 import { RunnableLambda } from "@langchain/core/runnables";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { tool } from "@langchain/core/tools";
@@ -9,10 +10,11 @@ import { AnthropicAdapter, GeminiAdapter, OpenAIAdapter, VercelAISDKAdapter } fr
 import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { GoogleADKAdapter } from "../src/adapters/google-adk";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
+import { SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 import { SlowFailureRest } from "./support/slowFailureRest";
 import { createFakeGoogleAdkSdk, createRealEventGoogleAdkSdk } from "./helpers/fakeGoogleAdkSdk";
 
@@ -20,7 +22,9 @@ const NAME = "lookup_weather";
 const MARKER = "private-argument-sentinel";
 const RESULT = "12C";
 const ANSWER = "The weather is 12C.";
-const ROOT_START = { event: "on_chain_start", name: "graph", run_id: "root" };
+
+const localTool = (tools: unknown, name = NAME) =>
+  (tools as Array<{ name: string; invoke: (args: unknown) => Promise<unknown> }>).find((candidate) => candidate.name === name)!;
 
 const families: Array<{ name: string; create: (tool: CustomToolDef, narration: boolean) => FrameworkAdapter }> = [
   { name: "Anthropic", create: (tool, narration) => {
@@ -76,14 +80,21 @@ const families: Array<{ name: string; create: (tool: CustomToolDef, narration: b
   }) },
   { name: "LangGraph local", create: (tool, narration) => new LangGraphAdapter({
     customTools: [tool], emitExecutionEvents: narration,
-    graphFactory: (tools) => ({ async *streamEvents() {
-      const local = (tools as Array<{ name: string; invoke: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
-      yield ROOT_START;
-      yield { event: "on_tool_start", name: NAME, run_id: "local", data: { input: { query: MARKER } } };
-      expect(await local.invoke({ query: MARKER })).toBe(RESULT);
-      yield { event: "on_tool_end", name: NAME, run_id: "local", data: { output: RESULT } };
-      yield { event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
-    } }),
+    graphFactory: (tools) => {
+      const callLocal = async () => expect(await localTool(tools).invoke({ query: MARKER })).toBe(RESULT);
+      return {
+        async *streamEvents() {
+          yield { event: "on_tool_start", name: NAME, run_id: "local", data: { input: { query: MARKER } } };
+          await callLocal();
+          yield { event: "on_tool_end", name: NAME, run_id: "local", data: { output: RESULT } };
+          yield { event: "on_chain_end", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
+        },
+        async invoke() {
+          await callLocal();
+          return { messages: [["assistant", ANSWER]] };
+        },
+      };
+    },
   }) },
 ];
 
@@ -116,7 +127,7 @@ describe.each(families)("$name scoped custom execution", ({ create }) => {
     const turn = await heldWeatherTurn(create, true);
     await turn.reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === NAME);
     await turn.finish();
-    expect(turn.reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(turn.reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: NAME }, { kind: "reasoning" }, false,
     ]);
     expect([...turn.room.events("tool_call"), ...turn.room.events("tool_result")]).toEqual([]);
@@ -168,49 +179,54 @@ describe("streamed native tool activity", () => {
     expect(calls).toBe(1);
     expect(session.room.messages.map(({ content }) => content)).toEqual([ANSWER]);
     expect(session.room.events("tool_result").some((event) => JSON.parse(event.content).output === RESULT)).toBe(true);
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name }, { kind: "reasoning" }, false,
     ]);
     expect(JSON.stringify(reports.entries)).not.toContain(MARKER);
   });
 
-  it.each(["on_tool_end", "on_tool_error"])("LangGraph observes starts and %s before narration gating", async (terminal) => {
+  it.each(["returns", "throws"])("reports a real graph's native tool through callbacks with narration off when it %s", async (ending) => {
+    const entered = createDeferred();
     const release = createDeferred();
-    onTestFinished(() => release.resolve());
+    const finish = createDeferred();
+    onTestFinished(() => { release.resolve(); finish.resolve(); });
+    const nativeTool = tool(async ({ query }: { query: string }) => {
+      expect(query).toBe(MARKER);
+      entered.resolve();
+      await release.promise;
+      if (ending === "throws") throw new Error("native tool failed");
+      return RESULT;
+    }, { name: NATIVE, description: "Graph-owned lookup", schema: z.object({ query: z.string() }) });
+    const graph = new StateGraph(MessagesAnnotation)
+      .addNode("request", () => ({ messages: [new AIMessage({ content: "", tool_calls: [{ id: "call-real", name: NATIVE, args: { query: MARKER } }] })] }))
+      .addNode("tools", new ToolNode([nativeTool]))
+      .addNode("answer", async () => { await finish.promise; return { messages: [new AIMessage(ANSWER)] }; })
+      .addEdge(START, "request").addEdge("request", "tools")
+      .addEdge("tools", "answer").addEdge("answer", END).compile();
     const reports = recordRuntimeActivity();
-    const adapter = new LangGraphAdapter({ emitExecutionEvents: false, graph: {
-      async *streamEvents() {
-        yield ROOT_START;
-        yield { event: "on_tool_start", name: "native_lookup", run_id: "native", data: { input: { query: MARKER } } };
-        await release.promise;
-        yield { event: terminal, name: "native_lookup", run_id: "native", data: { output: RESULT } };
-        yield { event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } };
-      },
-      async invoke() { throw new Error("stream-capable graph must not be invoked a second time"); },
-    } });
-    await using session = await BandPlatform.join(adapter, [person("owner")]);
-    const message = await session.room.say("owner", "weather?");
-    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    await using session = await BandPlatform.join(new LangGraphAdapter({ graph, emitExecutionEvents: false }), [person("owner")]);
+    const message = await session.room.say("owner", "lookup");
+    await entered.promise;
+    const started = await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === NATIVE);
     release.resolve();
+    // The graph is still running, so only the tool's own callback can restore reasoning here.
+    await reports.next((entry) => entry.working && entry.activity?.kind === "reasoning", reports.entries.indexOf(started) + 1);
+    finish.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
     expect(session.room.messages.map(({ content }) => content)).toEqual([ANSWER]);
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
-      { kind: "reasoning" }, { kind: "tool_call", name: "native_lookup" }, { kind: "reasoning" }, false,
-    ]);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: NATIVE }, { kind: "reasoning" }, false]);
     expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
     expect(JSON.stringify(reports.entries)).not.toContain(MARKER);
   });
 });
 
-const NATIVE = "native_lookup";
-/** A heartbeat republishes the current activity, which is how a test reads the slot without waiting on a timer of its own. */
 const KEEPALIVE = { workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 };
-const activitySequence = (reports: ReturnType<typeof recordRuntimeActivity>) => reports.entries.map(({ working, activity }) => working ? activity : false);
+const NATIVE = "native_lookup";
 
 interface NativeEvents { start: unknown[]; unrelatedEnd: unknown; end: unknown; answer: unknown[] }
-interface NativeGates { processed: Deferred; release: Deferred; fail: boolean }
+interface NativeGates { processed: Deferred; release: Deferred; ended: Deferred; finish: Deferred; fail: boolean }
 
-/** A provider turn that starts native work, passes an unrelated end, holds, then finishes or fails. */
+/** A provider turn that starts native work, passes an unrelated end, holds, ends it, holds again, then answers or fails. */
 async function* nativeTurn(events: NativeEvents, gates: NativeGates) {
   yield* events.start;
   yield events.unrelatedEnd;
@@ -218,41 +234,40 @@ async function* nativeTurn(events: NativeEvents, gates: NativeGates) {
   await gates.release.promise;
   if (gates.fail) throw new Error("provider connection reset");
   yield events.end;
+  gates.ended.resolve();
+  await gates.finish.promise;
   yield* events.answer;
 }
 
-const nativeFamilies: Array<{ name: string; create: (events: NativeEvents, gates: NativeGates) => FrameworkAdapter }> = [
-  { name: "Google ADK", create: (events, gates) => new GoogleADKAdapter({ enableExecutionReporting: false,
-    sdkFactory: createRealEventGoogleAdkSdk(() => nativeTurn(events, gates)) }) },
-  { name: "LangGraph", create: (events, gates) => new LangGraphAdapter({ emitExecutionEvents: false,
-    graph: { streamEvents: () => nativeTurn(events, gates) } }) },
+const adkEvent = (part: unknown) => ({ actions: {}, content: { parts: [part] } });
+const nativeFamilies: Array<{ name: string; events: NativeEvents; create: (events: NativeEvents, gates: NativeGates) => FrameworkAdapter }> = [
+  { name: "Google ADK",
+    events: {
+      start: [adkEvent({ functionCall: { id: "native", name: NATIVE, args: { query: MARKER } } })],
+      unrelatedEnd: adkEvent({ functionResponse: { id: "unrelated", name: "old_lookup", response: {} } }),
+      end: adkEvent({ functionResponse: { id: "native", name: NATIVE, response: { result: RESULT } } }),
+      answer: [adkEvent({ text: ANSWER })],
+    },
+    create: (events, gates) => new GoogleADKAdapter({ enableExecutionReporting: false, sdkFactory: createRealEventGoogleAdkSdk(() => nativeTurn(events, gates)) }) },
+  { name: "LangGraph",
+    events: {
+      start: [{ event: "on_tool_start", name: NATIVE, run_id: "native", data: { input: { query: MARKER } } }],
+      unrelatedEnd: { event: "on_tool_end", name: "other_tool", run_id: "unrelated", data: { output: RESULT } },
+      end: { event: "on_tool_end", name: NATIVE, run_id: "native", data: { output: RESULT } },
+      answer: [{ event: "on_chain_end", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } }],
+    },
+    create: (events, gates) => new LangGraphAdapter({ emitExecutionEvents: true, graph: { streamEvents: () => nativeTurn(events, gates) } }) },
 ];
 
-const adkEvent = (part: unknown) => ({ actions: {}, content: { parts: [part] } });
-const nativeEvents: Record<string, NativeEvents> = {
-  "Google ADK": {
-    start: [adkEvent({ functionCall: { id: "native", name: NATIVE, args: { query: MARKER } } })],
-    unrelatedEnd: adkEvent({ functionResponse: { id: "unrelated", name: "old_lookup", response: {} } }),
-    end: adkEvent({ functionResponse: { id: "native", name: NATIVE, response: { result: RESULT } } }),
-    answer: [adkEvent({ text: ANSWER })],
-  },
-  LangGraph: {
-    start: [ROOT_START, { event: "on_tool_start", name: NATIVE, run_id: "native", data: { input: { query: MARKER } } }],
-    unrelatedEnd: { event: "on_tool_end", name: "other_tool", run_id: "unrelated", data: { output: RESULT } },
-    end: { event: "on_tool_end", name: NATIVE, run_id: "native", data: { output: RESULT } },
-    answer: [{ event: "on_chain_end", run_id: "root", name: "graph", data: { output: { messages: [["assistant", ANSWER]] } } }],
-  },
-};
-
-describe.each(nativeFamilies)("$name native activity across a turn", ({ name, create }) => {
-  const events = nativeEvents[name]!;
+describe.each(nativeFamilies)("$name native activity across a turn", ({ events, create }) => {
   const gates = (fail: boolean): NativeGates => {
     const release = createDeferred();
-    onTestFinished(() => release.resolve());
-    return { processed: createDeferred(), release, fail };
+    const finish = createDeferred();
+    onTestFinished(() => { release.resolve(); finish.resolve(); });
+    return { processed: createDeferred(), release, ended: createDeferred(), finish, fail };
   };
 
-  it("keeps a native tool active when an unrelated call ends, and ends it with its own response", async () => {
+  it("keeps a native tool active when an unrelated call ends, and ends it with its own end", async () => {
     const held = gates(false);
     const reports = recordRuntimeActivity();
     const platform = await BandPlatform.start(create(events, held), [person("owner")], undefined, { enableWorkingState: true, ...KEEPALIVE });
@@ -263,9 +278,12 @@ describe.each(nativeFamilies)("$name native activity across a turn", ({ name, cr
     const heartbeat = await reports.next(() => true, reports.entries.length);
     expect(heartbeat.activity).toEqual({ kind: "tool_call", name: NATIVE });
     held.release.resolve();
+    await held.ended.promise;
+    // The stream is still open, so only the native end can restore reasoning here.
+    await reports.next((entry) => entry.working && entry.activity?.kind === "reasoning", reports.entries.length - 1);
+    held.finish.resolve();
     expect(await room.outcome(message)).toBe("processed");
     expect(room.messages.map(({ content }) => content)).toEqual([ANSWER]);
-    expect(activitySequence(reports).at(-2)).toEqual({ kind: "reasoning" });
   });
 
   it("ends a native tool the provider never finished before the failure is reported", async () => {
@@ -288,54 +306,64 @@ describe.each(nativeFamilies)("$name native activity across a turn", ({ name, cr
 });
 
 describe("a local wrapper that rejects before running", () => {
-  const localFamilies: Array<{ name: string; create: (tool: CustomToolDef, rejected: Deferred, hold: Deferred) => FrameworkAdapter }> = [
-    { name: "Google ADK", create: (tool, rejected, hold) => new GoogleADKAdapter({ additionalTools: [tool], enableExecutionReporting: false,
+  const localFamilies: Array<{ name: string; create: (tool: CustomToolDef, called: Deferred, hold: Deferred, name: string) => FrameworkAdapter }> = [
+    { name: "Google ADK", create: (tool, called, hold, name) => new GoogleADKAdapter({ additionalTools: [tool], enableExecutionReporting: false,
       sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
-        const local = (agent.tools as Array<{ name: string; execute: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
-        yield { functionCalls: [{ id: "local", name: NAME, args: {} }] };
-        await expect(local.execute({})).rejects.toThrow();
-        rejected.resolve();
+        const local = (agent.tools as Array<{ name: string; execute: (args: unknown) => Promise<unknown> }>).find((candidate) => candidate.name === name)!;
+        yield { functionCalls: [{ id: "local", name, args: {} }] };
+        await local.execute({}).catch(() => undefined);
+        called.resolve();
         await hold.promise;
       }) }) },
-    { name: "LangGraph", create: (tool, rejected, hold) => new LangGraphAdapter({ customTools: [tool], emitExecutionEvents: false,
+    { name: "LangGraph", create: (tool, called, hold, name) => new LangGraphAdapter({ customTools: [tool], emitExecutionEvents: true,
       graphFactory: (tools) => ({ async *streamEvents() {
-        const local = (tools as Array<{ name: string; invoke: (args: unknown) => Promise<unknown> }>).find(({ name }) => name === NAME)!;
-        yield ROOT_START;
-        yield { event: "on_tool_start", name: NAME, run_id: "local", data: { input: {} } };
-        await expect(local.invoke({})).rejects.toThrow();
-        rejected.resolve();
+        yield { event: "on_tool_start", name, run_id: "local", data: { input: {} } };
+        await localTool(tools, name).invoke({}).catch(() => undefined);
+        called.resolve();
         await hold.promise;
       } }) }) },
   ];
+  const cases = localFamilies.flatMap((family) => [NAME, SEND_MESSAGE_TOOL_NAME].map((tool) => ({ ...family, tool })));
 
-  it.each(localFamilies)("$name reports no native activity for it", async ({ create }) => {
-    const rejected = createDeferred();
+  it.each(cases)("$name reports no native activity for $tool called with arguments it rejects", async ({ create, tool: name }) => {
+    const called = createDeferred();
     const hold = createDeferred();
     const reports = recordRuntimeActivity();
     const tool: CustomToolDef = { name: NAME, description: "Weather lookup", schema: z.object({ query: z.string() }), handler: async () => RESULT };
-    const platform = await BandPlatform.start(create(tool, rejected, hold), [person("owner")], undefined, { enableWorkingState: true, ...KEEPALIVE });
+    const platform = await BandPlatform.start(create(tool, called, hold, name), [person("owner")], undefined, { enableWorkingState: true, ...KEEPALIVE });
     onTestFinished(() => platform[Symbol.asyncDispose]());
     onTestFinished(() => hold.resolve());
     const room = await platform.room("room-1");
     await room.say("owner", "weather?");
-    await rejected.promise;
+    await called.promise;
     const heartbeat = await reports.next(() => true, reports.entries.length);
     expect(heartbeat.activity).toEqual({ kind: "reasoning" });
   });
 });
 
-describe("LangGraph reply from the stream", () => {
-  it("posts what invoke would, not the output of a nested chain", async () => {
-    const State = Annotation.Root({ ...MessagesAnnotation.spec, answer: Annotation<string>() });
-    const router = RunnableLambda.from(async () => "billing");
-    const graph = new StateGraph(State)
-      .addNode("route", async (_state, config) => { await router.invoke("question", config); return {}; })
-      .addNode("respond", () => ({ answer: "Your invoice is attached." }))
-      .addEdge(START, "route").addEdge("route", "respond").addEdge("respond", END).compile();
-    const adapter = new LangGraphAdapter({ graph, emitExecutionEvents: false });
-    await using session = await BandPlatform.join(adapter, [person("owner")]);
-    const message = await session.room.say("owner", "invoice?");
+describe("LangGraph reply with narration off", () => {
+  const answering = (state: { output: ReturnType<typeof Annotation<string>> } | undefined) => {
+    const State = Annotation.Root({ ...MessagesAnnotation.spec, ...(state ?? {}) });
+    return new StateGraph(State)
+      .addNode("respond", () => ({ messages: [new AIMessage("hello from messages")], ...(state ? { output: "42" } : {}) }))
+      .addEdge(START, "respond").addEdge("respond", END).compile();
+  };
+  const piped = { name: "composed into a pipeline", graph: () => answering(undefined).pipe(RunnableLambda.from((state: unknown) => state)) };
+  const channel = { name: "with a state channel named output", graph: () => answering({ output: Annotation<string>() }) };
+
+  it.each([piped, channel])("posts invoke's reply for a graph $name", async ({ graph }) => {
+    await using session = await BandPlatform.join(new LangGraphAdapter({ graph: graph() as never, emitExecutionEvents: false }), [person("owner")]);
+    const message = await session.room.say("owner", "hello");
     expect(await session.room.outcome(message)).toBe("processed");
-    expect(session.room.messages).toEqual([]);
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["hello from messages"]);
+  });
+
+  it("replies through invoke for a graph whose streamEvents is not implemented", async () => {
+    const client = { runs: { async *stream() { yield { event: "values", data: { messages: [{ role: "assistant", content: "remote hello" }] } }; } } };
+    const remote = new RemoteGraph({ graphId: "agent", client: client as never });
+    await using session = await BandPlatform.join(new LangGraphAdapter({ graph: remote as never, emitExecutionEvents: false }), [person("owner")]);
+    const message = await session.room.say("owner", "hi");
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["remote hello"]);
   });
 });
