@@ -32,7 +32,7 @@ import { buildCustomMcpRegistrations } from "../../mcp/customTools";
 import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
-/** Compaction has no provider id, and a query runs at most one at a time. */
+/** Compaction has no provider id, so every compaction in a query shares this one. */
 const COMPACTION_ID = "compaction";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
@@ -247,17 +247,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     const custom = buildCustomMcpRegistrations(this.customTools, resolve);
     const registrations = [...room, ...this.additionalMcpTools];
     assertCustomToolNamesAvailable(custom.map(({ name }) => name), registrations.map(({ name }) => name));
-    return { registrations, custom, local: new Set([...room, ...custom].map(({ name }) => name)) };
+    return { registrations, custom, localNames: new Set([...room, ...custom].map(({ name }) => name)) };
   }
 
-  /** A bridge whose tools resolve only while `isCurrent`; `local` names the tools Band executes itself. */
+  /** A bridge whose tools resolve only while `isCurrent`; `localToolNames` spells the tools Band executes itself as the hooks name them. */
   private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools, isCurrent: () => boolean) {
     const resolve = (id: string): TurnTools | undefined => id === roomId && isCurrent() ? tools : undefined;
-    const { registrations, custom, local } = this.buildRegistrations(resolve);
+    const { registrations, custom, localNames } = this.buildRegistrations(resolve);
     const bridge = createBridge(registrations, custom);
     return {
       bridge,
-      local: new Set(mcpToolNames(local)),
+      localToolNames: new Set(mcpToolNames(localNames)),
       retire: () => bridge.serverConfig.instance.close(),
     };
   }
@@ -294,12 +294,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       }),
       PostToolUse: toolEnd,
       PostToolUseFailure: toolEnd,
-      // The CLI fires no PostCompact for a compaction that fails, and a query compacts one at a time.
-      PreCompact: on(() => {
-        native.end(COMPACTION_ID);
-        native.memory(COMPACTION_ID);
-      }),
-      PostCompact: on(() => native.end(COMPACTION_ID)),
+      PreCompact: on(() => native.memory(COMPACTION_ID)),
     };
   }
 
@@ -353,7 +348,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       options.mcpServers = { [MCP_SERVER_NAME]: mcp.bridge.serverConfig };
       options.allowedTools = mcp.bridge.allowedTools;
     }
-    const native = trackNativeActivity(tools, mcp?.local ?? new Set());
+    const native = trackNativeActivity(tools, mcp?.localToolNames ?? new Set());
     options.hooks = this.activityHooks(native);
     const close = this.registerQuery(roomId, abortController, async () => {
       native.endAll();
@@ -382,7 +377,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       await close();
       throw error;
     }
-    return closeAfter(endAnsweredTools(query, native), close);
+    return closeAfter(endFinishedActivity(query, native), close);
   }
 
   private async consumeQueryEvents(
@@ -465,9 +460,13 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 }
 
-/** Whatever became of a tool call (ran, failed, or was denied with no hook), the model is handed its result here. */
-async function* endAnsweredTools(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
+/**
+ * Ends what the stream shows finished: a tool the model is handed a result for, whether it ran, failed or was
+ * denied with no hook, and a compaction the CLI reports done. It fires no PostCompact for one that fails.
+ */
+async function* endFinishedActivity(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
   for await (const event of query) {
+    if (event.type === "system" && event.subtype === "status" && event.status === null) native.end(COMPACTION_ID);
     if (event.type === "user" && Array.isArray(event.message.content)) {
       for (const block of event.message.content) {
         if (block.type === "tool_result") native.end(block.tool_use_id);

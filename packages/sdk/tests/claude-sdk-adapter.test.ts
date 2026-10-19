@@ -24,7 +24,7 @@ import { createDeferred } from "../src/core/deferred";
 import { BandPlatform, person, AGENT_ID, AGENT_API_KEY } from "./flows/support/bandPlatform";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { BandLink } from "../src/platform/BandLink";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 import { activityWhileProviderFails } from "./support/providerFailure";
 import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
@@ -129,7 +129,7 @@ describe("Claude scoped activity", () => {
       expect(await session.room.outcome(message)).toBe("failed");
       expect(session.room.failures).toEqual([MISSING_REPLY]);
       expect(session.room.messages).toEqual([]);
-      expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      expect(activitySequence(reports)).toEqual([
         { kind: "reasoning" }, { kind: "tool_call", name: "mcp__band__native_lookup" }, { kind: "reasoning" }, false,
       ]);
       expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
@@ -175,7 +175,7 @@ describe("Claude scoped activity", () => {
     await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup_status");
     release.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: "lookup_status" }, { kind: "reasoning" },
       { kind: "tool_call", name: "band_get_participants" }, { kind: "reasoning" }, false,
     ]);
@@ -346,46 +346,40 @@ describe("Claude scoped activity", () => {
     expect(logger.warn).toHaveBeenCalledWith("Claude SDK MCP bridge close failed", expect.objectContaining({ roomId: session.room.id }));
   });
 
-  it("ends native tools and compaction at their hook boundaries", async () => {
+  it("ends a native tool at its failure hook", async () => {
     const reports = recordRuntimeActivity();
     const tool = { tool_name: "Bash", tool_input: { command: "private-marker" }, tool_use_id: "native" };
     const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
       queryFn: async function* ({ options }) {
         await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
         await reported(reports, "reasoning", () => callHook(options, "PostToolUseFailure", { ...tool, error: "failed", is_interrupt: false }));
-        await reported(reports, "memory", () => callHook(options, "PreCompact", { trigger: "auto", custom_instructions: null }));
-        await reported(reports, "reasoning", () => callHook(options, "PostCompact", { trigger: "auto", compact_summary: "private-marker" }));
         yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
       },
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
-      { kind: "reasoning" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false,
-    ]);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false]);
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
     expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
     expect(JSON.stringify(reports.entries)).not.toContain("private-marker");
   });
 
-  it("reports a compaction that starts after one that failed without a PostCompact", async () => {
+  it.each(["failed", "success"] as const)("ends a compaction the CLI reports %s, with or without a PostCompact", async (result) => {
     const reports = recordRuntimeActivity();
-    const tool = { tool_name: "Bash", tool_input: {}, tool_use_id: "after-failure" };
-    const compact = { trigger: "auto", custom_instructions: null };
+    const compacted = { type: "system", subtype: "status", status: null, compact_result: result, uuid: "status", session_id: "session" };
     const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
       queryFn: async function* ({ options }) {
-        await reported(reports, "memory", () => callHook(options, "PreCompact", compact));
-        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
-        await reported(reports, "reasoning", () => callHook(options, "PostToolUse", { ...tool, tool_response: "ok" }));
-        await reported(reports, "memory", () => callHook(options, "PreCompact", compact));
+        await reported(reports, "memory", () => callHook(options, "PreCompact", { trigger: "auto", custom_instructions: null }));
+        const from = reports.entries.length;
+        yield compacted as never;
+        await reports.next((entry) => entry.activity?.kind === "reasoning", from);
+        await reported(reports, "memory", () => callHook(options, "PreCompact", { trigger: "auto", custom_instructions: null }));
         yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
       },
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
-      { kind: "reasoning" }, { kind: "memory" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false,
-    ]);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false]);
   });
 
   it("ends a native tool whose call was denied, which runs no hook after it", async () => {
@@ -401,7 +395,7 @@ describe("Claude scoped activity", () => {
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false,
     ]);
   });
