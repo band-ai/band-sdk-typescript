@@ -7,7 +7,7 @@ import { z } from "zod";
 import { createDeferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
-import { SlowFailureRest } from "./support/slowFailureRest";
+import { activityWhileProviderFails } from "./support/providerFailure";
 
 import { CodexAdapter } from "../src/adapters/codex";
 import {
@@ -256,20 +256,8 @@ describe("CodexAdapter", () => {
     ];
 
     it.each(endings)("is ended before the failure is reported when %s", async (_ending, client) => {
-      const reports = recordRuntimeActivity();
-      const rest = new SlowFailureRest([person("owner")]);
-      onTestFinished(() => rest.gate.resolve());
       const adapter = new CodexAdapter({ factory: async () => client(), config: { cwd: tmpRoot(), enableExecutionReporting: false } });
-      const platform = await BandPlatform.start(adapter, [person("owner")], rest,
-        { enableWorkingState: true, workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 });
-      onTestFinished(() => platform[Symbol.asyncDispose]());
-      const room = await platform.room("room-1");
-      const message = await room.say("owner", "run it");
-      await rest.failurePosting.promise;
-      const heartbeat = await reports.next(() => true, reports.entries.length);
-      expect(heartbeat.activity).toEqual({ kind: "reasoning" });
-      rest.gate.resolve();
-      expect(await room.outcome(message)).toBe("failed");
+      expect(await activityWhileProviderFails(adapter)).toEqual({ kind: "reasoning" });
     });
   });
 

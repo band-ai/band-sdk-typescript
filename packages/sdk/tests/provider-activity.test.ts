@@ -15,7 +15,7 @@ import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
-import { SlowFailureRest } from "./support/slowFailureRest";
+import { activityWhileProviderFails } from "./support/providerFailure";
 import { createFakeGoogleAdkSdk, createRealEventGoogleAdkSdk } from "./helpers/fakeGoogleAdkSdk";
 
 const NAME = "lookup_weather";
@@ -288,20 +288,10 @@ describe.each(nativeFamilies)("$name native activity across a turn", ({ events, 
 
   it("ends a native tool the provider never finished before the failure is reported", async () => {
     const held = gates(true);
-    const reports = recordRuntimeActivity();
-    const rest = new SlowFailureRest([person("owner")]);
-    onTestFinished(() => rest.gate.resolve());
-    const platform = await BandPlatform.start(create(events, held), [person("owner")], rest, { enableWorkingState: true, ...KEEPALIVE });
-    onTestFinished(() => platform[Symbol.asyncDispose]());
-    const room = await platform.room("room-1");
-    const message = await room.say("owner", "weather?");
-    await held.processed.promise;
-    held.release.resolve();
-    await rest.failurePosting.promise;
-    const heartbeat = await reports.next(() => true, reports.entries.length);
-    expect(heartbeat.activity).toEqual({ kind: "reasoning" });
-    rest.gate.resolve();
-    expect(await room.outcome(message)).toBe("failed");
+    expect(await activityWhileProviderFails(create(events, held), { opened: async () => {
+      await held.processed.promise;
+      held.release.resolve();
+    } })).toEqual({ kind: "reasoning" });
   });
 });
 
