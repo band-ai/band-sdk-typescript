@@ -10,7 +10,7 @@ import type { CollectedChunk } from "./types";
 const COMPLETED = "completed";
 const FAILED = "failed";
 
-export function isTerminalToolStatus(status: string): boolean {
+function isTerminalToolStatus(status: string): boolean {
   return status === COMPLETED || status === FAILED;
 }
 

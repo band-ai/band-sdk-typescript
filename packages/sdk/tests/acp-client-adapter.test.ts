@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 
 import {
   ACPClientAdapter,
@@ -118,7 +118,7 @@ describe("ACPClientAdapter", () => {
     second.resolve("allow");
     expect(await session.room.outcome(message)).toBe("processed");
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+    expect(activitySequence(reports)).toEqual([
       { kind: "reasoning" }, { kind: "tool_call", name: "execute" }, { kind: "permission" }, { kind: "reasoning" }, false,
     ]);
     expect(JSON.stringify(reports.entries)).not.toContain("private");
