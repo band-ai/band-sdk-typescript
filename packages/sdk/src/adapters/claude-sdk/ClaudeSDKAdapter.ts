@@ -142,6 +142,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       throw new ValidationError("ClaudeSDK customTools require `enableMcpTools: true`.");
     }
     this.customTools = customTools;
+    // Fails at construction on a malformed custom tool; name conflicts need the started adapter.
     buildCustomMcpRegistrations(customTools, () => undefined);
     this.cwd = options?.cwd;
     this.settingSources = options?.settingSources ?? [];
@@ -161,7 +162,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
     if (this.enableMcpTools) {
       await this.sdkMcpBridgeLoader.get();
-      this.buildRegistrations(() => undefined);
+      this.buildRegistrations(() => undefined); // Fails at start on a name conflict.
     }
   }
 
@@ -195,7 +196,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         finalText = consumed.finalText;
         resultFailure = consumed.resultFailure;
       } catch (error) {
-        if (this.settleIfRetired(context.roomId, tools)) return;
+        if (this.settleIfRetired(context.roomId, tools)) {
+          this.logger.debug("Claude turn retired; its outcome is discarded", { roomId: context.roomId, error });
+          return;
+        }
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
       }
       if (this.settleIfRetired(context.roomId, tools)) return;
@@ -214,7 +218,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       // Posting preceding text must not turn a failed provider result into success.
       if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     } finally {
-      if (this.roomTools.get(context.roomId) === tools) this.roomTools.delete(context.roomId);
+      if (this.ownsRoom(context.roomId, tools)) this.roomTools.delete(context.roomId);
     }
   }
 
@@ -352,12 +356,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
   private async consumeQueryEvents(
     query: AsyncIterable<SDKMessage>,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     roomId: string,
   ): Promise<{ finalText: string; resultFailure: ClaudeResultFailure | null }> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
     for await (const event of query) {
+      // The SDK still yields what it buffered before the abort; a retired turn must not write it anywhere.
+      if (!this.ownsRoom(roomId, tools)) break;
       const sessionId = event.session_id;
       if (sessionId) {
         const previousSessionId = this.sessionIds.get(roomId) ?? null;
@@ -381,7 +387,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         }
       }
 
-      if (this.enableExecutionReporting && event.type === "tool_use_summary") {
+      if (this.enableExecutionReporting && event.type === "tool_use_summary" && this.ownsRoom(roomId, tools)) {
         try {
           await tools.sendEvent(JSON.stringify(event), "tool_call");
         } catch (error) {
