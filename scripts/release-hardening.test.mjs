@@ -1002,12 +1002,16 @@ test("CI validates pull requests to main and the legacy dev compatibility lane",
   );
 });
 
-test("CI re-validates the trunk after a merge, over the whole tree, without cancelling itself", async () => {
+test("CI validates every merge group and re-validates the trunk, over the whole tree, without cancelling itself", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
   // Without a push trigger the suite only ever ran against a PR's merge commit,
   // so a red build that landed anyway stopped being reported once merged.
   assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
+
+  // The merge queue waits for `ci-status` on every merge group; without this
+  // trigger it never reports and the queue deadlocks.
+  assert.match(workflow, /\n {2}merge_group:\n/);
 
   // A trunk run that gets superseded leaves that commit with no verdict, which
   // reopens the same gap from the other side.
@@ -1016,15 +1020,16 @@ test("CI re-validates the trunk after a merge, over the whole tree, without canc
     /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
   );
 
-  // Path filtering is a PR-time optimisation. On the trunk both packages must be
-  // selected, or `ci-status` would go green having skipped lint and test.
-  for (const output of ["sdk", "openclaw"]) {
+  // Path filtering is a PR-time optimisation. On the trunk and in a merge group
+  // every package must be selected, or `ci-status` would go green having skipped
+  // lint and test.
+  for (const output of ["sdk", "openclaw", "claude-code"]) {
     assert.match(
       workflow,
       new RegExp(
-        `${output}: \\$\\{\\{ github\\.event_name == 'push' && 'true' \\|\\| steps\\.filter\\.outputs\\.${output} \\}\\}`,
+        `${output}: \\$\\{\\{ github\\.event_name != 'pull_request' && 'true' \\|\\| steps\\.filter\\.outputs\\.${output} \\}\\}`,
       ),
-      `${output} must be forced true on a push so trunk validation cannot be skipped`,
+      `${output} must be forced true outside pull requests so trunk and queue validation cannot be skipped`,
     );
   }
 
@@ -1033,6 +1038,27 @@ test("CI re-validates the trunk after a merge, over the whole tree, without canc
   assert.match(
     workflow,
     /- name: Verify release intent\n {8}if: github\.event_name == 'pull_request'\n/,
+  );
+});
+
+test("CI skips draft pull requests and starts when one is marked ready", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/);
+  // Both root jobs carry the guard; lint and test hang off `changes`.
+  assert.match(workflow, /\n {2}changes:\n(?: {4}#[^\n]*\n)* {4}if: &not-draft github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\n/);
+  assert.match(workflow, /\n {2}packaging:\n {4}if: \*not-draft\n/);
+});
+
+test("PR title check reports in the merge queue without a PR to validate", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/pr-title.yml"), "utf8");
+
+  // `Validate PR Title` is required, so it must report on every merge group, and
+  // a merge group has no title: an unguarded validation step would fail there.
+  assert.match(workflow, /\n {2}merge_group:\n/);
+  assert.match(
+    workflow,
+    /- name: Validate Conventional Commits format\n(?: {8}#[^\n]*\n)* {8}if: github\.event_name == 'pull_request'\n/,
   );
 });
 
@@ -1109,8 +1135,12 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   const block = workflow.slice(start);
 
   // The aggregate must always report one stable context even when its
-  // intentionally conditional lint/test dependencies are skipped.
-  assert.match(block, /^    if: always\(\)$/m);
+  // intentionally conditional lint/test dependencies are skipped -- except on
+  // a draft, where nothing ran and a verdict would be a false failure.
+  assert.match(
+    block,
+    /^    if: always\(\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\)$/m,
+  );
   assert.match(block, /changes:\$\{\{ needs\.changes\.result \}\}:success/);
   assert.match(block, /packaging:\$\{\{ needs\.packaging\.result \}\}:success/);
   assert.match(block, /lint:\$\{\{ needs\.lint\.result \}\}:success\|skipped/);

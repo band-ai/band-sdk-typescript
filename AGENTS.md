@@ -547,7 +547,7 @@ pnpm test
 
 ## Commit & PR Titles
 
-Commit subjects and PR titles follow Conventional Commits: `type(scope): subject`. Ordinary PRs are squash-merged, so the PR title becomes the commit Release Please reads, and CI checks it (`Validate PR Title`).
+Commit subjects and PR titles follow Conventional Commits: `type(scope): subject`. Every PR is squash-merged through the merge queue, so the PR title becomes the commit Release Please reads, and CI checks it (`Validate PR Title`).
 
 - Allowed `type` and `scope` values are the `types:` and `scopes:` lists in `.github/workflows/pr-title.yml`. That file is the single source of truth. Read it before writing a title, and use only the values it lists.
 - The scope is optional. If no listed scope fits, omit it (`fix: …`). Never invent one from a directory, class, or module name.

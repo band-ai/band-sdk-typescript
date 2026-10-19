@@ -49,16 +49,26 @@ Protection is enforced with GitHub Rulesets, not classic branch protection.
 
 | Branch | Merge Method | Required Reviews | Stale Dismissed | Thread Resolution | Strict Checks | Merge Queue |
 |--------|--------------|------------------|-----------------|-------------------|---------------|-------------|
-| `main` | Squash (ordinary features) / Merge or approved history-preserving exception | 1 | Yes | Yes | Yes | No |
+| `main` | Squash, through the merge queue | 1 from a code owner | Yes | Yes | Yes | Yes |
 
-`main` blocks deletion and non-fast-forward (force) pushes.
+`main` blocks deletion and non-fast-forward (force) pushes. Two rulesets split
+the policy:
 
-Release PRs must use a merge commit or squash merge, never rebase merge. The
+- `main-branch-protection` — merge queue, required checks, no deletion or force
+  push.
+  Nobody but org admins can bypass it.
+- `main-code-owner-review` — one approval from a code owner
+  (`.github/CODEOWNERS`) and resolved threads. Code owners are *exempt*, so their
+  own PRs need no review; they still go through the queue and its checks.
+
+Every PR, release PRs included, is squash-merged by the queue. The
 release-intent check independently compares the full PR or push range against
 GitHub's authoritative base SHA, preventing an earlier commit in a multi-commit
 topology from hiding a version transition.
 
-**Required status check:** `ci-status` — and only that one.
+**Required status checks:** `ci-status` and `Validate PR Title`. CodeQL gates
+PRs through the ruleset's code scanning rule instead of a status check, because
+that rule does not apply to merge groups, where CodeQL default setup never runs.
 
 Rulesets are external GitHub state that no file in this repository can assert, so
 this section describes the intended configuration rather than proving what is
@@ -88,10 +98,12 @@ guards assert over global state (export-surface snapshots, whole-tree text scans
 byte-identical doc regeneration), so that failure mode is realistic here rather
 than theoretical.
 
-There is **no merge queue**, so on a busy day a branch can go stale between
-updating and merging and the update is simply retried. If that becomes a real
-cost, adding the queue means giving `ci.yml` and `pr-title.yml` both a
-`merge_group:` trigger and guarding `pr-title.yml`'s validation step with
+### Merge queue
+
+The queue re-runs the required checks on each PR combined with everything queued
+ahead of it, so two PRs that pass alone but break together never both land. Both
+`ci.yml` and `pr-title.yml` therefore trigger on `merge_group:`, and
+`pr-title.yml` guards its validation step with
 `if: github.event_name == 'pull_request'` — a merge group carries no PR title, so
 without that guard the queue deadlocks.
 
@@ -106,16 +118,19 @@ Runs on every PR to `main` and, as a compatibility measure, every PR to `dev`.
 Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.
 
-It also runs on every **push to `main`**, so the trunk is re-validated after a
-merge. Without that trigger the suite only ever saw a PR's merge commit: a red
-build that landed anyway stopped being reported the moment it merged, and "CI is
-green on `main`" said nothing about `main`'s actual tree. Three details make the
+It also runs on every **merge group**, so a change is validated against the
+latest trunk before it lands, and on every **push to `main`**, so the trunk is
+re-validated after a merge. Without the push trigger the suite only ever saw a
+PR's merge commit: a red build that landed anyway stopped being reported the
+moment it merged, and "CI is green on `main`" said nothing about `main`'s actual
+tree. Three details make the
 trunk run meaningful rather than decorative:
 
 - **Path filtering is skipped.** `dorny/paths-filter` runs only on pull
-  requests; on a push every package output is forced `true`. Trunk validation
-  exercises the whole tree, not the slice one merge happened to touch —
-  otherwise `ci-status` could go green having skipped `lint` and `test`.
+  requests; on a push or merge group every package output is forced `true`.
+  Trunk validation exercises the whole tree, not the slice one merge happened
+  to touch — otherwise `ci-status` could go green having skipped `lint` and
+  `test`.
 - **Runs are not cancelled.** `cancel-in-progress` is on for pull requests only.
   Superseding a PR run is free; superseding a trunk run would leave that commit
   of `main` with no verdict at all.
@@ -153,9 +168,10 @@ no write permission.
 Validates the PR title against Conventional Commits (`Validate PR Title`),
 accepting only the `types:` and `scopes:` listed in the workflow. It is the one
 place those lists live, so change them there.
-Skipped for bot actors (dependabot, release-please). It is **not** a required
-check; the squash-merge subject is what Release Please reads, so a wrong title
-misfiles a changelog entry rather than breaking a build.
+Skipped for bot actors (dependabot, release-please). It is a required check:
+the squash-merge subject is what Release Please reads, so a wrong title would
+misfile a changelog entry. In a merge group there is no title, so the validation
+step is skipped and the job reports success.
 
 ## Release Workflow
 
