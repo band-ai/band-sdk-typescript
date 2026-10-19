@@ -145,10 +145,14 @@ export class ChannelRegistry {
   /**
    * A promise for `topic` if it's already joined or has a join in flight,
    * without starting a new one. A topic mid-leave is never reported as
-   * already joined (see `isJoined`): treating that window as "joined" would
-   * hand the caller a promise that resolves into a channel already gone.
+   * already joined (see `isJoined`) nor as joining: either promise would
+   * resolve or reject into a channel already gone, so a new join waits out
+   * the leave and starts fresh.
    */
   public existingJoin(topic: string): Promise<void> | undefined {
+    if (this.leaveFlights.current(topic)) {
+      return undefined;
+    }
     if (this.isJoined(topic)) {
       return Promise.resolve();
     }
@@ -287,7 +291,7 @@ export class ChannelRegistry {
 
     const pending = this.pendingChannels.get(topic);
     if (pending && isOptionalTopic(pending.options)) {
-      return this.leavePending(topic, pending);
+      return this.leaveFlights.run(topic, () => this.leavePending(topic, pending));
     }
     const tracked = this.channels.get(topic);
     if (!tracked) {

@@ -303,6 +303,25 @@ describe("optional topic ownership on the Phoenix wire", () => {
     expect(view.data).toEqual([]);
   });
 
+  it("starts a fresh join when a pending optional join is left and rejoined without awaiting the leave", async () => {
+    await using kit = await connected();
+    const { peer, transport } = kit;
+    const view = owner();
+    peer.queueJoinOutcomes(optional, ["pending"]);
+    peer.queueJoinPayloads(optional, [{ fresh: true }]);
+    const abandoned = expect(transport.join(optional, {}, { blocksReconnect: false })).rejects.toThrow("superseded");
+    const old = await peer.joins.next((entry) => entry.topic === optional);
+
+    const leaving = transport.leave(optional);
+    const rejoining = transport.join(optional, view.handlers, view.options);
+    await Promise.all([leaving, abandoned, rejoining]);
+
+    const joins = peer.joins.entries.filter((entry) => entry.topic === optional);
+    expect(joins).toHaveLength(2);
+    expect(joins[1]!.joinRef).not.toBe(old.joinRef);
+    expect(view.data).toEqual([{ fresh: true }]);
+  });
+
   it("leaves a mandatory pending join to settle", async () => {
     await using kit = await connected();
     const { peer, transport } = kit;
