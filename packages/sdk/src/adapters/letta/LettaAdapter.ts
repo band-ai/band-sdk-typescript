@@ -920,36 +920,9 @@ export class LettaAdapter extends SimpleAdapter<
 
     return this.raceTimeout(
       async (s) => {
-        if (!client.agents.messages.createStream) return await client.agents.messages.create(agentId, params, { signal: s });
-        const stream = await client.agents.messages.createStream(agentId, params, { signal: s });
-        const messages: LettaResponseMessage[] = [];
-        const active = new Set<string>();
-        let stopReason: string | undefined;
-        let usage: Record<string, unknown> | undefined;
-        try {
-          for await (const value of stream) {
-            const event = asOptionalRecord(value);
-            if (!event) continue;
-            const type = event.message_type;
-            if (type === "error_message") throw new Error(typeof event.message === "string" ? event.message : "Letta stream failed");
-            if (type === "stop_reason" && typeof event.stop_reason === "string") stopReason = event.stop_reason;
-            else if (type === "usage_statistics") usage = event;
-            else if (typeof type === "string" && type !== "ping") {
-              const message = event as unknown as LettaResponseMessage;
-              messages.push(message);
-              if (type === "tool_call_message" && message.tool_call?.name && !active.has(message.tool_call.tool_call_id)) {
-                active.add(message.tool_call.tool_call_id);
-                reportToolActivity(tools, message.tool_call.name);
-              } else if (type === "tool_return_message" && message.tool_call_id && active.delete(message.tool_call_id)) {
-                endToolActivity(tools);
-              }
-            }
-          }
-        } finally {
-          if (active.size > 0) endToolActivity(tools);
-        }
-        if (!stopReason) throw new Error("Letta stream ended without a stop reason");
-        return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };
+        const messages = client.agents.messages;
+        if (!messages.createStream) return await messages.create(agentId, params, { signal: s });
+        return await collectLettaStream(await messages.createStream(agentId, params, { signal: s }), tools);
       },
       remaining,
       "Letta API call timed out",
@@ -1067,6 +1040,42 @@ function buildUserMessage(input: {
 
   return `${updates.join("\n\n")}\n\n${content}`;
 }
+
+/** Folds a streamed Letta turn into a non-streamed response, reporting native tool activity as it arrives. */
+async function collectLettaStream(
+  stream: AsyncIterable<unknown>,
+  tools: AdapterToolsProtocol,
+): Promise<LettaResponse> {
+  const messages: LettaResponseMessage[] = [];
+  const active = new Set<string>();
+  let stopReason: string | undefined;
+  let usage: Record<string, unknown> | undefined;
+  try {
+    for await (const value of stream) {
+      const event = asOptionalRecord(value);
+      if (!event) continue;
+      const type = event.message_type;
+      if (type === "error_message") throw new Error(typeof event.message === "string" ? event.message : "Letta stream failed");
+      if (type === "stop_reason" && typeof event.stop_reason === "string") stopReason = event.stop_reason;
+      else if (type === "usage_statistics") usage = event;
+      else if (typeof type === "string" && type !== "ping") {
+        const message = event as unknown as LettaResponseMessage;
+        messages.push(message);
+        if (type === "tool_call_message" && message.tool_call?.name && !active.has(message.tool_call.tool_call_id)) {
+          active.add(message.tool_call.tool_call_id);
+          reportToolActivity(tools, message.tool_call.name);
+        } else if (type === "tool_return_message" && message.tool_call_id && active.delete(message.tool_call_id)) {
+          endToolActivity(tools);
+        }
+      }
+    }
+  } finally {
+    if (active.size > 0) endToolActivity(tools);
+  }
+  if (!stopReason) throw new Error("Letta stream ended without a stop reason");
+  return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };
+}
+
 
 async function loadLettaClientFactory(config: {
   apiKey?: string;
