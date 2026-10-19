@@ -35,8 +35,12 @@ class WireClient implements AsyncDisposable {
     return this.frames.entries.filter((frame) => frame[3] === "phx_reply" && frame[2] !== "phoenix").map((frame) => `${frame[1]}:${frame[4].status}`);
   }
 
-  public async [Symbol.asyncDispose](): Promise<void> {
+  public close(): void {
     this.socket.close();
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    this.close();
   }
 }
 
@@ -81,6 +85,7 @@ describe("FakePhoenixPeer leave controls", () => {
     await second.frames.next((frame) => frame[1] === "r1");
     await first.drain("h3");
     expect(second.replies()).toEqual(["r1:error"]);
+    expect(second.frames.entries.find((frame) => frame[1] === "r1")![4]).toEqual({ status: "error", response: { reason: "rejected" } });
     expect(first.replies()).toEqual([]);
 
     kit.peer.settleRequest(firstLater!, "ok");
@@ -104,6 +109,19 @@ describe("FakePhoenixPeer leave controls", () => {
     expect(() => kit.peer.settleRequest(lost!, "ok")).toThrow("no longer pending");
   });
 
+  it("refuses to answer a request whose connection the client closed", async () => {
+    await using kit = await started();
+    await using client = await WireClient.open(kit.peer);
+    kit.peer.queueLeaveOutcomes("t", ["pending"]);
+    client.push("j", "r1", "phx_leave");
+    await client.drain("h");
+    const [held] = kit.peer.leaves.entries;
+    const cursor = kit.peer.closed.entries.length;
+    client.close();
+    await kit.peer.closed.next(() => true, cursor);
+    expect(() => kit.peer.settleRequest(held!, "ok")).toThrow("no longer pending");
+  });
+
   it("applies queued leave outcomes per topic in order and then acknowledges, leaving joins alone", async () => {
     await using kit = await started();
     await using client = await WireClient.open(kit.peer);
@@ -114,7 +132,6 @@ describe("FakePhoenixPeer leave controls", () => {
     client.push("j", "r4", "phx_join");
     client.push("j", "r5", "phx_leave", "other");
     await client.frames.next((frame) => frame[1] === "r5");
-    await client.drain("h");
     expect(client.replies()).toEqual(["r1:error", "r3:ok", "r4:ok", "r5:ok"]);
     expect(kit.peer.leaves.entries.map((request) => `${request.topic}:${request.ref}`)).toEqual(["t:r1", "t:r2", "t:r3", "other:r5"]);
     expect(kit.peer.joins.entries.map((request) => request.ref)).toEqual(["r4"]);

@@ -18,6 +18,11 @@ export interface JoinOptions {
   exemptFromBuffering?: boolean;
 }
 
+/** Whether a topic joined with `options` is independent of mandatory recovery; `blocksReconnect` defaults to true. */
+export function isOptionalTopic(options?: JoinOptions): boolean {
+  return options?.blocksReconnect === false;
+}
+
 /**
  * One settled outcome of an automatic transport-level reconnect: every topic
  * the transport owned when the socket reopened has since either rejoined or

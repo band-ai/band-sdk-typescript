@@ -16,13 +16,14 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
-import type {
-  JoinOptions,
-  ReconnectObserver,
-  ReconnectSnapshot,
-  StreamingTransport,
-  TopicHandlers,
-  TopicRejoinObserver,
+import {
+  isOptionalTopic,
+  type JoinOptions,
+  type ReconnectObserver,
+  type ReconnectSnapshot,
+  type StreamingTransport,
+  type TopicHandlers,
+  type TopicRejoinObserver,
 } from "./transport";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 
@@ -230,7 +231,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     const epoch = this.epoch.current;
-    if (options?.blocksReconnect !== false) await this.reconnectBarrier?.promise;
+    if (!isOptionalTopic(options)) await this.reconnectBarrier?.promise;
     if (this.epoch.isStale(epoch)) {
       this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
       throw supersededJoinError(topic);
@@ -432,7 +433,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private recordSocketClose(event?: { code?: number; reason?: string }): void {
-    this.registry.notifyUnavailable();
     this.connected = false;
     const suppressCloseReason = this.suppressNextCloseReason;
     this.suppressNextCloseReason = false;

@@ -252,6 +252,9 @@ export class FakePhoenixPeer implements AsyncDisposable {
     socket.on("close", () => {
       const agentId = this.sockets.get(socket) ?? null;
       this.sockets.delete(socket);
+      for (const [key, request] of this.pendingRequests) {
+        if (request.socket === socket) this.pendingRequests.delete(key);
+      }
       this.closed.record(agentId);
     });
     socket.on("message", (data) => {

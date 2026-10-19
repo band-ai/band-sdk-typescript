@@ -91,13 +91,17 @@ function registryKit() {
   const socket = new FakeSocket();
   const epoch = new Epoch();
   const left = new RecordLog<string>();
+  const channelsWhenLeft: number[] = [];
   const settled = new RecordLog<string>();
   const registry = new ChannelRegistry(socket as unknown as Socket, epoch, new NoopLogger(), {
     wrapHandler: (_topic, _event, handler) => (payload) => void handler(payload),
     onJoinSettled: (topic, joined) => settled.record(`${topic}:${joined}`),
-    onLeft: (topic) => left.record(topic),
+    onLeft: (topic) => {
+      channelsWhenLeft.push(socket.channels.length);
+      left.record(topic);
+    },
   });
-  return { socket, registry, left, settled };
+  return { socket, registry, left, channelsWhenLeft, settled };
 }
 
 async function joined(kit: ReturnType<typeof registryKit>, topic: string, options: JoinOptions, handlers: Record<string, () => void> = {}) {
@@ -130,33 +134,40 @@ describe("ChannelRegistry retirement when a graceful leave does not complete", (
     expect(kit.registry.isJoined("t")).toBe(true);
   });
 
-  it("keeps a mandatory channel registered after a failed leave, as before", async () => {
+  it.each([
+    ["error", "Failed to leave topic t"],
+    ["timeout", "Timeout leaving topic t"],
+  ] as const)("keeps a mandatory channel registered after a leave that ends in %s, as before", async (status, message) => {
     const kit = registryKit();
     const channel = await joined(kit, "t", {});
 
-    const failed = expect(kit.registry.leave("t")).rejects.toThrow("Failed to leave topic t");
-    channel.leavePushes[0]!.settle("timeout");
-    await failed.catch(() => undefined);
+    const failed = expect(kit.registry.leave("t")).rejects.toThrow(message);
+    channel.leavePushes[0]!.settle(status);
+    await failed;
 
     expect(kit.registry.isJoined("t")).toBe(true);
     expect(kit.socket.removed).toEqual([]);
     expect(kit.left.entries).toEqual([]);
   });
 
-  it("does not let a join reply that arrives while the leave is held reach the owner or the tracker", async () => {
+  it.each(["ok", "error", "timeout"] as const)("does not let a join %s reply that arrives while the leave is held reach the owner or the tracker", async (status) => {
     const kit = registryKit();
-    const snapshots = new RecordLog<unknown>();
-    const channel = await joined(kit, "t", { ...optional, onJoined: (reply) => snapshots.record(reply) });
+    const lifecycle = new RecordLog<unknown>();
+    const channel = await joined(kit, "t", {
+      ...optional,
+      onJoined: (reply) => lifecycle.record(reply),
+      onUnavailable: () => lifecycle.record("lost"),
+    });
     const settledBefore = kit.settled.entries.length;
-    const snapshotsBefore = snapshots.entries.length;
 
     const leaving = kit.registry.leave("t");
     // Phoenix resends the same join push on every automatic rejoin; a reply to it can still land mid-leave.
-    channel.joinPush.settle("ok", { stale: true });
+    channel.joinPush.settle(status, { stale: true });
     channel.leavePushes[0]!.settle("ok");
     await leaving;
 
-    expect(snapshots.entries).toHaveLength(snapshotsBefore);
+    // Only the first join's snapshot and the leave's own loss notice: the stale reply published nothing.
+    expect(lifecycle.entries).toEqual([{ snapshot: "t" }, "lost"]);
     expect(kit.settled.entries).toHaveLength(settledBefore);
   });
 
@@ -221,6 +232,19 @@ describe("ChannelRegistry leave of a join still in flight", () => {
     expect(channel.leavePushes).toHaveLength(1);
     expect(kit.socket.removed).toEqual([channel]);
     expect(kit.registry.isJoined("t")).toBe(false);
+    expect(kit.left.entries).toEqual(["t"]);
+  });
+
+  it("reports the abandoned topic as left before a caller retrying its rejected join can allocate a replacement", async () => {
+    const kit = registryKit();
+    const retried = kit.registry.join("t", {}, optional).catch(() => kit.registry.join("t", {}, optional));
+
+    await kit.registry.leave("t");
+
+    expect(kit.channelsWhenLeft).toEqual([1]);
+    kit.socket.channels[1]!.joinPush.settle("ok");
+    await retried;
+    expect(kit.registry.isJoined("t")).toBe(true);
   });
 
   it("leaves a mandatory pending join alone, as before", async () => {

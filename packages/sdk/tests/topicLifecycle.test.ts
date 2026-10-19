@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../src/core/deferred";
+import type { Logger } from "../src/core/logger";
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { RecordLog } from "./testUtils";
@@ -8,9 +9,9 @@ const optional = "optional:room";
 const chat = "chat_room:room";
 const participants = "room_participants:room";
 
-async function connected() {
+async function connected(logger?: Logger) {
   const peer = await FakePhoenixPeer.start();
-  const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "test", reconnectAfterMs: () => 10 });
+  const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "test", logger, reconnectAfterMs: () => 10 });
   await transport.connect();
   return { peer, transport, async [Symbol.asyncDispose]() {
     vi.useRealTimers();
@@ -49,8 +50,9 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
     const recovery = createDeferred<void>();
     const delivered = new RecordLog<string>();
     const activity = new RecordLog<unknown>();
+    const attempted = new RecordLog<ReadonlySet<string>>();
     transport.onReconnected((snapshot) => {
-      expect(snapshot.attemptedTopics).toEqual(new Set([chat, participants]));
+      attempted.record(snapshot.attemptedTopics);
       recovery.resolve();
     });
     await transport.join(chat, { message: () => delivered.record("message") });
@@ -76,6 +78,7 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
     }
     for (const request of requests.slice(0, 2)) peer.settleRequest(request, "ok");
     await recovery.promise;
+    expect(attempted.entries).toEqual([new Set([chat, participants])]);
     peer.push(chat, "message", {});
     peer.push(participants, "added", {});
     await delivered.next((value) => value === "participant");
@@ -108,7 +111,7 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
     expect(peer.joins.entries.filter((request) => request.topic === optional)).toHaveLength(2);
   });
 
-  it("invalidates on socket loss and permanent close without retrying the closed topic", async () => {
+  it("invalidates on socket loss and permanent close, and does not rejoin the closed topic at once", async () => {
     await using kit = await connected();
     const { peer, transport } = kit;
     const lifecycle = new RecordLog<string>();
@@ -127,19 +130,28 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
     expect(lifecycle.entries.at(-1)).toBe("unavailable");
   });
 
-  it("contains lifecycle callback failures, sync or async, and still delivers the real event", async () => {
-    await using kit = await connected();
+  it("contains lifecycle callback failures, sync or async, logs which callback failed without its message, and still delivers the real event", async () => {
+    const errors = new RecordLog<{ message: string; context?: Record<string, unknown> }>();
+    const logger: Logger = {
+      debug: () => undefined, info: () => undefined, warn: () => undefined,
+      error: (message, context) => errors.record({ message, context }),
+    };
+    await using kit = await connected(logger);
     const event = createDeferred<void>();
     const lost = createDeferred<void>();
     await kit.transport.join(optional, { changed: () => event.resolve() }, {
-      blocksReconnect: false, onJoined: () => { throw new Error("observer"); },
-      onUnavailable: async () => { lost.resolve(); throw new Error("observer"); },
+      blocksReconnect: false, onJoined: () => { throw new Error("sentinel"); },
+      onUnavailable: async () => { lost.resolve(); throw new Error("sentinel"); },
     });
     kit.peer.push(optional, "phx_error", {});
     await lost.promise;
     kit.peer.push(optional, "changed", {});
     await event.promise;
     await kit.transport.leave(optional);
+    for (const callback of ["onJoined", "onUnavailable"]) {
+      const failure = await errors.next((entry) => entry.context?.callback === callback);
+      expect(failure).toEqual({ message: "Topic lifecycle observer failed", context: { topic: optional, callback, error: "Error" } });
+    }
   });
 
   it("rejects an initial failure without blocking another topic", async () => {
@@ -170,15 +182,16 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
 });
 
 /** One topic owner's view: its snapshots, events and losses, in the order the transport delivered them. */
-function owner() {
+function owner({ optional: independent = true } = {}) {
   const seen = new RecordLog<unknown>();
+  const callbacks = { onJoined: (reply: unknown) => seen.record(reply), onUnavailable: () => seen.record("unavailable") };
   return {
     seen,
     /** What the owner was given: snapshots and events, without the loss notices, which may repeat. */
     get data() { return seen.entries.filter((value) => value !== "unavailable"); },
     get lost() { return seen.entries.at(-1) === "unavailable"; },
     handlers: { changed: (payload: unknown) => seen.record(payload) },
-    options: { blocksReconnect: false, exemptFromBuffering: true, onJoined: (reply: unknown) => seen.record(reply), onUnavailable: () => seen.record("unavailable") },
+    options: independent ? { blocksReconnect: false, exemptFromBuffering: true, ...callbacks } : callbacks,
   };
 }
 
@@ -278,10 +291,14 @@ describe("optional topic ownership on the Phoenix wire", () => {
     const joining = transport.join(optional, view.handlers, view.options);
     const superseded = expect(joining).rejects.toThrow("superseded");
     await peer.joins.next((entry) => entry.topic === optional);
-    await transport.disconnect();
+    // With the peer not reading, the close handshake cannot finish, so the loss must come from disconnect() itself.
+    peer.stallReads();
+    const disconnecting = transport.disconnect();
+    await view.seen.next((value) => value === "unavailable");
+    peer.resumeReads();
+    await disconnecting;
     await superseded;
     expect(view.data).toEqual([]);
-    expect(view.lost).toBe(true);
   });
 
   it("leaves a mandatory pending join to settle", async () => {
@@ -303,13 +320,36 @@ describe("optional topic ownership on the Phoenix wire", () => {
     peer.queueJoinOutcomes(optional, ["pending", "pending"]);
     const joining = transport.join(optional, view.handlers, view.options);
     const old = await peer.joins.next((entry) => entry.topic === optional);
+    const cursor = peer.joins.entries.length;
     peer.severAllConnections();
-    const replacement = await peer.joins.next((entry) => entry.topic === optional, 1);
+    const replacement = await peer.joins.next((entry) => entry.topic === optional, cursor);
     expect(replacement.connection).not.toBe(old.connection);
     expect(() => peer.settleRequest(old, "ok", { stale: true })).toThrow("no longer pending");
     peer.settleRequest(replacement, "ok", { fresh: true });
     await joining;
     expect(view.data).toEqual([{ fresh: true }]);
+  });
+});
+
+describe("lifecycle callbacks on a mandatory topic", () => {
+  it("reports the loss, then the rejoin snapshot, while the topic stays in the reconnect set", async () => {
+    await using kit = await connected();
+    const { peer, transport } = kit;
+    const view = owner({ optional: false });
+    const attempted = new RecordLog<ReadonlySet<string>>();
+    transport.onReconnected((snapshot) => attempted.record(snapshot.attemptedTopics));
+    peer.queueJoinPayloads(chat, [{ version: 1 }]);
+    await transport.join(chat, view.handlers, view.options);
+
+    peer.queueJoinPayloads(chat, [{ version: 2 }]);
+    peer.severAllConnections();
+    await attempted.next(() => true);
+    expect(attempted.entries).toEqual([new Set([chat])]);
+    expect(view.seen.entries[0]).toEqual({ version: 1 });
+    expect(view.seen.entries.at(-1)).toEqual({ version: 2 });
+    const between = view.seen.entries.slice(1, -1);
+    expect(between.length).toBeGreaterThan(0);
+    expect(between.every((value) => value === "unavailable")).toBe(true);
   });
 });
 

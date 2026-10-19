@@ -3,7 +3,7 @@ import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { KeyedSingleFlight } from "../../core/singleFlight";
 import { Epoch } from "../../core/epoch";
-import type { JoinOptions, TopicHandlers } from "./transport";
+import { isOptionalTopic, type JoinOptions, type TopicHandlers } from "./transport";
 
 interface TrackedChannel {
   channel: Channel;
@@ -88,10 +88,11 @@ export class ChannelRegistry {
   /** The joined topics a reconnect waits on; optional topics (`blocksReconnect: false`) are left out. */
   public *topics(): IterableIterator<string> {
     for (const [topic, tracked] of this.channels) {
-      if (tracked.options.blocksReconnect !== false) yield topic;
+      if (!isOptionalTopic(tracked.options)) yield topic;
     }
   }
 
+  /** Reports every owned channel, pending joins included, as lost. A transport disconnect uses it to invalidate before the close handshake finishes. */
   public notifyUnavailable(): void {
     for (const [topic, tracked] of [...this.channels, ...this.pendingChannels]) {
       this.notifyLost(topic, tracked.options);
@@ -107,16 +108,25 @@ export class ChannelRegistry {
   }
 
   private notifyLost(topic: string, options: JoinOptions): void {
-    this.observe(topic, () => options.onUnavailable?.());
+    this.observe(topic, "onUnavailable", () => options.onUnavailable?.());
   }
 
-  /** Runs a feature callback, containing a throw or a rejection so it never reaches Phoenix or the registry. */
-  private observe(topic: string, callback: () => void): void {
-    const failed = (): void => this.logger.error("Topic lifecycle observer failed", { topic });
+  /**
+   * Runs a feature callback, containing a throw or a rejection so it never
+   * reaches Phoenix or the registry. Only the error's name is logged: its
+   * message can carry the caller's data.
+   */
+  private observe(topic: string, callback: "onJoined" | "onUnavailable", run: () => void): void {
+    const failed = (error: unknown): void =>
+      this.logger.error("Topic lifecycle observer failed", {
+        topic,
+        callback,
+        error: error instanceof Error ? error.name : typeof error,
+      });
     try {
-      void Promise.resolve(callback()).catch(failed);
-    } catch {
-      failed();
+      void Promise.resolve(run()).catch(failed);
+    } catch (error) {
+      failed(error);
     }
   }
 
@@ -185,7 +195,7 @@ export class ChannelRegistry {
         joinPush
           .receive("ok", (reply: unknown) => {
             if (!current()) return;
-            this.observe(topic, () => options.onJoined?.(reply));
+            this.observe(topic, "onJoined", () => options.onJoined?.(reply));
             this.settleJoin(topic, "ok");
             resolve();
           })
@@ -275,7 +285,7 @@ export class ChannelRegistry {
     }
 
     const pending = this.pendingChannels.get(topic);
-    if (pending?.options.blocksReconnect === false) {
+    if (pending && isOptionalTopic(pending.options)) {
       return this.leavePending(topic, pending);
     }
     const tracked = this.channels.get(topic);
@@ -286,13 +296,14 @@ export class ChannelRegistry {
     return this.leaveFlights.run(topic, () => this.doLeave(topic, tracked));
   }
 
-  /** Abandons an optional join still in flight; a mandatory one is left to settle, as it always was. */
+  /** Abandons an optional join still in flight; a mandatory join is left to settle so reconnect recovery still awaits it. */
   private async leavePending(topic: string, pending: PendingJoin): Promise<void> {
     this.notifyLost(topic, pending.options);
     this.pendingChannels.delete(topic);
     this.abandonChannel(topic, pending);
-    await this.joinFlights.current(topic)?.catch(() => undefined);
+    // Before the await: a caller whose join was just rejected can retry in the same tick, and must not meet this cleanup.
     this.hooks.onLeft(topic);
+    await this.joinFlights.current(topic)?.catch(() => undefined);
   }
 
   private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
@@ -317,7 +328,7 @@ export class ChannelRegistry {
     } catch (error) {
       // An optional channel is never left registered behind a failed leave,
       // or a same-topic restart would mistake it for a usable join.
-      if (options.blocksReconnect === false) {
+      if (isOptionalTopic(options)) {
         removeSocketChannel(this.socket, channel);
         this.forget(topic, tracked);
       }
