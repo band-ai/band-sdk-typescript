@@ -3,6 +3,16 @@ export interface TopicHandlers {
 }
 
 export interface JoinOptions {
+  /** Called synchronously with the raw join reply, on the first join and on every automatic rejoin. */
+  onJoined?: (reply: unknown) => void;
+  /** Called synchronously when the channel is lost, errored, closed or left. May repeat for one loss. */
+  onUnavailable?: () => void;
+  /**
+   * `false` makes the topic optional: its join does not wait on the reconnect
+   * barrier, it is left out of the reconnect snapshot, and leaving it while
+   * its join is in flight abandons that join. Defaults to `true`.
+   */
+  blocksReconnect?: boolean;
   /**
    * Exempts this topic's event delivery from any reconnect-buffering window
    * a transport may hold events behind. Only a channel whose events must
@@ -10,6 +20,11 @@ export interface JoinOptions {
    * supersede notices) should set this.
    */
   exemptFromBuffering?: boolean;
+}
+
+/** Whether a topic joined with `options` is independent of mandatory recovery; `blocksReconnect` defaults to true. */
+export function isOptionalTopic(options?: JoinOptions): boolean {
+  return options?.blocksReconnect === false;
 }
 
 /**
