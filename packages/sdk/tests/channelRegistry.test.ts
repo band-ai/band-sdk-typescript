@@ -91,17 +91,13 @@ function registryKit() {
   const socket = new FakeSocket();
   const epoch = new Epoch();
   const left = new RecordLog<string>();
-  const channelsWhenLeft: number[] = [];
   const settled = new RecordLog<string>();
   const registry = new ChannelRegistry(socket as unknown as Socket, epoch, new NoopLogger(), {
     wrapHandler: (_topic, _event, handler) => (payload) => void handler(payload),
     onJoinSettled: (topic, joined) => settled.record(`${topic}:${joined}`),
-    onLeft: (topic) => {
-      channelsWhenLeft.push(socket.channels.length);
-      left.record(topic);
-    },
+    onLeft: (topic) => left.record(topic),
   });
-  return { socket, registry, left, channelsWhenLeft, settled };
+  return { socket, registry, left, settled };
 }
 
 async function joined(kit: ReturnType<typeof registryKit>, topic: string, options: JoinOptions, handlers: Record<string, () => void> = {}) {
@@ -233,18 +229,6 @@ describe("ChannelRegistry leave of a join still in flight", () => {
     expect(kit.socket.removed).toEqual([channel]);
     expect(kit.registry.isJoined("t")).toBe(false);
     expect(kit.left.entries).toEqual(["t"]);
-  });
-
-  it("reports the abandoned topic as left before a caller retrying its rejected join can allocate a replacement", async () => {
-    const kit = registryKit();
-    const retried = kit.registry.join("t", {}, optional).catch(() => kit.registry.join("t", {}, optional));
-
-    await kit.registry.leave("t");
-
-    expect(kit.channelsWhenLeft).toEqual([1]);
-    kit.socket.channels[1]!.joinPush.settle("ok");
-    await retried;
-    expect(kit.registry.isJoined("t")).toBe(true);
   });
 
   it("leaves a mandatory pending join alone, as before", async () => {

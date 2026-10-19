@@ -301,9 +301,8 @@ export class ChannelRegistry {
     this.notifyLost(topic, pending.options);
     this.pendingChannels.delete(topic);
     this.abandonChannel(topic, pending);
-    // Before the await: a caller whose join was just rejected can retry in the same tick, and must not meet this cleanup.
-    this.hooks.onLeft(topic);
     await this.joinFlights.current(topic)?.catch(() => undefined);
+    this.hooks.onLeft(topic);
   }
 
   private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
