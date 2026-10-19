@@ -162,19 +162,19 @@ function nativeBash(turn: OpencodeTurn) {
   });
 }
 
-type FailingContext = { session: Awaited<ReturnType<typeof opencodeRoom>>; reports: ReturnType<typeof recordRuntimeActivity> };
+type ActivityReports = ReturnType<typeof recordRuntimeActivity>;
 
 /** Waits until the provider has opened something, so the turn's watchdog is running, then runs out its clock. */
-async function timeOut({ reports }: FailingContext): Promise<void> {
+async function timeOut(reports: ActivityReports): Promise<void> {
   await reports.next((entry) => entry.activity !== undefined && entry.activity.kind !== "reasoning");
   await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
 }
 
 /** What the room's activity read while a turn's failure was still being posted; `fail` makes the turn fail. */
 async function activityWhileFailing(
-  script: (turn: OpencodeTurn, reports: ReturnType<typeof recordRuntimeActivity>) => Promise<void> | void,
+  script: (turn: OpencodeTurn, reports: ActivityReports) => Promise<void> | void,
   config: OpencodeAdapterConfig,
-  fail: (context: FailingContext) => Promise<void> = async () => {},
+  fail: (reports: ActivityReports) => Promise<void> = async () => {},
 ) {
   const reports = recordRuntimeActivity();
   const rest = new SlowFailureRest(PEOPLE);
@@ -182,7 +182,7 @@ async function activityWhileFailing(
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   await using session = await opencodeRoom({ turnTimeoutMs: TURN_TIMEOUT_MS, ...config }, { rest });
   await session.start((turn) => script(turn, reports));
-  await fail({ session, reports });
+  await fail(reports);
   await rest.failurePosting.promise;
   await vi.advanceTimersByTimeAsync(WORKING_HEARTBEAT_MS);
   const activity = reports.entries.at(-1)?.activity;

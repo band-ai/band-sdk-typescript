@@ -125,10 +125,24 @@ interface AskLifecycle<T> {
 /** One turn's state. A turn is still current while `room.turn` is this object. */
 class OpencodeTurn {
   public constructor(public readonly tools: TurnTools) {}
+  /** Prompt message id, so only OpenCode's reply messages parented to it are attributed to this turn. */
   public readonly messageId = opencodeMessageId();
   public readonly activityMessages = new Set<string>();
-  public readonly activityCalls = new Set<string>();
-  public readonly completedActivityCalls = new Set<string>();
+  private readonly activityCalls = new Set<string>();
+  private readonly completedActivityCalls = new Set<string>();
+
+  /** Opens activity for a native tool part once; a part that already finished stays finished. */
+  public startToolActivity(partId: string, toolName: string): void {
+    if (this.activityCalls.has(partId) || this.completedActivityCalls.has(partId)) return;
+    this.activityCalls.add(partId);
+    reportToolActivity(this.tools, toolName);
+  }
+
+  public finishToolActivity(partId: string): void {
+    if (!this.activityCalls.delete(partId)) return;
+    this.completedActivityCalls.add(partId);
+    endToolActivity(this.tools);
+  }
 
   /** Ends the running tool and human wait the turn left open, so neither outlives the provider's side of it. */
   public endActivity(): void {
@@ -685,13 +699,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     const isTerminal = status === "completed" || status === "error";
 
     if (messageId && turn.activityMessages.has(messageId)) {
-      if (isActive && !turn.activityCalls.has(partId) && !turn.completedActivityCalls.has(partId)) {
-        turn.activityCalls.add(partId);
-        reportToolActivity(turn.tools, toolName);
-      } else if (isTerminal && turn.activityCalls.delete(partId)) {
-        turn.completedActivityCalls.add(partId);
-        endToolActivity(turn.tools);
-      }
+      if (isActive) turn.startToolActivity(partId, toolName);
+      else if (isTerminal) turn.finishToolActivity(partId);
     }
     if (!this.config.enableExecutionReporting) return;
 
