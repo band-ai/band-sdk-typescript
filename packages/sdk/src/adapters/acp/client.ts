@@ -11,9 +11,8 @@ import type {
   JsonRpcId,
 } from "@agentclientprotocol/sdk";
 
-import type { Logger } from "../../core/logger";
 import { asOptionalRecord } from "../shared/coercion";
-import { toolCallId } from "./toolCalls";
+import { PENDING, toolCallId } from "./toolCalls";
 import type {
   ACPClientExtensionHandler,
   ACPPermissionHandler,
@@ -42,10 +41,7 @@ export class BandACPClient implements Client {
   // First prompt to report a tool call owns it for its session's life, so a call
   // replayed on a later prompt of the session is not reported again.
   private readonly callOwners = new Map<string, Map<string, number>>()
-  // Prompts the turn stopped waiting on while still running: their late
-  // notifications cannot be told from a new prompt's, so the session reports nothing.
-  private readonly abandonedPrompts = new Map<number, string>()
-  private readonly permissionReplies = new Map<JsonRpcId | object, number>()
+  private readonly openWaits = new Map<JsonRpcId | object, number>()
   // Once the wire is observed, a manual wait is held through the response write
   // instead of the handler's lifetime.
   private wireObserved = false
@@ -62,7 +58,6 @@ export class BandACPClient implements Client {
     permissionHandler: ACPPermissionHandler,
     extensionHandler?: ACPClientExtensionHandler,
     private readonly humanDecision?: (method: string, params: Record<string, unknown>) => boolean,
-    private readonly logger?: Logger,
   ) {
     this.roomId = roomId
     this.permissionHandler = permissionHandler
@@ -92,8 +87,7 @@ export class BandACPClient implements Client {
   } {
     const token = ++this.nextPromptToken
     this.promptsInFlight.set(token, sessionId)
-    if (activity && !this.isAmbiguous(sessionId)) this.activities.set(token, activity)
-    let running = false
+    if (activity) this.activities.set(token, activity)
     let released = false
     const release = (): void => {
       if (released) {
@@ -104,29 +98,15 @@ export class BandACPClient implements Client {
       this.endActivity(token)
     }
     return {
-      release: () => {
-        if (running && !released) this.abandon(token, sessionId)
-        release()
-      },
+      release,
       run: async (fn) => {
-        running = true
         try {
           return await fn()
         } finally {
-          this.abandonedPrompts.delete(token)
           release()
         }
       },
     }
-  }
-
-  private abandon(token: number, sessionId: string): void {
-    this.abandonedPrompts.set(token, sessionId)
-    this.logger?.warn("acp_client.prompt_abandoned_in_flight", { roomId: this.roomId, sessionId })
-  }
-
-  private isAmbiguous(sessionId: string): boolean {
-    return [...this.abandonedPrompts.values()].includes(sessionId)
   }
 
   /** Ends what a prompt left open, so the turn's failure or flush never runs under its tool or wait. */
@@ -134,7 +114,7 @@ export class BandACPClient implements Client {
     const activity = this.activities.get(token)
     this.activities.delete(token)
     const waiting = this.holdsWait(token)
-    for (const [request, owner] of this.permissionReplies) if (owner === token) this.permissionReplies.delete(request)
+    for (const [request, owner] of this.openWaits) if (owner === token) this.openWaits.delete(request)
     if (waiting) activity?.permission(false)
     activity?.end()
   }
@@ -146,8 +126,7 @@ export class BandACPClient implements Client {
 
     const chunk = toCollectedChunk(params.update)
     if (chunk) {
-      this.captureObserver(params.sessionId, chunk, this.promptToken(params.sessionId))?.observe(chunk)
-      this.appendChunk(params.sessionId, chunk)
+      this.collect(params.sessionId, chunk, this.promptToken(params.sessionId))
     }
   }
 
@@ -174,18 +153,18 @@ export class BandACPClient implements Client {
 
   private beginWait(request: JsonRpcId | object, token: number): void {
     const first = !this.holdsWait(token)
-    this.permissionReplies.set(request, token)
+    this.openWaits.set(request, token)
     if (first) this.activities.get(token)?.permission(true)
   }
 
   private endWait(request: JsonRpcId | object): void {
-    const token = this.permissionReplies.get(request)
-    this.permissionReplies.delete(request)
+    const token = this.openWaits.get(request)
+    this.openWaits.delete(request)
     if (token !== undefined && !this.holdsWait(token)) this.activities.get(token)?.permission(false)
   }
 
   private holdsWait(token: number): boolean {
-    return [...this.permissionReplies.values()].includes(token)
+    return [...this.openWaits.values()].includes(token)
   }
 
   /** Holds actual manual waits through the JSON-RPC response write. */
@@ -293,9 +272,14 @@ export class BandACPClient implements Client {
     }
 
     for (const chunk of chunks) {
-      this.captureObserver(sessionId, chunk, prompt)?.observe(chunk)
-      this.appendChunk(sessionId, chunk)
+      this.collect(sessionId, chunk, prompt)
     }
+  }
+
+  /** Reports a chunk to the prompt that owns its tool call, and keeps it for the turn's flush. */
+  private collect(sessionId: string, chunk: CollectedChunk, token: number | undefined): void {
+    this.claimToolCall(sessionId, chunk, token)?.observe(chunk)
+    this.appendChunk(sessionId, chunk)
   }
 
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
@@ -307,10 +291,10 @@ export class BandACPClient implements Client {
     return tokens.length === 1 ? tokens[0][0] : undefined
   }
 
-  private captureObserver(sessionId: string, chunk: CollectedChunk, token: number | undefined): PromptActivity | undefined {
+  private claimToolCall(sessionId: string, chunk: CollectedChunk, token: number | undefined): PromptActivity | undefined {
     if (this.retired) return undefined
     const id = toolCallId(chunk)
-    if (!id || token === undefined || this.isAmbiguous(sessionId)) return undefined
+    if (!id || token === undefined) return undefined
     let owners = this.callOwners.get(sessionId)
     if (!owners) this.callOwners.set(sessionId, owners = new Map<string, number>())
     const owner = owners.get(id)
@@ -395,7 +379,7 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
         metadata: {
           tool_call_id: update.toolCallId,
           raw_input: update.rawInput,
-          status: update.status ?? "pending",
+          status: update.status ?? PENDING,
           ...(update.kind ? { kind: update.kind } : {}),
         },
         streamed: false,

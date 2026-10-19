@@ -85,6 +85,8 @@ interface DecisionSpec {
   multiSelect: ReadonlySet<string>;
 }
 
+type QuestionChoices = Pick<DecisionSpec, "choices" | "multiSelect">;
+
 // A permission's option id, or an extension method's result; undefined denies or cancels.
 type DecisionAnswer = string | Record<string, unknown> | undefined;
 
@@ -357,19 +359,21 @@ export class CursorRoomAgent extends ACPRoomAgent {
   }
 
   /** A question reaches the room only in manual mode, and only when there is something to choose. */
-  private asksRoom(questions: ReturnType<typeof questionChoices>): boolean {
+  private asksRoom(questions: QuestionChoices): boolean {
     return this.questionMode === "manual" && questions.choices.size > 0;
   }
 
   private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const questions = questionChoices(params.questions);
-    if (!this.asksRoom(questions)) {
-      return this.questionMode === "autoFirst" && questions.choices.size > 0
-        ? answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])))
-        : CANCELLED;
-    }
+    if (!this.asksRoom(questions)) return this.autoAnswer(questions);
     const result = await this.waitForDecision(turn, { kind: DECISION_KIND.question, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
     return isRecord(result) ? result : CANCELLED;
+  }
+
+  private autoAnswer(questions: QuestionChoices): Record<string, unknown> {
+    return this.questionMode === "autoFirst" && questions.choices.size > 0
+      ? answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])))
+      : CANCELLED;
   }
 
   private async resolvePlan(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -511,7 +515,7 @@ function allowOption(options: readonly PermissionOption[]): PermissionOption | u
   return options.find((option) => option.kind === "allow_once") ?? options.find((option) => option.kind === "allow_always");
 }
 
-function questionChoices(value: unknown): { choices: Map<string, readonly string[]>; multiSelect: Set<string> } {
+function questionChoices(value: unknown): QuestionChoices {
   const choices = new Map<string, readonly string[]>();
   const multiSelect = new Set<string>();
   if (!Array.isArray(value)) return { choices, multiSelect };

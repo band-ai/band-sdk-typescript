@@ -5,7 +5,6 @@ import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
 
 import type {
-  Client,
   ClientCapabilities,
   ClientSideConnection,
   InitializeResponse,
@@ -565,7 +564,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     if (owner) {
       const key = this.sessionKey(owner.generation, owner.sessionId)
       owner.client?.resetChunks(owner.sessionId)
-      owner.client?.forgetSession(owner.sessionId)
       this.activeSessions.delete(key)
       this.bootstrappedSessions.delete(key)
       this.cancelPendingPermissions(key, "room-closed")
@@ -692,6 +690,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
     this.roomToSession.delete(roomId)
     this.sessionToRoom.delete(this.sessionKey(owner.generation, owner.sessionId))
+    owner.client?.forgetSession(owner.sessionId)
   }
 
   private sessionKey(generation: number, sessionId: string): string {
@@ -761,7 +760,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         (params) => this.routePermissionRequest(params, owner.generation),
         this.extensionHandler,
         (method, params) => this.isHumanDecision(method, params),
-        this.logger,
       )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {
@@ -1740,7 +1738,7 @@ export function assertPermissionTimeoutMs(value: number | undefined): void {
 }
 
 export async function createSubprocessConnection(
-  client: Client,
+  client: BandACPClient,
   options: {
     command: string[];
     cwd?: string;
@@ -1782,7 +1780,7 @@ export async function createSubprocessConnection(
     Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
   )
 
-  const connection = new acp.ClientSideConnection(() => client, client instanceof BandACPClient ? client.observeStream(stream) : stream)
+  const connection = new acp.ClientSideConnection(() => client, client.observeStream(stream))
 
   return {
     connection,

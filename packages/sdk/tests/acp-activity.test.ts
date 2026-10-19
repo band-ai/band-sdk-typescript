@@ -1,8 +1,8 @@
-import { AgentSideConnection, ndJsonStream, ClientSideConnection, type Agent, type AnyMessage, type Client, type SessionUpdate, type AgentCapabilities } from "@agentclientprotocol/sdk";
+import { AgentSideConnection, ndJsonStream, ClientSideConnection, RequestError, type Agent, type AnyMessage, type Client, type SessionUpdate, type AgentCapabilities } from "@agentclientprotocol/sdk";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ACPClientAdapter } from "../src/adapters/acp/ACPClientAdapter";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPRoomAgent";
-import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { BandPlatform, person, type RecordingRestApi } from "./flows/support/bandPlatform";
 import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
 import { activityWhileProviderFails } from "./support/providerFailure";
 import { BandACPClient, type PromptActivity } from "../src/adapters/acp/client";
@@ -10,9 +10,8 @@ import { observeNativeToolCalls } from "../src/adapters/acp/toolCalls";
 import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
 import { createDeferred } from "../src/core/deferred";
 import { trackNativeActivity } from "../src/runtime/workingState";
-import { CallHolds, makeLoggerSpy, RecordLog, tmpRoot } from "./testUtils";
+import { CallHolds, RecordLog, tmpRoot } from "./testUtils";
 import { scopedActivity } from "./support/scopedActivity";
-import type { RecordingRestApi } from "./flows/support/bandPlatform";
 import type { CollectedChunk } from "../src/adapters/acp/types";
 import { fileURLToPath } from "node:url";
 
@@ -291,34 +290,16 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     expect(observed).toEqual(["old", "replacement"]);
   });
 
-  it("reports a call id again once the room has closed the session that owned it", async () => {
+  it("attributes nothing while two prompts are in flight on one session", async () => {
     const observed: string[] = [];
-    const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }));
-    client.beginSession("first");
-    await client.enterPromptSession("first", observingAs(observed, "old")).run(() => startNativeCall(client, "first", "known"));
-    client.forgetSession("first");
-    await client.enterPromptSession("first", observingAs(observed, "reopened")).run(() => startNativeCall(client, "first", "known"));
-    expect(observed).toEqual(["old", "reopened"]);
-  });
-
-  it("stops reporting a session while an abandoned prompt still runs, and resumes once it settles", async () => {
-    const observed: string[] = [];
-    const logger = makeLoggerSpy();
     const settle = createDeferred();
-    const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }), undefined, undefined, logger);
-    client.beginSession("first");
-    client.beginSession("fresh");
-    const abandoned = client.enterPromptSession("first", observingAs(observed, "abandoned"));
-    const settled = abandoned.run(() => settle.promise);
-    abandoned.release();
-    await client.enterPromptSession("first", observingAs(observed, "ambiguous")).run(() => startNativeCall(client, "first", "unseen"));
-    await client.enterPromptSession("fresh", observingAs(observed, "fresh")).run(() => startNativeCall(client, "fresh", "unseen"));
+    const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }));
+    client.beginSession("session");
+    const first = client.enterPromptSession("session", observingAs(observed, "first")).run(() => settle.promise);
+    await client.enterPromptSession("session", observingAs(observed, "second")).run(() => startNativeCall(client, "session", "call"));
     settle.resolve();
-    await settled;
-    await client.enterPromptSession("first", observingAs(observed, "resumed")).run(() => startNativeCall(client, "first", "later"));
-    expect(observed).toEqual(["fresh", "resumed"]);
-    expect(logger.warn).toHaveBeenCalledOnce();
-    expect(logger.warn).toHaveBeenCalledWith("acp_client.prompt_abandoned_in_flight", { roomId: "room", sessionId: "first" });
+    await first;
+    expect(observed).toEqual([]);
   });
 });
 
@@ -394,7 +375,7 @@ describe("native tool call observation", () => {
     expect(await streamed([
       { sessionUpdate: "tool_call", toolCallId: "named", title: "Tool: band_send_message", status: "in_progress",
         rawInput: { server: MCP_SERVER_NAME, tool: "band_send_message", arguments: {} } },
-      { sessionUpdate: "tool_call_update", toolCallId: "named", content: [{ type: "content", content: { type: "text", text: "sending" } }] },
+      { sessionUpdate: "tool_call_update", toolCallId: "named", kind: "other", content: [{ type: "content", content: { type: "text", text: "sending" } }] },
       { sessionUpdate: "tool_call_update", toolCallId: "named", status: "completed" },
     ])).toEqual([{ kind: "reasoning" }]);
   });
@@ -479,6 +460,95 @@ describe("ACP native activity through the adapter", () => {
     const { room, say } = await startAdapter(adapter);
     expect(await room.outcome(await say())).toBe("processed");
     expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "execute" }, { kind: "reasoning" }, false]);
+  });
+
+  it("holds the permission wait until both human decisions settle", async () => {
+    const reports = recordRuntimeActivity();
+    const first = createDeferred<string | undefined>();
+    const second = createDeferred<string | undefined>();
+    const firstReplied = createDeferred();
+    const decisions: unknown[] = [];
+    onTestFinished(() => { first.resolve("allow"); second.resolve("allow"); });
+    const adapter = new ACPClientAdapter({ command: ["native-fixture"], cwd: tmpRoot(), enableMcpTools: false,
+      resolvePermission: async ({ toolCall }) => toolCall.toolCallId === "one" ? first.promise : second.promise,
+      connectionFactory: inMemoryAgent((agent) => idleAgent(async ({ sessionId }) => {
+        const ask = (id: string) => agent.requestPermission({ sessionId, toolCall: { toolCallId: id, title: "private approval prompt" }, ...ASK });
+        const [one, two] = [ask("one"), ask("two")];
+        decisions.push(await one);
+        // Only a wait still held outranks this call, and it ends before the turn's last report.
+        await agent.sessionUpdate({ sessionId, update: { ...nativeToolStart, toolCallId: "later", kind: "fetch", status: "in_progress" } });
+        await agent.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "later", status: "completed" } });
+        firstReplied.resolve();
+        decisions.push(await two);
+        await agent.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+        return { stopReason: "end_turn" };
+      })),
+    });
+    const { room, say } = await startAdapter(adapter);
+    const message = await say();
+    await reports.next((entry) => entry.activity?.kind === "permission");
+    first.resolve("allow");
+    await firstReplied.promise;
+    second.resolve("allow");
+    expect(await room.outcome(message)).toBe("processed");
+    expect(decisions).toEqual([ALLOW, ALLOW]);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "permission" }, { kind: "reasoning" }, false]);
+    expect(JSON.stringify(reports.entries)).not.toContain("private");
+  });
+
+  it.each([
+    { case: "an automatic approval", adapterOptions: {}, options: ASK.options },
+    { case: "a manual approval with no options to choose", adapterOptions: { resolvePermission: async () => "allow" }, options: [] },
+  ])("reports no wait for $case", async ({ adapterOptions, options }) => {
+    const reports = recordRuntimeActivity();
+    const adapter = new ACPClientAdapter({ command: ["native-fixture"], cwd: tmpRoot(), enableMcpTools: false, ...adapterOptions,
+      connectionFactory: inMemoryAgent((agent) => idleAgent(async ({ sessionId }) => {
+        await agent.requestPermission({ sessionId, toolCall: { toolCallId: "ask", title: "approval" }, options });
+        await agent.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+        return { stopReason: "end_turn" };
+      })),
+    });
+    const { room, say } = await startAdapter(adapter);
+    expect(await room.outcome(await say())).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(reports.entries.some((entry) => entry.activity?.kind === "permission")).toBe(false);
+  });
+
+  it("reports a call id again on the session that replaces a dropped one", async () => {
+    const reports = recordRuntimeActivity();
+    let prompts = 0;
+    const adapter = new ACPClientAdapter({ command: ["native-fixture"], cwd: tmpRoot(), enableMcpTools: false,
+      connectionFactory: inMemoryAgent((agent) => idleAgent(async ({ sessionId }) => {
+        await agent.sessionUpdate({ sessionId, update: { ...nativeToolStart, kind: "execute", status: "in_progress" } });
+        // A rejected first prompt leaves the session unaccepted, so the next turn opens a fresh one.
+        if (++prompts === 1) throw new RequestError(-32000, "refused");
+        await agent.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "native-call", status: "completed" } });
+        await agent.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+        return { stopReason: "end_turn" };
+      })),
+    });
+    const { room, say } = await startAdapter(adapter);
+    const reportedCalls = async (outcome: string) => {
+      const from = reports.entries.length;
+      expect(await room.outcome(await say())).toBe(outcome);
+      await reports.next((entry) => !entry.working, from);
+      return reports.entries.filter((entry) => entry.activity?.kind === "tool_call").length;
+    };
+    expect(await reportedCalls("failed")).toBe(1);
+    expect(await reportedCalls("processed")).toBe(2);
+  });
+
+  it("ends an open wait before the turn timeout's failure is delivered", async () => {
+    const hang = createDeferred<string | undefined>();
+    onTestFinished(() => hang.resolve(undefined));
+    const adapter = new ACPClientAdapter({ command: ["native-fixture"], cwd: tmpRoot(), enableMcpTools: false, turnTimeoutMs: 50,
+      resolvePermission: () => hang.promise,
+      connectionFactory: inMemoryAgent((agent) => idleAgent(async ({ sessionId }) => {
+        await agent.requestPermission({ sessionId, toolCall: { toolCallId: "ask", title: "approval" }, ...ASK });
+        return { stopReason: "end_turn" };
+      }), () => hang.resolve(undefined)),
+    });
+    expect(await activityWhileProviderFails(adapter)).toEqual({ kind: "reasoning" });
   });
 
   it("ends a native call the agent never finished before the turn timeout's failure is delivered", async () => {
