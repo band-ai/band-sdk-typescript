@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { activityPeer, json } from "./support/activityPeer";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
+import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { createDeferred } from "../src/core/deferred";
 
 import { LettaAdapter } from "../src/adapters/letta/LettaAdapter";
 import type {
@@ -12,6 +16,127 @@ import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/too
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
+
+const AGENT_ID = "letta-agent";
+const NATIVE_TOOL = "run_test";
+const sse = (event: unknown): string => `data: ${JSON.stringify(event)}\n\n`;
+const nativeToolCall = (id: string, args = "{}") => ({ message_type: "tool_call_message", tool_call: { name: NATIVE_TOOL, arguments: args, tool_call_id: id } });
+
+describe("Letta generated step stream", () => {
+  it.each(["error", "cleanup"])("releases the real SSE stream and owned agent on %s", async (ending) => {
+    const release = createDeferred();
+    const closed = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    let deleted = 0;
+    await using peer = await activityPeer(async ({ request, response }) => {
+      if (request.url === "/v1/agents/") return json(response, { id: AGENT_ID });
+      if (request.method === "DELETE") { deleted++; response.writeHead(204); response.end(); return; }
+      response.on("close", () => closed.resolve());
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write(sse(nativeToolCall("native")));
+      await release.promise;
+      if (!response.destroyed) response.end(`${sse({ message_type: "error_message", message: "native execution failed" })}data: [DONE]\n\n`);
+    });
+    const adapter = new LettaAdapter({ lettaBaseUrl: peer.origin, lettaApiKey: "test" });
+    {
+      await using session = await BandPlatform.join(adapter, [person("owner")]);
+      const message = await session.room.say("owner", "run it");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      if (ending === "cleanup") await adapter.onCleanup(session.room.id);
+      else release.resolve();
+      expect(await session.room.outcome(message)).toBe("failed");
+      await closed.promise;
+      expect(session.room.messages).toEqual([]);
+      expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: NATIVE_TOOL }, { kind: "reasoning" }, false]);
+      expect(session.room.failures).toHaveLength(1);
+    }
+    release.resolve();
+    expect(deleted).toBe(1);
+  });
+
+  it("observes live native steps while preserving approval continuation, output and disposal", async () => {
+    const release = createDeferred();
+    const returned = createDeferred();
+    onTestFinished(() => { release.resolve(); returned.resolve(); });
+    const reports = recordRuntimeActivity();
+    let rounds = 0;
+    let deleted = false;
+    await using peer = await activityPeer(async ({ request, response, body }) => {
+      if (request.url === "/v1/agents/") return json(response, { id: AGENT_ID });
+      if (request.method === "DELETE") { deleted = true; response.writeHead(204); response.end(); return; }
+      expect(request.url).toBe(`/v1/agents/${AGENT_ID}/messages`);
+      expect(body.streaming).toBe(true);
+      expect(body.stream_tokens).toBe(false);
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const emit = (event: unknown) => response.write(sse(event));
+      if (++rounds === 1) {
+        emit({ message_type: "ping" });
+        emit(nativeToolCall("native", '{"private":"argument-marker"}'));
+        emit(nativeToolCall("native", '{"private":"argument-marker"}'));
+        await release.promise;
+        emit({ message_type: "tool_return_message", tool_call_id: "native", tool_return: "native result", status: "success" });
+        await returned.promise;
+        emit({ message_type: "approval_request_message", tool_call: { name: SEND_MESSAGE_TOOL_NAME,
+          arguments: JSON.stringify({ content: "tool reply", mentions: ["@owner"] }), tool_call_id: "local" } });
+        emit({ message_type: "stop_reason", stop_reason: "requires_approval" });
+      } else {
+        expect(body.messages).toMatchObject([{ type: "tool_return", tool_returns: [{ tool_call_id: "local", status: "success" }] }]);
+        emit({ message_type: "assistant_message", content: "closing text must not duplicate the tool reply" });
+        emit({ message_type: "stop_reason", stop_reason: "end_turn" });
+      }
+      emit({ message_type: "usage_statistics", prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
+      response.end("data: [DONE]\n\n");
+    });
+    const adapter = new LettaAdapter({ lettaBaseUrl: peer.origin, lettaApiKey: "test", emitReasoningEvents: false });
+    {
+      await using session = await BandPlatform.join(adapter, [person("owner")]);
+      const message = await session.room.say("owner", "run the tool");
+      await reports.next((report) => report.activity?.kind === "tool_call" && report.activity.name === NATIVE_TOOL);
+      expect(rounds).toBe(1);
+      release.resolve();
+      await reports.next((report) => report.activity?.kind === "reasoning", 2);
+      returned.resolve();
+      expect(await session.room.outcome(message)).toBe("processed");
+      expect(session.room.messages.map(({ content }) => content)).toEqual(["tool reply"]);
+      expect(activitySequence(reports)).toEqual([
+        { kind: "reasoning" }, { kind: "tool_call", name: NATIVE_TOOL }, { kind: "reasoning" },
+        { kind: "tool_call", name: SEND_MESSAGE_TOOL_NAME }, { kind: "reasoning" }, false,
+      ]);
+      expect(JSON.stringify(reports.entries)).not.toContain("argument-marker");
+    }
+    expect(deleted).toBe(true);
+    expect(rounds).toBe(2);
+  });
+
+  it("reports the provider's own error text when the stream carries an error message", async () => {
+    await using peer = await activityPeer(async ({ request, response }) => {
+      if (request.url === "/v1/agents/") return json(response, { id: AGENT_ID });
+      if (request.method === "DELETE") { response.writeHead(204); response.end(); return; }
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`${sse({ message_type: "error_message", message: "native execution failed" })}data: [DONE]\n\n`);
+    });
+    const adapter = new LettaAdapter({ lettaBaseUrl: peer.origin, lettaApiKey: "test" });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "hello");
+    expect(await session.room.outcome(message)).toBe("failed");
+    expect(session.room.failures.map(({ content }) => content).join("\n")).toContain("native execution failed");
+  });
+
+  it("fails the turn when the stream ends without a stop reason", async () => {
+    await using peer = await activityPeer(async ({ request, response }) => {
+      if (request.url === "/v1/agents/") return json(response, { id: AGENT_ID });
+      if (request.method === "DELETE") { response.writeHead(204); response.end(); return; }
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`${sse({ message_type: "assistant_message", content: "cut off" })}data: [DONE]\n\n`);
+    });
+    const adapter = new LettaAdapter({ lettaBaseUrl: peer.origin, lettaApiKey: "test" });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "hello");
+    expect(await session.room.outcome(message)).toBe("failed");
+    expect(session.room.messages).toEqual([]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fake Letta client

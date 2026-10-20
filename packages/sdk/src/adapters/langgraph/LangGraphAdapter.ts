@@ -11,6 +11,7 @@ import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
 import { relayReply, type TurnTools } from "../../core/turn";
+import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 
 import {
   buildCustomToolIndex,
@@ -142,9 +143,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
+      let observedNames = new Set<string>();
       if (this.usesBandTools) {
         sdk = await this.sdkLoader.get();
-        langGraphTools = buildLangGraphTools({
+        const built = buildLangGraphTools({
           sdk,
           tools,
           includeMemoryTools: this.includeMemoryTools,
@@ -152,6 +154,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
           customTools: this.customTools,
           additionalTools: this.additionalTools,
         });
+        langGraphTools = built.tools;
+        observedNames = built.observedNames;
       }
 
       const graph = await this.resolveGraph(sdk, langGraphTools);
@@ -188,12 +192,13 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       };
 
       if (this.emitExecutionEvents && graph.streamEvents) {
-        text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
-      } else if (!graph.invoke) {
-        return;
-      } else {
-        const result = await graph.invoke(input, graphConfig);
+        text = await withNativeActivity(tools, observedNames, (native) => this.forwardStreamEvents(graph, input, graphConfig, tools, native));
+      } else if (graph.invoke) {
+        const invoke = graph.invoke.bind(graph);
+        const result = await withNativeActivity(tools, observedNames, (native) => invoke(input, { ...graphConfig, callbacks: [toolActivityCallbacks(native)] }));
         text = extractAssistantText(result);
+      } else {
+        return;
       }
     } catch (error) {
       await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
@@ -294,6 +299,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     input: Record<string, unknown>,
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
+    native: NativeActivity,
   ): Promise<string | null> {
     // version belongs on config (arg 2), not the optional third arg.
     const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
@@ -307,6 +313,9 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       const data = asOptionalRecord(event) ?? {};
       const eventType = String(data.event ?? "");
       const details = asOptionalRecord(data.data) ?? {};
+      const runId = typeof data.run_id === "string" ? data.run_id : "";
+      if (eventType === "on_tool_start") native.tool(runId, typeof data.name === "string" ? data.name : "");
+      if (eventType === "on_tool_end" || eventType === "on_tool_error") native.end(runId);
       if (eventType === "on_tool_start") {
         // The run ID pairs both events; the model's call ID arrives only at tool end.
         await tools.sendEvent(
@@ -357,6 +366,16 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 }
 
+/** A LangChain callback handler that reports the tools a graph runs natively; it is awaited so no report trails `invoke`. */
+function toolActivityCallbacks(native: NativeActivity) {
+  return {
+    awaitHandlers: true,
+    handleToolStart: (_tool: unknown, _input: string, runId: string, _parentRunId?: string, _tags?: string[], _metadata?: Record<string, unknown>, runName?: string): void => native.tool(runId, runName ?? ""),
+    handleToolEnd: (_output: unknown, runId: string): void => native.end(runId),
+    handleToolError: (_error: unknown, runId: string): void => native.end(runId),
+  };
+}
+
 function streamToolArgs(input: unknown): Record<string, unknown> {
   const args = asOptionalRecord(input) ?? {};
   // LangChain wraps JSON-schema tool arguments in a single JSON string field.
@@ -372,7 +391,7 @@ function buildLangGraphTools(input: {
   additionalTools: unknown[];
   includeMemoryTools: boolean;
   logger: Logger;
-}): unknown[] {
+}): { tools: unknown[]; observedNames: Set<string> } {
   const schemas = input.tools.getToolSchemas("openai", {
     includeMemory: input.includeMemoryTools,
   });
@@ -390,11 +409,14 @@ function buildLangGraphTools(input: {
   const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
     input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
 
-  return [
-    ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
-    ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn))),
-    ...input.additionalTools,
-  ];
+  return {
+    tools: [
+      ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
+      ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn, input.tools))),
+      ...input.additionalTools,
+    ],
+    observedNames: new Set([...specs, ...portable.map(({ spec }) => spec)].map(({ name }) => name)),
+  };
 }
 
 function toLangGraphToolSpec(schema: Record<string, unknown>): LangGraphToolLike | null {

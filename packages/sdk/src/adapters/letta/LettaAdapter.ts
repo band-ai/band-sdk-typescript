@@ -6,12 +6,13 @@ import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFai
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { relayReply, type TurnTools } from "../../core/turn";
-import { asErrorMessage, toWireString } from "../shared/coercion";
+import { asErrorMessage, asOptionalRecord, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
+import { withNativeActivity } from "../../runtime/workingState";
 
 // ---------------------------------------------------------------------------
 // Minimal Letta client surface
@@ -92,6 +93,11 @@ export interface LettaClientLike {
         params: LettaMessageCreateParams,
         options?: LettaRequestOptions,
       ): Promise<LettaResponse>;
+      createStream?(
+        agentId: string,
+        params: LettaMessageCreateParams,
+        options?: LettaRequestOptions,
+      ): Promise<AsyncIterable<unknown>>;
     };
   };
 }
@@ -727,6 +733,7 @@ export class LettaAdapter extends SimpleAdapter<
         client_tools: clientTools.length > 0 ? clientTools : undefined,
       },
       deadline,
+      tools,
       signal,
     );
 
@@ -762,6 +769,7 @@ export class LettaAdapter extends SimpleAdapter<
           client_tools: clientTools.length > 0 ? clientTools : undefined,
         },
         deadline,
+        tools,
         signal,
       );
 
@@ -902,6 +910,7 @@ export class LettaAdapter extends SimpleAdapter<
     agentId: string,
     params: LettaMessageCreateParams,
     deadline: number,
+    tools: AdapterToolsProtocol,
     signal?: AbortSignal,
   ): Promise<LettaResponse> {
     const remaining = deadline - Date.now();
@@ -910,7 +919,11 @@ export class LettaAdapter extends SimpleAdapter<
     }
 
     return this.raceTimeout(
-      (s) => client.agents.messages.create(agentId, params, { signal: s }),
+      async (s) => {
+        const messages = client.agents.messages;
+        if (!messages.createStream) return await messages.create(agentId, params, { signal: s });
+        return await collectLettaStream(await messages.createStream(agentId, params, { signal: s }), tools);
+      },
       remaining,
       "Letta API call timed out",
       signal,
@@ -1028,37 +1041,80 @@ function buildUserMessage(input: {
   return `${updates.join("\n\n")}\n\n${content}`;
 }
 
+/** Folds a streamed Letta turn into a non-streamed response, reporting native tool activity as it arrives. */
+async function collectLettaStream(
+  stream: AsyncIterable<unknown>,
+  tools: AdapterToolsProtocol,
+): Promise<LettaResponse> {
+  const messages: LettaResponseMessage[] = [];
+  let stopReason: string | undefined;
+  let usage: Record<string, unknown> | undefined;
+  await withNativeActivity(tools, new Set(), async (native) => {
+    for await (const value of stream) {
+      const event = asOptionalRecord(value);
+      if (!event || typeof event.message_type !== "string") continue;
+      switch (event.message_type) {
+        case "error_message":
+          throw new Error(typeof event.message === "string" ? event.message : "Letta stream failed");
+        case "stop_reason":
+          if (typeof event.stop_reason === "string") stopReason = event.stop_reason;
+          break;
+        case "usage_statistics":
+          usage = event;
+          break;
+        case "ping":
+          break;
+        default: {
+          const message = event as unknown as LettaResponseMessage;
+          messages.push(message);
+          if (message.message_type === "tool_call_message" && message.tool_call?.name) native.tool(message.tool_call.tool_call_id, message.tool_call.name);
+          else if (message.message_type === "tool_return_message" && message.tool_call_id) native.end(message.tool_call_id);
+        }
+      }
+    }
+  });
+  if (!stopReason) throw new Error("Letta stream ended without a stop reason");
+  return { messages, stop_reason: { stop_reason: stopReason }, ...(usage ? { usage } : {}) };
+}
+
+type LettaClientCtor = typeof import("@letta-ai/letta-client/client").Letta;
+type CreateParams = import("@letta-ai/letta-client/resources/agents/messages").MessageCreateParamsNonStreaming;
+
 async function loadLettaClientFactory(config: {
   apiKey?: string;
   baseUrl?: string;
 }): Promise<LettaClientFactory> {
-  const module = (await import("@letta-ai/letta-client").catch(
-    (error: unknown) => {
-      throw new UnsupportedFeatureError(
-        `LettaAdapter requires optional dependency @letta-ai/letta-client. Install it with "pnpm add @letta-ai/letta-client". (${error instanceof Error ? error.message : String(error)})`,
-      );
-    },
-  )) as {
-    default?: new (options?: {
-      apiKey?: string;
-      baseURL?: string;
-    }) => LettaClientLike;
-    Letta?: new (options?: {
-      apiKey?: string;
-      baseURL?: string;
-    }) => LettaClientLike;
-  };
+  const module: unknown = await import("@letta-ai/letta-client").catch((error: unknown) => {
+    throw new UnsupportedFeatureError(
+      `LettaAdapter requires optional dependency @letta-ai/letta-client. Install it with "pnpm add @letta-ai/letta-client". (${error instanceof Error ? error.message : String(error)})`,
+    );
+  });
 
-  const LettaCtor = module.default ?? module.Letta;
+  const loaded = module as { default?: LettaClientCtor; Letta?: LettaClientCtor };
+  const LettaCtor = loaded.default ?? loaded.Letta;
   if (!LettaCtor) {
     throw new UnsupportedFeatureError(
       'LettaAdapter requires optional dependency @letta-ai/letta-client. Install it with "pnpm add @letta-ai/letta-client".',
     );
   }
 
-  return async () =>
-    new LettaCtor({
+  return async () => {
+    const client = new LettaCtor({
       ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
     });
+    return {
+      agents: {
+        create: async (params, options) => await client.agents.create(params, options),
+        delete: async (id) => { await client.agents.delete(id); },
+        messages: {
+          // Keep the injected client contract; the SDK's role literals are narrower.
+          create: async (id, params, options) => await client.agents.messages.create(id, params as CreateParams, options) as unknown as LettaResponse,
+          createStream: async (id, params, options) => await client.agents.messages.create(id, {
+            ...params as CreateParams, streaming: true, stream_tokens: false,
+          }, options),
+        },
+      },
+    };
+  };
 }
