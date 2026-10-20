@@ -1002,39 +1002,37 @@ test("CI validates pull requests to main and the legacy dev compatibility lane",
   );
 });
 
-test("CI validates every merge group and re-validates the trunk, over the whole tree, without cancelling itself", async () => {
+test("CI validates every merge group over the whole tree, without cancelling it", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
-  // Without a push trigger the suite only ever ran against a PR's merge commit,
-  // so a red build that landed anyway stopped being reported once merged.
-  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
-
   // The merge queue waits for `ci-status` on every merge group; without this
-  // trigger it never reports and the queue deadlocks.
+  // trigger it never reports and the queue deadlocks. `main` fast-forwards to
+  // the commit the queue validated, so a push run would only repeat it.
   assert.match(workflow, /\n {2}merge_group:\n/);
+  assert.doesNotMatch(workflow, /\n {2}push:\n/);
 
-  // A trunk run that gets superseded leaves that commit with no verdict, which
-  // reopens the same gap from the other side.
+  // A superseded merge-group run would leave the commit that lands with no
+  // verdict; only pull request runs may be cancelled.
   assert.match(
     workflow,
     /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
   );
 
-  // Path filtering is a PR-time optimisation. On the trunk and in a merge group
-  // every package must be selected, or `ci-status` would go green having skipped
-  // lint and test.
+  // Path filtering is a PR-time optimisation. In a merge group every package
+  // must be selected, or `ci-status` would go green having skipped lint and
+  // test.
   for (const output of ["sdk", "openclaw", "claude-code"]) {
     assert.match(
       workflow,
       new RegExp(
         `${output}: \\$\\{\\{ github\\.event_name != 'pull_request' && 'true' \\|\\| steps\\.filter\\.outputs\\.${output} \\}\\}`,
       ),
-      `${output} must be forced true outside pull requests so trunk and queue validation cannot be skipped`,
+      `${output} must be forced true outside pull requests so queue validation cannot be skipped`,
     );
   }
 
-  // Release intent is a merge gate with no baseline on a push; running it there
-  // would fail every trunk build on a missing RELEASE_BASE_COMMIT.
+  // Release intent is a merge gate with no baseline in a merge group; running
+  // it there would fail every queue run on a missing RELEASE_BASE_COMMIT.
   assert.match(
     workflow,
     /- name: Verify release intent\n {8}if: github\.event_name == 'pull_request'\n/,
@@ -1135,12 +1133,10 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   const block = workflow.slice(start);
 
   // The aggregate must always report one stable context even when its
-  // intentionally conditional lint/test dependencies are skipped -- except on
-  // a draft, where nothing ran and a verdict would be a false failure.
-  assert.match(
-    block,
-    /^    if: always\(\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\)$/m,
-  );
+  // intentionally conditional lint/test dependencies are skipped. A skipped
+  // gate would count as passing, so it runs on drafts too, where the skipped
+  // `changes` job turns it red.
+  assert.match(block, /^    if: always\(\)$/m);
   assert.match(block, /changes:\$\{\{ needs\.changes\.result \}\}:success/);
   assert.match(block, /packaging:\$\{\{ needs\.packaging\.result \}\}:success/);
   assert.match(block, /lint:\$\{\{ needs\.lint\.result \}\}:success\|skipped/);
@@ -1162,6 +1158,17 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
     [...needs].sort(),
     jobNames.filter((name) => name !== "ci-status").sort(),
     "ci-status must depend on every other CI job, or a failure could slip through",
+  );
+
+  // The script checks only the results it lists, so a needed job missing here
+  // could fail without failing the gate.
+  const checked = [...block.matchAll(/"([a-z][a-z0-9-]*):\$\{\{ needs\.\1\.result \}\}:/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    [...checked].sort(),
+    [...needs].sort(),
+    "ci-status must check the result of every job it needs",
   );
 });
 

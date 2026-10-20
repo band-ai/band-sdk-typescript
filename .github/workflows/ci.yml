@@ -2,18 +2,13 @@ name: CI
 
 # GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
 # during the transition so old or mistakenly targeted work is not left untested.
-#
-# `push: [main]` re-validates the trunk after every merge. Without it the suite
-# only ever ran against a PR's merge commit, so a red build that landed anyway
-# stopped being reported the moment it was merged — which is how a failing
-# assertion sat on `main` unnoticed.
 on:
   pull_request:
     branches: [main, dev]
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
-  # The merge queue re-runs the required `ci-status` on each merge group.
+  # The merge queue runs the required `ci-status` on each merge group, and `main`
+  # fast-forwards to the exact commit it validated, so a push to `main` has
+  # nothing left to verify.
   merge_group:
 
 # Checkout reads repository contents; paths-filter reads the PR file list.
@@ -24,19 +19,17 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Superseding a PR run is free; superseding a trunk run is not. Cancelling a
-  # push run would leave that commit of `main` with no verdict at all, which is
-  # the exact gap this workflow's push trigger exists to close.
+  # A new push to a pull request supersedes its running CI. Merge-queue runs are
+  # never cancelled: each one is the verdict for the commit that lands.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
   # Detect which packages changed to skip unnecessary builds.
   #
-  # On a push to `main` or a merge group every output is forced true: trunk
-  # validation must exercise the whole tree, not the slice one merge happened
-  # to touch, or a green `ci-status` would again say nothing about `main`'s
-  # actual state.
+  # In a merge group every output is forced true: the queue's run is the verdict
+  # for the commit `main` becomes, so it must exercise the whole tree, not the
+  # slice one PR happened to touch.
   changes:
     # Drafts get no CI; ready_for_review above fires the first real run.
     if: &not-draft github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -49,7 +42,7 @@ jobs:
       any: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.changes != '[]' }}
     steps:
       # Only feeds paths-filter below, which itself only runs on pull_request —
-      # skip the checkout too on push and merge group so a full-tree run doesn't
+      # skip the checkout too in a merge group so a full-tree run doesn't
       # pay for a step with nothing downstream to use it.
       - name: Checkout code
         if: github.event_name == 'pull_request'
@@ -160,9 +153,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # A merge gate, so it only has a baseline (and only has a job to do) on a
-      # pull request. On a push the merge has already happened and release.yml
-      # owns the release path; there is no `pull_request.base.sha` to compare
-      # against, and inventing one would turn every trunk run red.
+      # pull request, where it already gated the change. A merge group has no
+      # `pull_request.base.sha` to compare against, and inventing one would turn
+      # every queue run red.
       - name: Verify release intent
         if: github.event_name == 'pull_request'
         run: node scripts/assert-release-intent.mjs
@@ -305,14 +298,16 @@ jobs:
   # The single status branch protection should require.
   #
   # `lint` and `test` are intentionally conditional and may report as skipped.
-  # `changes` and `packaging` are mandatory and must report success. This job
-  # always runs, provides one stable ruleset context, and rejects any other state.
+  # `changes` and `packaging` are mandatory and must report success, so a draft
+  # run, which skips every job, is red. This job always runs, provides one
+  # stable ruleset context, and rejects any other state. always(), not a
+  # narrower condition: a skipped required check counts as passing.
   #
   # Requiring only this context also means adding or renaming a job above never
   # requires editing the ruleset.
   ci-status:
     needs: [changes, lint, test, packaging]
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify every CI job passed or was skipped
