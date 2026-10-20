@@ -132,7 +132,10 @@ queue run the real verdict for `main`:
   otherwise `ci-status` could go green having skipped `lint` and `test`.
 - **Queue runs are not cancelled.** `cancel-in-progress` is on for pull requests
   only. Superseding a PR run is free; superseding a merge-group run would leave
-  the commit that lands with no verdict at all.
+  the commit that lands with no verdict at all. Each merge-group run also gets
+  its own concurrency group (`github.run_id`): a PR requeued on the same base
+  reuses its `gh-readonly-queue/...` ref, so a ref-keyed group would hold the
+  new run pending behind the old one.
 - **Release intent is PR-only.** `assert-release-intent.mjs` is a merge gate and
   needs `github.event.pull_request.base.sha` as its baseline. A merge group has
   no such baseline, and the PR run already gated it.

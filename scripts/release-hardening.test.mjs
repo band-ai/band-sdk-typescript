@@ -1012,7 +1012,12 @@ test("CI validates every merge group over the whole tree, without cancelling it"
   assert.doesNotMatch(workflow, /\n {2}push:\n/);
 
   // A superseded merge-group run would leave the commit that lands with no
-  // verdict; only pull request runs may be cancelled.
+  // verdict; only pull request runs may be cancelled. A requeued PR reuses its
+  // queue ref, so each merge-group run is keyed by its own run id.
+  assert.match(
+    workflow,
+    /group: \$\{\{ github\.event_name == 'pull_request' && format\('\{0\}-\{1\}', github\.workflow, github\.ref\) \|\| github\.run_id \}\}/,
+  );
   assert.match(
     workflow,
     /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
