@@ -253,6 +253,11 @@ describe("CodexAdapter", () => {
       ["the transport closes", () => new FakeCodexClient({ events: [started, { kind: "notification", method: "transport/closed", params: {} }] })],
       ["the app-server dies while the loop waits", () => new FakeCodexClient({ events: [started] })],
       ["a server request cannot be answered", () => new UnansweringClient({ events: [started, scriptedToolCall(SEND_MESSAGE_TOOL_NAME, { content: "hi", mentions: [] })] })],
+      ["Codex reports an error it will not retry", () => new FakeCodexClient({ events: [
+        started,
+        { kind: "notification", method: "error", params: { willRetry: false, error: { message: "model exploded" } } },
+        { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "failed", error: { message: "model exploded" } } } },
+      ] })],
     ];
 
     it.each(endings)("is ended before the failure is reported when %s", async (_ending, client) => {

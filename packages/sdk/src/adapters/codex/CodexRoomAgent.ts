@@ -489,6 +489,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         if (params.willRetry === true) {
           this.logger.warn("codex_adapter.retryable_error", { error: errorMessage, roomId });
         } else {
+          native.endAll();
           await safeSendFailure(
             tools,
             agentFailure(this.provider, errorMessage, asString(error.code), error),
