@@ -2,11 +2,18 @@ import type { BandToolName } from "@band-ai/band-sdk-core";
 
 import { mcpToolSpelling, resolveBandToolName } from "../../contracts/toolSchemas";
 import type { Turn } from "../../core/turn";
+import type { NativeActivity } from "../../runtime/workingState";
 import { asOptionalRecord } from "../shared/coercion";
 import type { CollectedChunk } from "./types";
 
-// The status an ACP tool call reports once it succeeded.
+// A call is pending until it reports otherwise, and ends on one of the other two.
+export const PENDING = "pending";
 const COMPLETED = "completed";
+const FAILED = "failed";
+
+function isTerminalToolStatus(status: string): boolean {
+  return status === COMPLETED || status === FAILED;
+}
 
 // The `rawInput` keys each runtime reports an MCP call under, as (server,
 // tool, arguments): codex-acp, then Cursor.
@@ -51,7 +58,7 @@ function namedBandTool(chunk: CollectedChunk): BandToolName | undefined {
   return resolveBandToolName(acpToolCallName(rawInput, typeof title === "string" ? title : ""));
 }
 
-function toolCallId(chunk: CollectedChunk): string | undefined {
+export function toolCallId(chunk: CollectedChunk): string | undefined {
   const id = chunk.metadata.tool_call_id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
 }
@@ -74,4 +81,34 @@ export function recordBandToolCalls(chunks: readonly CollectedChunk[], turn: Tur
       turn.recordTool(tool);
     }
   }
+}
+
+/**
+ * Reports a runtime's own tool calls by id, and ends each on its terminal status.
+ * With `bandToolsAreLocal`, a call that names a Band tool is skipped from then on, whichever frame names it:
+ * Band executes it and reports itself, and the runtime may name it only in a later update.
+ */
+export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal: boolean): (chunk: CollectedChunk) => void {
+  const calls = new Map<string, { terminal: boolean; local: boolean }>();
+  return (chunk) => {
+    const id = toolCallId(chunk);
+    if (!id) return;
+    const previous = calls.get(id);
+    if (previous?.terminal) return;
+    const terminal = isTerminalToolStatus(typeof chunk.metadata.status === "string" ? chunk.metadata.status : PENDING);
+    const local = previous?.local || (bandToolsAreLocal && namedBandTool(chunk) !== undefined);
+    calls.set(id, { terminal, local });
+    if (local) {
+      native.end(id); // a call first reported by kind, then named, stops being a native tool
+      return;
+    }
+    if (terminal) native.end(id);
+    else native.tool(id, nativeToolName(chunk));
+  };
+}
+
+/** ACP titles can contain commands; only structured tool names or categories are public detail. */
+function nativeToolName(chunk: CollectedChunk): string {
+  const kind = typeof chunk.metadata.kind === "string" ? chunk.metadata.kind : "";
+  return acpToolCallName(chunk.metadata.raw_input, "") || kind;
 }

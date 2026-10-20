@@ -1556,6 +1556,7 @@ describe("ACPClientAdapter", () => {
 
       await expect(client.extMethod("vendor/ask", { sessionId: "s-a" })).resolves.toEqual({})
       await client.extNotification("vendor/todos", { sessionId: "s-a" })
+      await client.sessionUpdate({ sessionId: "s-a", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late" } } })
 
       expect(contexts).toEqual([])
       expect(client.getCollectedChunks("s-a")).toEqual([])

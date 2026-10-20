@@ -2,6 +2,9 @@ import type { AgentSideConnection } from "@agentclientprotocol/sdk";
 
 import type { ACPExtensionHandler } from "./extensions";
 
+export const CURSOR_ASK_QUESTION_METHOD = "cursor/ask_question"
+export const CURSOR_CREATE_PLAN_METHOD = "cursor/create_plan"
+
 /**
  * Cursor-specific ACP extension handler.
  *
@@ -27,7 +30,7 @@ export class CursorExtensionHandler implements ACPExtensionHandler {
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown> | null> {
-    if (method === "cursor/ask_question") {
+    if (method === CURSOR_ASK_QUESTION_METHOD) {
       const options = Array.isArray(params.options) ? params.options : []
       const first = options.find((option) => !!option && typeof option === "object") as Record<string, unknown> | undefined
       if (!first) {
@@ -46,7 +49,7 @@ export class CursorExtensionHandler implements ACPExtensionHandler {
       }
     }
 
-    if (method === "cursor/create_plan") {
+    if (method === CURSOR_CREATE_PLAN_METHOD) {
       return {
         outcome: {
           type: "approved",

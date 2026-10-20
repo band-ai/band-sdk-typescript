@@ -5,7 +5,6 @@ import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
 
 import type {
-  Client,
   ClientCapabilities,
   ClientSideConnection,
   InitializeResponse,
@@ -34,7 +33,8 @@ import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
-import { recordBandToolCalls } from "./toolCalls";
+import { observeNativeToolCalls, recordBandToolCalls } from "./toolCalls";
+import { trackNativeActivity } from "../../runtime/workingState";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
   AcpSessionConfigError,
@@ -49,9 +49,7 @@ import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { createBandMcpBackend, type BandMcpBackend } from "../../mcp/backends";
-import {
-  BandACPClient,
-} from "./client";
+import { ACP_PERMISSION_METHOD, BandACPClient, type PromptActivity } from "./client";
 import {
   choosePermissionOption,
   type ACPClientConnectionFactory,
@@ -428,7 +426,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
       const activeConnection = connection
       const activeSessionId = sessionId
-      const promptSession = client.enterPromptSession(activeSessionId)
+      const promptSession = client.enterPromptSession(activeSessionId, this.promptActivity(tools))
       releasePrompt = promptSession.release
       const response = await withTimeout(
         this.raceAgainstConnectionClose(activeConnection, promptSession.run(() => activeConnection.prompt({
@@ -692,6 +690,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
     this.roomToSession.delete(roomId)
     this.sessionToRoom.delete(this.sessionKey(owner.generation, owner.sessionId))
+    owner.client?.forgetSession(owner.sessionId)
   }
 
   private sessionKey(generation: number, sessionId: string): string {
@@ -760,6 +759,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         this.roomId,
         (params) => this.routePermissionRequest(params, owner.generation),
         this.extensionHandler,
+        (method, params) => this.isHumanDecision(method, params),
       )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {
@@ -1359,6 +1359,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
+  private promptActivity(tools: TurnTools): PromptActivity {
+    const native = trackNativeActivity(tools, new Set())
+    return {
+      observe: observeNativeToolCalls(native, this.enableMcpTools),
+      wait: (id) => native.wait(id),
+      endWait: (id) => native.endWait(id),
+      end: () => native.endAll(),
+    }
+  }
+
+  protected isHumanDecision(method: string, params: Record<string, unknown>): boolean {
+    return method === ACP_PERMISSION_METHOD && this.resolvePermission !== undefined &&
+      Array.isArray(params.options) && params.options.length > 0
+  }
+
   private async handlePermissionRequest(
     tools: TurnTools,
     roomId: string,
@@ -1724,7 +1739,7 @@ export function assertPermissionTimeoutMs(value: number | undefined): void {
 }
 
 export async function createSubprocessConnection(
-  client: Client,
+  client: BandACPClient,
   options: {
     command: string[];
     cwd?: string;
@@ -1766,7 +1781,7 @@ export async function createSubprocessConnection(
     Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
   )
 
-  const connection = new acp.ClientSideConnection(() => client, stream)
+  const connection = new acp.ClientSideConnection(() => client, client.observeStream(stream))
 
   return {
     connection,
