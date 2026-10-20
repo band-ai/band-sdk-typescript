@@ -474,19 +474,30 @@ Shutdown may add the remaining request budget plus one final request budget
 turn; failed final delivery relies on the platform TTL to clear the indicator.
 Custom REST transports must honor `abortSignal` through response-body completion.
 
-On agent API 1.25.0 or later, the same reporter includes reasoning or the name
-of a scoped Band/custom tool while it executes. Changes send immediately;
-keep-alives repeat current detail. Final false carries no detail. Activity never
-contains arguments, output, commands or prompts, and chat narration is independent.
+On agent API 1.25.0 or later, the same reporter includes its current activity:
+`reasoning`, `tool_call` with a tool name, `permission` during an actual human wait,
+or `memory` during an observed compaction. Changes send immediately; keep-alives
+repeat the current state. Overlapping work shares one reporter, with permission
+winning until every real wait and its reply I/O ends. Final false carries no detail.
+Activity contains names only, never tool arguments, output, commands or prompts.
+Chat narration remains independent and can stay disabled.
 
-ToolCalling adapters and query-bound Claude MCP tools observe actual local
-execution. Uncorrelated shared OpenCode MCP requests remain at reasoning.
-ADK and LangGraph streams report native tool starts and terminals independently
-of narration. Codex reports native items and compaction; Letta consumes native
-step streams while preserving create-only injected clients. LangGraph invoke-only
-graphs retain their existing fallback. Native Claude hooks and correlated
-ACP/OpenCode decisions are supplied by the dependent provider-lifetime layer;
-opaque remote work remains reasoning.
+| Signal source | Available detail |
+| --- | --- |
+| Scoped Band/custom tools, ToolCalling adapters, ADK and LangGraph streams | Actual local execution; observable native tool starts and terminals |
+| Claude SDK | Query-owned native hooks, scoped MCP tools and compaction statuses |
+| Codex | Native item starts/completions and local dynamic tools |
+| ACP variants and OpenCode | Correlated tool events and real human decisions, including detached control replies |
+| Letta | Native step streams and local approval tools |
+| Parlant, A2A, gateway and ACP server bridge | Reasoning for opaque remote work |
+
+Provider-hosted tools absent from a model interface remain reasoning. Injected
+invoke-only LangGraph graphs and create-only Letta clients remain supported, with
+reasoning for their unobservable remote tools. ACP has no prompt ID on updates:
+known calls are fenced, and observations after an unacknowledged prompt stay
+disabled until a fresh session/connection. An unknown delayed start from a provider
+violating ACP completion ordering cannot be attributed reliably. ACP display titles
+may contain commands, so structured tool names or categories supply its detail.
 
 Compatibility is automatic and owned by each REST client: an unauthenticated
 `GET <restUrl>/api/v1/health` reads `api_version` (the agent API release), so it

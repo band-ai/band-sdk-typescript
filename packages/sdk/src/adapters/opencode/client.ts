@@ -6,6 +6,7 @@ export interface OpencodeClientLike {
   promptAsync(
     sessionId: string,
     input: {
+      messageID?: string;
       parts: Array<Record<string, unknown>>;
       system?: string;
       model?: Record<string, string>;
@@ -148,6 +149,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
   public async promptAsync(
     sessionId: string,
     input: {
+      messageID?: string;
       parts: Array<Record<string, unknown>>;
       system?: string;
       model?: Record<string, string>;
@@ -160,6 +162,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
       ...this.scope(),
       sessionID: sessionId,
       parts: input.parts,
+      ...(input.messageID ? { messageID: input.messageID } : {}),
       ...(input.system ? { system: input.system } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.agent ? { agent: input.agent } : {}),

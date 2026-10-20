@@ -4,7 +4,7 @@
  * OpenCode server on a local port. Each flow asserts what the room saw, what
  * OpenCode was sent, and how the platform settled each message.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 
 import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig } from "../../src/adapters/opencode";
@@ -19,7 +19,8 @@ import type { BandMcpServer } from "../../src/mcp/server";
 import { CallHolds, expectMcpServerStopped, FakeTools, makeMessage, MISSING_REPLY, type ReportedFailure } from "../testUtils";
 import { BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
-import { recordRuntimeActivity } from "../support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "../support/activityReports";
+import { SlowFailureRest } from "../support/slowFailureRest";
 import { ACT_TOOL, CLOSING_TEXT, contractRows, NO_REPLY_ARGS, TOOL_REPLY, turnInput, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
@@ -28,6 +29,9 @@ const INTRUDER = "intruder";
 const PEOPLE = [OWNER, APPROVER, INTRUDER].map(person);
 
 const DEADLINE_MS = 60_000;
+const TURN_TIMEOUT_MS = 120_000;
+// The default cadence of the working-state heartbeat.
+const WORKING_HEARTBEAT_MS = 3000;
 const SHORT_DEADLINE_MS = 30_000;
 
 // OpenCode's Band tools are room-scoped: every call names its room.
@@ -150,6 +154,50 @@ function observedClients(closeError?: Error) {
   return { clients, clientFactory };
 }
 
+/** OpenCode's own assistant message for the current prompt, and a `bash` part of it in `status`. */
+function nativeBash(turn: OpencodeTurn) {
+  turn.emit("message.updated", { info: { id: "native-assistant", parentID: turn.prompt.messageID, role: "assistant", sessionID: turn.sessionId } });
+  return (status: string) => turn.emit("message.part.updated", {
+    part: { sessionID: turn.sessionId, messageID: "native-assistant", id: "native", type: "tool", tool: "bash", state: { status } },
+  });
+}
+
+type ActivityReports = ReturnType<typeof recordRuntimeActivity>;
+
+/** Waits until the provider has opened something, so the turn's watchdog is running, then runs out its clock. */
+async function timeOut(reports: ActivityReports): Promise<void> {
+  await reports.next((entry) => entry.activity !== undefined && entry.activity.kind !== "reasoning");
+  await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+}
+
+type OpencodeRoom = Awaited<ReturnType<typeof opencodeRoom>>;
+
+/**
+ * What the room's activity read while a turn's failure was still being posted; `fail` makes the turn
+ * fail, and `meanwhile` is what the room and OpenCode do before the failure lands.
+ */
+async function activityWhileFailing(
+  script: (turn: OpencodeTurn, reports: ActivityReports) => Promise<void> | void,
+  config: OpencodeAdapterConfig,
+  fail: (reports: ActivityReports) => Promise<void> = async () => {},
+  meanwhile: (session: OpencodeRoom) => Promise<unknown> = async () => {},
+) {
+  const reports = recordRuntimeActivity();
+  const rest = new SlowFailureRest(PEOPLE);
+  onTestFinished(() => rest.gate.resolve());
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await using session = await opencodeRoom({ turnTimeoutMs: TURN_TIMEOUT_MS, ...config }, { rest });
+  await session.start((turn) => script(turn, reports));
+  await fail(reports);
+  await rest.failurePosting.promise;
+  await meanwhile(session);
+  await vi.advanceTimersByTimeAsync(WORKING_HEARTBEAT_MS);
+  const activity = reports.entries.at(-1)?.activity;
+  rest.gate.resolve();
+  await session.room.until(() => session.room.events(FAILURE_EVENT_TYPE).length === 1);
+  return activity;
+}
+
 describe("OpenCode in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -191,7 +239,145 @@ describe("OpenCode in a Band room", () => {
     ]);
   });
 
+  it("attributes native parts to the submitted prompt and suppresses shared MCP observations", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    let oldPrompt: unknown;
+    await session.start((turn) => { oldPrompt = turn.prompt.messageID; turn.answer("First answer."); });
+    await reports.next((entry) => !entry.working);
+    await session.afterTurn();
+    const from = reports.entries.length;
+    const release = createDeferred();
+    const localFinished = createDeferred();
+    const message = await session.start(async (turn) => {
+      expect(turn.prompt.messageID).toMatch(/^msg_[0-9a-f]{12}[A-Za-z0-9]{14}$/);
+      expect(turn.prompt.messageID).not.toBe(oldPrompt);
+      const assistant = (id: string, parentID: unknown) => turn.emit("message.updated", { info: { id, parentID, role: "assistant", sessionID: turn.sessionId } });
+      const part = (messageID: string, id: string, status: string, tool = "bash") => turn.emit("message.part.updated", {
+        part: { sessionID: turn.sessionId, messageID, id, type: "tool", tool, state: { status, input: { command: "private-command-marker" } } },
+      });
+      assistant("old-assistant", oldPrompt);
+      part("old-assistant", "unseen-old-tool", "running", "stale_tool");
+      part("unmatched-assistant", "unmatched-part", "running", "unmatched_tool");
+      assistant("current-assistant", turn.prompt.messageID);
+      part("current-assistant", "native", "pending");
+      part("current-assistant", "native", "running");
+      const result = await turn.callTool("band_get_participants", ROOM);
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain(OWNER);
+      localFinished.resolve();
+      await release.promise;
+      part("old-assistant", "unseen-old-tool", "completed", "stale_tool");
+      part("current-assistant", "native", "completed");
+      part("current-assistant", "native", "completed");
+      turn.answer("Done.");
+    });
+    try {
+      await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "bash", from);
+      await localFinished.promise;
+      expect(reports.entries.slice(from).map(({ activity }) => activity)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "bash" }]);
+      release.resolve();
+      expect(await session.room.outcome(message)).toBe("processed");
+      await reports.next((entry) => !entry.working, from);
+      expect(reports.entries.slice(from).map(({ working, activity }) => working ? activity : false)).toEqual([
+        { kind: "reasoning" }, { kind: "tool_call", name: "bash" }, { kind: "reasoning" }, false,
+      ]);
+      expect(session.room.messages.at(-1)?.content).toBe("Done.");
+      expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+      expect(JSON.stringify(reports.entries)).not.toContain("private-command-marker");
+    } finally { release.resolve(); }
+  });
+
+  it.each(["completed", "error"])("ends a native part that finishes as %s", async (status) => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const message = await session.start(async (turn) => {
+      const part = nativeBash(turn);
+      part("running");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      part(status);
+      await reports.next((entry) => entry.activity?.kind === "reasoning", 2);
+      turn.answer("Done.");
+    });
+    expect(await session.room.outcome(message)).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "bash" }, { kind: "reasoning" }, false]);
+  });
+
+  it("ends a running native part before a turn timeout's failure is delivered", async () => {
+    expect(await activityWhileFailing((turn) => { nativeBash(turn)("running"); }, { enableExecutionReporting: false }, timeOut))
+      .toEqual({ kind: "reasoning" });
+  });
+
+  it("ends an open permission wait before a turn timeout's failure is delivered", async () => {
+    expect(await activityWhileFailing((turn) => void turn.askPermission({ id: "per_open" }), { approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 }, timeOut))
+      .toEqual({ kind: "reasoning" });
+  });
+
+  it("keeps the wait ended when the room answers one of the failed turn's asks before its failure is delivered", async () => {
+    const asks = (turn: OpencodeTurn) => { turn.askPermission({ id: "per_first" }); turn.askPermission({ id: "per_second" }); };
+    expect(await activityWhileFailing(asks, { approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 }, timeOut, ({ room }) => room.exchange(OWNER, "approve per_first")))
+      .toEqual({ kind: "reasoning" });
+  });
+
+  it("keeps the wait ended when OpenCode asks again after a session error, before its failure is delivered", async () => {
+    expect(await activityWhileFailing(async (turn, reports) => {
+      turn.askPermission({ id: "per_first" });
+      await reports.next((entry) => entry.activity?.kind === "permission");
+      turn.error("boom");
+    }, {}, undefined, async ({ server }) => (await server.turn()).askPermission({ id: "per_late" }))).toEqual({ kind: "reasoning" });
+  });
+
+  it.each(["always", "reject"])("stops waiting once an `%s` reply settles the session's other asks on OpenCode", async (reply) => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const { room } = session;
+    await session.start(async (turn) => {
+      await Promise.all([turn.askPermission({ id: "per_first" }), turn.askPermission({ id: "per_second" })].map((ask) => ask.reply));
+      nativeBash(turn)("running");
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_second"));
+    await room.exchange(OWNER, `${reply} per_first`);
+
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    expect(await room.exchange(OWNER, "approve per_second")).toEqual([SAYS.noLongerPending("permission", "per_second")]);
+  });
+
+  it("stops waiting once another OpenCode client answers the room's asks", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const { room, server } = session;
+    await session.start(async (turn) => {
+      await Promise.all([turn.askPermission({ id: "per_tui" }), turn.askQuestion([{ question: "Proceed?" }], "que_tui")].map((ask) => ask.reply));
+      nativeBash(turn)("running");
+    });
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_tui"));
+    server.replyPermission("per_tui", { reply: "once" });
+    server.replyQuestion("que_tui", [["yes"]]);
+
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    expect(await room.exchange(OWNER, "approve per_tui")).toEqual([SAYS.noLongerPending("permission", "per_tui")]);
+    expect(await room.exchange(OWNER, "reject que_tui")).toEqual([SAYS.noLongerPending("question", "que_tui")]);
+  });
+
+  it("ends a running native part before a reply-less turn's failure is delivered", async () => {
+    expect(await activityWhileFailing(async (turn, reports) => {
+      nativeBash(turn)("running");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      turn.idle();
+    }, { enableExecutionReporting: false })).toEqual({ kind: "reasoning" });
+  });
+
+  it("ends a running native part before a session error's failure is delivered", async () => {
+    expect(await activityWhileFailing(async (turn, reports) => {
+      nativeBash(turn)("running");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      turn.error("boom");
+    }, { enableExecutionReporting: false })).toEqual({ kind: "reasoning" });
+  });
+
   it("keeps working across a detached approval and its reply I/O until the provider terminates", async () => {
+    const reports = recordRuntimeActivity();
     await using session = await opencodeRoom({ enableExecutionReporting: false });
     const { room, platform, server } = session;
     const resumed = createDeferred();
@@ -207,15 +393,19 @@ describe("OpenCode in a Band room", () => {
     try {
       await room.nextMessage((posted) => posted.content === approvalPrompt("per_working"));
       await room.outcome(message);
+      expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
       await vi.advanceTimersByTimeAsync(6000);
-      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, true, true]);
+      // Initial reasoning, permission change, then two refreshes.
+      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, true, true, true]);
       const control = room.exchange(OWNER, "approve per_working");
       await reply.sending;
       await vi.advanceTimersByTimeAsync(3000);
+      expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
       expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(true);
       reply.release();
       await resumed.promise;
       await control;
+      expect(reports.entries.at(-1)?.activity).toEqual({ kind: "reasoning" });
       expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
       terminal.resolve();
       await platform.rest.workingReports.next((entry) => !entry.working);
@@ -288,6 +478,7 @@ describe("OpenCode in a Band room", () => {
   });
 
   it("routes a busy room's replies to the asks still awaiting one, and only from allowed senders", async () => {
+    const reports = recordRuntimeActivity();
     await using session = await opencodeRoom({}, { decisionAuthorizedSenders: [OWNER, APPROVER] });
     const { room, server } = session;
     const [first, second, question] = ["per_first", "per_second", "que_branch"];
@@ -302,9 +493,11 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, "reject")).toEqual([SAYS.dualRejectHint([first, second], [question])]);
     expect(await room.exchange(INTRUDER, `approve ${second}`)).toEqual([SAYS.notAuthorized()]);
     expect(await room.exchange(APPROVER, `@[[agent-1]] approve ${second}`)).toEqual([SAYS.approvalHandled(second, "once")]);
+    expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
     // With `second` answered, a bare command means the one ask of its kind still open.
     expect(await room.exchange(OWNER, "always")).toEqual([SAYS.approvalHandled(first, "always")]);
-    expect(await room.exchange(OWNER, "reject")).toEqual([SAYS.questionRejected(question)]);
+    expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
+    expect(await room.exchange(OWNER, "reject")).toContain(SAYS.questionRejected(question));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([[second, "once"], [first, "always"]]);
@@ -327,7 +520,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, `approve ${pair}`)).toEqual([SAYS.questionHint([pair, single])]);
     expect(await room.exchange(OWNER, "reject que_wrong")).toEqual([SAYS.noLongerPending("question", "que_wrong")]);
     expect(await room.exchange(OWNER, "Alice\nEngineer")).toEqual([SAYS.questionAnswered(pair)]);
-    expect(await room.exchange(OWNER, "approve the blue one")).toEqual([SAYS.questionAnswered(single)]);
+    expect(await room.exchange(OWNER, "approve the blue one")).toContain(SAYS.questionAnswered(single));
 
     await room.nextMessage((posted) => posted.content === "Thanks.");
     expect(server.questionReplies()).toEqual([[pair, [["Alice"], ["Engineer"]]], [single, [["approve the blue one"]]]]);
@@ -394,7 +587,8 @@ describe("OpenCode in a Band room", () => {
       turn.answer("Done.");
     });
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_ask"));
-    expect(await room.exchange(OWNER, "yes")).toEqual([SAYS.questionAnswered("que_ask")]);
+    // OpenCode resumes on its reply event, so the answer can land before the room's acknowledgement.
+    expect(await room.exchange(OWNER, "yes")).toContain(SAYS.questionAnswered("que_ask"));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([["per_auto", "once"]]);
@@ -403,6 +597,7 @@ describe("OpenCode in a Band room", () => {
   });
 
   it("declines approvals and rejects questions without asking the room under auto_decline and auto_reject", async () => {
+    const reports = recordRuntimeActivity();
     await using session = await opencodeRoom({ approvalMode: "auto_decline", questionMode: "auto_reject" });
     const { room, server } = session;
     await session.start(async (turn) => {
@@ -415,6 +610,7 @@ describe("OpenCode in a Band room", () => {
     expect(server.permissionReplies()).toEqual([["per_auto", "reject"]]);
     expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", []], ["que_ask", DECLINED]]));
     expect(room.messages.map((posted) => posted.content)).toEqual(["Done."]);
+    expect(reports.entries.some(({ activity }) => activity?.kind === "permission")).toBe(false);
   });
 
   it("fails the turn when OpenCode refuses a room's reply, drops the sibling asks, and serves the next request on the same session", async () => {
@@ -461,7 +657,7 @@ describe("OpenCode in a Band room", () => {
 
     expect(await room.exchange(OWNER, "approve per_claimed")).toEqual([SAYS.approvalHandled("per_claimed", "once")]);
     failedPrompt.release();
-    expect(await room.exchange(OWNER, `approve ${landed}`)).toEqual([SAYS.approvalHandled(landed, "once")]);
+    expect(await room.exchange(OWNER, `approve ${landed}`)).toContain(SAYS.approvalHandled(landed, "once"));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(await claimed.reply).toEqual({ reply: "once" });
@@ -525,7 +721,6 @@ describe("OpenCode in a Band room", () => {
 
   it("times out a turn stuck on an unanswered ask, aborts it even if the abort never answers, and opens a fresh session next time", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const TURN_TIMEOUT_MS = 120_000;
     await using session = await opencodeRoom({ turnTimeoutMs: TURN_TIMEOUT_MS, approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 });
     const { room, server } = session;
     const hungAbort = server.hold("POST /session/ses_:id/abort");
