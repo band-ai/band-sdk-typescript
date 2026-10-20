@@ -305,14 +305,16 @@ jobs:
   # The single status branch protection should require.
   #
   # `lint` and `test` are intentionally conditional and may report as skipped.
-  # `changes` and `packaging` are mandatory and must report success. This job
-  # always runs, provides one stable ruleset context, and rejects any other state.
+  # `changes` and `packaging` are mandatory and must report success, so a draft
+  # run, which skips every job, is red. This job always runs, provides one
+  # stable ruleset context, and rejects any other state. always(), not a
+  # narrower condition: a skipped required check counts as passing.
   #
   # Requiring only this context also means adding or renaming a job above never
   # requires editing the ruleset.
   ci-status:
     needs: [changes, lint, test, packaging]
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify every CI job passed or was skipped

@@ -1135,12 +1135,10 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   const block = workflow.slice(start);
 
   // The aggregate must always report one stable context even when its
-  // intentionally conditional lint/test dependencies are skipped -- except on
-  // a draft, where nothing ran and a verdict would be a false failure.
-  assert.match(
-    block,
-    /^    if: always\(\) && \(github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\)$/m,
-  );
+  // intentionally conditional lint/test dependencies are skipped. A skipped
+  // gate would count as passing, so it runs on drafts too, where the skipped
+  // `changes` job turns it red.
+  assert.match(block, /^    if: always\(\)$/m);
   assert.match(block, /changes:\$\{\{ needs\.changes\.result \}\}:success/);
   assert.match(block, /packaging:\$\{\{ needs\.packaging\.result \}\}:success/);
   assert.match(block, /lint:\$\{\{ needs\.lint\.result \}\}:success\|skipped/);

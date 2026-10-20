@@ -82,8 +82,9 @@ jobs matters for two reasons:
 1. **One policy distinguishes mandatory and conditional work.** GitHub reports a
    job skipped by a job-level condition as successful. `lint` and `test` are
    intentionally conditional and may be skipped; `changes` and `packaging` are
-   mandatory and must succeed. `ci-status` encodes that distinction and always
-   reports one stable context.
+   mandatory and must succeed, so a draft PR, which runs no CI, shows a red
+   `ci-status`. `ci-status` encodes that distinction and always reports one
+   stable context.
 2. **The ruleset stops tracking job names.** Adding, renaming, or splitting a CI
    job needs no ruleset edit. A test in
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
