@@ -42,7 +42,7 @@ describe(SCENARIO, () => {
         releaseIndex,
       );
       expect(room.activity.entries.indexOf(stopped)).toBeGreaterThanOrEqual(releaseIndex);
-      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual({ agentId: identity.id, event: ACTIVITY_EVENT.started });
+      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual(expect.objectContaining({ agentId: identity.id, event: ACTIVITY_EVENT.started }));
     } finally { release.resolve(); }
   });
 

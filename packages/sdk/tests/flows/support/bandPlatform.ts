@@ -15,6 +15,7 @@ import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/r
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
+import type { SessionConfig } from "../../../src/runtime/types";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
@@ -542,11 +543,12 @@ export class BandPlatform implements AsyncDisposable {
   }
 
   /** Starts the agent; pass an earlier platform's `rest` to restart it against the same rooms and history. */
-  public static async start(adapter: FrameworkAdapter, participants: readonly ParticipantRecord[], rest?: RecordingRestApi): Promise<BandPlatform> {
+  public static async start(adapter: FrameworkAdapter, participants: readonly ParticipantRecord[], rest?: RecordingRestApi, sessionConfig?: SessionConfig): Promise<BandPlatform> {
     const platform = new BandPlatform(participants, rest);
     platform.runtime = new PlatformRuntime({
       agentId: AGENT_ID,
       apiKey: AGENT_API_KEY,
+      sessionConfig,
       link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
     });
     await platform.runtime.start(adapter);

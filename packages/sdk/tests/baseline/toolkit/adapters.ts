@@ -136,7 +136,7 @@ export function buildOpencode({ prompt, workDir, reportToolCalls }: BuildOptions
 
 /** Reports every tool call as a `tool_call` event, so a scenario that gives tools or memory, or asks, can read them back. */
 function reportsTools({ customTools, memory, reportToolCalls }: Pick<BuildOptions, "customTools" | "memory" | "reportToolCalls">) {
-  return { enableExecutionReporting: Boolean(customTools?.length) || Boolean(memory) || Boolean(reportToolCalls) };
+  return { enableExecutionReporting: reportToolCalls ?? (Boolean(customTools?.length) || Boolean(memory)) };
 }
 
 /**

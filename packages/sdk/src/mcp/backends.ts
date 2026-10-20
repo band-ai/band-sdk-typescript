@@ -1,6 +1,6 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import { mcpToolNames } from "../contracts/toolSchemas";
-import type { McpToolRegistration } from "./registrations";
+import type { BuildRegistrationsOptions, McpToolRegistration } from "./registrations";
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
@@ -24,6 +24,8 @@ export interface BandMcpBackend {
 }
 
 export interface CreateBandMcpBackendOptions {
+  /** @internal HTTP registration execution boundary. */
+  execute?: BuildRegistrationsOptions["execute"];
   kind: BandMcpBackendKind;
   enableMemoryTools: boolean;
   /**
@@ -118,6 +120,7 @@ export async function createBandMcpBackend(
   }
 
   const server = new BandMcpServer({
+    execute: options.execute,
     tools: resolvedTools,
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,

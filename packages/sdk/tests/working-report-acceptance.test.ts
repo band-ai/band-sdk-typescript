@@ -15,11 +15,12 @@ describe("automatic working-report acceptance", () => {
     const peer = await FakePhoenixPeer.start();
     const observer = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "observer" });
     // Keep the real Room observer; only live provisioning and cleanup are replaced by this local peer.
-    const room: Room = Reflect.construct(Room, ["room", observer]);
-    await Reflect.get(room, "observe").call(room);
+    const room = await Room.observing("room", observer);
     const entered = createDeferred();
     const release = createDeferred();
     const generated = buildFakeRestAdapter([
+      { status: 200, body: { data: { working: true } } },
+      { status: 200, body: { data: { working: true } } },
       { status: 200, body: { data: { working: true } } },
       { status: 200, body: { data: { working: false } } },
     ]);
@@ -50,14 +51,15 @@ describe("automatic working-report acceptance", () => {
       );
       await run;
       expect(room.activity.entries.indexOf(stopped)).toBeGreaterThanOrEqual(releaseIndex);
-      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual({ agentId: "a1", event: ACTIVITY_EVENT.started });
+      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual(expect.objectContaining({ agentId: "a1", event: ACTIVITY_EVENT.started }));
       if (enabled) {
         expect(reports.entries.slice(0, reportReleaseIndex)).toContainEqual({ roomId: room.id, working: true });
         expect(reports.entries.slice(reportReleaseIndex)).toContainEqual({ roomId: room.id, working: false });
-        expect(generated.calls.map(({ method, url }) => ({ method, url }))).toEqual([
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
-        ]);
+        // A report queued behind an in-flight one is dropped once its scope ends, so the count is a floor.
+        const requests = generated.calls.map(({ method, url }) => `${method} ${url}`);
+        expect(requests.length).toBeGreaterThanOrEqual(2);
+        expect(new Set(requests)).toEqual(new Set(["POST http://fake-band.test/api/v1/agent/chats/room/activity"]));
+        expect(reports.entries.at(-1)).toEqual({ roomId: room.id, working: false });
       } else {
         // Both original observer checks passed, but neither required successful report exists.
         expect(reports.entries).toEqual([]);

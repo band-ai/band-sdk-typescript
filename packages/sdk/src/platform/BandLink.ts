@@ -2,7 +2,8 @@ import { resolveLogger, type Logger } from "../core/logger";
 import { SingleFlight } from "../core/singleFlight";
 import { Session } from "./Session";
 import { FernRestAdapter } from "../client/rest/RestFacade";
-import type { RestRequestOptions } from "../client/rest/requestOptions";
+import { ActivityCapability } from "../client/rest/activityCapability";
+import type { ReportActivityOptions, RestRequestOptions } from "../client/rest/requestOptions";
 import {
   fetchPaginated,
   type PaginationOptions,
@@ -143,6 +144,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
         }),
+        { activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }) },
       );
 
     this.rest = restApi;
@@ -537,7 +539,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     return response.data.map((msg) => toPlatformMessage(roomId, msg));
   }
 
-  public async reportActivity(roomId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+  public async reportActivity(roomId: string, working: boolean, options?: ReportActivityOptions): Promise<{ working: boolean }> {
     if (!this.rest.reportActivity) throw new UnsupportedFeatureError("Activity reporting is not available in current REST adapter");
     return await this.rest.reportActivity(roomId, working, options);
   }

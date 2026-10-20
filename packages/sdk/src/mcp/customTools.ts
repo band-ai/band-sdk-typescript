@@ -36,7 +36,7 @@ export function buildCustomMcpRegistrations(
       toolsForRoom,
       async (tools, args) => {
         try {
-          return successResult(await executeCustomTool(customTool, args, tools.turn));
+          return successResult(await executeCustomTool(customTool, args, tools.turn, tools));
         } catch (error) {
           return errorResult(error instanceof Error ? error.message : String(error));
         }

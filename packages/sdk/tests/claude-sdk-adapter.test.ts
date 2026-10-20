@@ -21,7 +21,46 @@ import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { AdapterToolsProtocol, FrameworkAdapterInput } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
+import { BandPlatform, person, AGENT_ID, AGENT_API_KEY } from "./flows/support/bandPlatform";
+import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
+import { BandLink } from "../src/platform/BandLink";
+import { recordRuntimeActivity } from "./support/activityReports";
 import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
+
+/** What the MCP client throws once the query-owned server is closed. */
+const TRANSPORT_CLOSED = /Not connected|Connection closed/;
+
+/** Serves buffered items before surfacing a failure, as the SDK's own stream does, so an abort leaves them to be read. */
+class BufferedStream<T> implements AsyncIterable<T> {
+  private readonly queue: T[] = [];
+  private error?: Error;
+  private waiter?: { resolve: (result: IteratorResult<T>) => void; reject: (error: Error) => void };
+
+  public enqueue(value: T): void {
+    if (this.waiter) {
+      const { resolve } = this.waiter;
+      this.waiter = undefined;
+      resolve({ done: false, value });
+    } else this.queue.push(value);
+  }
+
+  public fail(error: Error): void {
+    this.error = error;
+    const waiter = this.waiter;
+    this.waiter = undefined;
+    waiter?.reject(error);
+  }
+
+  public [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        if (this.queue.length > 0) return Promise.resolve({ done: false, value: this.queue.shift()! });
+        if (this.error) return Promise.reject(this.error);
+        return new Promise((resolve, reject) => { this.waiter = { resolve, reject }; });
+      },
+    };
+  }
+}
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -30,6 +69,210 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
     }
   })();
 }
+
+describe("Claude scoped MCP activity", () => {
+  it("observes actual query-bound custom and Band MCP execution", async () => {
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    const adapter = new ClaudeSDKAdapter({ enableExecutionReporting: false,
+      customTools: [{ name: "lookup_status", schema: z.object({ query: z.string() }), handler: async ({ query }) => {
+        expect(query).toBe("private-mcp-marker");
+        await release.promise;
+        return "ready";
+      } }],
+      queryFn: async function* ({ options }) {
+        const server = options!.mcpServers![MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+        const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+        await server.instance.connect(serverTransport);
+        const client = new Client({ name: "scoped-mcp-test", version: "1" });
+        onTestFinished(() => client.close());
+        await client.connect(clientTransport);
+        const custom = await client.callTool({ name: "lookup_status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
+        expect(custom.isError).toBeUndefined();
+        expect(JSON.stringify(custom.content)).toContain("ready");
+        const band = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } });
+        expect(band.isError).toBeUndefined();
+        expect(JSON.stringify(band.content)).toContain("owner");
+        yield { type: "result", subtype: "success", result: "Done." } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "look up status");
+    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup_status");
+    release.resolve();
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      { kind: "reasoning" }, { kind: "tool_call", name: "lookup_status" }, { kind: "reasoning" },
+      { kind: "tool_call", name: "band_get_participants" }, { kind: "reasoning" }, false,
+    ]);
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+    expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+    expect(JSON.stringify(reports.entries)).not.toContain("private-mcp-marker");
+  });
+
+  it("aborts and closes query-owned MCP on forced reset before admitting a replacement", async () => {
+    const started = [createDeferred(), createDeferred()];
+    const releases = [createDeferred(), createDeferred()];
+    const finished = [createDeferred(), createDeferred()];
+    const options: NonNullable<ClaudeSDKQueryParams["options"]>[] = [];
+    const clients: Client[] = [];
+    const adapter = new ClaudeSDKAdapter({ queryFn: async function* (params) {
+      const index = options.push(params.options!) - 1;
+      started[index]!.resolve();
+      try {
+        await releases[index]!.promise;
+        if (params.options?.abortController?.signal.aborted) throw new Error("query aborted");
+        yield { type: "result", subtype: "success", result: "Done." } as never;
+      } finally { finished[index]!.resolve(); }
+    } });
+    await using platform = BandPlatform.host([person("owner")]);
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    onTestFinished(async () => {
+      releases.forEach((release) => release.resolve());
+      await Promise.all(finished.slice(0, options.length).map((done) => done.promise));
+      await runtime.stop(0);
+      await Promise.all(clients.map((client) => client.close()));
+    });
+    const connect = async (index: number) => {
+      const server = options[index]!.mcpServers![MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(serverTransport);
+      const client = new Client({ name: "query-cleanup-test", version: "1" });
+      clients.push(client);
+      await client.connect(clientTransport);
+      return client;
+    };
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    await room.say("owner", "first");
+    await started[0]!.promise;
+    const first = await connect(0);
+    expect((await first.listTools()).tools.length).toBeGreaterThan(0);
+    await runtime.resetRoomSession("room", 0);
+    expect(options[0]!.abortController!.signal.aborted).toBe(true);
+    await expect(first.listTools()).rejects.toThrow(TRANSPORT_CLOSED);
+    await room.say("owner", "replacement");
+    await started[1]!.promise;
+    const second = await connect(1);
+    expect((await second.listTools()).tools.length).toBeGreaterThan(0);
+    await runtime.stop(0);
+    expect(options[1]!.abortController!.signal.aborted).toBe(true);
+    await expect(second.listTools()).rejects.toThrow(TRANSPORT_CLOSED);
+  });
+
+  it("ends a turn retired by a forced reset without writing into the room", async () => {
+    const started = createDeferred();
+    const adapter = new ClaudeSDKAdapter({ queryFn: async function* (params) {
+      started.resolve();
+      const signal = params.options!.abortController!.signal;
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw Object.assign(new Error("Claude Code process aborted by user"), { name: "AbortError" });
+      yield undefined as never;
+    } });
+    const turns: Promise<void>[] = [];
+    const onMessage = adapter.onMessage.bind(adapter);
+    adapter.onMessage = (...args) => { const turn = onMessage(...args); turns.push(turn); return turn; };
+    await using platform = BandPlatform.host([person("owner")]);
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    onTestFinished(async () => { await runtime.stop(0); });
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    await room.say("owner", "first");
+    await started.promise;
+    const posted = platform.rest.posted.entries.length;
+    await runtime.resetRoomSession("room", 0);
+    await Promise.all(turns);
+    expect(platform.rest.posted.entries.slice(posted)).toEqual([]);
+  });
+
+  it("keeps a turn retired by a forced reset from writing events it had buffered", async () => {
+    const resumes: Array<string | undefined> = [];
+    const adapter = new ClaudeSDKAdapter({ enableExecutionReporting: true, queryFn: ({ options }) => {
+      resumes.push(options!.resume);
+      const stream = new BufferedStream<unknown>();
+      if (resumes.length === 1) {
+        stream.enqueue({ type: "tool_use_summary", summary: "ran a tool", preceding_tool_use_ids: [] });
+        stream.enqueue({ type: "assistant", session_id: "old-session", message: { content: [{ type: "text", text: "partial" }] } });
+        options!.abortController!.signal.addEventListener("abort", () => {
+          stream.fail(Object.assign(new Error("Claude Code process aborted by user"), { name: "AbortError" }));
+        }, { once: true });
+      } else stream.enqueue({ type: "result", subtype: "success", result: "fresh", session_id: "new-session" });
+      return stream as never;
+    } });
+    const turns: Promise<void>[] = [];
+    const onMessage = adapter.onMessage.bind(adapter);
+    adapter.onMessage = (...args) => { const turn = onMessage(...args); turns.push(turn); return turn; };
+    await using platform = BandPlatform.host([person("owner")]);
+    const writing = createDeferred();
+    const gate = createDeferred();
+    let held = false;
+    const createChatEvent = platform.rest.createChatEvent.bind(platform.rest);
+    platform.rest.createChatEvent = async (roomId, event) => {
+      if (!held) { held = true; writing.resolve(); await gate.promise; }
+      return await createChatEvent(roomId, event);
+    };
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    onTestFinished(async () => { gate.resolve(); await runtime.stop(0); });
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    await room.say("owner", "first");
+    await writing.promise;
+    const posted = platform.rest.posted.entries.length;
+    await runtime.resetRoomSession("room", 0);
+    gate.resolve();
+    await Promise.all(turns);
+    expect(platform.rest.posted.entries.slice(posted).filter((entry) => entry.messageType === "task")).toEqual([]);
+    await room.say("owner", "second");
+    await room.until(() => resumes.length === 2);
+    expect(resumes[1]).toBeUndefined();
+  });
+
+  it("keeps a turn retired while its reply is being posted from reporting its failure", async () => {
+    const adapter = new ClaudeSDKAdapter({ queryFn: async function* () {
+      yield { type: "assistant", session_id: "session", message: { content: [{ type: "text", text: "partial answer" }] } } as never;
+      yield { type: "result", subtype: "error_max_turns", is_error: true, session_id: "session", errors: ["max turns reached"] } as never;
+    } });
+    const turns: Promise<void>[] = [];
+    const onMessage = adapter.onMessage.bind(adapter);
+    adapter.onMessage = (...args) => { const turn = onMessage(...args); turns.push(turn); return turn; };
+    await using platform = BandPlatform.host([person("owner")]);
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    });
+    await runtime.start(adapter);
+    const room = await platform.room("room");
+    const reply = room.holdMessage((content) => content.includes("partial answer"));
+    onTestFinished(async () => { reply.release(); await runtime.stop(0); });
+    await room.say("owner", "first");
+    await reply.sending;
+    const posted = platform.rest.posted.entries.length;
+    await runtime.resetRoomSession("room", 0);
+    reply.release();
+    await Promise.all(turns);
+    expect(platform.rest.posted.entries.slice(posted).filter((entry) => entry.messageType === "error")).toEqual([]);
+  });
+
+  it("logs a failed query-owned MCP close with its room and keeps the completed turn's outcome", async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const adapter = new ClaudeSDKAdapter({ logger, queryFn: async function* (params) {
+      const server = params.options!.mcpServers![MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+      vi.spyOn(server.instance, "close").mockRejectedValueOnce(new Error("close failed"));
+      yield { type: "result", subtype: "success", result: "Done." } as never;
+    } });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "hello");
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+    expect(logger.warn).toHaveBeenCalledWith("Claude SDK MCP bridge close failed", expect.objectContaining({ roomId: session.room.id }));
+  });
+});
 
 describe("ClaudeSDKAdapter", () => {
   it("uses the stable query API and resumes by session id", async () => {
@@ -846,9 +1089,9 @@ describe("ClaudeSDKAdapter", () => {
       const release = createDeferred();
       const handler = vi.fn(() => "done");
       let queries = 0;
-      let options: ClaudeSDKQueryParams["options"];
+      const optionsByRoom = new Map<string, ClaudeSDKQueryParams["options"]>();
       const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler })], queryFn: async function* (params) {
-        options = params.options;
+        optionsByRoom.set(params.prompt.includes('room_id="first"') ? "first" : "second", params.options);
         if (++queries === 2) bothStarted.resolve();
         await release.promise;
         yield success("") as never;
@@ -859,17 +1102,18 @@ describe("ClaudeSDKAdapter", () => {
       const turns = [startMessage(adapter, first, "first"), startMessage(adapter, second, "second")];
       await bothStarted.promise;
       for (const room_id of [undefined, "", "  ", 4, "unknown"]) {
-        const result = await callMcpTool(options, "write_marker", room_id === undefined ? {} : { room_id });
+        const result = await callMcpTool(optionsByRoom.get("first"), "write_marker", room_id === undefined ? {} : { room_id });
         expect(result.isError).toBe(true);
       }
       expect(handler).not.toHaveBeenCalled();
-      await callMcpTool(options, "write_marker", { room_id: " first " });
+      expect((await callMcpTool(optionsByRoom.get("second"), "write_marker", { room_id: "first" })).isError).toBe(true);
+      await callMcpTool(optionsByRoom.get("first"), "write_marker", { room_id: " first " });
       expect(first.turn.verdict()).toBe("complete");
       expect(second.turn.verdict()).toBe("missing_reply");
-      await callMcpTool(options, "write_marker", { room_id: "second" });
+      await callMcpTool(optionsByRoom.get("second"), "write_marker", { room_id: "second" });
       release.resolve();
       await Promise.all(turns);
-      expect((await callMcpTool(options, "write_marker", { room_id: "first" })).isError).toBe(true);
+      await expect(callMcpTool(optionsByRoom.get("first"), "write_marker", { room_id: "first" })).rejects.toThrow(TRANSPORT_CLOSED);
       expect(handler).toHaveBeenCalledTimes(2);
     });
 
@@ -899,32 +1143,27 @@ describe("ClaudeSDKAdapter", () => {
       const pending = startMessage(adapter, first);
       await handlerStarted.promise;
       await adapter.onCleanup(ROOM_ID);
-      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).isError).toBe(true);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(TRANSPORT_CLOSED);
       const replacement = startMessage(adapter, second);
       await replacementStarted.promise;
       releaseHandler.resolve();
       await pending;
-      expect(first.turn.verdict()).toBe("complete");
       expect(second.turn.verdict()).toBe("missing_reply");
       releaseReplacement.resolve();
       await replacement;
+      expect(first.turn.verdict()).toBe("complete");
       expect(second.turn.verdict()).toBe("complete");
-      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).isError).toBe(true);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).rejects.toThrow(TRANSPORT_CLOSED);
     });
 
     it("does not reinstall a cleaned-up binding when query loading finishes", async () => {
       const loading = createDeferred();
       const releaseLoad = createDeferred();
-      const consuming = createDeferred();
-      const releaseStream = createDeferred();
-      let options: ClaudeSDKQueryParams["options"];
       const handler = vi.fn();
-      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler })], queryFn: async function* (params) {
-        options = params.options;
-        consuming.resolve();
-        await releaseStream.promise;
+      const queryFn = vi.fn(async function* () {
         yield success("") as never;
-      } });
+      });
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler })], queryFn });
       await adapter.onStarted("Parity Agent", "Parity test agent");
       // Hold only the asynchronous loading boundary; the bridge and its calls remain real.
       const loader = adapter as unknown as { startQuery: (...args: unknown[]) => Promise<AsyncIterable<unknown>> };
@@ -938,14 +1177,23 @@ describe("ClaudeSDKAdapter", () => {
       await loading.promise;
       await adapter.onCleanup(ROOM_ID);
       releaseLoad.resolve();
-      await consuming.promise;
-      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
-      expect(handler).not.toHaveBeenCalled();
-      releaseStream.resolve();
       await pending;
+      expect(queryFn).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
     });
 
-    it.each(["query", "stream", "result", "relay"] as const)("clears binding on %s failure and runs the next turn", async (exit) => {
+    const staleCallRefused = async (options: ClaudeSDKQueryParams["options"]) =>
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+    const staleCallDisconnected = async (options: ClaudeSDKQueryParams["options"]) =>
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
+    const deliveryFailed = (turn: Promise<unknown>) => expect(turn).rejects.toBeInstanceOf(DeliveryFailedError);
+
+    it.each([
+      { exit: "query" as const, firstTurn: expectTurnFailed, staleCall: staleCallRefused },
+      { exit: "stream" as const, firstTurn: expectTurnFailed, staleCall: staleCallDisconnected },
+      { exit: "result" as const, firstTurn: expectTurnFailed, staleCall: staleCallDisconnected },
+      { exit: "relay" as const, firstTurn: deliveryFailed, staleCall: staleCallDisconnected },
+    ])("clears binding on $exit failure and runs the next turn", async ({ exit, firstTurn, staleCall }) => {
       let calls = 0;
       let options: ClaudeSDKQueryParams["options"];
       const adapter = new ClaudeSDKAdapter({ customTools: [portable()], queryFn: (params) => {
@@ -961,13 +1209,11 @@ describe("ClaudeSDKAdapter", () => {
       } });
       await adapter.onStarted("Parity Agent", "Parity test agent");
       const failingTools = new FakeTools(exit === "relay" ? { failOn: ["sendMessage"] } : undefined);
-      const first = adapter.onEvent(turnInput(failingTools, SENDER));
-      if (exit === "relay") await expect(first).rejects.toBeInstanceOf(DeliveryFailedError);
-      else await expectTurnFailed(first);
-      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+      await firstTurn(adapter.onEvent(turnInput(failingTools, SENDER)));
+      await staleCall(options);
       await adapter.onEvent(turnInput(new FakeTools(), SENDER));
       expect(calls).toBe(2);
-      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
     });
 
     it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
