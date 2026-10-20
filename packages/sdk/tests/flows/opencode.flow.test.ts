@@ -360,6 +360,14 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, "reject que_tui")).toEqual([SAYS.noLongerPending("question", "que_tui")]);
   });
 
+  it("ends a running native part before a reply-less turn's failure is delivered", async () => {
+    expect(await activityWhileFailing(async (turn, reports) => {
+      nativeBash(turn)("running");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      turn.idle();
+    }, { enableExecutionReporting: false })).toEqual({ kind: "reasoning" });
+  });
+
   it("ends a running native part before a session error's failure is delivered", async () => {
     expect(await activityWhileFailing(async (turn, reports) => {
       nativeBash(turn)("running");

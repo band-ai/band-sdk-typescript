@@ -155,7 +155,9 @@ class OpencodeTurn {
     return this.backgrounded.promise;
   }
 
+  /** Every way a turn ends comes here, so nothing it opened outlives it into a failure report. */
   public end(outcome: TurnEndOutcome): void {
+    this.native.endAll();
     this.outcome.resolve(outcome);
   }
 
