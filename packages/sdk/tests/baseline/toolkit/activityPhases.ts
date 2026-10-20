@@ -1,3 +1,8 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { copyFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { onTestFinished } from "vitest";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import { createDeferred } from "../../../src/core/deferred";
@@ -29,5 +34,35 @@ export function activityPhases() {
         onRuntimeStop: async () => { release(); await adapter.onRuntimeStop?.(); },
       };
     },
+  };
+}
+
+const ACTIVITY_MARKER_HEADER = "x-activity-marker";
+const BARRIER_HELPER = fileURLToPath(new URL("./activityBarrier.mjs", import.meta.url));
+
+/** Native Bash runs this Node helper and waits for an explicit harness response. */
+export async function nativeToolBarrier(workDir: string, marker: string) {
+  const entered = createDeferred<string>();
+  const release = createDeferred();
+  const server = createServer(async (request, response) => {
+    entered.resolve(String(request.headers[ACTIVITY_MARKER_HEADER] ?? ""));
+    await release.promise;
+    response.end("released");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No native activity barrier port");
+  onTestFinished(async () => {
+    release.resolve();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  const path = join(workDir, "activity-barrier.mjs");
+  await copyFile(BARRIER_HELPER, path);
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  return {
+    command: `node ${quote(path)} http://127.0.0.1:${address.port}/ready ${ACTIVITY_MARKER_HEADER} ${quote(marker)}`,
+    entered: entered.promise,
+    release: () => release.resolve(),
   };
 }

@@ -571,6 +571,11 @@ export function mcpToolNames(names: Set<string>): string[] {
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => `${MCP_TOOL_PREFIX}${name}`);
 }
 
+/** How Claude Code names a Band MCP tool in its hooks: characters outside `[A-Za-z0-9_-]` become `_`. */
+export function claudeHookToolName(name: string): string {
+  return `${MCP_TOOL_PREFIX}${name.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
 export function getToolDescription(name: string): string {
   const model = TOOL_MODELS[name as keyof typeof TOOL_MODELS];
   return model?.description ?? `Execute ${name}`;

@@ -50,4 +50,20 @@ Working state is on by default through shared runtime
 keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
 { enableWorkingState: false } })` to disable it. No provider-specific option or
 tool capability is needed. Execution reporting options control chat tool narration
-independently of this automatic boolean indicator.
+independently of this automatic indicator and its activity detail.
+
+```ts
+import { Agent, ClaudeSDKAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: { enableWorkingState: true },
+  adapter: new ClaudeSDKAdapter({ enableExecutionReporting: false }),
+});
+```
+
+Ask for an allowed native Bash operation, such as `pwd`. Existing permission policy
+still applies. Native start/end hooks report `tool_call/Bash` then reasoning on a
+compatible agent API, with no command in activity or tool narration in chat.
+The main thread's compaction status reports memory. This adapter does not expose an interactive
+approval resolver, so SDK policy checks alone do not establish a human wait.

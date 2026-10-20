@@ -1,4 +1,6 @@
 import type {
+  HookCallbackMatcher,
+  HookInput,
   Options,
   SDKAssistantMessage,
   SDKMessage,
@@ -7,6 +9,7 @@ import type {
   Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
@@ -14,7 +17,7 @@ import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
+import { claudeHookToolName, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -28,6 +31,9 @@ import {
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
 import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
+
+/** Compaction has no provider id; the main thread compacts one at a time, so a query uses this one. */
+const COMPACTION_ID = "compaction";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
 
@@ -46,6 +52,7 @@ type ClaudeQueryOptions = Pick<
   | "disallowedTools"
   | "settingSources"
   | "settings"
+  | "hooks"
   | "abortController"
 >;
 
@@ -236,34 +243,30 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   private buildRegistrations(resolve: (roomId: string) => TurnTools | undefined) {
-    const registrations = buildRoomScopedRegistrations(resolve, {
-      enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
-    });
+    const room = buildRoomScopedRegistrations(resolve, { enableMemoryTools: this.enableMemoryTools, enableContactTools: true });
     const custom = buildCustomMcpRegistrations(this.customTools, resolve);
-    assertCustomToolNamesAvailable(custom.map((registration) => registration.name), registrations.map((registration) => registration.name));
-    return { registrations, custom };
+    const registrations = [...room, ...this.additionalMcpTools];
+    assertCustomToolNamesAvailable(custom.map(({ name }) => name), registrations.map(({ name }) => name));
+    return { registrations, custom, localNames: new Set([...room, ...custom].map(({ name }) => name)) };
   }
 
-  /** A bridge whose tools resolve only for the room's current turn, and only until it is retired. */
-  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools) {
-    let live = true;
-    const resolve = (id: string): TurnTools | undefined => live && id === roomId && this.ownsRoom(id, tools) ? tools : undefined;
-    const { registrations, custom } = this.buildRegistrations(resolve);
+  /** A bridge whose tools resolve only while `isCurrent`; `localToolNames` spells the tools Band executes itself as the hooks name them. */
+  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools, isCurrent: () => boolean) {
+    const resolve = (id: string): TurnTools | undefined => id === roomId && isCurrent() ? tools : undefined;
+    const { registrations, custom, localNames } = this.buildRegistrations(resolve);
     const bridge = createBridge(registrations, custom);
     return {
       bridge,
-      retire: async (): Promise<void> => {
-        live = false;
-        await bridge.serverConfig.instance.close();
-      },
+      localToolNames: new Set([...localNames].map(claudeHookToolName)),
+      retire: () => bridge.serverConfig.instance.close(),
     };
   }
 
-  /** The one idempotent close of a room's query: retire its bridge, abort it, and stop tracking it. */
-  private registerQuery(roomId: string, abortController: AbortController, retireBridge: () => Promise<void>): () => Promise<void> {
+  /** The one idempotent close of a room's query: retire it, abort it, and stop tracking it. */
+  private registerQuery(roomId: string, abortController: AbortController, retire: () => Promise<void>): () => Promise<void> {
     let closing: Promise<void> | undefined;
     const close = (): Promise<void> => {
-      closing ??= retireBridge().catch((error: unknown) => {
+      closing ??= retire().catch((error: unknown) => {
         this.logger.warn("Claude SDK MCP bridge close failed", { roomId, error });
       });
       abortController.abort();
@@ -272,6 +275,26 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     };
     this.activeQueries.set(roomId, close);
     return close;
+  }
+
+  /** Reports what the provider runs natively; tools Band executes itself report from their own execution. */
+  private activityHooks(native: NativeActivity): ClaudeQueryOptions["hooks"] {
+    const on = (handler: (input: HookInput) => void): HookCallbackMatcher[] => [{
+      hooks: [async (input) => {
+        handler(input);
+        return {};
+      }],
+    }];
+    const toolEnd = on((input) => {
+      if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "PostToolUseFailure") native.end(input.tool_use_id);
+    });
+    return {
+      PreToolUse: on((input) => {
+        if (input.hook_event_name === "PreToolUse") native.tool(input.tool_use_id, input.tool_name);
+      }),
+      PostToolUse: toolEnd,
+      PostToolUseFailure: toolEnd,
+    };
   }
 
   private queryOptions(abortController: AbortController, resume: string | null): ClaudeQueryOptions {
@@ -318,12 +341,18 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       abortController,
       this.sessionIds.get(roomId) ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null),
     );
-    const mcp = createBridge && this.openBridge(createBridge, roomId, tools);
+    const isCurrent = (): boolean => !abortController.signal.aborted && this.ownsRoom(roomId, tools);
+    const mcp = createBridge && this.openBridge(createBridge, roomId, tools, isCurrent);
     if (mcp) {
       options.mcpServers = { [MCP_SERVER_NAME]: mcp.bridge.serverConfig };
       options.allowedTools = mcp.bridge.allowedTools;
     }
-    const close = this.registerQuery(roomId, abortController, mcp?.retire ?? (async () => undefined));
+    const native = trackNativeActivity(tools, mcp?.localToolNames ?? new Set());
+    options.hooks = this.activityHooks(native);
+    const close = this.registerQuery(roomId, abortController, async () => {
+      native.endAll();
+      await mcp?.retire();
+    });
 
     const roomToolHint = this.enableMcpTools
       ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${roomId}".`
@@ -347,7 +376,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       await close();
       throw error;
     }
-    return closeAfter(query, close);
+    return closeAfter(trackStreamActivity(query, native), close);
   }
 
   private async consumeQueryEvents(
@@ -427,6 +456,26 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         error,
       });
     }
+  }
+}
+
+/**
+ * Reports what the stream shows: a tool the model is handed a result for has ended, whether it ran, failed or
+ * was denied with no hook, and the main thread's compaction runs between its `compacting` and null statuses.
+ * Hooks cannot tell those from a subagent's compaction, which sends no status.
+ */
+async function* trackStreamActivity(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
+  for await (const event of query) {
+    if (event.type === "system" && event.subtype === "status") {
+      if (event.status === "compacting") native.memory(COMPACTION_ID);
+      else if (event.status === null) native.end(COMPACTION_ID);
+    }
+    if (event.type === "user" && Array.isArray(event.message.content)) {
+      for (const block of event.message.content) {
+        if (block.type === "tool_result") native.end(block.tool_use_id);
+      }
+    }
+    yield event;
   }
 }
 

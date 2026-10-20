@@ -24,7 +24,8 @@ import { createDeferred } from "../src/core/deferred";
 import { BandPlatform, person, AGENT_ID, AGENT_API_KEY } from "./flows/support/bandPlatform";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { BandLink } from "../src/platform/BandLink";
-import { recordRuntimeActivity } from "./support/activityReports";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
+import { activityWhileProviderFails } from "./support/providerFailure";
 import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 /** What the MCP client throws once the query-owned server is closed. */
@@ -70,13 +71,78 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   })();
 }
 
-describe("Claude scoped MCP activity", () => {
-  it("observes actual query-bound custom and Band MCP execution", async () => {
+type ClaudeOptions = ClaudeSDKQueryParams["options"];
+
+/** Fires the hook the adapter registered for `event`, as the SDK does, with the base input every hook carries. */
+async function callHook(options: ClaudeOptions, event: keyof NonNullable<NonNullable<ClaudeOptions>["hooks"]>, input: Record<string, unknown>): Promise<void> {
+  const hook = options?.hooks?.[event]?.[0]?.hooks[0];
+  expect(hook).toBeDefined();
+  expect(await hook!({ hook_event_name: event, session_id: "session", cwd: "/tmp", transcript_path: "/tmp/transcript", ...input } as never,
+    undefined, { signal: new AbortController().signal })).toEqual({});
+}
+
+/** Runs `fire` and waits for the report it causes, so the next step cannot coalesce into it. */
+async function reported(reports: ReturnType<typeof recordRuntimeActivity>, kind: string, fire: () => Promise<void> | void): Promise<void> {
+  const from = reports.entries.length;
+  await fire();
+  await reports.next((entry) => entry.activity?.kind === kind, from);
+}
+
+describe("Claude scoped activity", () => {
+  it("observes raw additional MCP tools through native hooks without portable effect credit", async () => {
+    const entered = createDeferred();
     const release = createDeferred();
     onTestFinished(() => release.resolve());
     const reports = recordRuntimeActivity();
     const adapter = new ClaudeSDKAdapter({ enableExecutionReporting: false,
-      customTools: [{ name: "lookup_status", schema: z.object({ query: z.string() }), handler: async ({ query }) => {
+      additionalMcpTools: [{ name: "native_lookup", description: "Raw lookup",
+        inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+        execute: async ({ query }) => {
+          expect(query).toBe("private-raw-marker");
+          entered.resolve();
+          await release.promise;
+          return { content: [{ type: "text", text: "native result" }] };
+        },
+      }],
+      queryFn: async function* ({ options }) {
+        const server = options!.mcpServers![MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+        const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+        await server.instance.connect(serverTransport);
+        const client = new Client({ name: "raw-mcp-test", version: "1" });
+        onTestFinished(() => client.close());
+        await client.connect(clientTransport);
+        const invoke = (event: "PreToolUse" | "PostToolUse") => callHook(options, event, {
+          tool_name: "mcp__band__native_lookup", tool_input: { query: "private-raw-marker" }, tool_response: "native result", tool_use_id: "raw-call",
+        });
+        await invoke("PreToolUse");
+        expect(await client.callTool({ name: "native_lookup", arguments: { query: "private-raw-marker" } })).toMatchObject({ content: [{ type: "text", text: "native result" }] });
+        await invoke("PostToolUse");
+        yield { type: "result", subtype: "success", result: "" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "look up status");
+    try {
+      await entered.promise;
+      await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "mcp__band__native_lookup");
+      release.resolve();
+      expect(await session.room.outcome(message)).toBe("failed");
+      expect(session.room.failures).toEqual([MISSING_REPLY]);
+      expect(session.room.messages).toEqual([]);
+      expect(activitySequence(reports)).toEqual([
+        { kind: "reasoning" }, { kind: "tool_call", name: "mcp__band__native_lookup" }, { kind: "reasoning" }, false,
+      ]);
+      expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+      expect(JSON.stringify(reports.entries)).not.toContain("private-raw-marker");
+    } finally { release.resolve(); }
+  });
+
+  it("uses actual query-bound custom and Band MCP execution without duplicate native observations", async () => {
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    const adapter = new ClaudeSDKAdapter({ enableExecutionReporting: false,
+      customTools: [{ name: "lookup.status", schema: z.object({ query: z.string() }), handler: async ({ query }) => {
         expect(query).toBe("private-mcp-marker");
         await release.promise;
         return "ready";
@@ -88,22 +154,30 @@ describe("Claude scoped MCP activity", () => {
         const client = new Client({ name: "scoped-mcp-test", version: "1" });
         onTestFinished(() => client.close());
         await client.connect(clientTransport);
-        const custom = await client.callTool({ name: "lookup_status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
+        // Claude Code spells the dotted custom tool's name in its hooks with an underscore.
+        const invoke = (event: "PreToolUse" | "PostToolUse", hookName: string) => callHook(options, event, {
+          tool_name: hookName, tool_input: {}, tool_response: "ready", tool_use_id: hookName,
+        });
+        await invoke("PreToolUse", "mcp__band__lookup_status");
+        const custom = await client.callTool({ name: "lookup.status", arguments: { room_id: "room-1", query: "private-mcp-marker" } });
         expect(custom.isError).toBeUndefined();
         expect(JSON.stringify(custom.content)).toContain("ready");
+        await invoke("PostToolUse", "mcp__band__lookup_status");
+        await invoke("PreToolUse", "mcp__band__band_get_participants");
         const band = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } });
         expect(band.isError).toBeUndefined();
         expect(JSON.stringify(band.content)).toContain("owner");
+        await invoke("PostToolUse", "mcp__band__band_get_participants");
         yield { type: "result", subtype: "success", result: "Done." } as never;
       },
     });
     await using session = await BandPlatform.join(adapter, [person("owner")]);
     const message = await session.room.say("owner", "look up status");
-    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup_status");
+    await reports.next((entry) => entry.activity?.kind === "tool_call" && entry.activity.name === "lookup.status");
     release.resolve();
     expect(await session.room.outcome(message)).toBe("processed");
-    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
-      { kind: "reasoning" }, { kind: "tool_call", name: "lookup_status" }, { kind: "reasoning" },
+    expect(activitySequence(reports)).toEqual([
+      { kind: "reasoning" }, { kind: "tool_call", name: "lookup.status" }, { kind: "reasoning" },
       { kind: "tool_call", name: "band_get_participants" }, { kind: "reasoning" }, false,
     ]);
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
@@ -271,6 +345,94 @@ describe("Claude scoped MCP activity", () => {
     expect(await session.room.outcome(message)).toBe("processed");
     expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
     expect(logger.warn).toHaveBeenCalledWith("Claude SDK MCP bridge close failed", expect.objectContaining({ roomId: session.room.id }));
+  });
+
+  it("ends a native tool at its failure hook", async () => {
+    const reports = recordRuntimeActivity();
+    const tool = { tool_name: "Bash", tool_input: { command: "private-marker" }, tool_use_id: "native" };
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
+        await reported(reports, "reasoning", () => callHook(options, "PostToolUseFailure", { ...tool, error: "failed", is_interrupt: false }));
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false]);
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+    expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+    expect(JSON.stringify(reports.entries)).not.toContain("private-marker");
+  });
+
+  const status = (state: "compacting" | "requesting" | null) => ({ type: "system", subtype: "status", status: state, uuid: `status-${state}`, session_id: "session" }) as never;
+
+  it("reports the main thread's compaction between its compacting and null statuses, each time", async () => {
+    const reports = recordRuntimeActivity();
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* () {
+        for (let compaction = 0; compaction < 2; compaction++) {
+          const from = reports.entries.length;
+          yield status("compacting");
+          await reports.next((entry) => entry.activity?.kind === "memory", from);
+          const ending = reports.entries.length;
+          yield status(null);
+          await reports.next((entry) => entry.activity?.kind === "reasoning", ending);
+        }
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, { kind: "memory" }, { kind: "reasoning" }, false]);
+  });
+
+  it("keeps a compaction running through a status that is neither compacting nor null", async () => {
+    const reports = recordRuntimeActivity();
+    const tool = { tool_name: "Bash", tool_input: {}, tool_use_id: "during-compaction" };
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        const from = reports.entries.length;
+        yield status("compacting");
+        await reports.next((entry) => entry.activity?.kind === "memory", from);
+        yield status("requesting");
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", tool));
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "memory" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false]);
+  });
+
+  it("ends a native tool whose call was denied, which runs no hook after it", async () => {
+    const reports = recordRuntimeActivity();
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", { tool_name: "Bash", tool_input: {}, tool_use_id: "denied" }));
+        const from = reports.entries.length;
+        yield { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "denied", is_error: true, content: "Permission denied" }] } } as never;
+        await reports.next((entry) => entry.activity?.kind === "reasoning", from);
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "session" } as never;
+      },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "run it"))).toBe("processed");
+    expect(activitySequence(reports)).toEqual([
+      { kind: "reasoning" }, { kind: "tool_call", name: "Bash" }, { kind: "reasoning" }, false,
+    ]);
+  });
+
+  it("ends a native tool the query left open before its failure is delivered", async () => {
+    const reports = recordRuntimeActivity();
+    const adapter = new ClaudeSDKAdapter({ enableMcpTools: false, enableExecutionReporting: false,
+      queryFn: async function* ({ options }) {
+        await reported(reports, "tool_call", () => callHook(options, "PreToolUse", { tool_name: "Bash", tool_input: {}, tool_use_id: "open" }));
+        throw new Error("provider died");
+        yield undefined as never;
+      },
+    });
+    expect(await activityWhileProviderFails(adapter, { reports })).toEqual({ kind: "reasoning" });
   });
 });
 
