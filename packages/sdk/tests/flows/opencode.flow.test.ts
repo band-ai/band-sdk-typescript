@@ -170,11 +170,17 @@ async function timeOut(reports: ActivityReports): Promise<void> {
   await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
 }
 
-/** What the room's activity read while a turn's failure was still being posted; `fail` makes the turn fail. */
+type OpencodeRoom = Awaited<ReturnType<typeof opencodeRoom>>;
+
+/**
+ * What the room's activity read while a turn's failure was still being posted; `fail` makes the turn
+ * fail, and `meanwhile` is what the room and OpenCode do before the failure lands.
+ */
 async function activityWhileFailing(
   script: (turn: OpencodeTurn, reports: ActivityReports) => Promise<void> | void,
   config: OpencodeAdapterConfig,
   fail: (reports: ActivityReports) => Promise<void> = async () => {},
+  meanwhile: (session: OpencodeRoom) => Promise<unknown> = async () => {},
 ) {
   const reports = recordRuntimeActivity();
   const rest = new SlowFailureRest(PEOPLE);
@@ -184,6 +190,7 @@ async function activityWhileFailing(
   await session.start((turn) => script(turn, reports));
   await fail(reports);
   await rest.failurePosting.promise;
+  await meanwhile(session);
   await vi.advanceTimersByTimeAsync(WORKING_HEARTBEAT_MS);
   const activity = reports.entries.at(-1)?.activity;
   rest.gate.resolve();
@@ -305,6 +312,52 @@ describe("OpenCode in a Band room", () => {
   it("ends an open permission wait before a turn timeout's failure is delivered", async () => {
     expect(await activityWhileFailing((turn) => void turn.askPermission({ id: "per_open" }), { approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 }, timeOut))
       .toEqual({ kind: "reasoning" });
+  });
+
+  it("keeps the wait ended when the room answers one of the failed turn's asks before its failure is delivered", async () => {
+    const asks = (turn: OpencodeTurn) => { turn.askPermission({ id: "per_first" }); turn.askPermission({ id: "per_second" }); };
+    expect(await activityWhileFailing(asks, { approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 }, timeOut, ({ room }) => room.exchange(OWNER, "approve per_first")))
+      .toEqual({ kind: "reasoning" });
+  });
+
+  it("keeps the wait ended when OpenCode asks again after a session error, before its failure is delivered", async () => {
+    expect(await activityWhileFailing(async (turn, reports) => {
+      turn.askPermission({ id: "per_first" });
+      await reports.next((entry) => entry.activity?.kind === "permission");
+      turn.error("boom");
+    }, {}, undefined, async ({ server }) => (await server.turn()).askPermission({ id: "per_late" }))).toEqual({ kind: "reasoning" });
+  });
+
+  it.each(["always", "reject"])("stops waiting once an `%s` reply settles the session's other asks on OpenCode", async (reply) => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const { room } = session;
+    await session.start(async (turn) => {
+      await Promise.all([turn.askPermission({ id: "per_first" }), turn.askPermission({ id: "per_second" })].map((ask) => ask.reply));
+      nativeBash(turn)("running");
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_second"));
+    await room.exchange(OWNER, `${reply} per_first`);
+
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    expect(await room.exchange(OWNER, "approve per_second")).toEqual([SAYS.noLongerPending("permission", "per_second")]);
+  });
+
+  it("stops waiting once another OpenCode client answers the room's asks", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const { room, server } = session;
+    await session.start(async (turn) => {
+      await Promise.all([turn.askPermission({ id: "per_tui" }), turn.askQuestion([{ question: "Proceed?" }], "que_tui")].map((ask) => ask.reply));
+      nativeBash(turn)("running");
+    });
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_tui"));
+    server.replyPermission("per_tui", { reply: "once" });
+    server.replyQuestion("que_tui", [["yes"]]);
+
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    expect(await room.exchange(OWNER, "approve per_tui")).toEqual([SAYS.noLongerPending("permission", "per_tui")]);
+    expect(await room.exchange(OWNER, "reject que_tui")).toEqual([SAYS.noLongerPending("question", "que_tui")]);
   });
 
   it("ends a running native part before a session error's failure is delivered", async () => {
@@ -436,7 +489,7 @@ describe("OpenCode in a Band room", () => {
     // With `second` answered, a bare command means the one ask of its kind still open.
     expect(await room.exchange(OWNER, "always")).toEqual([SAYS.approvalHandled(first, "always")]);
     expect(reports.entries.at(-1)?.activity).toEqual({ kind: "permission" });
-    expect(await room.exchange(OWNER, "reject")).toEqual([SAYS.questionRejected(question)]);
+    expect(await room.exchange(OWNER, "reject")).toContain(SAYS.questionRejected(question));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([[second, "once"], [first, "always"]]);
@@ -459,7 +512,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, `approve ${pair}`)).toEqual([SAYS.questionHint([pair, single])]);
     expect(await room.exchange(OWNER, "reject que_wrong")).toEqual([SAYS.noLongerPending("question", "que_wrong")]);
     expect(await room.exchange(OWNER, "Alice\nEngineer")).toEqual([SAYS.questionAnswered(pair)]);
-    expect(await room.exchange(OWNER, "approve the blue one")).toEqual([SAYS.questionAnswered(single)]);
+    expect(await room.exchange(OWNER, "approve the blue one")).toContain(SAYS.questionAnswered(single));
 
     await room.nextMessage((posted) => posted.content === "Thanks.");
     expect(server.questionReplies()).toEqual([[pair, [["Alice"], ["Engineer"]]], [single, [["approve the blue one"]]]]);
@@ -526,7 +579,8 @@ describe("OpenCode in a Band room", () => {
       turn.answer("Done.");
     });
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_ask"));
-    expect(await room.exchange(OWNER, "yes")).toEqual([SAYS.questionAnswered("que_ask")]);
+    // OpenCode resumes on its reply event, so the answer can land before the room's acknowledgement.
+    expect(await room.exchange(OWNER, "yes")).toContain(SAYS.questionAnswered("que_ask"));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([["per_auto", "once"]]);
@@ -595,7 +649,7 @@ describe("OpenCode in a Band room", () => {
 
     expect(await room.exchange(OWNER, "approve per_claimed")).toEqual([SAYS.approvalHandled("per_claimed", "once")]);
     failedPrompt.release();
-    expect(await room.exchange(OWNER, `approve ${landed}`)).toEqual([SAYS.approvalHandled(landed, "once")]);
+    expect(await room.exchange(OWNER, `approve ${landed}`)).toContain(SAYS.approvalHandled(landed, "once"));
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(await claimed.reply).toEqual({ reply: "once" });
