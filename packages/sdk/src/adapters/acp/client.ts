@@ -24,7 +24,8 @@ export const ACP_PERMISSION_METHOD = "session/request_permission"
 /** What one prompt reports to: the runtime's own tool calls, its manual waits, and the end of both. */
 export interface PromptActivity {
   observe(chunk: CollectedChunk): void
-  permission(waiting: boolean): void
+  wait(id: string): void
+  endWait(id: string): void
   end(): void
 }
 
@@ -41,7 +42,8 @@ export class BandACPClient implements Client {
   // First prompt to report a tool call owns it for its session's life, so a call
   // replayed on a later prompt of the session is not reported again.
   private readonly callOwners = new Map<string, Map<string, number>>()
-  private readonly openWaits = new Map<JsonRpcId | object, number>()
+  private readonly openWaits = new Map<JsonRpcId | object, { token: number; wait: string }>()
+  private nextWait = 0
   // Once the wire is observed, a manual wait is held through the response write
   // instead of the handler's lifetime.
   private wireObserved = false
@@ -113,9 +115,7 @@ export class BandACPClient implements Client {
   private endActivity(token: number): void {
     const activity = this.activities.get(token)
     this.activities.delete(token)
-    const waiting = this.holdsWait(token)
-    for (const [request, owner] of this.openWaits) if (owner === token) this.openWaits.delete(request)
-    if (waiting) activity?.permission(false)
+    for (const [request, owner] of this.openWaits) if (owner.token === token) this.openWaits.delete(request)
     activity?.end()
   }
 
@@ -152,19 +152,15 @@ export class BandACPClient implements Client {
   }
 
   private beginWait(request: JsonRpcId | object, token: number): void {
-    const first = !this.holdsWait(token)
-    this.openWaits.set(request, token)
-    if (first) this.activities.get(token)?.permission(true)
+    const wait = String(++this.nextWait)
+    this.openWaits.set(request, { token, wait })
+    this.activities.get(token)?.wait(wait)
   }
 
   private endWait(request: JsonRpcId | object): void {
-    const token = this.openWaits.get(request)
+    const owner = this.openWaits.get(request)
     this.openWaits.delete(request)
-    if (token !== undefined && !this.holdsWait(token)) this.activities.get(token)?.permission(false)
-  }
-
-  private holdsWait(token: number): boolean {
-    return [...this.openWaits.values()].includes(token)
+    if (owner) this.activities.get(owner.token)?.endWait(owner.wait)
   }
 
   /** Holds actual manual waits through the JSON-RPC response write. */

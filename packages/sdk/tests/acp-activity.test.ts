@@ -14,6 +14,7 @@ import { CallHolds, RecordLog, tmpRoot } from "./testUtils";
 import { scopedActivity } from "./support/scopedActivity";
 import type { CollectedChunk } from "../src/adapters/acp/types";
 import { fileURLToPath } from "node:url";
+import { codexNamedBandTool, cursorLateNamedBandTool } from "./fixtures/providerTraces";
 
 const fakeAcpAgentPath = fileURLToPath(new URL("./fixtures/fakeAcpAgent.mjs", import.meta.url));
 const ALLOW = { outcome: { outcome: "selected", optionId: "allow" } } as const;
@@ -24,7 +25,8 @@ function activityLog() {
   const log = new RecordLog<string>();
   const activity: PromptActivity = {
     observe: (chunk) => log.record(`observed:${String(chunk.metadata.tool_call_id)}`),
-    permission: (waiting) => log.record(waiting ? "permission" : "permission-ended"),
+    wait: (id) => log.record(`wait:${id}`),
+    endWait: (id) => log.record(`wait-ended:${id}`),
     end: () => log.record("ended"),
   };
   return { log, activity };
@@ -69,7 +71,7 @@ const idleAgent = (prompt: Agent["prompt"] = async () => ({ stopReason: "end_tur
 });
 
 /** A prompt's activity that records which prompt observed a call. */
-const observingAs = (observed: string[], name: string): PromptActivity => ({ observe: () => { observed.push(name); }, permission: () => {}, end: () => {} });
+const observingAs = (observed: string[], name: string): PromptActivity => ({ observe: () => { observed.push(name); }, wait: () => {}, endWait: () => {}, end: () => {} });
 
 const startNativeCall = (client: BandACPClient, sessionId: string, id: string) => client.sessionUpdate({ sessionId, update: {
   sessionUpdate: "tool_call", toolCallId: id, title: "Bash", kind: "execute", status: "in_progress",
@@ -123,7 +125,8 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     client.beginSession("session");
     const owner = client.enterPromptSession("session", {
       observe: () => observing.resolve(),
-      permission: () => {},
+      wait: () => {},
+      endWait: () => {},
       end: () => {},
     });
     const peer = acpPeer(client, idleAgent(async () => {
@@ -180,15 +183,15 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     await secondAsked.promise;
     first.resolve();
     await heldOne.sending;
-    expect(log.entries).toEqual(["permission"]);
+    expect(log.entries).toEqual(["wait:1", "wait:2"]);
     heldOne.release();
-    await log.next((entry) => entry === "written");
-    expect(log.entries).toEqual(["permission", "written"]);
+    await log.next((entry) => entry === "wait-ended:1");
+    expect(log.entries).toEqual(["wait:1", "wait:2", "written", "wait-ended:1"]);
     second.resolve();
     await heldTwo.sending;
     heldTwo.release();
-    await log.next((entry) => entry === "permission-ended");
-    expect(log.entries).toEqual(["permission", "written", "written", "permission-ended"]);
+    await log.next((entry) => entry === "wait-ended:2");
+    expect(log.entries).toEqual(["wait:1", "wait:2", "written", "wait-ended:1", "written", "wait-ended:2"]);
     expect(await Promise.all(answers)).toEqual([ALLOW, ALLOW]);
     provider.resolve();
     await work;
@@ -203,7 +206,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     const work = owner.run(() => peer.agent.requestPermission({ sessionId: "session", toolCall: { toolCallId: "auto", title: "approval" }, ...ASK }));
     expect(await work).toEqual(ALLOW);
     await log.next((entry) => entry === "written");
-    expect(log.entries.filter((entry) => entry.startsWith("permission"))).toEqual([]);
+    expect(log.entries.filter((entry) => entry.startsWith("wait"))).toEqual([]);
   });
 
   it("ends the wait a prompt left open when it stops waiting for the agent", async () => {
@@ -224,7 +227,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     const answer = peer.agent.requestPermission({ sessionId: "session", toolCall: { toolCallId: "ask", title: "approval" }, ...ASK });
     await asked.promise;
     owner.release();
-    expect(log.entries).toEqual(["permission", "permission-ended", "ended"]);
+    expect(log.entries).toEqual(["wait:1", "ended"]);
     unanswered.resolve();
     await answer;
     provider.resolve();
@@ -247,7 +250,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     const answer = peer.agent.requestPermission({ sessionId: "session", toolCall: { toolCallId: "ask", title: "approval" }, ...ASK });
     await asked.promise;
     client.retire();
-    expect(log.entries).toEqual(["permission", "permission-ended", "ended"]);
+    expect(log.entries).toEqual(["wait:1", "ended"]);
     unanswered.resolve();
     await answer;
     await work;
@@ -262,8 +265,8 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     const peer = acpPeer(client, idleAgent(), log);
     onTestFinished(() => provider.resolve());
     await peer.agent.extMethod("vendor/ask", {});
-    await log.next((entry) => entry === "permission-ended");
-    expect(log.entries).toEqual(["permission", "written", "permission-ended"]);
+    await log.next((entry) => entry === "wait-ended:1");
+    expect(log.entries).toEqual(["wait:1", "written", "wait-ended:1"]);
     provider.resolve();
     await work;
   });
@@ -320,7 +323,7 @@ describe("native tool call observation", () => {
     const native = trackNativeActivity(scope.tools, new Set());
     const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }));
     client.beginSession("session");
-    const prompt = client.enterPromptSession("session", { observe: observeNativeToolCalls(native, true), permission: () => {}, end: () => native.endAll() });
+    const prompt = client.enterPromptSession("session", { observe: observeNativeToolCalls(native, true), wait: (id) => native.wait(id), endWait: (id) => native.endWait(id), end: () => native.endAll() });
     await prompt.run(async () => {
       for (const update of updates) {
         await client.sessionUpdate({ sessionId: "session", update });
@@ -329,8 +332,6 @@ describe("native tool call observation", () => {
     });
     return [...scope.reports.entries];
   }
-  const sendMessage = { providerIdentifier: MCP_SERVER_NAME, toolName: "band_send_message", args: { content: "hi" } };
-
   const start = toolCallFrame({ tool_call_id: "call", kind: "execute", status: "in_progress" });
   const bandCall = toolCallFrame({ tool_call_id: "band", status: "in_progress", raw_input: { server: MCP_SERVER_NAME, tool: "band_send_message", arguments: {} } });
 
@@ -362,29 +363,20 @@ describe("native tool call observation", () => {
       .toEqual([{ kind: "reasoning" }]);
   });
 
-  it("leaves a Band tool Cursor names only in a later update to its own execution", async () => {
-    expect(await streamed([
-      { sessionUpdate: "tool_call", toolCallId: "late", title: "MCP: tool", status: "pending", rawInput: {} },
-      { sessionUpdate: "tool_call_update", toolCallId: "late", title: `${MCP_SERVER_NAME}: band_send_message`, rawInput: sendMessage },
-      { sessionUpdate: "tool_call_update", toolCallId: "late", status: "in_progress" },
-      { sessionUpdate: "tool_call_update", toolCallId: "late", rawOutput: "{}", status: "completed" },
-    ])).toEqual([{ kind: "reasoning" }]);
+  it("ends Cursor's placeholder for a Band tool once a later update names it", async () => {
+    expect(await streamed(cursorLateNamedBandTool("late"))).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "other" }, { kind: "reasoning" }]);
   });
 
-  it("leaves a named Band tool to its own execution through its content-only updates", async () => {
-    expect(await streamed([
-      { sessionUpdate: "tool_call", toolCallId: "named", title: "Tool: band_send_message", status: "in_progress",
-        rawInput: { server: MCP_SERVER_NAME, tool: "band_send_message", arguments: {} } },
-      { sessionUpdate: "tool_call_update", toolCallId: "named", kind: "other", content: [{ type: "content", content: { type: "text", text: "sending" } }] },
-      { sessionUpdate: "tool_call_update", toolCallId: "named", status: "completed" },
-    ])).toEqual([{ kind: "reasoning" }]);
+  it("leaves a Band tool codex-acp names on its start to its own execution", async () => {
+    expect(await streamed(codexNamedBandTool("named"))).toEqual([{ kind: "reasoning" }]);
   });
 
-  it("stops reporting a call as native once an update names it a Band tool", async () => {
+  it("keeps a named Band tool skipped when a later update repeats its kind", async () => {
+    const [start] = codexNamedBandTool("named");
     expect(await streamed([
-      { sessionUpdate: "tool_call", toolCallId: "renamed", title: "MCP: tool", kind: "other", status: "in_progress" },
-      { sessionUpdate: "tool_call_update", toolCallId: "renamed", title: `${MCP_SERVER_NAME}: band_send_message`, rawInput: sendMessage },
-    ])).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "other" }, { kind: "reasoning" }]);
+      start,
+      { sessionUpdate: "tool_call_update", toolCallId: "named", kind: "other", status: "in_progress" },
+    ])).toEqual([{ kind: "reasoning" }]);
   });
 
   it("reports a Band tool the runtime runs on its own", async () => {

@@ -65,12 +65,18 @@ export function setPermissionActivity(tools: object, waiting: boolean): void {
   scopeLease(tools)?.permission(waiting);
 }
 
-/** Provider-native work by id: a start is reported once per activity, and only a tracked end restores reasoning. */
+/**
+ * Provider-native work and human waits by id: a start is reported once per activity, only a tracked
+ * end restores reasoning, and the wait holds while any decision is open. `endAll` ends the turn's
+ * work for good, so nothing a provider sends late can report again.
+ */
 export function trackNativeActivity(tools: object, localNames: ReadonlySet<string>) {
   const open = new Map<string, Activity>();
+  const waits = new Set<string>();
+  let ended = false;
   const begin = (id: string, activity: Activity): void => {
     const current = open.get(id);
-    if (!id || (current && sameActivity(current, activity))) return;
+    if (ended || !id || (current && sameActivity(current, activity))) return;
     open.set(id, activity);
     scopeLease(tools)?.observe(activity);
   };
@@ -85,10 +91,25 @@ export function trackNativeActivity(tools: object, localNames: ReadonlySet<strin
     end(id: string): void {
       if (open.delete(id)) endToolActivity(tools);
     },
+    wait(id: string): void {
+      if (ended || waits.has(id)) return;
+      waits.add(id);
+      if (waits.size === 1) setPermissionActivity(tools, true);
+    },
+    endWait(id: string): void {
+      if (waits.delete(id) && waits.size === 0) setPermissionActivity(tools, false);
+    },
     endAll(): void {
-      if (open.size === 0) return;
-      open.clear();
-      endToolActivity(tools);
+      ended = true;
+      // Tools first: while the wait still outranks them, their end publishes nothing of its own.
+      if (open.size > 0) {
+        open.clear();
+        endToolActivity(tools);
+      }
+      if (waits.size > 0) {
+        waits.clear();
+        setPermissionActivity(tools, false);
+      }
     },
   };
 }

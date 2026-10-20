@@ -34,7 +34,7 @@ import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } fro
 import { abandon } from "../shared/abandon";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { observeNativeToolCalls, recordBandToolCalls } from "./toolCalls";
-import { setPermissionActivity, trackNativeActivity } from "../../runtime/workingState";
+import { trackNativeActivity } from "../../runtime/workingState";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
   AcpSessionConfigError,
@@ -1363,7 +1363,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const native = trackNativeActivity(tools, new Set())
     return {
       observe: observeNativeToolCalls(native, this.enableMcpTools),
-      permission: (waiting) => setPermissionActivity(tools, waiting),
+      wait: (id) => native.wait(id),
+      endWait: (id) => native.endWait(id),
       end: () => native.endAll(),
     }
   }
