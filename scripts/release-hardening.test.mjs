@@ -1002,39 +1002,37 @@ test("CI validates pull requests to main and the legacy dev compatibility lane",
   );
 });
 
-test("CI validates every merge group and re-validates the trunk, over the whole tree, without cancelling itself", async () => {
+test("CI validates every merge group over the whole tree, without cancelling it", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
-  // Without a push trigger the suite only ever ran against a PR's merge commit,
-  // so a red build that landed anyway stopped being reported once merged.
-  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
-
   // The merge queue waits for `ci-status` on every merge group; without this
-  // trigger it never reports and the queue deadlocks.
+  // trigger it never reports and the queue deadlocks. `main` fast-forwards to
+  // the commit the queue validated, so a push run would only repeat it.
   assert.match(workflow, /\n {2}merge_group:\n/);
+  assert.doesNotMatch(workflow, /\n {2}push:\n/);
 
-  // A trunk run that gets superseded leaves that commit with no verdict, which
-  // reopens the same gap from the other side.
+  // A superseded merge-group run would leave the commit that lands with no
+  // verdict; only pull request runs may be cancelled.
   assert.match(
     workflow,
     /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
   );
 
-  // Path filtering is a PR-time optimisation. On the trunk and in a merge group
-  // every package must be selected, or `ci-status` would go green having skipped
-  // lint and test.
+  // Path filtering is a PR-time optimisation. In a merge group every package
+  // must be selected, or `ci-status` would go green having skipped lint and
+  // test.
   for (const output of ["sdk", "openclaw", "claude-code"]) {
     assert.match(
       workflow,
       new RegExp(
         `${output}: \\$\\{\\{ github\\.event_name != 'pull_request' && 'true' \\|\\| steps\\.filter\\.outputs\\.${output} \\}\\}`,
       ),
-      `${output} must be forced true outside pull requests so trunk and queue validation cannot be skipped`,
+      `${output} must be forced true outside pull requests so queue validation cannot be skipped`,
     );
   }
 
-  // Release intent is a merge gate with no baseline on a push; running it there
-  // would fail every trunk build on a missing RELEASE_BASE_COMMIT.
+  // Release intent is a merge gate with no baseline in a merge group; running
+  // it there would fail every queue run on a missing RELEASE_BASE_COMMIT.
   assert.match(
     workflow,
     /- name: Verify release intent\n {8}if: github\.event_name == 'pull_request'\n/,
