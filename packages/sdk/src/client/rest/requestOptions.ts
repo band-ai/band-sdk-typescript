@@ -1,4 +1,5 @@
 export interface RestRequestOptions {
+  abortSignal?: AbortSignal;
   maxRetries?: number;
   timeoutInSeconds?: number;
   headers?: Record<string, string>;

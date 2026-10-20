@@ -44,3 +44,12 @@ jerry_agent:
 Each room gets its own Codex app-server in `<cwd>/.band-workspaces/<roomId>`; pass `cwd` to choose the root (default `process.cwd()`).
 
 Band credentials use `loadAgentConfig(...)` only. Codex provider auth is handled by the Codex CLI / environment, not YAML.
+
+### Automatic working indicator
+
+Working state is on by default through shared runtime
+[`sessionConfig`](../../../../README.md#automatic-working-state), with a three-second
+keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
+{ enableWorkingState: false } })` to disable it. No provider-specific option or
+tool capability is needed. Execution reporting options control chat tool narration
+independently of this automatic boolean indicator.

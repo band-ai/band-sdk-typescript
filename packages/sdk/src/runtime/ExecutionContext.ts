@@ -1,3 +1,4 @@
+import { WorkingStateReporter, type ReportFn, type WorkingLease } from "./workingState";
 import type { AgentToolsRestApi } from "../client/rest/types";
 import { fetchCursorTail } from "../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
@@ -5,7 +6,7 @@ import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
-import { parseSessionConfig, type ConversationContext, type PlatformMessage, type SessionConfig } from "./types";
+import { parseSessionConfig, type ConversationContext, type PlatformMessage, type SessionConfig, type ResolvedSessionConfig } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 import { buildParticipantsMessage, resolveMentions, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
@@ -53,6 +54,9 @@ export class ExecutionContext {
   private contextCache: ConversationContext | null = null;
   private contextCacheExpiresAt = 0;
 
+  private workingReporter?: WorkingStateReporter;
+  private readonly sessionConfig: ResolvedSessionConfig;
+
   private _state: ExecutionState = "starting";
   private readonly retryTrackerInstance: RetryTracker;
   private _llmInitialized = false;
@@ -60,6 +64,7 @@ export class ExecutionContext {
 
   public constructor(options: ExecutionContextOptions) {
     const sessionConfig = parseSessionConfig(options);
+    this.sessionConfig = sessionConfig;
     this.roomId = options.roomId;
     this.link = options.link;
     this.maxContextMessages = sessionConfig.maxContextMessages;
@@ -121,6 +126,16 @@ export class ExecutionContext {
 
   public getTools(): AdapterToolsProtocol {
     return this.adapterTools;
+  }
+
+  public openWorkingCycle(report: ReportFn): WorkingLease | undefined {
+    if (!this.sessionConfig.enableWorkingState) return undefined;
+    this.workingReporter ??= new WorkingStateReporter(report, this.sessionConfig, this.roomId, this.logger);
+    return this.workingReporter.open();
+  }
+
+  public async closeWorkingState(): Promise<void> {
+    await this.workingReporter?.close();
   }
 
   public hasMessage(messageId: string): boolean {

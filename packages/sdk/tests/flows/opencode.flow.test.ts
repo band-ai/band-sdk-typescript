@@ -154,6 +154,38 @@ describe("OpenCode in a Band room", () => {
     vi.useRealTimers();
   });
 
+  it("keeps working across a detached approval and its reply I/O until the provider terminates", async () => {
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const { room, platform, server } = session;
+    const resumed = createDeferred();
+    const terminal = createDeferred();
+    const reply = server.hold("POST /permission/per_:id/reply");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const message = await session.start(async (turn) => {
+      await turn.askPermission({ id: "per_working" }).reply;
+      resumed.resolve();
+      await terminal.promise;
+      turn.answer("Done.");
+    });
+    try {
+      await room.nextMessage((posted) => posted.content === approvalPrompt("per_working"));
+      await room.outcome(message);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, true, true]);
+      const control = room.exchange(OWNER, "approve per_working");
+      await reply.sending;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(true);
+      reply.release();
+      await resumed.promise;
+      await control;
+      expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
+      terminal.resolve();
+      await platform.rest.workingReports.next((entry) => !entry.working);
+      expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(false);
+    } finally { reply.release(); terminal.resolve(); vi.useRealTimers(); }
+  });
+
   it("streams one answer to the requester, reporting each tool once and ignoring what is not the assistant's", async () => {
     await using session = await opencodeRoom({ enableExecutionReporting: true, providerId: "anthropic", modelId: "claude-test" });
     const { room, server } = session;

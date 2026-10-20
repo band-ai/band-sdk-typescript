@@ -1,3 +1,4 @@
+import { bindWorkingCycle } from "./workingState";
 import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
@@ -76,6 +77,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly stopGate = new SingleFlight<boolean>();
   private _agentName = "";
   private _agentDescription = "";
+  private contactHubRoomId?: string;
   private contactsSubscribed = false;
 
   public constructor(options: PlatformRuntimeOptions) {
@@ -254,6 +256,7 @@ export class PlatformRuntime implements AsyncDisposable {
       await adapter.onStarted(this._agentName, this._agentDescription);
       assertNotSuperseded();
 
+      this.contactHubRoomId = undefined;
       this.contactHandler = new ContactEventHandler({
         config: this.contactConfig ?? { strategy: "disabled" },
         rest: this.link.rest,
@@ -285,6 +288,7 @@ export class PlatformRuntime implements AsyncDisposable {
           }
         },
         onHubInit: async (roomId, systemPrompt) => {
+          this.contactHubRoomId = roomId;
           const runtime = this.runtime;
           if (!runtime) return;
           runtime.getOrCreateContext(roomId).injectSystemMessage(systemPrompt);
@@ -297,7 +301,7 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
-        onExecute: (context, event) => this.executeAdapter(context, event, adapter),
+        onExecute: (context, event, admitted) => this.executeAdapter(context, event, adapter, admitted),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
         onContactEvent: (event) => this.handleContactEvent(event),
         onParticipantAdded: this._onParticipantAdded,
@@ -443,8 +447,11 @@ export class PlatformRuntime implements AsyncDisposable {
     context: ExecutionContext,
     event: PlatformEvent,
     adapter: FrameworkAdapter,
+    admitted: () => boolean,
   ): Promise<void> {
+    if (!admitted()) return;
     const input = await this.preprocessor.process(context, event, this._agentId);
+    if (!admitted()) return;
     if (!input) {
       this.logger.debug("preprocessor returned no input", {
         roomId: context.roomId,
@@ -463,6 +470,11 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
     }
 
+    if (!admitted()) return;
+    const lease = roomId === this.contactHubRoomId ? undefined : context.openWorkingCycle(
+      (working, options) => this.link.reportActivity(roomId, working, options),
+    );
+
     // History ids, not content: enough to tell what a cold-boot turn could recall.
     this.logger.debug("turn starting", {
       roomId,
@@ -474,11 +486,16 @@ export class PlatformRuntime implements AsyncDisposable {
     let succeeded = true;
     let caughtError: unknown;
     try {
-      await adapter.onEvent(input);
+      await lease?.ready;
+      if (!admitted()) return;
+      await adapter.onEvent(lease ? { ...input, tools: bindWorkingCycle(input.tools, lease) } : input);
     } catch (error) {
       succeeded = false;
       caughtError = error;
+    } finally {
+      await lease?.end();
     }
+    if (!admitted()) return;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
 
     if (messageId && !isSynthetic) {

@@ -42,3 +42,12 @@ jerry_agent:
   agent_id: "your-jerry-agent-id"
   api_key: "your-api-key"
 ```
+
+### Automatic working indicator
+
+Working state is on by default through shared runtime
+[`sessionConfig`](../../../../README.md#automatic-working-state), with a three-second
+keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
+{ enableWorkingState: false } })` to disable it. No provider-specific option or
+tool capability is needed. Execution reporting options control chat tool narration
+independently of this automatic boolean indicator.

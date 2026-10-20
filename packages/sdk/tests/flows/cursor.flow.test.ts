@@ -129,12 +129,40 @@ describe("Cursor in a Band room", () => {
     vi.useRealTimers();
   });
 
+  it("keeps working while a detached Cursor permission waits and retires only at prompt completion", async () => {
+    await using session = await cursorRoom();
+    const { room, platform } = session;
+    const resumed = createDeferred();
+    const terminal = createDeferred();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { message, tokens } = await session.start(async (turn) => {
+      await turn.requestPermission(WRITE_FILE);
+      resumed.resolve();
+      await terminal.promise;
+      await turn.say(DONE);
+    }, 1);
+    try {
+      await room.outcome(message);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, true, true]);
+      await room.exchange(OWNER, `${CURSOR_COMMAND} select ${tokens[0]} allow`);
+      await resumed.promise;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
+      terminal.resolve();
+      await platform.rest.workingReports.next((entry) => !entry.working);
+      expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(false);
+    } finally { terminal.resolve(); vi.useRealTimers(); }
+  });
+
   it("lets the room approve and deny tool permissions while the turn waits, however the owner phrases it", async () => {
     await using session = await cursorRoom();
     const { room } = session;
+    const terminal = createDeferred();
     const { result, message, tokens: [write] } = await session.start(async (turn) => {
       const first = await turn.requestPermission(WRITE_FILE);
       const second = await turn.requestPermission({ ...WRITE_FILE, toolCall: { toolCallId: "rm-1", title: "Delete draft.md" } });
+      await terminal.promise;
       await turn.say("Updated the notes.");
       return [first, second];
     }, 1);
@@ -151,6 +179,7 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(TEAMMATE, `${CURSOR_COMMAND} deny ${remove}`)).toContain(SAYS.resolved("permission", remove!));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${remove} allow`)).toEqual([SAYS.notPending(remove!)]);
 
+    terminal.resolve();
     expect(await result).toEqual([selected("allow"), CANCELLED]);
     // The room was handed back when the first decision opened; the reply still reaches the requester.
     expect(await room.outcome(message)).toBe("processed");
@@ -621,7 +650,7 @@ describe("Cursor in a Band room", () => {
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(RELEASED_TURN_FAILED, expect.anything()));
     expect(logger.warn.mock.calls.filter(([event]) => event === RELEASED_TURN_FAILED)).toHaveLength(1);
     const refused = platform.rest.refused.entries;
-    expect(refused.map(({ roomId, call }) => ({ roomId, call }))).toEqual([{ roomId: room.id, call: "createChatEvent" }]);
+    expect(refused.map(({ roomId, call }) => ({ roomId, call }))).toEqual([{ roomId: room.id, call: "reportActivity" }, { roomId: room.id, call: "createChatEvent" }]);
     const reports = reportedFailures(refused.flatMap(({ attempt }) => attempt ?? []));
     expect(reports).toHaveLength(1);
     expect(reports).not.toContainEqual(MISSING_REPLY);

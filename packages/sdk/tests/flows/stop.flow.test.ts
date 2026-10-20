@@ -53,7 +53,6 @@ describe("stopping while the agent's rooms are still joining", () => {
 
     const stopping = runtime.stop(STOP_AT_TURN_IN_FLIGHT_MS);
     held.release();
-    expect(await room.outcome(inFlight)).toBe("processed");
     // Arrives while the stop waits on the start: the runtime must not take it up.
     await room.say(USER, `${MENTION} three`);
     releaseLaterRoom();
@@ -63,7 +62,8 @@ describe("stopping while the agent's rooms are still joining", () => {
     await using _next = runtimeOn(platform);
     await _next.start(next);
     expect(await room.outcome(waiting)).toBe("processed");
-    expect(first.handled.entries).toEqual([inFlight]);
+    expect(first.handled.entries).toEqual([]);
+    expect(next.handled.entries).toContain(inFlight);
   });
 
   it("stops cleanly when the stop lands in the same tick as the start", async () => {
