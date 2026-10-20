@@ -87,7 +87,8 @@ jobs matters for two reasons:
 2. **The ruleset stops tracking job names.** Adding, renaming, or splitting a CI
    job needs no ruleset edit. A test in
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
-   other job in `ci.yml`, so a new job cannot silently escape the gate.
+   other job in `ci.yml` and checks each one's result, so a new job cannot
+   silently escape the gate.
 
 ### Strict checks
 
@@ -105,7 +106,8 @@ ahead of it, so two PRs that pass alone but break together never both land. Both
 `ci.yml` and `pr-title.yml` therefore trigger on `merge_group:`, and
 `pr-title.yml` guards its validation step with
 `if: github.event_name == 'pull_request'` — a merge group carries no PR title, so
-without that guard the queue deadlocks.
+without that guard the queue deadlocks. `typescript-core-coverage.yml` is not a
+required check and does not run in the queue.
 
 Dependabot PRs go stale on every merge to `main`. Dependabot rebases its own
 branches, so this is visible noise rather than work.

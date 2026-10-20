@@ -38,7 +38,6 @@ on:
       - '.github/workflows/typescript-core-coverage.yml'
       - '.github/scripts/*core*coverage*.mjs'
       - 'scripts/typescript-core-coverage-workflow.test.mjs'
-  merge_group:
   workflow_dispatch:
 
 permissions:

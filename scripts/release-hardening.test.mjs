@@ -1163,6 +1163,17 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
     jobNames.filter((name) => name !== "ci-status").sort(),
     "ci-status must depend on every other CI job, or a failure could slip through",
   );
+
+  // The script checks only the results it lists, so a needed job missing here
+  // could fail without failing the gate.
+  const checked = [...block.matchAll(/"([a-z][a-z0-9-]*):\$\{\{ needs\.\1\.result \}\}:/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    [...checked].sort(),
+    [...needs].sort(),
+    "ci-status must check the result of every job it needs",
+  );
 });
 
 /** What CI must run for every released package. */
