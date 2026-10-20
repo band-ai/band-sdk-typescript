@@ -208,6 +208,8 @@ describe("runtime working-state session configuration", () => {
     { workingKeepAliveSeconds: Infinity }, { workingKeepAliveSeconds: NaN },
     { workingRequestTimeoutSeconds: 0 }, { workingRequestTimeoutSeconds: 3 },
     { workingRequestTimeoutSeconds: Infinity }, { workingRequestTimeoutSeconds: NaN },
+    // Each report can succeed and still land after the TTL: a 3.9s response, a 4s cadence, then a 3.9s request.
+    { workingKeepAliveSeconds: 4, workingRequestTimeoutSeconds: 3.9 },
     { maxWorkingStateSeconds: 0 }, { maxWorkingStateSeconds: -1 },
     { maxWorkingStateSeconds: Infinity }, { maxWorkingStateSeconds: NaN },
   ])("rejects invalid enabled timing at construction: %o", (sessionConfig) => {

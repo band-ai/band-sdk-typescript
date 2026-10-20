@@ -52,7 +52,8 @@ export const sessionConfigSchema = z.object({
   const timeout = config.workingRequestTimeoutSeconds;
   for (const [field, valid] of [
     ["workingKeepAliveSeconds", Number.isFinite(cadence) && cadence > 0 && cadence < WORKING_STATE_TTL_SECONDS / 2],
-    ["workingRequestTimeoutSeconds", Number.isFinite(timeout) && timeout > 0 && timeout < cadence],
+    // A refresh starts a cadence after the previous response, so one slow response and one slow request must fit the TTL.
+    ["workingRequestTimeoutSeconds", Number.isFinite(timeout) && timeout > 0 && timeout < cadence && cadence + 2 * timeout < WORKING_STATE_TTL_SECONDS],
     ["maxWorkingStateSeconds", config.maxWorkingStateSeconds === undefined || (Number.isFinite(config.maxWorkingStateSeconds) && config.maxWorkingStateSeconds > 0)],
   ] as const) {
     if (!valid) ctx.addIssue({ code: "custom", path: [field], message: "Invalid enabled working-state timing" });

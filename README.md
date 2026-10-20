@@ -463,7 +463,9 @@ working indicator enabled; disabling working state preserves tools and narration
 
 When enabled, cadence must be finite, positive and strictly below five seconds
 (half the platform's ten-second indicator TTL). Request timeout must be finite,
-positive and below cadence; an optional maximum duration must be finite and
+positive and below cadence, and cadence plus two request timeouts must stay
+below that TTL, since a refresh starts a cadence after the previous response.
+An optional maximum duration must be finite and
 positive. Dormant numeric timing settings are ignored when disabled. At the cap,
 refreshes stop while adapter work continues; completion still attempts a final
 false. Each request has no retries and a separate whole-request cancellation budget.

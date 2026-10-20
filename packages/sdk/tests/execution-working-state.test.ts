@@ -4,6 +4,7 @@ import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { DefaultPreprocessor } from "../src/runtime/preprocessing/DefaultPreprocessor";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
+import { Execution } from "../src/runtime/Execution";
 import { BandLink } from "../src/platform/BandLink";
 import { createDeferred } from "../src/core/deferred";
 import { retainWorkingCycleUntil } from "../src/runtime/workingState";
@@ -362,6 +363,72 @@ describe("execution-owned working state", () => {
     await expect(f.runtime.stop(0)).rejects.toBe(error);
     provider.resolve(); await retained;
     expect(f.log.entries.filter((entry) => entry === "false")).toHaveLength(1);
+  });
+
+  it("stops with the original error when a fatal failure is still closing reporting", async () => {
+    const error = new Error("preprocessing failed");
+    const base = new DefaultPreprocessor();
+    const closing = createDeferred();
+    const closed = createDeferred();
+    const f = await fixture({
+      preprocessor: { process: async (context, event, agentId) => {
+        if (event.type === "message_created" && event.payload.id === "fatal") throw error;
+        return await base.process(context, event, agentId);
+      } },
+      report: async (working) => { if (!working) { closing.resolve(); await closed.promise; } },
+    });
+    const provider = createDeferred();
+    let retained: Promise<void> | undefined;
+    await f.runtime.start(new GenericAdapter(async ({ tools }) => { retained = retainWorkingCycleUntil(tools, provider.promise); tools.turn.settle(); }));
+    await f.runtime.bootstrapRoomMessage(room, message());
+    const outcome = expect(f.runtime.runForever()).rejects.toBe(error);
+    await f.transport.emit(`chat_room:${room}`, "message_created", {
+      id: "fatal", content: "fail", message_type: "text", sender_id: "user", sender_type: "User", sender_name: "User",
+      inserted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    });
+    await closing.promise;
+    const stopping = f.runtime.stop(0);
+    closed.resolve();
+    await expect(stopping).rejects.toBe(error);
+    await outcome;
+    provider.resolve(); await retained;
+  });
+
+  it("stops scanning the backlog once a forced stop has closed the queue, while reporting still closes", async () => {
+    const firstRead = createDeferred<unknown>();
+    const rescanned = createDeferred();
+    const closing = createDeferred();
+    const closed = createDeferred();
+    const entered = createDeferred();
+    const release = createDeferred();
+    let reads = 0;
+    const link = {
+      getNextMessage: async () => {
+        if (++reads > 1) rescanned.resolve();
+        return await firstRead.promise;
+      },
+      getStaleProcessingMessages: async () => [],
+      markFailed: async () => {},
+    };
+    const context = new ExecutionContext({ roomId: room, link: link as never, maxContextMessages: 20 });
+    const report = async (working: boolean) => { if (!working) { closing.resolve(); await closed.promise; } };
+    const execution = new Execution({ roomId: room, link: link as never, context, onExecute: async (handlerContext, event, admitted) => {
+      // As PlatformRuntime does: an unadmitted backlog head is left unmarked, so `/messages/next` serves it again.
+      if (!admitted() || event.type !== "message_created" || event.payload.id !== "bootstrap") return;
+      handlerContext.openWorkingCycle(report);
+      entered.resolve();
+      await release.promise;
+    } });
+    const bootstrapping = execution.bootstrapMessage(message("bootstrap") as never);
+    await entered.promise;
+
+    const stopping = execution.stop(0);
+    await closing.promise;
+    firstRead.resolve(message("backlog"));
+    release.resolve(); await bootstrapping;
+    const outcome = await Promise.race([rescanned.promise.then(() => "rescanned"), execution.waitForIdle().then(() => "idle")]);
+    closed.resolve(); await stopping;
+    expect(outcome).toBe("idle");
   });
 
   it("disabled reporting still admits handlers and preserves deliberate no-reply tools", async () => {
