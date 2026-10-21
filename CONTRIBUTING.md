@@ -52,9 +52,15 @@ This is a pnpm workspace with three published packages:
 
 2. **Make your changes**
 
-   Follow the coding standards in [`AGENTS.md`](AGENTS.md).
+   Follow the engineering standard and relevant skills in [`AGENTS.md`](AGENTS.md).
+   Plan the change, establish the owning cause or need, and assess meaningful
+   coverage of realistic flows before implementation.
 
-3. **Run the checks**
+3. **Run the applicable checks**
+
+   Select validation using [AGENTS.md](AGENTS.md#pre-commit-checklist). Prose-only
+   changes need documentation/skill checks, not the SDK unit suite. The full
+   workspace gate for shared behavior, dependencies and packaging is:
 
    ```bash
    pnpm -r lint
@@ -119,7 +125,14 @@ This is a pnpm workspace with three published packages:
 
 5. **Submit a pull request**
 
-   Push your branch and open a PR against **`main`**. Every PR is **squash-merged**
+   Push your branch and open a **draft** PR against **`main`**. Complete the
+   [author readiness review](AGENTS.md#pr-lifecycle-and-readiness-review) before
+   marking it ready: supported problem analysis, a proportional plan, complete
+   implementation, meaningful scenario coverage, and applicable validation.
+   Use the [Why / What / Scope format](AGENTS.md#pull-request-descriptions).
+   Draft CI skips do not waive author checks; ready does not mean approved.
+
+   Every PR is **squash-merged**
    through the merge queue, so the squash subject is what Release Please sees —
    make sure it is a valid Conventional Commit (CI validates the PR title for you).
 

@@ -1,11 +1,14 @@
 ---
 name: bug-hunting-via-example
-description: Ask which runnable TypeScript examples to use, discover them from the repo, smoke-start or live-run against Band with fresh provisioned agents, and trace failures across adapters, config, and platform boundaries. Use for example certification, live debugging, adapter integration issues, and parity work with band-sdk-python's example workflow.
+description: Validate or debug actual runnable TypeScript examples using the existing discovery, startup-smoke and live runners. Use for named examples or example certification; use band-investigate-test-error for a failing test and band-run-e2e-live for baseline scenarios.
 ---
 
 # Bug Hunting via Example (TypeScript SDK)
 
-Port of band-sdk-python's `.claude/skills/bug-hunting-via-example`, adapted for `packages/sdk/examples/**/*.ts` entry points (`isDirectExecution` + `loadAgentConfig`).
+Read [workflow-runtime.md](../workflow-runtime.md). Use the existing
+`packages/sdk/examples/**/*.ts` entry points (`isDirectExecution` +
+`loadAgentConfig`) and runner implementations; verify their supported options
+before execution. Diagnosis does not imply publication or unrelated live runs.
 
 ## Principles
 
@@ -13,7 +16,9 @@ Port of band-sdk-python's `.claude/skills/bug-hunting-via-example`, adapted for 
 - Startup liveness (`OK_RUNNING`) is not proof of LLM behavior — use the live runner for marker turns.
 - Prefer fresh provisioned agents (`tests/integration/support/liveHarness.ts`) over shared `agent_config.yaml` for live plans.
 - Never print API keys; child logs go to temp files on failure only.
-- Reuse Python's mental model: discover → config → smoke → (optional) YAML plan → scorecard.
+- Follow discovery → config → smoke → scoped live plan → scorecard.
+- Preserve existing configuration and other agents' resources; use owned
+  worktrees and temporary plans for experiments.
 
 ## 0. Select examples
 
@@ -54,7 +59,10 @@ Implementation: `packages/sdk/scripts/examples-smoke-startup.mjs` + `examples-di
 
 YAML plan format matches Python's runner seam (simplified: **independent** scenarios only — no `collaborations` / shared-room group yet).
 
-> **A plan file is arbitrary code execution.** `command` is argv the runner spawns; read untrusted plans like shell scripts.
+> A plan can specify executable argv through `command`. Inspect its source and
+> intended commands before running it. A trusted developer-authored plan is
+> ordinary local execution; do not label it a vulnerability without an
+> untrusted-input path across an authority boundary.
 
 ```yaml
 version: 1
@@ -79,16 +87,19 @@ Each example gets an isolated temp `agent_config.yaml` with a **provisioned** ag
 
 Sample plan checked into the repo: `packages/sdk/scripts/example-plans/basic-echo.yaml`.
 
-## 4. Python parity reference
+## 4. Diagnose at the actual boundary
 
-For full independent + together topologies, collaboration probes, and tool-call barriers, see band-sdk-python:
-
-- `.claude/skills/bug-hunting-via-example/SKILL.md`
-- `scripts/discover.py`, `scripts/runner.py`
-- `tests/e2e/baseline/toolkit/`
-
-Extend the TypeScript runner when a concrete TS debugging session proves the same seam is needed.
+The TS runner supports independent scenarios. Do not invent shared-room or
+collaboration options from another SDK. A concrete need for that support is a
+separate proposed runner change, with an implementation plan and approval.
+For failures, compare example/config, platform, adapter and external CLI
+hypotheses with observed evidence; reuse `band-investigate-test-error`'s
+investigation method. Preserve the exact failing command and owned logs.
 
 ## 5. Report
 
 Hand off: discovery output, smoke scorecard, live scorecard, preserved child log paths on startup failure, and whether the defect is example/config/platform/adapter/external CLI.
+
+When fixes are requested, repair the owning cause and validate the affected
+behavior using AGENTS. New PRs start as drafts and require author readiness
+before promotion. Never treat startup liveness as successful end-to-end behavior.

@@ -13,7 +13,9 @@ coverage
 # Local Claude Code settings/state (machine-specific, not shared)
 .claude/settings.local.json
 .claude/worktrees
-.agents
+# Keep the shared skill discovery link; ignore other local agent state.
+.agents/*
+!.agents/skills
 .idea
 scorecard.png
 agent_config.yaml

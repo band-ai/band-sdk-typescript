@@ -2,6 +2,73 @@
 
 This is a TypeScript SDK that connects AI agents to the Band collaborative platform.
 
+## Engineering Standard
+
+Understand the problem before changing code. For defects, establish the root
+cause with evidence and fix it at the layer that owns the behavior. For other
+changes, establish the intended outcome and constraints.
+
+Before implementation, form a plan proportional to the work: scope, approach,
+important scenarios, and validation. Prefer focused, clear solutions that reuse
+existing patterns.
+
+Assess whether existing tests meaningfully cover the affected behavior. Close
+material coverage gaps and validate realistic flows, including complex
+interactions and failure paths where relevant. Passing tests or high coverage
+alone do not establish correctness.
+
+Report what was verified, what remains uncertain, and any checks not run.
+Follow the [PR Lifecycle and Readiness Review](#pr-lifecycle-and-readiness-review)
+requirements: start new PRs as drafts and mark them ready only after the
+readiness review passes.
+
+Other developers and agents may be working concurrently. Preserve their
+changes, inspect current local and remote state before integrating or pushing,
+and avoid unrelated edits or destructive Git operations.
+
+## Skills
+
+Project guidance lives under `.claude/skills/`; Codex discovers the same skills
+through the `.agents/skills` symlink. Before starting, identify, read, and apply
+the existing skills relevant to the task. Reassess when moving from research
+to implementation, testing, or review. Discovery alone does not load instructions.
+Read the linked `SKILL.md` directly when automatic loading is unavailable.
+
+Follow each activation rule: `band-code-review` requires explicit invocation.
+Use only skills that actually exist and disclose missing guidance when it
+materially affects the work. Read [the shared runtime guidance](.claude/skills/workflow-runtime.md)
+for host capabilities, authorization, delegation and cleanup.
+
+Relevant personal or other installed skills may complement project guidance
+without weakening its requirements. Respect the user's chosen workflow and
+each skill's activation rules. Do not modify or remove personal skills as
+part of repository work.
+
+As the project matures, propose focused corrections when work reveals stale
+rules, recurring gaps, or better established practice. Prefer improving an
+existing skill or this file. Create new skills or change personal skills only
+with explicit user approval.
+
+| Skill | Use when |
+|---|---|
+| [band-typescript-conventions](.claude/skills/band-typescript-conventions/SKILL.md) | editing TypeScript source, APIs, comments, or errors |
+| [band-typescript-test-conventions](.claude/skills/band-typescript-test-conventions/SKILL.md) | writing/reviewing tests or assessing meaningful coverage and realistic flows |
+| [band-plan](.claude/skills/band-plan/SKILL.md) | turning a Linear ticket into a reviewed implementation plan |
+| [band-linear-create-branch](.claude/skills/band-linear-create-branch/SKILL.md) | creating a branch for Linear work with `git lb` |
+| [band-add-framework-adapter](.claude/skills/band-add-framework-adapter/SKILL.md) | adding a framework adapter |
+| [band-write-e2e-test](.claude/skills/band-write-e2e-test/SKILL.md) | writing or extending live baseline scenarios |
+| [band-run-e2e-live](.claude/skills/band-run-e2e-live/SKILL.md) | running existing live baseline scenarios |
+| [band-investigate-test-error](.claude/skills/band-investigate-test-error/SKILL.md) | finding the cause of a failing or flaky test |
+| [band-code-review](.claude/skills/band-code-review/SKILL.md) | explicitly running the team's six-angle PR or branch review |
+| [band-here-is-a-review](.claude/skills/band-here-is-a-review/SKILL.md) | verifying and handling supplied review feedback |
+| [band-pr-triage](.claude/skills/band-pr-triage/SKILL.md) | a quick read-only PR readiness assessment |
+| [band-ci-triage](.claude/skills/band-ci-triage/SKILL.md) | investigating failing checks at the tested revision |
+| [band-security-review](.claude/skills/band-security-review/SKILL.md) | a requested review of security and trust boundaries |
+| [band-stacked-prs](.claude/skills/band-stacked-prs/SKILL.md) | managing dependent PRs or considering a stack |
+| [bug-hunting-via-example](.claude/skills/bug-hunting-via-example/SKILL.md) | reproducing failures with actual runnable TS examples |
+| [dependabot-triage](.claude/skills/dependabot-triage/SKILL.md) | handling existing bot PRs and blocked upgrades |
+| [upgrade-dependencies](.claude/skills/upgrade-dependencies/SKILL.md) | surveying and upgrading outdated workspace dependencies |
+
 ## Core Features
 
 1. Multi-framework support (OpenAI, Anthropic, Gemini, Claude Agent SDK, Codex, LangGraph, Vercel AI SDK, Google ADK, Letta, OpenCode, Parlant, plus a Generic adapter)
@@ -60,6 +127,15 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 
 Tool schemas live in `packages/sdk/src/contracts/toolSchemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
 
+## Turn Outcome
+
+`SimpleAdapter.onEvent` applies the central turn-outcome rule from SDK Core;
+adapters must not duplicate judgment. Post adapter-authored text with
+`sendNotice` and relay model final text through `relayReply`. Read
+[docs/turn-outcome.md](docs/turn-outcome.md) before changing turn settlement or
+reply behavior. `packages/sdk/tests/turnOutcomeContract.ts` registers adapter
+coverage and explicit exemptions.
+
 ## REST Client API Pattern
 
 REST is wrapped around the Fern-generated `@band-ai/rest-client`. `FernRestAdapter` and `RestFacade` expose a **flat** method surface you reach via `link.rest`:
@@ -93,7 +169,7 @@ WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/Ph
 
 ### Event Types
 
-All events share the shape `{ type, roomId, payload, raw? }` (see `packages/sdk/src/platform/events.ts`). Payload types are validated with Zod schemas in `packages/sdk/src/platform/streaming/payloadSchemas.ts`.
+All events share the shape `{ type, roomId, payload, raw? }` (see `packages/sdk/src/platform/events.ts`). `BandLink` validates payloads with `validateEventPayload` from `@band-ai/band-sdk-core`; protocol rules remain owned by Core.
 
 ```ts
 type PlatformEvent =
@@ -384,13 +460,18 @@ packages/sdk/tests/
 
 ## Commands
 
-Run from the repo root or `packages/sdk/`:
+Run from the repository root unless a command says otherwise. Root `pnpm test`
+and `pnpm typecheck` build the SDK first; directly filtered tests do not.
+Build first for declaration/consumer proofs or downstream package checks:
 
 ```bash
 # Install dependencies (root, monorepo-aware)
-pnpm install
+pnpm install --frozen-lockfile
 
-# Run unit tests (all packages from root, sdk only from packages/sdk)
+# Build SDK output for directly filtered consumer/package checks
+pnpm build:sdk
+
+# Run unit tests (all packages, or only SDK)
 pnpm test
 pnpm --filter @band-ai/sdk test
 
@@ -415,7 +496,9 @@ pnpm --filter @band-ai/sdk run dev:linear
 
 ## Subpath Builds
 
-`packages/sdk/tsup.config.ts` defines the entry points; each subpath in `package.json#exports` maps to its own `dist/<name>.{js,cjs,d.ts}`. Add a new subpath by:
+`packages/sdk/tsup.config.ts` and `packages/sdk/package.json#exports` own the
+entry/output mappings for ESM, CJS, and declarations. Names need not match the
+import subpath (`mcp/claude` maps to `mcp-claude`). Add a new subpath by:
 
 1. Creating an entry barrel under `packages/sdk/src/<name>/index.ts`
 2. Adding the entry to `tsup.config.ts`
@@ -438,60 +521,12 @@ LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_AP
 
 ## Adding a New Framework Adapter
 
-When adding a new adapter, follow this workflow. Use the lowercase module name (e.g. `openai`, `gemini`) and derive the PascalCase class prefix (e.g. `OpenAI`, `Gemini`).
-
-### Phase 1: Scaffold Source Files
-
-1. Create the adapter folder at `packages/sdk/src/adapters/<framework>/` with at minimum:
-   - `<Framework>Adapter.ts`: class extending `SimpleAdapter` (most adapters) or `ToolCallingAdapter` (LLMs that call platform tools as function calls)
-   - `index.ts`: barrel export
-   - `types.ts` (optional): adapter-specific option interfaces
-2. If a history converter is needed, add `packages/sdk/src/converters/<framework>.ts` and re-export from `converters/index.ts`.
-3. Add the upstream SDK as an **optional peer dependency** in `packages/sdk/package.json` (`peerDependencies` + `peerDependenciesMeta.<pkg>.optional = true`). Do not add it to `dependencies`.
-
-### Phase 2: Wire Up Exports
-
-1. Re-export the adapter and option types from `packages/sdk/src/adapters/index.ts` and `packages/sdk/src/index.ts`.
-2. If the adapter has a dedicated subpath, add an entry in `tsup.config.ts` and `package.json#exports`.
-
-### Phase 3: Implement the Adapter
-
-- For `ToolCallingAdapter`: implement a `ToolCallingModel` that converts the platform `TOOL_MODELS` into the framework's tool-call format, executes the LLM call, and returns tool calls/results. Pass `options.signal` (aborted when the turn's `turnTimeoutMs` runs out) to the provider call, so an abandoned request is released.
-- For `SimpleAdapter`: implement `onMessage(message, tools)` directly. Use `tools.sendMessage`, `tools.sendEvent`, etc.
-- Every turn is judged by band-sdk-core's turn-outcome rule; read [docs/turn-outcome.md](docs/turn-outcome.md) before posting text the adapter writes itself or relaying the model's closing text. Register the adapter in `TURN_OUTCOME_ADAPTERS` (or `TURN_OUTCOME_EXEMPT`) in `packages/sdk/tests/turnOutcomeContract.ts`.
-- Honour `agent_name` and own-agent filtering when converting history.
-- Reuse helpers from `packages/sdk/src/adapters/shared/` (`conversationPrompt`, `history`, `coercion`, `lazyAsyncValue`).
-
-### Phase 4: Tests
-
-- Unit tests at `packages/sdk/tests/<framework>-adapter.test.ts` covering: invocation flow, tool execution, error handling, custom tools, history conversion edge cases.
-- Use `FakeAgentTools` from `@band-ai/sdk/testing` to mock the platform side.
-- Register the adapter in the baseline suite (`packages/sdk/tests/baseline/toolkit/`; see its README), so every live scenario runs against it.
-
-### Phase 5: Example
-
-- Create `packages/sdk/examples/<framework>/01_basic_agent.ts` (numbered scripts + folder README) mirroring an existing example (e.g., `examples/anthropic/01_basic_agent.ts`).
-- Use `loadAgentConfig("my_agent")` (YAML) or `loadAgentConfigFromEnv()` (env vars) for credentials, **not** direct `process.env` reads.
-
-### Phase 6: Final Validation
-
-```bash
-pnpm --filter @band-ai/sdk run lint
-pnpm --filter @band-ai/sdk run typecheck
-pnpm --filter @band-ai/sdk test
-```
-
-### Key Files Reference
-
-| Purpose | Path |
-|---|---|
-| Adapter source | `packages/sdk/src/adapters/<framework>/` |
-| History converter | `packages/sdk/src/converters/<framework>.ts` |
-| Adapter barrel | `packages/sdk/src/adapters/index.ts` |
-| Top-level barrel | `packages/sdk/src/index.ts` |
-| Tool schemas | `packages/sdk/src/contracts/toolSchemas.ts` |
-| Tool calling base | `packages/sdk/src/adapters/tool-calling/` |
-| Test fakes | `packages/sdk/src/testing/FakeAgentTools.ts` |
+Use [band-add-framework-adapter](.claude/skills/band-add-framework-adapter/SKILL.md)
+for research, planning, registration and verification. Keep the TS constructor
+pattern `new <Framework>Adapter(options)` with a named options interface,
+optional framework peers, import isolation, central turn judgment, and explicit
+room/resource ownership. Register turn-outcome tests and supported baseline
+capabilities in the existing TS registries.
 
 ## Example Files (`packages/sdk/examples/`)
 
@@ -506,44 +541,61 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Top-level `await` is fine; the package is ESM (`"type": "module"`).
 - Examples are excluded from strict ESLint rules but still typechecked.
 
-## SDK Design Guidelines
+## Coding and Test Standards
 
-- Types as the API — design the surface around what TypeScript can infer and enforce; good types should tell a caller what a function does without reading the implementation.
-- Runtime validation matches static types — a schema library (Zod) is the single source of truth for both, so "compiles" and "actually valid" never drift apart.
-- Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable. Applies to new top-level entry points (like `Agent.create`); existing adapters keep their established `new <Framework>Adapter(options)` constructor pattern (see "Adding a New Framework Adapter").
-- Interceptors for cross-cutting concerns — auth, retries, and error-wrapping live in one shared place every request passes through, not copy-pasted per method.
-- Custom error types — wrap raw HTTP/protocol errors in typed errors so callers can `instanceof`-check instead of parsing status codes or message strings.
-- Consistency across the surface — the same kind of operation should look and behave the same way everywhere in the SDK.
-- Classes for namespacing, functions for helpers — give callers both a low-level client and high-level convenience helpers; don't force one style.
-- Modular types at scale — split types by domain as the surface grows; don't let one file become the bottleneck.
-- Predictable defaults — a new caller should get a working result with minimal config; sane defaults (timeouts, retries) apply out of the box.
-- Declarative coding style — describe *what* the result should be, not the step-by-step *how*; push imperative control flow into small, named helpers.
-- Comments are factual, not narration — short, state the non-obvious *why* only. Let the code speak for itself.
-- Tests assert real behavior, not the obvious or an assumption — don't assert language/library trivia or a mock echoing back what you told it to return; assert outcomes that would actually fail if the code broke.
-- Tests should strive to assert real-life scenarios and complex flows, not just isolated units in the abstract.
+Read [band-typescript-conventions](.claude/skills/band-typescript-conventions/SKILL.md)
+for API design, typing, errors, logging, comments and package boundaries, and
+[band-typescript-test-conventions](.claude/skills/band-typescript-test-conventions/SKILL.md)
+for test design and coverage. Keep functions focused and reuse existing sources
+of truth. Meaningful assertions and realistic complex flows matter more than
+counts or percentages.
 
-## Coding Standards
+Prove ordering with explicit synchronization and confirmed completion; fixed
+sleeps and elapsed wall time are not evidence. Use controlled clocks for
+expiry/deadlines, keeping real process/network readiness independent. Cleanup
+must cover failed or cancelled startup and release owned resources completely.
 
-- TypeScript strict mode is on (`tsconfig.json`: `strict: true`, `verbatimModuleSyntax: true`, `forceConsistentCasingInFileNames: true`).
-- ESM only for source (`type: "module"`); use `.js` extensions in import paths only when required (verbatim module syntax).
-- Use `import type` for type-only imports (enforced by `verbatimModuleSyntax`).
-- No `any` in `src/` — `@typescript-eslint/no-explicit-any` is `error` for `src/**/*.ts` (relaxed for tests/examples).
-- Prefer named exports; avoid default exports.
-- All public adapter options use named interfaces (`<Framework>AdapterOptions`).
-- Use the `Logger` interface from `@band-ai/sdk/core` instead of `console.*` in library code (`console.warn`/`console.error` allowed only when there is no logger context).
-- Validate external input at boundaries with Zod schemas (`packages/sdk/src/platform/streaming/payloadSchemas.ts` is the model).
-- Never bundle peer dependencies — they must remain `external` in `tsup.config.ts`.
-- Async/await everywhere; do not return raw promises from non-async functions in library code.
-- Keep node compatibility at `>=22` (`engines.node` in both root and SDK package.json).
-- Never put issue-tracker references in code — no Linear issue IDs (e.g. `INT-123`), Linear URLs, or ticket numbers in comments, docstrings, or strings. Explain the *why* in plain terms instead. (Branch names, commit messages, and PR descriptions may reference issues.)
+## External Research & Code Reuse
+
+Verify external behavior in current primary documentation and the source of the
+released version actually used. Before hand-rolling a nontrivial mechanism,
+look for an established library and existing repository helpers. Verify the
+needed capability and compatibility with package engines, optional peers,
+module formats, and consumers; a plausible API name is not evidence.
 
 ## Pre-Commit Checklist
+
+Reread the diff against the relevant conventions before selecting checks.
+Look for duplicated policies or magic values, unnecessary indirection, and
+assertions that do not prove the intended behavior. Linters alone cannot
+establish these properties.
+
+Choose validation for the affected behavior. Explicit user limits take
+precedence; report unrun checks instead of implying they passed.
+
+| Change | Local validation |
+|---|---|
+| Documentation or skill instructions only | Check links, frontmatter, referenced paths/commands, and relevant workflow scenarios. Validate changed runnable examples where applicable. Do not run the SDK suite or wait for CI solely for prose changes. |
+| Executable skill helpers, examples, or scripts | Run relevant behavioral checks in their actual Node/package environment; executable helpers are code, even inside a skill. |
+| Localized TypeScript source or tests | Run affected lint, type checks and behavioral tests; build SDK output first when consumer proofs need it. Broaden for affected callers. |
+| Shared runtime/protocol behavior, dependencies, packaging, or broad refactors | Run the full workspace gate below plus relevant ESM/CJS, declaration, optional-peer/import isolation, downstream plugin and boundary/live checks. |
+| CI or release workflows | Run applicable workflow guards and actionlint; see `docs/ci-cd-workflows.md`. Run release-hardening checks for changes to `.github/`, `scripts/`, or release configuration. Avoid publishing during probes. |
+
+Mixed changes use the union of applicable checks. Do not repeat a passing gate
+without new relevant changes or evidence. Required remote checks and approvals
+remain merge gates.
+
+Full workspace gate (not required for prose-only changes):
 
 ```bash
 pnpm -r lint
 pnpm typecheck
 pnpm test
 ```
+
+Use the affected package manifests and `.github/workflows/ci.yml` for additional
+packaging/consumer commands. Root typecheck/test build the SDK first. Isolate
+installs and build output from concurrent workers; never stash their work.
 
 ## Commit & PR Titles
 
@@ -553,3 +605,63 @@ Commit subjects and PR titles follow Conventional Commits: `type(scope): subject
 - The scope is optional. If no listed scope fits, omit it (`fix: …`). Never invent one from a directory, class, or module name.
 - The subject, the text after `type(scope): `, is at most 80 characters.
 - Mark a breaking change with `!` after the scope: `feat(adapters)!: …`.
+
+## Pull Request Descriptions
+
+Use only **Why**, **What**, and **Scope** sections. Explain the problem, final
+behavior and boundaries for a reviewer without chat context. Keep the body
+current; avoid appended checklists, progress logs or a testing section. Record
+validation and unresolved failures in the linked Linear issue or an evidence
+attachment linked from the PR. A Linear ticket is not required for every
+ordinary branch; follow `CONTRIBUTING.md` and use the branch skill for Linear work.
+
+## PR Lifecycle and Readiness Review
+
+Open new PRs as **drafts**. A draft is the place to share work in progress,
+seek early design feedback, and expose unfinished validation. Mark it ready
+for review only after the developer's readiness review passes. Ready means
+the author has completed the engineering work and considers it fit for peer
+review; it does not mean peers have approved it or that it is mergeable.
+
+The readiness review checks the actual diff and relevant existing tests:
+
+- **Problem understood:** a bug has a supported root-cause explanation and
+  failure scenario; a feature has a clear underlying need and design rationale.
+  Do not invent a root cause for documentation or mechanical changes.
+- **Solution planned:** the approach, owning layer, scope, compatibility, and
+  expected scenarios were considered before implementation. A small change
+  may need a short explanation; complex or cross-component work needs a
+  written plan. Reconcile the final implementation with that plan.
+- **Implementation complete:** the diff solves the cause or need at its
+  authoritative boundary, is focused and maintainable, and has no known
+  blocking defects or unfinished in-scope work hidden as follow-ups.
+- **Coverage meaningful:** apply the test-conventions skill's "Coverage and
+  realistic flows" guidance. Map important scenarios to assertions, include
+  relevant complex interactions and failure/recovery paths, and close material
+  in-scope gaps. Passing tests and coverage percentages alone are insufficient.
+- **Validation evidenced:** the applicable author checks from the Pre-Commit
+  Checklist passed for the implementation being reviewed. Record the reviewed
+  head, checks and outcomes, scenario coverage, and material limitations in
+  the linked Linear issue or evidence attachment. Reuse earlier results only
+  when subsequent changes do not affect what they prove. Keep the PR body in
+  the existing Why / What / Scope format.
+
+If a criterion fails or required author validation is blocked or unrun, keep
+the PR in draft and state what remains. Do not replace evidence with a
+checklist assertion. After substantive changes or a newly discovered blocking
+defect, reassess readiness and return the PR to draft when the criteria no
+longer hold; an ordinary reviewer suggestion alone does not invalidate it.
+
+This repo starts its main CI jobs on `ready_for_review`, so green CI is not a
+prerequisite for leaving draft. Applicable author validation must still pass;
+CI pending after promotion is not a claimed pass and all required checks and
+approvals remain merge gates. If an essential scenario can only be validated
+in CI, use an authorized draft-compatible run or keep the PR in draft.
+
+This review is an author responsibility, not a requirement to invoke the full
+publishing code-review skill. A cheap PR triage verdict cannot substitute for
+it. Agents should use `gh pr create --draft` when PR creation is authorized;
+promote with `gh pr ready <pr>` only after the review passes and the task
+authorizes that transition. Do not change unrelated PRs' stages or treat
+readiness as permission to merge. See the
+[GitHub stage documentation](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/changing-the-stage-of-a-pull-request).
