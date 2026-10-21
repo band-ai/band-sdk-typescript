@@ -687,6 +687,7 @@
     },
     "./rest": {
       "runtime": [
+        "ActivityCapability",
         "DEFAULT_REQUEST_OPTIONS",
         "FernRestAdapter",
         "RestFacade",
@@ -697,6 +698,7 @@
         "normalizePaginationMetadata"
       ],
       "declarations": [
+        "ActivityCapability",
         "AgentIdentity",
         "ChatMessageMention",
         "ChatParticipant",
@@ -710,12 +712,14 @@
         "DEFAULT_REQUEST_OPTIONS",
         "FernBandClientLike",
         "FernRestAdapter",
+        "FernRestAdapterOptions",
         "GetBoardArgs",
         "GetTaskArgs",
         "ListTasksArgs",
         "PaginatedResponse",
         "PaginationMetadata",
         "PlatformChatMessage",
+        "ReportActivityOptions",
         "RestApi",
         "RestFacade",
         "SetBoardArgs",

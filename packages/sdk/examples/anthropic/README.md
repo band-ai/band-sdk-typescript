@@ -84,4 +84,33 @@ Provider credentials come from the environment (`ANTHROPIC_API_KEY`), not from t
 
 ## Architecture
 
-`AnthropicAdapter` provides per-room conversation history, platform history hydration, participant updates, and the Band platform tool loop. Set `enableExecutionReporting: true` (as in `02`) to post tool activity into the room. A turn is capped at `turnTimeoutMs` (default five minutes; `Infinity` removes the cap): one that hits it fails its message and frees the room, but a tool already running is not interrupted.
+`AnthropicAdapter` provides per-room conversation history, platform history hydration, participant updates, and the Band platform tool loop. Set `enableExecutionReporting: true` (as in `02`) to post tool narration into the room. The automatic working indicator is controlled separately by runtime `sessionConfig`. A turn is capped at `turnTimeoutMs` (default five minutes; `Infinity` removes the cap): one that hits it fails its message and frees the room, but a tool already running is not interrupted.
+
+### Automatic working indicator
+
+Working state is on by default through shared runtime
+[`sessionConfig`](../../../../README.md#automatic-working-state), with a three-second
+keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
+{ enableWorkingState: false } })` to disable it. No provider-specific option or
+tool capability is needed. Execution reporting options control chat tool narration
+independently of this automatic indicator and its activity detail.
+
+To observe a local tool without posting arguments into chat, configure a custom
+tool and keep narration off. For example, ask this adapter to call `lookup_status`:
+
+```ts
+import { z } from "zod";
+import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: { enableWorkingState: true },
+  adapter: new AnthropicAdapter({
+    enableExecutionReporting: false,
+    customTools: [{ name: "lookup_status", schema: z.object({ id: z.string() }), handler: async () => "ready" }],
+  }),
+});
+```
+
+On a compatible agent API, the indicator shows `tool_call/lookup_status` during
+execution and returns to reasoning afterward. Only the name is reported.

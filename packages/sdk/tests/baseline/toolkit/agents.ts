@@ -39,7 +39,7 @@ export class AgentIdentity implements AsyncDisposable {
     public readonly apiKey: string,
     restUrl: string,
   ) {
-    this.rest = agentRest(restUrl, apiKey);
+    this.rest = agentRest(restUrl, apiKey, debugLogger(name));
   }
 
   /** The platform handle (`owner/agent`) others address this agent by. */
@@ -95,6 +95,7 @@ async function runAs(
     agentId: identity.id,
     apiKey: identity.apiKey,
     wsUrl: env.wsUrl,
+    restUrl: env.restUrl,
     logger: debugLogger(identity.name),
     linkOptions: { restApi: identity.rest, transport },
     agentConfig: { autoSubscribeExistingRooms: true },

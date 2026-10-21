@@ -2,6 +2,7 @@ import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import {
   isStructuredToolFailure,
   isToolExecutorError,
@@ -285,13 +286,10 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     });
 
     const turnId = turnStarted.turn.id;
-    const { finalText, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
-      client,
-      threadId,
-      turnId,
+    const { finalText, turnStatus, turnError, reportedFailureInLoop } = await withNativeActivity(
       tools,
-      config,
-      context.roomId,
+      new Set(),
+      (native) => this.runEventLoop(client, threadId, turnId, tools, config, context.roomId, native),
     );
 
     await this.emitTurnOutcome({
@@ -376,6 +374,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     tools: TurnTools,
     config: CodexAdapterConfig,
     roomId: string,
+    native: NativeActivity,
   ): Promise<{
     finalText: string;
     turnStatus: TurnStatus;
@@ -434,6 +433,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
           break;
         }
         this.abandonClient(client);
+        native.endAll();
         return reportTurnFailure(
           tools,
           agentFailure(this.provider, asErrorMessage(error)),
@@ -454,6 +454,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         } catch (error) {
           rethrowIfRecoverableTurnFailure(error);
           await this.evictOnTransportFailure(error, client);
+          native.endAll();
           return reportTurnFailure(
             tools,
             agentFailure(this.provider, asErrorMessage(error)),
@@ -473,12 +474,22 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
 
       const params = asOptionalRecord(event.params) ?? {};
 
+      if (event.method === "item/started") {
+        const item = parseThreadItem(params.item);
+        if (item && typeof item.id === "string") {
+          if (isToolLikeItem(item)) native.tool(item.id, toolItemName(item));
+          else if (item.type === "contextCompaction") native.memory(item.id);
+        }
+        continue;
+      }
+
       if (event.method === "error") {
         const error = asOptionalRecord(params.error) ?? {};
         const errorMessage = asNonEmptyString(error.message) ?? "Unknown Codex error";
         if (params.willRetry === true) {
           this.logger.warn("codex_adapter.retryable_error", { error: errorMessage, roomId });
         } else {
+          native.endAll();
           await safeSendFailure(
             tools,
             agentFailure(this.provider, errorMessage, asString(error.code), error),
@@ -503,6 +514,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         if (!item) {
           continue;
         }
+        if (typeof item.id === "string") native.end(item.id);
 
         if (item.type === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
           finalText = item.text;
@@ -1003,7 +1015,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         let output: unknown;
         if (customTool) {
           try {
-            output = await executeCustomTool(customTool, arguments_, tools.turn);
+            output = await executeCustomTool(customTool, arguments_, tools.turn, tools);
           } catch (error) {
             output = normalizeCustomToolError(toolName, error);
           }
@@ -1117,6 +1129,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
   }
 
   private extractToolItem(item: ToolLikeItem): [string, Record<string, unknown>, string] {
+    const name = toolItemName(item);
     if (item.type === "commandExecution") {
       const args = {
         command: item.command,
@@ -1129,12 +1142,12 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
       if (item.exitCode !== null) {
         outputParts.push(`exit_code=${item.exitCode}`);
       }
-      return ["exec", args, outputParts.join("\n") || item.status];
+      return [name, args, outputParts.join("\n") || item.status];
     }
 
     if (item.type === "fileChange") {
       return [
-        "file_edit",
+        name,
         { files: item.changes.map((change) => change.path) },
         item.status,
       ];
@@ -1143,19 +1156,19 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     if (item.type === "mcpToolCall") {
       const args = asOptionalRecord(item.arguments) ?? {};
       const output = item.result ?? item.error ?? "completed";
-      return [`mcp:${item.server}/${item.tool}`, args, toWireString(output)];
+      return [name, args, toWireString(output)];
     }
 
     if (item.type === "webSearch") {
-      return ["web_search", { query: item.query }, toWireString(item.action ?? "completed")];
+      return [name, { query: item.query }, toWireString(item.action ?? "completed")];
     }
 
     if (item.type === "imageView") {
-      return ["view_image", { path: item.path }, "viewed"];
+      return [name, { path: item.path }, "viewed"];
     }
 
     return [
-      `collab:${item.tool}`,
+      name,
       {
         ...(item.prompt ? { prompt: item.prompt } : {}),
         ...(item.agents ? { agents: item.agents } : {}),
@@ -1460,6 +1473,18 @@ function isToolLikeItem(item: ThreadItem): item is ToolLikeItem {
     "imageView",
     "collabAgentToolCall",
   ].includes(item.type);
+}
+
+/** The activity name of a tool item; it needs only the item's identity, so it is valid before the item completes. */
+function toolItemName(item: ToolLikeItem): string {
+  switch (item.type) {
+    case "commandExecution": return "exec";
+    case "fileChange": return "file_edit";
+    case "mcpToolCall": return `mcp:${item.server}/${item.tool}`;
+    case "webSearch": return "web_search";
+    case "imageView": return "view_image";
+    default: return `collab:${item.tool}`;
+  }
 }
 
 function isThoughtLikeItem(item: ThreadItem): item is ThoughtLikeItem {

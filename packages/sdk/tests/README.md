@@ -22,4 +22,5 @@ adapter scorecard. See [`baseline/README.md`](baseline/README.md).
 `tests/integration/` holds runnable scripts, excluded from the default `vitest run`
 (none of its files end in `.test.ts`/`.spec.ts`, vitest's default include pattern):
 - `pnpm build && npx tsx tests/integration/band-sdk-core-bundler.ts` — reads `dist/`, so build first; no secrets/network needed. Runs on every PR via `.github/workflows/ci.yml`'s `test` job.
+- `pnpm exec tsx tests/integration/activity-peer-compatibility.ts <claude-package> <letta-package> <opencode-package>` — compiles `fixtures/activityPeerContracts.ts` against extracted published packages. Minimum versions are Claude SDK 0.3.224, Letta 1.7.1 and OpenCode 1.3.0; the normal SDK typecheck checks the same fixture against installed peers.
 - `support/liveHarness.ts` — shared live-platform plumbing (provisioning, reaping, env loading) for the baseline suite and `scripts/`.

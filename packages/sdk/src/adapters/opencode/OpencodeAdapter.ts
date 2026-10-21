@@ -1,3 +1,5 @@
+import { retainWorkingCycleUntil, suppressToolActivity, trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
+import { opencodeMessageId } from "./messageId";
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
@@ -122,7 +124,14 @@ interface AskLifecycle<T> {
 
 /** One turn's state. A turn is still current while `room.turn` is this object. */
 class OpencodeTurn {
-  public constructor(public readonly tools: TurnTools) {}
+  /** The turn's native tool parts and the asks it waits on a human for, keyed by part and request id. */
+  public readonly native: NativeActivity;
+  public constructor(public readonly tools: TurnTools) {
+    this.native = trackNativeActivity(tools, new Set());
+  }
+  /** Prompt message id, so only OpenCode's reply messages parented to it are attributed to this turn. */
+  public readonly messageId = opencodeMessageId();
+  public readonly activityMessages = new Set<string>();
 
   public readonly textParts = new Map<string, string>();
   public readonly assistantMessageIds = new Set<string>();
@@ -146,7 +155,9 @@ class OpencodeTurn {
     return this.backgrounded.promise;
   }
 
+  /** Every way a turn ends comes here, so nothing it opened outlives it into a failure report. */
   public end(outcome: TurnEndOutcome): void {
+    this.native.endAll();
     this.outcome.resolve(outcome);
   }
 
@@ -374,6 +385,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     roomState.requesterMentions = [{ id: message.senderId }];
     try {
       await client.promptAsync(sessionId, {
+        messageID: turn.messageId,
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
           replayMessages: needsHistoryReplay ? history.replayMessages : null,
         }),
@@ -391,7 +403,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     // can't happen there, before this call was known to succeed.
     roomState.forceFreshSession = false;
 
-    await runUntilReleased(this.watchTurnCompletion(roomState, turn), turn.released, (error) => {
+    await runUntilReleased(retainWorkingCycleUntil(turn.tools, this.watchTurnCompletion(roomState, turn)), turn.released, (error) => {
       this.logger.error("OpenCode turn failed after the request returned", { error, roomId });
     });
   }
@@ -464,6 +476,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
 
   private startMcpBackend(): Promise<BandMcpBackend | null> {
     return this.mcpBackendFactory({
+      execute: suppressToolActivity,
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.toolsForRoom(roomId),
@@ -556,6 +569,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return;
     }
 
+    if (eventType === "permission.replied") {
+      this.settledOnOpencode(roomState, roomState.decisions.permissions, properties);
+      return;
+    }
+
+    if (eventType === "question.replied" || eventType === "question.rejected") {
+      this.settledOnOpencode(roomState, roomState.decisions.questions, properties);
+      return;
+    }
+
     // The rest only updates a live turn.
     const turn = roomState.turn;
     if (!turn) {
@@ -567,6 +590,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       const messageId = typeof info.id === "string" ? info.id : null;
       if (info.role === "assistant" && messageId) {
         turn.assistantMessageIds.add(messageId);
+        if (info.parentID === turn.messageId) turn.activityMessages.add(messageId);
       }
       const error = info.error;
       if (info.role === "assistant" && error) {
@@ -655,7 +679,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return;
     }
 
-    if (partType !== "tool" || !this.config.enableExecutionReporting) {
+    if (partType !== "tool") {
       return;
     }
 
@@ -663,14 +687,22 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     const toolName = typeof part.tool === "string" ? part.tool : "unknown";
     const callId = typeof part.callID === "string" && part.callID.length > 0 ? part.callID : partId;
     const status = String(state.status ?? "");
+    const isActive = status === "pending" || status === "running";
+    const isTerminal = status === "completed" || status === "error";
 
-    if ((status === "pending" || status === "running") && !turn.reportedToolCalls.has(callId)) {
+    if (messageId && turn.activityMessages.has(messageId)) {
+      if (isActive) turn.native.tool(partId, toolName);
+      else if (isTerminal) turn.native.end(partId);
+    }
+    if (!this.config.enableExecutionReporting) return;
+
+    if (isActive && !turn.reportedToolCalls.has(callId)) {
       turn.reportedToolCalls.add(callId);
       await this.reportToolCall(roomState, toolName, state, callId);
       return;
     }
 
-    if ((status === "completed" || status === "error")) {
+    if (isTerminal) {
       if (!turn.reportedToolCalls.has(callId)) {
         turn.reportedToolCalls.add(callId);
         await this.reportToolCall(roomState, toolName, state, callId);
@@ -743,6 +775,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     });
   }
 
+  // OpenCode settled an ask the room never claimed: another client answered it, or a reply to another
+  // ask settled it too. A claimed ask ends with its own reply, so its wait covers that reply's I/O.
+  private settledOnOpencode<T>(roomState: RoomState, registry: DecisionRegistry<T>, properties: Record<string, unknown>): void {
+    const entry = registry.unclaimed().find(({ token }) => token === properties.requestID);
+    if (entry && registry.withdraw(entry)) roomState.turn?.native.endWait(entry.token);
+  }
+
   // One ask's lifecycle, whatever its kind: register it, then reply automatically or relay it to the room.
   // `registration` is null for a redelivery whose reply is already in flight.
   private async openAsk<T>(
@@ -760,6 +799,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       await this.replyInBackground(roomState, registry.tryClaim(entry.token)!, ask.autoReply);
       return;
     }
+    roomState.turn?.native.wait(entry.token);
     registry.startTimeout(entry, ask.timeoutMs, async (expired) => {
       if (await this.replyInBackground(roomState, expired, ask.timeoutReply)) {
         await roomState.tools.sendEvent(ask.timedOutNotice, "error");
@@ -892,6 +932,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     } finally {
       // A failed reply leaves the ask unanswerable, so it must not linger claimed.
       registry.forget(entry);
+      turn?.native.endWait(entry.token);
     }
   }
 
@@ -1066,6 +1107,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
   }
 
   private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
+    roomState.turn?.native.endAll();
     // Best-effort: failing to report the failure must not leave the room's turn wait released forever.
     await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
     // Thrown, not returned: PlatformRuntime marks a message failed only when

@@ -82,12 +82,14 @@ jobs matters for two reasons:
 1. **One policy distinguishes mandatory and conditional work.** GitHub reports a
    job skipped by a job-level condition as successful. `lint` and `test` are
    intentionally conditional and may be skipped; `changes` and `packaging` are
-   mandatory and must succeed. `ci-status` encodes that distinction and always
-   reports one stable context.
+   mandatory and must succeed, so a draft PR, which runs no CI, shows a red
+   `ci-status`. `ci-status` encodes that distinction and always reports one
+   stable context.
 2. **The ruleset stops tracking job names.** Adding, renaming, or splitting a CI
    job needs no ruleset edit. A test in
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
-   other job in `ci.yml`, so a new job cannot silently escape the gate.
+   other job in `ci.yml` and checks each one's result, so a new job cannot
+   silently escape the gate.
 
 ### Strict checks
 
@@ -105,7 +107,8 @@ ahead of it, so two PRs that pass alone but break together never both land. Both
 `ci.yml` and `pr-title.yml` therefore trigger on `merge_group:`, and
 `pr-title.yml` guards its validation step with
 `if: github.event_name == 'pull_request'` — a merge group carries no PR title, so
-without that guard the queue deadlocks.
+without that guard the queue deadlocks. `typescript-core-coverage.yml` is not a
+required check and does not run in the queue.
 
 Dependabot PRs go stale on every merge to `main`. Dependabot rebases its own
 branches, so this is visible noise rather than work.
@@ -119,27 +122,25 @@ Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.
 
 It also runs on every **merge group**, so a change is validated against the
-latest trunk before it lands, and on every **push to `main`**, so the trunk is
-re-validated after a merge. Without the push trigger the suite only ever saw a
-PR's merge commit: a red build that landed anyway stopped being reported the
-moment it merged, and "CI is green on `main`" said nothing about `main`'s actual
-tree. Three details make the
-trunk run meaningful rather than decorative:
+latest trunk before it lands. `main` fast-forwards to the exact commit the queue
+validated, so CI does not run again on a push to `main`. Three details make the
+queue run the real verdict for `main`:
 
 - **Path filtering is skipped.** `dorny/paths-filter` runs only on pull
-  requests; on a push or merge group every package output is forced `true`.
-  Trunk validation exercises the whole tree, not the slice one merge happened
-  to touch — otherwise `ci-status` could go green having skipped `lint` and
-  `test`.
-- **Runs are not cancelled.** `cancel-in-progress` is on for pull requests only.
-  Superseding a PR run is free; superseding a trunk run would leave that commit
-  of `main` with no verdict at all.
+  requests; in a merge group every package output is forced `true`, so the
+  queue exercises the whole tree, not the slice one PR happened to touch —
+  otherwise `ci-status` could go green having skipped `lint` and `test`.
+- **Queue runs are not cancelled.** `cancel-in-progress` is on for pull requests
+  only. Superseding a PR run is free; superseding a merge-group run would leave
+  the commit that lands with no verdict at all. Each merge-group run also gets
+  its own concurrency group (`github.run_id`): a PR requeued on the same base
+  reuses its `gh-readonly-queue/...` ref, so a ref-keyed group would hold the
+  new run pending behind the old one.
 - **Release intent is PR-only.** `assert-release-intent.mjs` is a merge gate and
-  needs `github.event.pull_request.base.sha` as its baseline. A push has no such
-  baseline, and the merge it would gate has already happened.
+  needs `github.event.pull_request.base.sha` as its baseline. A merge group has
+  no such baseline, and the PR run already gated it.
 
-`scripts/release-hardening.test.mjs` asserts each of these, so the trunk trigger
-cannot be quietly removed or hollowed out.
+`scripts/release-hardening.test.mjs` asserts each of these.
 
 The workflow-level `GITHUB_TOKEN` is least-privilege: `contents: read` supports
 checkout and `pull-requests: read` supports changed-file detection. CI receives

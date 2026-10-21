@@ -1,5 +1,6 @@
 import type {
-  McpSdkServerConfigWithInstance,
+  HookCallbackMatcher,
+  HookInput,
   Options,
   SDKAssistantMessage,
   SDKMessage,
@@ -8,14 +9,15 @@ import type {
   Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
+import { claudeHookToolName, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -27,7 +29,11 @@ import {
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
+import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
+
+/** Compaction has no provider id; the main thread compacts one at a time, so a query uses this one. */
+const COMPACTION_ID = "compaction";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
 
@@ -46,6 +52,8 @@ type ClaudeQueryOptions = Pick<
   | "disallowedTools"
   | "settingSources"
   | "settings"
+  | "hooks"
+  | "abortController"
 >;
 
 export interface ClaudeSDKQueryParams {
@@ -91,11 +99,6 @@ export const ISOLATION_SETTINGS = {
   disableClaudeAiConnectors: true,
 } as const satisfies Settings;
 
-interface BandMcpBridge {
-  serverConfig: McpSdkServerConfigWithInstance;
-  allowedTools: string[];
-}
-
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
 
@@ -108,7 +111,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly enableMemoryTools: boolean;
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
-  private readonly customToolRegistrations: McpToolRegistration[];
+  private readonly customTools: CustomToolDef[];
   private readonly cwd?: string;
   private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
@@ -124,10 +127,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     },
   });
   private readonly sessionIds = new Map<string, string>();
-  // One turn per room: its MCP calls resolve the room's tools, so a second turn would take over the first's.
+  // Provider sessions accept one query per room.
   private readonly roomTurns = createRoomTurnLock();
   private readonly roomTools = new Map<string, TurnTools>();
-  private mcpBridge: BandMcpBridge | null = null;
+  private readonly activeQueries = new Map<string, () => Promise<void>>();
   private systemPrompt = "";
 
   public constructor(options?: ClaudeSDKAdapterOptions) {
@@ -145,7 +148,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     if (customTools.length > 0 && !this.enableMcpTools) {
       throw new ValidationError("ClaudeSDK customTools require `enableMcpTools: true`.");
     }
-    this.customToolRegistrations = buildCustomMcpRegistrations(customTools, (roomId) => this.roomTools.get(roomId));
+    this.customTools = customTools;
+    // Fails at construction on a malformed custom tool; name conflicts need the started adapter.
+    buildCustomMcpRegistrations(customTools, () => undefined);
     this.cwd = options?.cwd;
     this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
@@ -163,17 +168,8 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     });
 
     if (this.enableMcpTools) {
-      const createSdkMcpBridge = await this.sdkMcpBridgeLoader.get();
-      const registrations = buildRoomScopedRegistrations((roomId) => this.roomTools.get(roomId), {
-        enableMemoryTools: this.enableMemoryTools,
-        enableContactTools: true,
-        additionalTools: this.additionalMcpTools,
-      });
-      assertCustomToolNamesAvailable(
-        this.customToolRegistrations.map((registration) => registration.name),
-        registrations.map((registration) => registration.name),
-      );
-      this.mcpBridge = createSdkMcpBridge(registrations, this.customToolRegistrations);
+      await this.sdkMcpBridgeLoader.get();
+      this.buildRegistrations(() => undefined); // Fails at start on a name conflict.
     }
   }
 
@@ -202,13 +198,15 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       let finalText = "";
       let resultFailure: ClaudeResultFailure | null = null;
       try {
-        const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context);
+        const query = await this.startQuery(message, tools, history, participantsMessage, contactsMessage, context);
         const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
         finalText = consumed.finalText;
         resultFailure = consumed.resultFailure;
       } catch (error) {
+        if (this.settleIfRetired(context.roomId, tools, error)) return;
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
       }
+      if (this.settleIfRetired(context.roomId, tools)) return;
 
       const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
       const replyText = finalText.trim();
@@ -218,28 +216,90 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       try {
         await relayReply(tools, replyText, mention);
       } catch (error) {
+        if (this.settleIfRetired(context.roomId, tools, error)) return;
         if (failure) await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
         throw error;
       }
+      if (this.settleIfRetired(context.roomId, tools)) return;
       // Posting preceding text must not turn a failed provider result into success.
       if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     } finally {
-      if (this.roomTools.get(context.roomId) === tools) {
-        this.roomTools.delete(context.roomId);
-      }
+      if (this.ownsRoom(context.roomId, tools)) this.roomTools.delete(context.roomId);
     }
   }
 
-  private async startQuery(
-    message: PlatformMessage,
-    history: HistoryProvider,
-    participantsMessage: string | null,
-    contactsMessage: string | null,
-    context: { isSessionBootstrap: boolean; roomId: string },
-  ): Promise<AsyncIterable<SDKMessage>> {
-    const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
+  private ownsRoom(roomId: string, tools: TurnTools): boolean {
+    return this.roomTools.get(roomId) === tools;
+  }
 
+  /** Only the room's current turn may write; a retired one (reset, stop) is settled so it ends without a report. */
+  private settleIfRetired(roomId: string, tools: TurnTools, error?: unknown): boolean {
+    const retired = !this.ownsRoom(roomId, tools);
+    if (retired) {
+      tools.turn.settle();
+      this.logger.debug("Claude turn retired; its outcome is discarded", { roomId, error });
+    }
+    return retired;
+  }
+
+  private buildRegistrations(resolve: (roomId: string) => TurnTools | undefined) {
+    const room = buildRoomScopedRegistrations(resolve, { enableMemoryTools: this.enableMemoryTools, enableContactTools: true });
+    const custom = buildCustomMcpRegistrations(this.customTools, resolve);
+    const registrations = [...room, ...this.additionalMcpTools];
+    assertCustomToolNamesAvailable(custom.map(({ name }) => name), registrations.map(({ name }) => name));
+    return { registrations, custom, localNames: new Set([...room, ...custom].map(({ name }) => name)) };
+  }
+
+  /** A bridge whose tools resolve only while `isCurrent`; `localToolNames` spells the tools Band executes itself as the hooks name them. */
+  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools, isCurrent: () => boolean) {
+    const resolve = (id: string): TurnTools | undefined => id === roomId && isCurrent() ? tools : undefined;
+    const { registrations, custom, localNames } = this.buildRegistrations(resolve);
+    const bridge = createBridge(registrations, custom);
+    return {
+      bridge,
+      localToolNames: new Set([...localNames].map(claudeHookToolName)),
+      retire: () => bridge.serverConfig.instance.close(),
+    };
+  }
+
+  /** The one idempotent close of a room's query: retire it, abort it, and stop tracking it. */
+  private registerQuery(roomId: string, abortController: AbortController, retire: () => Promise<void>): () => Promise<void> {
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      closing ??= retire().catch((error: unknown) => {
+        this.logger.warn("Claude SDK MCP bridge close failed", { roomId, error });
+      });
+      abortController.abort();
+      if (this.activeQueries.get(roomId) === close) this.activeQueries.delete(roomId);
+      return closing;
+    };
+    this.activeQueries.set(roomId, close);
+    return close;
+  }
+
+  /** Reports what the provider runs natively; tools Band executes itself report from their own execution. */
+  private activityHooks(native: NativeActivity): ClaudeQueryOptions["hooks"] {
+    const on = (handler: (input: HookInput) => void): HookCallbackMatcher[] => [{
+      hooks: [async (input) => {
+        handler(input);
+        return {};
+      }],
+    }];
+    const toolEnd = on((input) => {
+      if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "PostToolUseFailure") native.end(input.tool_use_id);
+    });
+    return {
+      PreToolUse: on((input) => {
+        if (input.hook_event_name === "PreToolUse") native.tool(input.tool_use_id, input.tool_name);
+      }),
+      PostToolUse: toolEnd,
+      PostToolUseFailure: toolEnd,
+    };
+  }
+
+  private queryOptions(abortController: AbortController, resume: string | null): ClaudeQueryOptions {
     const options: ClaudeQueryOptions = {
+      abortController,
       model: this.model,
       permissionMode: this.permissionMode,
       systemPrompt: this.systemPrompt,
@@ -256,45 +316,79 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     if (this.cwd) {
       options.cwd = this.cwd;
     }
-    const existingSession = this.sessionIds.get(context.roomId)
-      ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null);
-    if (existingSession) {
-      options.resume = existingSession;
+    if (resume) {
+      options.resume = resume;
     }
+    return options;
+  }
 
-    if (this.mcpBridge && this.enableMcpTools) {
-      options.mcpServers = {
-        [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
-      };
-      options.allowedTools = this.mcpBridge.allowedTools;
+  private async startQuery(
+    message: PlatformMessage,
+    tools: TurnTools,
+    history: HistoryProvider,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<AsyncIterable<SDKMessage>> {
+    const { roomId } = context;
+    const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
+    const createBridge = this.enableMcpTools ? await this.sdkMcpBridgeLoader.get() : undefined;
+    // No await may separate this check from registerQuery, or a reset could miss the query it must abort.
+    if (!this.ownsRoom(roomId, tools)) throw new RuntimeStateError("Claude query was retired before admission");
+
+    const abortController = new AbortController();
+    const options = this.queryOptions(
+      abortController,
+      this.sessionIds.get(roomId) ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null),
+    );
+    const isCurrent = (): boolean => !abortController.signal.aborted && this.ownsRoom(roomId, tools);
+    const mcp = createBridge && this.openBridge(createBridge, roomId, tools, isCurrent);
+    if (mcp) {
+      options.mcpServers = { [MCP_SERVER_NAME]: mcp.bridge.serverConfig };
+      options.allowedTools = mcp.bridge.allowedTools;
     }
+    const native = trackNativeActivity(tools, mcp?.localToolNames ?? new Set());
+    options.hooks = this.activityHooks(native);
+    const close = this.registerQuery(roomId, abortController, async () => {
+      native.endAll();
+      await mcp?.retire();
+    });
 
     const roomToolHint = this.enableMcpTools
-      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
+      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${roomId}".`
       : "";
 
-    return queryFn({
-      prompt: buildConversationPrompt({
-        history,
-        isSessionBootstrap: context.isSessionBootstrap,
-        participantsMessage,
-        contactsMessage,
-        historyHeader: "[Previous conversation context]",
-        currentMessage: message.content,
-        maxHistoryMessages: 50,
-      }) + roomToolHint,
-      options,
-    });
+    let query: AsyncIterable<SDKMessage>;
+    try {
+      query = queryFn({
+        prompt: buildConversationPrompt({
+          history,
+          isSessionBootstrap: context.isSessionBootstrap,
+          participantsMessage,
+          contactsMessage,
+          historyHeader: "[Previous conversation context]",
+          currentMessage: message.content,
+          maxHistoryMessages: 50,
+        }) + roomToolHint,
+        options,
+      });
+    } catch (error) {
+      await close();
+      throw error;
+    }
+    return closeAfter(trackStreamActivity(query, native), close);
   }
 
   private async consumeQueryEvents(
     query: AsyncIterable<SDKMessage>,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     roomId: string,
   ): Promise<{ finalText: string; resultFailure: ClaudeResultFailure | null }> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
     for await (const event of query) {
+      // The SDK still yields what it buffered before the abort; a retired turn must not write it anywhere.
+      if (!this.ownsRoom(roomId, tools)) break;
       const sessionId = event.session_id;
       if (sessionId) {
         const previousSessionId = this.sessionIds.get(roomId) ?? null;
@@ -318,7 +412,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         }
       }
 
-      if (this.enableExecutionReporting && event.type === "tool_use_summary") {
+      if (this.enableExecutionReporting && event.type === "tool_use_summary" && this.ownsRoom(roomId, tools)) {
         try {
           await tools.sendEvent(JSON.stringify(event), "tool_call");
         } catch (error) {
@@ -334,9 +428,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   public async onCleanup(roomId: string): Promise<void> {
+    const closing = this.activeQueries.get(roomId)?.();
     this.sessionIds.delete(roomId);
     this.roomTurns.release(roomId);
     this.roomTools.delete(roomId);
+    await closing;
+  }
+
+  public async onRuntimeStop(): Promise<void> {
+    this.roomTools.clear();
+    await Promise.all([...this.activeQueries.values()].map((close) => close()));
   }
 
   private async reportSessionId(
@@ -355,6 +456,34 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         error,
       });
     }
+  }
+}
+
+/**
+ * Reports what the stream shows: a tool the model is handed a result for has ended, whether it ran, failed or
+ * was denied with no hook, and the main thread's compaction runs between its `compacting` and null statuses.
+ * Hooks cannot tell those from a subagent's compaction, which sends no status.
+ */
+async function* trackStreamActivity(query: AsyncIterable<SDKMessage>, native: NativeActivity): AsyncGenerator<SDKMessage> {
+  for await (const event of query) {
+    if (event.type === "system" && event.subtype === "status") {
+      if (event.status === "compacting") native.memory(COMPACTION_ID);
+      else if (event.status === null) native.end(COMPACTION_ID);
+    }
+    if (event.type === "user" && Array.isArray(event.message.content)) {
+      for (const block of event.message.content) {
+        if (block.type === "tool_result") native.end(block.tool_use_id);
+      }
+    }
+    yield event;
+  }
+}
+
+async function* closeAfter<T>(query: AsyncIterable<T>, close: () => Promise<void>): AsyncGenerator<T> {
+  try {
+    yield* query;
+  } finally {
+    await close();
   }
 }
 

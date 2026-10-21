@@ -4,7 +4,8 @@
 // `pid=<pid> cwd=<process cwd> session=<session cwd>`. `FAKE_ACP_PID_FILE`
 // names a file, relative to its working directory, that it writes its pid to as
 // soon as it starts, so a test can find a process that never got to answer.
-// A prompt containing `FAKE_ACP_HANG_ON` is never answered.
+// A prompt containing `FAKE_ACP_HANG_ON` is never answered. With
+// `FAKE_ACP_ASK_PERMISSION` set, it asks for permission before answering.
 // `FAKE_ACP_STDERR_BYTES` writes
 // that much to stderr before serving, synchronously, so an undrained pipe
 // blocks it for real.
@@ -38,6 +39,13 @@ new AgentSideConnection((connection) => ({
     const hangOn = process.env.FAKE_ACP_HANG_ON;
     if (hangOn && prompt.some((block) => block.text?.includes(hangOn))) {
       return new Promise(() => undefined);
+    }
+    if (process.env.FAKE_ACP_ASK_PERMISSION) {
+      await connection.requestPermission({
+        sessionId,
+        toolCall: { toolCallId: "ask", title: "ask" },
+        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
+      });
     }
     const text = `pid=${process.pid} cwd=${process.cwd()} session=${sessionCwds.get(sessionId)}`;
     await connection.sessionUpdate({

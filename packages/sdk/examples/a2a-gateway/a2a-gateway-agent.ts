@@ -5,7 +5,7 @@ import {
   loadAgentConfig,
   isDirectExecution,
 } from "../../src/index";
-import { FernRestAdapter } from "../../src/rest";
+import { ActivityCapability, FernRestAdapter } from "../../src/rest";
 import { BandClient } from "@band-ai/rest-client";
 
 export function createA2AGatewayAgent(
@@ -20,6 +20,7 @@ export function createA2AGatewayAgent(
       apiKey: bandApiKey,
       ...(resolvedRestUrl ? { baseUrl: resolvedRestUrl } : {}),
     }),
+    resolvedRestUrl ? { activityCapability: new ActivityCapability({ origin: resolvedRestUrl }) } : {},
   );
 
   const adapter = new A2AGatewayAdapter({

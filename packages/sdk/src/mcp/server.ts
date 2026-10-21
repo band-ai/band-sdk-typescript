@@ -12,6 +12,8 @@ import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpServerOptions {
+  /** @internal */
+  execute?: BuildRegistrationsOptions["execute"];
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   /** Server name advertised to MCP clients. */
@@ -62,6 +64,7 @@ export class BandMcpServer {
     this.options = options;
 
     const regOptions: BuildRegistrationsOptions = {
+      execute: options.execute,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,

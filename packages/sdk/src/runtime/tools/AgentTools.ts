@@ -1,4 +1,5 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
@@ -358,6 +359,10 @@ export class AgentTools implements AgentToolsProtocol {
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
+    return await this.executeScopedToolCall(undefined, toolName, arguments_);
+  }
+
+  private async executeScopedToolCall(tools: AdapterToolsProtocol | undefined, toolName: string, arguments_: MetadataMap): Promise<unknown> {
     const validationError = validateToolArgs(toolName, arguments_);
     if (validationError) {
       return validationError;
@@ -373,8 +378,9 @@ export class AgentTools implements AgentToolsProtocol {
       });
     }
 
+    const scope = this.isToolExposed(toolName, true) ? tools : undefined;
     try {
-      const result = await handler(arguments_);
+      const result = await withToolActivity(scope, toolName, () => handler(arguments_));
       // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
       // never reject — see its own comment). Route that failure through the
       // same ToolExecutorError conversion a thrown error gets below, so every
@@ -417,26 +423,19 @@ export class AgentTools implements AgentToolsProtocol {
     }
   }
 
+  private isToolExposed(name: string, includeMemory: boolean): boolean {
+    if (TASK_TOOL_NAMES.has(name)) return this.capabilities.tasks;
+    if (MEMORY_TOOL_NAMES.has(name)) return includeMemory && this.capabilities.memory;
+    if (!CHAT_TOOL_NAMES.has(name) && !this.capabilities.contacts) return false;
+    if (name === "band_lookup_peers" && !this.capabilities.peers) return false;
+    return true;
+  }
+
   public getToolSchemas(format: "openai" | "anthropic", options?: { includeMemory?: boolean }): ToolSchemaRecord[] {
     const includeMemory = options?.includeMemory ?? false;
 
     const tools = Object.entries(TOOL_MODELS)
-      .filter(([name]) => {
-        if (TASK_TOOL_NAMES.has(name)) return this.capabilities.tasks;
-        if (MEMORY_TOOL_NAMES.has(name)) {
-          return includeMemory && this.capabilities.memory;
-        }
-
-        if (!CHAT_TOOL_NAMES.has(name) && !this.capabilities.contacts) {
-          return false;
-        }
-
-        if (name === "band_lookup_peers" && !this.capabilities.peers) {
-          return false;
-        }
-
-        return true;
-      })
+      .filter(([name]) => this.isToolExposed(name, includeMemory))
       .map(([name, model]) => {
         if (format === "anthropic") {
           return {
@@ -775,7 +774,9 @@ export class AgentTools implements AgentToolsProtocol {
       (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
     }
 
-    return Object.freeze(tools) as AdapterToolsProtocol;
+    return Object.freeze({ ...tools,
+      [SCOPED_TOOL_EXECUTOR]: (scope: AdapterToolsProtocol, name: string, args: MetadataMap) => this.executeScopedToolCall(scope, name, args),
+    }) as AdapterToolsProtocol;
   }
 
   private bindAdapterToolMethod<K extends AdapterToolMethodName>(methodName: K): AdapterToolsProtocol[K] {

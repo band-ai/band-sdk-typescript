@@ -1,7 +1,14 @@
+import type { Band } from "@band-ai/rest-client";
+
 export interface RestRequestOptions {
+  abortSignal?: AbortSignal;
   maxRetries?: number;
   timeoutInSeconds?: number;
   headers?: Record<string, string>;
+}
+
+export interface ReportActivityOptions extends RestRequestOptions {
+  activity?: Band.AgentActivityDetail;
 }
 
 export const DEFAULT_REQUEST_OPTIONS: RestRequestOptions = {

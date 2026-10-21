@@ -1,3 +1,4 @@
+import { retainWorkingCycleUntil } from "../../runtime/workingState";
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
 import { isAuthorizedSender } from "@band-ai/band-sdk-core";
@@ -14,6 +15,8 @@ import type {
   ACPPermissionRequest,
 } from "../acp";
 import { ACPRoomAgent, type ACPRoomAgentOptions } from "../acp/ACPRoomAgent";
+import { ACP_PERMISSION_METHOD } from "../acp/client";
+import { CURSOR_ASK_QUESTION_METHOD, CURSOR_CREATE_PLAN_METHOD } from "../acp/cursorExtensions";
 import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
@@ -81,6 +84,8 @@ interface DecisionSpec {
   choices: Map<string, readonly string[]>;
   multiSelect: ReadonlySet<string>;
 }
+
+type QuestionChoices = Pick<DecisionSpec, "choices" | "multiSelect">;
 
 // A permission's option id, or an extension method's result; undefined denies or cancels.
 type DecisionAnswer = string | Record<string, unknown> | undefined;
@@ -249,8 +254,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     };
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom };
     this.turn = turn;
-    const run = super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
-      .finally(() => this.forgetTurn(turn));
+    const run = retainWorkingCycleUntil(tools,
+      super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
+        .finally(() => this.forgetTurn(turn)),
+    );
     await runUntilReleased(run, released.promise, (error) => {
       this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
     });
@@ -319,10 +326,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     if (!turn || !sessionId || turn.sessionId !== sessionId) {
       return CANCELLED;
     }
-    if (method === "cursor/ask_question") {
+    if (method === CURSOR_ASK_QUESTION_METHOD) {
       return this.resolveQuestion(turn, params);
     }
-    if (method === "cursor/create_plan") {
+    if (method === CURSOR_CREATE_PLAN_METHOD) {
       return this.resolvePlan(turn, params);
     }
     return {};
@@ -345,16 +352,28 @@ export class CursorRoomAgent extends ACPRoomAgent {
     return typeof token === "string" && options.includes(token) ? token : undefined;
   }
 
+  protected override isHumanDecision(method: string, params: Record<string, unknown>): boolean {
+    if (method === ACP_PERMISSION_METHOD) return this.approvalMode === "manual" && super.isHumanDecision(method, params);
+    if (method === CURSOR_ASK_QUESTION_METHOD) return this.asksRoom(questionChoices(params.questions));
+    return method === CURSOR_CREATE_PLAN_METHOD && this.planMode === "manual";
+  }
+
+  /** A question reaches the room only in manual mode, and only when there is something to choose. */
+  private asksRoom(questions: QuestionChoices): boolean {
+    return this.questionMode === "manual" && questions.choices.size > 0;
+  }
+
   private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const questions = questionChoices(params.questions);
-    if (questions.choices.size === 0 || this.questionMode === "autoCancel") {
-      return CANCELLED;
-    }
-    if (this.questionMode === "autoFirst") {
-      return answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])));
-    }
+    if (!this.asksRoom(questions)) return this.autoAnswer(questions);
     const result = await this.waitForDecision(turn, { kind: DECISION_KIND.question, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
     return isRecord(result) ? result : CANCELLED;
+  }
+
+  private autoAnswer(questions: QuestionChoices): Record<string, unknown> {
+    return this.questionMode === "autoFirst" && questions.choices.size > 0
+      ? answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])))
+      : CANCELLED;
   }
 
   private async resolvePlan(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -496,7 +515,7 @@ function allowOption(options: readonly PermissionOption[]): PermissionOption | u
   return options.find((option) => option.kind === "allow_once") ?? options.find((option) => option.kind === "allow_always");
 }
 
-function questionChoices(value: unknown): { choices: Map<string, readonly string[]>; multiSelect: Set<string> } {
+function questionChoices(value: unknown): QuestionChoices {
   const choices = new Map<string, readonly string[]>();
   const multiSelect = new Set<string>();
   if (!Array.isArray(value)) return { choices, multiSelect };

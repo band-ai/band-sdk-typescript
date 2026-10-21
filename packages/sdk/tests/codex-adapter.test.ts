@@ -1,8 +1,13 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
+
+import { createDeferred } from "../src/core/deferred";
+import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
+import { activityWhileProviderFails } from "./support/providerFailure";
 
 import { CodexAdapter } from "../src/adapters/codex";
 import {
@@ -171,6 +176,96 @@ function defaultRequestHandler(method: string, params: Record<string, unknown>):
 }
 
 describe("CodexAdapter", () => {
+  it("observes held native execution without narration", async () => {
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    const item = { type: "commandExecution", id: "native", command: "private-command-marker", cwd: "/tmp", processId: null,
+      status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null };
+    const events: CodexRpcEvent[] = [
+      { kind: "notification", method: "item/started", params: { item } },
+      { kind: "notification", method: "item/completed", params: { item: { ...item, status: "completed", exitCode: 0 } } },
+      { kind: "notification", method: "item/started", params: { item: { type: "contextCompaction", id: "compact" } } },
+      { kind: "notification", method: "item/completed", params: { item: { type: "contextCompaction", id: "compact" } } },
+      { kind: "notification", method: "item/completed", params: { item: { type: "agentMessage", id: "answer", text: "Done." } } },
+      { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
+    ];
+    class HeldClient extends FakeCodexClient {
+      private held = false;
+      public override async recvEvent(): Promise<CodexRpcEvent> {
+        const event = await super.recvEvent();
+        if (!this.held && event.kind === "notification" && event.method === "item/completed") {
+          this.held = true;
+          await release.promise;
+        }
+        return event;
+      }
+    }
+    const client = new HeldClient({ events });
+    const adapter = new CodexAdapter({ factory: async () => client, config: { cwd: tmpRoot(), enableExecutionReporting: false } });
+    {
+      await using session = await BandPlatform.join(adapter, [person("owner")]);
+      const message = await session.room.say("owner", "run it");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      release.resolve();
+      expect(await session.room.outcome(message)).toBe("processed");
+      expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+      expect(activitySequence(reports)).toEqual([
+        { kind: "reasoning" }, { kind: "tool_call", name: "exec" }, { kind: "reasoning" },
+        { kind: "memory" }, { kind: "reasoning" }, false,
+      ]);
+      expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+      expect(JSON.stringify(reports.entries)).not.toContain("private-command-marker");
+    }
+    expect(client.closeCalls).toBe(1);
+  });
+
+  it("reports a custom tool the model calls through item/tool/call as scoped activity", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    const tool = { name: ACT_TOOL, description: "Does the thing", schema: z.object({ text: z.string() }),
+      handler: async () => { entered.resolve(); await release.promise; return "done"; } };
+    const client = new FakeCodexClient({ events: [scriptedToolCall(ACT_TOOL, { text: "private-argument-marker" }), ...scriptedTurnEvents("finalText")] });
+    const adapter = new CodexAdapter({ customTools: [tool], factory: async () => client, config: { cwd: tmpRoot(), enableExecutionReporting: false } });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    const message = await session.room.say("owner", "act");
+    await entered.promise;
+    await reports.next((entry) => entry.activity?.kind === "tool_call");
+    release.resolve();
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(activitySequence(reports)).toEqual([
+      { kind: "reasoning" }, { kind: "tool_call", name: ACT_TOOL }, { kind: "reasoning" }, false,
+    ]);
+    expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+    expect(JSON.stringify(reports.entries)).not.toContain("private-argument-marker");
+  });
+
+  describe("a native tool still open when the turn fails", () => {
+    const item = { type: "commandExecution", id: "native", command: "ls", cwd: "/tmp", processId: null,
+      status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null };
+    const started: CodexRpcEvent = { kind: "notification", method: "item/started", params: { item } };
+    class UnansweringClient extends FakeCodexClient {
+      public override async respond(): Promise<void> { throw new Error("Codex app-server is not connected"); }
+    }
+    const endings: Array<[string, () => CodexClientLike]> = [
+      ["the transport closes", () => new FakeCodexClient({ events: [started, { kind: "notification", method: "transport/closed", params: {} }] })],
+      ["the app-server dies while the loop waits", () => new FakeCodexClient({ events: [started] })],
+      ["a server request cannot be answered", () => new UnansweringClient({ events: [started, scriptedToolCall(SEND_MESSAGE_TOOL_NAME, { content: "hi", mentions: [] })] })],
+      ["Codex reports an error it will not retry", () => new FakeCodexClient({ events: [
+        started,
+        { kind: "notification", method: "error", params: { willRetry: false, error: { message: "model exploded" } } },
+        { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "failed", error: { message: "model exploded" } } } },
+      ] })],
+    ];
+
+    it.each(endings)("is ended before the failure is reported when %s", async (_ending, client) => {
+      const adapter = new CodexAdapter({ factory: async () => client(), config: { cwd: tmpRoot(), enableExecutionReporting: false } });
+      expect(await activityWhileProviderFails(adapter)).toEqual({ kind: "reasoning" });
+    });
+  });
+
   it("a /model list against a downed app server reports a failure and fails only that turn", async () => {
     // `/model list` is the one local command that reaches Codex, and local
     // commands run before onMessage's failure catch — so a bare rejection here

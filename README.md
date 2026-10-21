@@ -433,3 +433,85 @@ pnpm typecheck   # tsc --noEmit
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
+
+## Automatic working state
+
+The runtime reports a working indicator for accepted messages in ordinary
+rooms, across every adapter. It refreshes after each settled report and clears on
+completion or teardown. Contact-hub rooms are excluded.
+
+```ts
+import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new AnthropicAdapter({ anthropicModel: "claude-sonnet-4-6" }),
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: {
+    enableWorkingState: true,
+    workingKeepAliveSeconds: 3,
+    workingRequestTimeoutSeconds: 2,
+    // maxWorkingStateSeconds: 60,
+  },
+});
+```
+
+These are the defaults, with no maximum duration. The same `sessionConfig` works
+with Anthropic, Claude SDK, Codex and other adapters. Set `enableWorkingState: false`
+to opt out independently of tool capabilities and chat narration
+(`enableExecutionReporting` / `emitExecutionEvents`). Disabling narration keeps the
+working indicator enabled; disabling working state preserves tools and narration.
+
+When enabled, cadence must be finite, positive and strictly below five seconds
+(half the platform's ten-second indicator TTL). Request timeout must be finite,
+positive and below cadence, and cadence plus two request timeouts must stay
+below that TTL, since a refresh starts a cadence after the previous response.
+An optional maximum duration must be finite and
+positive. Dormant numeric timing settings are ignored when disabled. At the cap,
+refreshes stop while adapter work continues; completion still attempts a final
+false. Each request has no retries and a separate whole-request cancellation budget.
+Shutdown may add the remaining request budget plus one final request budget
+(default at most approximately four seconds). Reporting failures do not fail the
+turn; failed final delivery relies on the platform TTL to clear the indicator.
+Custom REST transports must honor `abortSignal` through response-body completion.
+
+On agent API 1.25.0 or later, the same reporter includes its current activity:
+`reasoning`, `tool_call` with a tool name, `permission` during an actual human wait,
+or `memory` during an observed compaction. Changes send immediately; keep-alives
+repeat the current state. Overlapping work shares one reporter, with permission
+winning until every real wait and its reply I/O ends. Final false carries no detail.
+Activity contains names only, never tool arguments, output, commands or prompts.
+Chat narration remains independent and can stay disabled.
+
+| Signal source | Available detail |
+| --- | --- |
+| Scoped Band/custom tools, ToolCalling adapters, ADK and LangGraph streams | Actual local execution; observable native tool starts and terminals |
+| Claude SDK | Query-owned native hooks, scoped MCP tools and compaction statuses |
+| Codex | Native item starts/completions and local dynamic tools |
+| ACP variants and OpenCode | Correlated tool events and real human decisions, including detached control replies |
+| Letta | Native step streams and local approval tools |
+| Parlant, A2A, gateway and ACP server bridge | Reasoning for opaque remote work |
+
+Provider-hosted tools absent from a model interface remain reasoning. Injected
+invoke-only LangGraph graphs and create-only Letta clients remain supported, with
+reasoning for their unobservable remote tools. ACP has no prompt ID on updates:
+known calls are fenced, and observations after an unacknowledged prompt stay
+disabled until a fresh session/connection. An unknown delayed start from a provider
+violating ACP completion ordering cannot be attributed reliably. ACP display titles
+may contain commands, so structured tool names or categories supply its detail.
+
+Compatibility is automatic and owned by each REST client: an unauthenticated
+`GET <restUrl>/api/v1/health` reads `api_version` (the agent API release), so it
+works on any host that serves REST, including `app.band.ai`. Reports never wait
+for it: until the answer is known they go out without detail, and the next
+keep-alive carries it. A definitive answer is final; older, missing, malformed or
+prerelease versions keep boolean reporting, while a timeout or server error is
+asked again on a later report. A detail-bearing 422 disables detail for that
+client and permits one boolean resend within the original request budget. Other
+failures do not downgrade. There is no second reporting switch. A `FernRestAdapter`
+you build yourself and inject as `restApi` reports detail only when given
+`{ activityCapability: new ActivityCapability({ origin: restUrl }) }` from
+`@band-ai/sdk/rest`; otherwise that link remains boolean-only.
+
+`SessionConfig` remains optional input; `ResolvedSessionConfig` now includes the
+three defaulted working-state fields and the optional duration cap. Callers that
+construct resolved configuration objects directly must include those defaults.

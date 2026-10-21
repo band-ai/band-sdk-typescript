@@ -290,6 +290,7 @@ function makeExecution(onExecute: () => Promise<void> = async () => undefined): 
   const retryTracker = new RetryTracker(1);
   const context = {
     setState: (_state: ExecutionState) => undefined,
+    closeWorkingState: async () => undefined,
     getRetryTracker: () => retryTracker,
   };
 

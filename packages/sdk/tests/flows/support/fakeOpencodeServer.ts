@@ -26,6 +26,13 @@ export interface Request {
 
 type Event = { type: string; properties: Record<string, unknown> };
 
+/** An ask OpenCode still waits on, and how to settle the turn awaiting it. */
+interface PendingAsk {
+  kind: "permission" | "question";
+  asked: Record<string, unknown>;
+  settle(body: Record<string, unknown>): void;
+}
+
 /** A route's canned failure: the status, and the body sent with it. */
 interface Failure {
   status: number;
@@ -58,20 +65,18 @@ export class OpencodeTurn {
     this.server.broadcast({ type, properties });
   }
 
-  /** Raises a permission ask and resolves with the reply OpenCode receives for it. */
+  /** Raises a permission ask and resolves with the reply that settles it, from any client or OpenCode itself. */
   public askPermission(properties: Record<string, unknown> = {}): { id: string; reply: Promise<Record<string, unknown>> } {
     const id = typeof properties.id === "string" ? properties.id : `per_${this.server.nextId()}`;
-    const reply = this.server.awaitRequest("POST", `/permission/${id}/reply`);
-    this.emit("permission.asked", { sessionID: this.sessionId, permission: "bash", patterns: ["npm test"], ...properties, id });
-    return { id, reply: reply.then((request) => request.body) };
+    const asked = { sessionID: this.sessionId, permission: "bash", patterns: ["npm test"], ...properties, id };
+    const reply = this.server.pendingAsk("permission", id, asked);
+    this.emit("permission.asked", asked);
+    return { id, reply };
   }
 
   /** Raises a question and resolves with the answers, or "rejected". */
   public askQuestion(questions: Array<Record<string, unknown>>, id = `que_${this.server.nextId()}`): { id: string; reply: Promise<string[][] | "rejected"> } {
-    const reply = Promise.race([
-      this.server.awaitRequest("POST", `/question/${id}/reply`).then((request) => request.body.answers as string[][]),
-      this.server.awaitRequest("POST", `/question/${id}/reject`).then(() => "rejected" as const),
-    ]);
+    const reply = this.server.pendingAsk("question", id, { sessionID: this.sessionId }).then((body) => (body.answers as string[][] | undefined) ?? "rejected" as const);
     this.emit("question.asked", { sessionID: this.sessionId, questions, id });
     return { id, reply };
   }
@@ -108,6 +113,7 @@ export class FakeOpencodeServer implements AsyncDisposable {
   private readonly streams = new Set<ServerResponse>();
   private readonly failures = new Map<string, Failure[]>();
   private readonly holds = new CallHolds<[route: string]>();
+  private readonly asks = new Map<string, PendingAsk>();
   private ids = 0;
   private port = 0;
   private mcp: Promise<Client> | null = null;
@@ -208,6 +214,42 @@ export class FakeOpencodeServer implements AsyncDisposable {
     return this.requests.entries.filter((request) => request.method === "POST" && request.path === path);
   }
 
+  /** Holds `id` open until a reply settles it, with the body that did. */
+  public pendingAsk(kind: PendingAsk["kind"], id: string, asked: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return new Promise((settle) => this.asks.set(id, { kind, asked, settle }));
+  }
+
+  /**
+   * Answers a permission as OpenCode 1.18's `Permission.reply` does, for whichever client sent it:
+   * `reject` also rejects the session's other pending permissions, and `always` approves those its
+   * patterns now cover. Each settled ask publishes `permission.replied`.
+   */
+  public replyPermission(id: string, body: Record<string, unknown>): void {
+    const replied = this.settle(id, body, "permission.replied", { reply: body.reply });
+    if (!replied || (body.reply !== "reject" && body.reply !== "always")) return;
+    const approved = new Set((replied.always ?? replied.patterns) as string[]);
+    for (const [other, { kind, asked }] of [...this.asks]) {
+      const sameSession = kind === "permission" && asked.sessionID === replied.sessionID;
+      const covered = asked.permission === replied.permission && (asked.patterns as string[]).every((pattern) => approved.has(pattern));
+      if (sameSession && (body.reply === "reject" || covered)) this.settle(other, { reply: body.reply }, "permission.replied", { reply: body.reply });
+    }
+  }
+
+  /** Answers a question as OpenCode does, publishing `question.replied`, or `question.rejected` without answers. */
+  public replyQuestion(id: string, answers?: string[][]): void {
+    if (answers) this.settle(id, { answers }, "question.replied", { answers });
+    else this.settle(id, {}, "question.rejected", {});
+  }
+
+  private settle(id: string, body: Record<string, unknown>, type: string, properties: Record<string, unknown>): Record<string, unknown> | undefined {
+    const pending = this.asks.get(id);
+    if (!pending) return undefined;
+    this.asks.delete(id);
+    pending.settle(body);
+    this.broadcast({ type, properties: { sessionID: pending.asked.sessionID, requestID: id, ...properties } });
+    return pending.asked;
+  }
+
   /** Resolves with the next request to `method path` that arrives after this call. */
   public awaitRequest(method: string, path: string): Promise<Request> {
     return this.requests.next((request) => request.method === method && request.path === path, this.requests.entries.length);
@@ -242,8 +284,10 @@ export class FakeOpencodeServer implements AsyncDisposable {
     this.requests.record(request);
     const route = `${request.method} ${request.path.replace(/\/(ses|per|que)_[^/]+/, "/$1_:id")}`;
 
-    await this.holds.pass(route);
     const failure = this.failures.get(route)?.shift();
+    // OpenCode settles an ask, and publishes that, before its response is on the wire.
+    if (!failure) this.answerAsk(request);
+    await this.holds.pass(route);
     if (failure) {
       return send(res, failure.status, failure.body);
     }
@@ -277,8 +321,15 @@ export class FakeOpencodeServer implements AsyncDisposable {
       }
       return;
     }
-    // Permission and question replies, aborts and MCP registration all simply succeed.
+    // Ask replies, aborts and MCP registration simply succeed.
     return send(res, 200, true);
+  }
+
+  private answerAsk({ method, path, body }: Request): void {
+    const ask = path.match(/^\/(permission|question)\/([^/]+)\/(reply|reject)$/);
+    if (method !== "POST" || !ask) return;
+    if (ask[1] === "permission") this.replyPermission(ask[2]!, body);
+    else this.replyQuestion(ask[2]!, ask[3] === "reply" ? body.answers as string[][] : undefined);
   }
 
   private openEventStream(res: ServerResponse): void {

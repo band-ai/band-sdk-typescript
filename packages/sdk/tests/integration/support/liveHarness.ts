@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 
 import { BandClient } from "@band-ai/rest-client";
 
-import { FernRestAdapter } from "../../../src/rest";
+import { ActivityCapability, FernRestAdapter } from "../../../src/rest";
+import type { Logger } from "../../../src/core/logger";
 
 export const NAME_PREFIX = "e2e-ts-";
 export const DEFAULT_REST_URL = "https://app.band.ai/";
@@ -60,8 +61,10 @@ export function cliProbeFailure(command: string): string | null {
 }
 
 /** A REST client acting as the agent that owns `apiKey`. */
-export function agentRest(restUrl: string, apiKey: string): FernRestAdapter {
-  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }));
+export function agentRest(restUrl: string, apiKey: string, logger?: Logger): FernRestAdapter {
+  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }), {
+    activityCapability: new ActivityCapability({ origin: restUrl, logger }),
+  });
 }
 
 export interface ProvisionedAgent {

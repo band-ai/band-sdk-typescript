@@ -1,4 +1,4 @@
-import type { RestRequestOptions } from "./requestOptions";
+import type { ReportActivityOptions, RestRequestOptions } from "./requestOptions";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
@@ -251,7 +251,7 @@ export interface ActivityRestApi {
   reportActivity?(
     _chatId: string,
     _working: boolean,
-    _options?: RestRequestOptions,
+    _options?: ReportActivityOptions,
   ): Promise<{ working: boolean }>;
 }
 
@@ -542,7 +542,7 @@ export interface FernBandClientLike {
   agentApiActivity?: {
     reportAgentChatActivity?(
       chatId: string,
-      request: { working: boolean },
+      request: { working: boolean; activity?: ReportActivityOptions["activity"] },
       options?: RestRequestOptions,
     ): Promise<unknown>;
   };

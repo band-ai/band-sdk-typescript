@@ -65,3 +65,13 @@ export function rethrowIfRecoverableTurnFailure(error: unknown): void {
     throw error;
   }
 }
+
+export const HTTP_NOT_FOUND = 404;
+export const HTTP_UNPROCESSABLE = 422;
+export const HTTP_TOO_MANY_REQUESTS = 429;
+export const HTTP_SERVER_ERROR = 500;
+
+/** Whether `error` is an HTTP failure from the REST client carrying `statusCode`. */
+export function hasStatusCode(error: unknown, statusCode: number): boolean {
+  return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === statusCode;
+}

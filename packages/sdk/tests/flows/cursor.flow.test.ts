@@ -14,10 +14,12 @@ import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-ac
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
+import { sessionConfigSchema } from "../../src/runtime/types";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
 import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
+import { activitySequence, recordRuntimeActivity } from "../support/activityReports";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
 import { makeLoggerSpy, MISSING_REPLY, reportedFailures, tmpRoot, type ReportedFailure } from "../testUtils";
 import { ACT_TOOL, CLOSING_TEXT, contractRows, NO_REPLY_ARGS, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
@@ -124,17 +126,52 @@ async function promptTokens(room: BandRoom, count: number): Promise<string[]> {
   return room.messages.filter(isPrompt).map((posted) => tokenOf(posted)!);
 }
 
+const KEEPALIVE_MS = sessionConfigSchema.parse({}).workingKeepAliveSeconds * 1000;
+
 describe("Cursor in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
+  it("keeps working while a detached Cursor permission waits and retires only at prompt completion", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await cursorRoom();
+    const { room, platform } = session;
+    const resumed = createDeferred();
+    const terminal = createDeferred();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { message, tokens } = await session.start(async (turn) => {
+      await turn.requestPermission(WRITE_FILE);
+      resumed.resolve();
+      await terminal.promise;
+      await turn.say(DONE);
+    }, 1);
+    try {
+      await room.outcome(message);
+      await reports.next((entry) => entry.activity?.kind === "permission");
+      const beforeHeartbeats = platform.rest.workingReports.entries.length;
+      await vi.advanceTimersByTimeAsync(2 * KEEPALIVE_MS);
+      expect(platform.rest.workingReports.entries.length).toBeGreaterThan(beforeHeartbeats);
+      expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
+      const waitingReports = reports.entries.length;
+      await room.exchange(OWNER, `${CURSOR_COMMAND} select ${tokens[0]} allow`);
+      await resumed.promise;
+      await reports.next((entry) => entry.activity?.kind === "reasoning", waitingReports);
+      await vi.advanceTimersByTimeAsync(KEEPALIVE_MS);
+      expect(platform.rest.workingReports.entries.every((entry) => entry.working)).toBe(true);
+      terminal.resolve();
+      await platform.rest.workingReports.next((entry) => !entry.working);
+    } finally { terminal.resolve(); vi.useRealTimers(); }
+  });
+
   it("lets the room approve and deny tool permissions while the turn waits, however the owner phrases it", async () => {
     await using session = await cursorRoom();
     const { room } = session;
+    const terminal = createDeferred();
     const { result, message, tokens: [write] } = await session.start(async (turn) => {
       const first = await turn.requestPermission(WRITE_FILE);
       const second = await turn.requestPermission({ ...WRITE_FILE, toolCall: { toolCallId: "rm-1", title: "Delete draft.md" } });
+      await terminal.promise;
       await turn.say("Updated the notes.");
       return [first, second];
     }, 1);
@@ -151,6 +188,7 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(TEAMMATE, `${CURSOR_COMMAND} deny ${remove}`)).toContain(SAYS.resolved("permission", remove!));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${remove} allow`)).toEqual([SAYS.notPending(remove!)]);
 
+    terminal.resolve();
     expect(await result).toEqual([selected("allow"), CANCELLED]);
     // The room was handed back when the first decision opened; the reply still reaches the requester.
     expect(await room.outcome(message)).toBe("processed");
@@ -317,6 +355,7 @@ describe("Cursor in a Band room", () => {
       expected: [CANCELLED, CANCELLED, { outcome: { outcome: "rejected" } }],
     },
   ] as const)("$policy without asking the room", async ({ options, expected }) => {
+    const reports = recordRuntimeActivity();
     await using session = await cursorRoom(options);
     const { result, message } = await session.start(answering(async (turn) => [
       await turn.requestPermission({ ...WRITE_FILE, options: [{ optionId: "allow-always", name: "Always", kind: "allow_always" }] }),
@@ -327,6 +366,31 @@ describe("Cursor in a Band room", () => {
     expect(await result).toEqual(expected);
     expect(await session.room.outcome(message)).toBe("processed");
     expect(session.room.messages.filter(isPrompt)).toEqual([]);
+    expect(reports.entries.some((entry) => entry.activity?.kind === "permission")).toBe(false);
+  });
+
+  it.each([
+    { kind: "question", options: {}, reply: "answer mode=plan", ask: (turn: CursorTurn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }) },
+    { kind: "plan", options: { planMode: "manual" }, reply: "accept", ask: (turn: CursorTurn) => turn.plan({ title: "Plan" }) },
+  ] as const)("reports a wait while a manual $kind awaits the room", async ({ options, reply, ask }) => {
+    const reports = recordRuntimeActivity();
+    await using session = await cursorRoom(options);
+    const { message, tokens } = await session.start(answering(ask), 1);
+    await reports.next((entry) => entry.activity?.kind === "permission");
+    const [verb, ...args] = reply.split(" ");
+    await session.room.exchange(OWNER, [CURSOR_COMMAND, verb, tokens[0], ...args].join(" "));
+    expect(await session.room.outcome(message)).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(activitySequence(reports)).toEqual([{ kind: "reasoning" }, { kind: "permission" }, { kind: "reasoning" }, false]);
+  });
+
+  it("reports no wait for a question that offers nothing to choose", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await cursorRoom();
+    const { result, message } = await session.start(answering((turn) => turn.ask({ questions: [] })));
+    expect(await result).toEqual(CANCELLED);
+    expect(await session.room.outcome(message)).toBe("processed");
+    expect(reports.entries.some((entry) => entry.activity?.kind === "permission")).toBe(false);
   });
 
   it("lets anyone in the room resolve decisions when the allowlist is unset", async () => {
@@ -621,7 +685,7 @@ describe("Cursor in a Band room", () => {
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(RELEASED_TURN_FAILED, expect.anything()));
     expect(logger.warn.mock.calls.filter(([event]) => event === RELEASED_TURN_FAILED)).toHaveLength(1);
     const refused = platform.rest.refused.entries;
-    expect(refused.map(({ roomId, call }) => ({ roomId, call }))).toEqual([{ roomId: room.id, call: "createChatEvent" }]);
+    expect(refused.map(({ roomId, call }) => ({ roomId, call }))).toEqual([{ roomId: room.id, call: "reportActivity" }, { roomId: room.id, call: "createChatEvent" }]);
     const reports = reportedFailures(refused.flatMap(({ attempt }) => attempt ?? []));
     expect(reports).toHaveLength(1);
     expect(reports).not.toContainEqual(MISSING_REPLY);

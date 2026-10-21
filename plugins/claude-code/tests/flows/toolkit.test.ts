@@ -320,6 +320,9 @@ describe("Band's working indicator", () => {
     await session.pushOf(id);
     await workingReports.next((report) => report.roomId === ROOM && report.working);
 
+    expect(await band.room.outcome(id)).toBe("processed");
+    expect(workingReports.entries).toEqual([{ roomId: ROOM, working: true }]);
+
     const afterPush = workingReports.entries.length;
     await session.callTool(TOOL.reply, { message_id: id, content: "pong" });
 

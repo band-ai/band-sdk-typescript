@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { scopedActivity } from "./support/scopedActivity";
+import { createDeferred } from "../src/core/deferred";
 import { z } from "zod";
 
 import {
   buildCustomToolIndex,
   CustomToolDefinitionError,
+  CustomToolValidationError,
   type CustomToolDef,
   customToolToAnthropicSchema,
   customToolToOpenAISchema,
@@ -15,6 +18,56 @@ import {
 } from "../src/runtime/tools/customTools";
 
 // -- Test fixtures --
+
+describe("scoped custom execution", () => {
+  it.each(["success", "failure", "throw"])("preserves %s and turn effects while observing actual execution", async (outcome) => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    await using scope = await scopedActivity();
+    const output = outcome === "failure" ? { ok: false, message: "failure" } : { value: "private-output" };
+    const definition: CustomToolDef = {
+      name: "custom_lookup", schema: z.object({ query: z.string() }), effect: "act",
+      handler: async () => {
+        entered.resolve(); await release.promise;
+        if (outcome === "throw") throw new Error("original failure");
+        return output;
+      },
+    };
+    const run = executeCustomTool(definition, { query: "private-argument" }, scope.tools.turn, scope.tools);
+    const result = outcome === "throw" ? expect(run).rejects.toThrow("original failure") : expect(run).resolves.toBe(output);
+    await entered.promise;
+    await scope.lease.flush();
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "tool_call", name: "custom_lookup" });
+    release.resolve();
+    await result;
+    await scope.lease.flush();
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "reasoning" });
+    expect(scope.tools.turn.verdict()).toBe(outcome === "success" ? "complete" : "missing_reply");
+    expect(JSON.stringify(scope.reports.entries)).not.toContain("private-");
+  });
+
+  it("does not observe a call whose arguments fail validation", async () => {
+    await using scope = await scopedActivity();
+    const handler = vi.fn();
+    const definition: CustomToolDef = { name: "custom_lookup", schema: z.object({ query: z.string() }), handler };
+    await expect(executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).rejects.toBeInstanceOf(CustomToolValidationError);
+    await scope.lease.flush();
+    expect(handler).not.toHaveBeenCalled();
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
+  });
+
+  it("runs the handler and returns its result while activity delivery is stalled", async () => {
+    await using scope = await scopedActivity();
+    const release = scope.hold();
+    const definition: CustomToolDef = { name: "custom_lookup", schema: z.object({}), handler: async () => "done" };
+    expect(await executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).toBe("done");
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
+    release();
+    await scope.lease.flush();
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "custom_lookup" }, { kind: "reasoning" }]);
+  });
+});
 
 const WeatherSchema = z.object({
   city: z.string().describe("City name"),

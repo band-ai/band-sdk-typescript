@@ -1,4 +1,4 @@
-import { UnsupportedFeatureError } from "../../core/errors";
+import { hasStatusCode, HTTP_UNPROCESSABLE, UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -21,7 +21,9 @@ import {
   DEFAULT_REQUEST_OPTIONS,
   MESSAGE_SEND_MAX_RETRIES,
   type RestRequestOptions,
+  type ReportActivityOptions,
 } from "./requestOptions";
+import type { ActivityCapability } from "./activityCapability";
 import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
@@ -374,11 +376,18 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
   };
 }
 
+export interface FernRestAdapterOptions {
+  /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
+  activityCapability?: ActivityCapability;
+}
+
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
+  private readonly activityCapability?: ActivityCapability;
 
-  public constructor(client: FernBandClientLike) {
+  public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
+    this.activityCapability = options.activityCapability;
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -543,17 +552,32 @@ export class FernRestAdapter implements RestApi {
     return normalizeChatRoom(await api(chatId, mergeOptions(options)));
   }
 
-  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+  public async reportActivity(chatId: string, working: boolean, options?: ReportActivityOptions): Promise<{ working: boolean }> {
     const api = this.client.agentApiActivity?.reportAgentChatActivity?.bind(this.client.agentApiActivity);
     if (!api) {
       throw new UnsupportedFeatureError("Fern client missing activity report endpoint");
     }
 
-    const payload = asMetadataMap(extractEnvelopeData(await api(chatId, { working }, mergeOptions(options))));
-    if (typeof payload?.working !== "boolean") {
-      throw new UnsupportedFeatureError("Activity response did not include the working state");
+    const { activity, ...requestOptions } = options ?? {};
+    const send = async (detail: typeof activity): Promise<{ working: boolean }> => {
+      const body = { working, ...(detail ? { activity: detail } : {}) };
+      const payload = asMetadataMap(extractEnvelopeData(await api(chatId, body, mergeOptions(requestOptions))));
+      if (typeof payload?.working !== "boolean") {
+        throw new UnsupportedFeatureError("Activity response did not include the working state");
+      }
+      return { working: payload.working };
+    };
+
+    const capability = this.activityCapability;
+    const detail = working && capability?.allowsDetail(requestOptions.timeoutInSeconds) ? activity : undefined;
+    try {
+      return await send(detail);
+    } catch (error) {
+      if (!detail || !hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
+      // Older platforms reject the field; the caller's one abort signal still bounds both attempts.
+      capability?.markUnsupported(`HTTP ${HTTP_UNPROCESSABLE}: ${error instanceof Error ? error.message : "no detail"}`);
+      return await send(undefined);
     }
-    return { working: payload.working };
   }
 
   public async listChatParticipants(
