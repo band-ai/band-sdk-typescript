@@ -218,6 +218,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # These guards scan tracked files outside the package path filters too.
+      - name: Verify repository-wide content guards
+        working-directory: packages/sdk
+        run: pnpm exec vitest run tests/c6-*.test.ts tests/c7-*.test.ts
+
       - name: Build all packages
         run: pnpm build
 
