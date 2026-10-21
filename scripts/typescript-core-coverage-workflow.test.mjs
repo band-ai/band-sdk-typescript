@@ -113,6 +113,13 @@ test("Core checkout uses the scoped read secret", async () => {
   );
 });
 
+test("workflow stays out of the merge queue", async () => {
+  const { workflow } = await loadSteps();
+
+  // Not a required check: running it on every merge group only slows the queue.
+  assert.doesNotMatch(workflow, /\n {2}merge_group:\n/);
+});
+
 test("weekly report schedules a separate mention digest", async () => {
   const { workflow } = await loadSteps();
   assert.match(workflow, /^    - cron: "47 20 \* \* 0" # Sunday night:/m);
