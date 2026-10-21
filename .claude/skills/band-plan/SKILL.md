@@ -79,11 +79,11 @@ Never assume, always verify — the one rule everything else follows from.
 2. Read the full ticket and comments — never plan from a title.
 3. Verify anything outside this repo in its actual source, never from memory
    or a name:
-   - Sibling repos: `band-ai/band-sdk-core`, `band-ai/band-sdk-python`,
-     `thenvoi/thenvoi-platform` (platform backend), `thenvoi/fern` (source of
-     the generated REST client). Use a local checkout when one
-     exists (fetch there too), otherwise read them with `gh`; ask the user
-     where a checkout lives rather than guessing.
+   - Sibling SDKs: `band-ai/band-sdk-core` and `band-ai/band-sdk-python`.
+     Resolve the platform backend and generated REST client's source repository
+     from verified local remotes or package metadata; do not guess a repository
+     from its product name. Use an existing checkout (fetch there too) or read
+     the resolved source with `gh`. Ask only when its identity remains unclear.
    - Third-party libraries and APIs: current primary docs plus the source of
      the pinned version. A capability that only exists in a newer release, or
      only sounds plausible from its name, is not verified.

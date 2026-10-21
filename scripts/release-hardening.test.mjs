@@ -1044,6 +1044,24 @@ test("CI validates every merge group over the whole tree, without cancelling it"
   );
 });
 
+test("repository-wide content guards run even when a pull request selects no package", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+  const packaging = workflow.match(/\n  packaging:\n[\s\S]*?(?=\n  [a-z][a-z-]*:|$)/)?.[0];
+  assert.ok(packaging, "the unconditional packaging job must exist");
+  assert.match(packaging, /^    if: \*not-draft$/m);
+  assert.doesNotMatch(packaging, /^    needs:/m, "content guards must not depend on path-filtered jobs");
+
+  const steps = namedWorkflowSteps(packaging);
+  const install = steps.find((step) => step.name === "Install dependencies");
+  const guard = steps.find((step) => step.name === "Verify repository-wide content guards");
+  const build = steps.find((step) => step.name === "Build all packages");
+  assert.ok(install && guard && build, "install, content guards and packaging must all run");
+  assert.ok(install.index < guard.index && guard.index < build.index, "check content before building packages");
+  assert.doesNotMatch(guard.body, /^        if:/m, "docs-only PRs must not skip the repository-wide guards");
+  assert.match(guard.body, /^        working-directory: packages\/sdk$/m);
+  assert.match(guard.body, /^        run: pnpm exec vitest run tests\/c6-\*\.test\.ts tests\/c7-\*\.test\.ts$/m);
+});
+
 test("CI skips draft pull requests and starts when one is marked ready", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 

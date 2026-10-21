@@ -117,6 +117,13 @@ branches, so this is visible noise rather than work.
 
 ### CI — `ci.yml`
 
+The mandatory `packaging` job runs the existing repository-wide content guards
+before building packages, even when PR path filters select no package. These
+guards read tracked source, documentation and agent guidance outside package
+directories. This keeps a docs-only PR from passing its PR checks and first
+revealing a content violation in the merge queue. The full SDK suite remains
+path-filtered on PRs and runs in the queue.
+
 Runs on every PR to `main` and, as a compatibility measure, every PR to `dev`.
 Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.

@@ -575,7 +575,7 @@ precedence; report unrun checks instead of implying they passed.
 
 | Change | Local validation |
 |---|---|
-| Documentation or skill instructions only | Check links, frontmatter, referenced paths/commands, and relevant workflow scenarios. Validate changed runnable examples where applicable. Do not run the SDK suite or wait for CI solely for prose changes. |
+| Documentation or skill instructions only | Check links, frontmatter, referenced paths/commands, and relevant workflow scenarios. Run the existing repository-wide content guards from CI's packaging job; they scan tracked guidance outside package paths. Validate changed runnable examples where applicable. The full SDK suite and a CI wait are not required solely for prose changes. |
 | Executable skill helpers, examples, or scripts | Run relevant behavioral checks in their actual Node/package environment; executable helpers are code, even inside a skill. |
 | Localized TypeScript source or tests | Run affected lint, type checks and behavioral tests; build SDK output first when consumer proofs need it. Broaden for affected callers. |
 | Shared runtime/protocol behavior, dependencies, packaging, or broad refactors | Run the full workspace gate below plus relevant ESM/CJS, declaration, optional-peer/import isolation, downstream plugin and boundary/live checks. |

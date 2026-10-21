@@ -68,6 +68,12 @@ repeated/cancelled/restarted flows without introducing a new test framework.
 
 ## Consumer and platform checks
 
+Repository-wide content guards scan tracked guidance and documentation outside
+package directories. Run the C6/C7 guard files selected by the packaging job in
+`.github/workflows/ci.yml` for relevant prose changes; path-filtered SDK checks
+alone do not establish that these invariants passed. The full SDK suite is not
+required solely for prose changes.
+
 Use host-native temporary paths and path utilities; do not skip an OS to hide
 separator assumptions. Genuine unavailable boundaries may skip with a reason.
 Check the actual workflow matrix before claiming cross-platform validation.
