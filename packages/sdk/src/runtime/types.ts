@@ -10,6 +10,10 @@ import type {
 } from "../contracts/protocols";
 
 export interface AgentConfig {
+  /**
+   * Join the rooms the agent already belongs to at startup and after a
+   * reconnect, not only rooms it is added to while running. Defaults to `true`.
+   */
   autoSubscribeExistingRooms?: boolean;
 }
 

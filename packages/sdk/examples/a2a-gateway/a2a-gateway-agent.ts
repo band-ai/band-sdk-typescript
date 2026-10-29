@@ -39,7 +39,6 @@ export function createA2AGatewayAgent(
       ...(resolvedRestUrl ? { restUrl: resolvedRestUrl } : {}),
     },
     linkOptions: { restApi },
-    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

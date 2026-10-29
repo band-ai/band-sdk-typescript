@@ -28,7 +28,6 @@ export function createA2ABridgeAgentWithAuth(options?: {
       ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
       ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
-    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

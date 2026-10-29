@@ -336,6 +336,79 @@ describe("PlatformRuntime", () => {
     expect(transport.hasTopic("room_participants:room-existing")).toBe(false);
   });
 
+  it("joins and serves existing rooms at startup when agentConfig is omitted", async () => {
+    const transport = new FakeTransport();
+    const restApi = new FakeRestApi({
+      listChats: async () => ({
+        data: [{ id: "room-existing", title: "Existing Room" }],
+        metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+      }),
+    });
+    const handled = createDeferred<string>();
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi }),
+    });
+    await runtime.start(new GenericAdapter(async ({ message }) => {
+      handled.resolve(message.content);
+    }));
+
+    expect(transport.hasTopic("chat_room:room-existing")).toBe(true);
+    expect(transport.hasTopic("room_participants:room-existing")).toBe(true);
+
+    await transport.emit("chat_room:room-existing", "message_created", {
+      id: "m1",
+      content: "hello existing room",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await expect(handled.promise).resolves.toBe("hello existing room");
+  });
+
+  it("leaves existing rooms unjoined when autoSubscribeExistingRooms is false", async () => {
+    const transport = new FakeTransport();
+    const listChats = async () => ({
+      data: [{ id: "room-existing", title: "Existing Room" }],
+      metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi({ listChats }),
+      }),
+      agentConfig: { autoSubscribeExistingRooms: false },
+    });
+
+    await runtime.start(new GenericAdapter(async () => {}));
+
+    expect(transport.hasTopic("agent_rooms:a1")).toBe(true);
+    expect(transport.hasTopic("chat_room:room-existing")).toBe(false);
+
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-new",
+      status: "active",
+      type: "direct",
+      title: "New Room",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    expect(transport.hasTopic("chat_room:room-new")).toBe(true);
+  });
+
   it("skips rooms rejected by roomFilter", async () => {
     const transport = new FakeTransport();
     const adapter = new GenericAdapter(async () => {});

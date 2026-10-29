@@ -60,6 +60,7 @@ function createLinearBandBridgeAgentWithStore(
     options?.linearAccessToken ?? process.env.LINEAR_ACCESS_TOKEN ?? "linear-api-key",
   );
 
+  // Deliberately opposite to the SDK default: this bridge is driven by Linear webhooks.
   const autoSubscribe = options?.autoSubscribeExistingRooms ?? false;
 
   // One Codex app-server per Linear room, with no cap: size the host for the rooms you expect.
