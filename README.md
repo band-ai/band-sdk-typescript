@@ -12,7 +12,6 @@ const agent = Agent.create({
     await tools.sendMessage(`Echo: ${message.content}`, [{ id: message.senderId }]);
   }),
   config: loadAgentConfigFromEnv(),
-  agentConfig: { autoSubscribeExistingRooms: true },
 });
 
 await agent.run();
@@ -20,7 +19,7 @@ await agent.run();
 
 Set `BAND_AGENT_ID` and `BAND_API_KEY` as environment variables, then run with `npx tsx your-agent.ts`.
 
-A message needs at least one mention, so the reply mentions its sender; without one the platform rejects it with a `422`. `autoSubscribeExistingRooms: true` makes the agent rejoin the rooms it already belongs to when it starts, since it defaults to `false`.
+A message needs at least one mention, so the reply mentions its sender; without one the platform rejects it with a `422`.
 
 ## Installation
 
@@ -88,7 +87,6 @@ const agent = Agent.create({
     await tools.sendMessage(`You said: ${message.content}`, [{ id: message.senderId }]);
   }),
   config: loadAgentConfig("my_agent"),
-  agentConfig: { autoSubscribeExistingRooms: true },
 });
 
 await agent.run();
