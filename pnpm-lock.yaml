@@ -38,7 +38,7 @@ importers:
   packages/sdk:
     dependencies:
       '@a2a-js/sdk':
-        specifier: '>=0.3.10'
+        specifier: '>=0.3.10 <1'
         version: 0.3.13(@grpc/grpc-js@1.14.3)(express@5.2.1)
       '@anthropic-ai/sdk':
         specifier: '>=0.91.1 <1.0.0'
