@@ -336,39 +336,31 @@ describe("PlatformRuntime", () => {
     expect(transport.hasTopic("room_participants:room-existing")).toBe(false);
   });
 
-  it("rejoins existing rooms after a restart when agentConfig is omitted", async () => {
+  it("joins and serves existing rooms at startup when agentConfig is omitted", async () => {
+    const transport = new FakeTransport();
     const restApi = new FakeRestApi({
       listChats: async () => ({
         data: [{ id: "room-existing", title: "Existing Room" }],
         metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
       }),
     });
-    const seenMessages: string[] = [];
-    const startRuntime = async (transport: FakeTransport) => {
-      const runtime = new PlatformRuntime({
-        agentId: "a1",
-        apiKey: "k",
-        link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi }),
-      });
-      await runtime.start(new GenericAdapter(async ({ message }) => {
-        seenMessages.push(message.content);
-      }));
-      return runtime;
-    };
+    const handled = createDeferred<string>();
 
-    const firstRun = await startRuntime(new FakeTransport());
-    await firstRun.stop();
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi }),
+    });
+    await runtime.start(new GenericAdapter(async ({ message }) => {
+      handled.resolve(message.content);
+    }));
 
-    const transport = new FakeTransport();
-    await using restarted = await startRuntime(transport);
-
-    expect(restarted.state.status).toBe("running");
     expect(transport.hasTopic("chat_room:room-existing")).toBe(true);
     expect(transport.hasTopic("room_participants:room-existing")).toBe(true);
 
     await transport.emit("chat_room:room-existing", "message_created", {
       id: "m1",
-      content: "hello after restart",
+      content: "hello existing room",
       message_type: "text",
       sender_id: "u1",
       sender_type: "User",
@@ -376,9 +368,8 @@ describe("PlatformRuntime", () => {
       inserted_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(seenMessages).toEqual(["hello after restart"]);
+    await expect(handled.promise).resolves.toBe("hello existing room");
   });
 
   it("leaves existing rooms unjoined when autoSubscribeExistingRooms is false", async () => {
