@@ -44,7 +44,6 @@ export function createCodexAgent(
       ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
       ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
-    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

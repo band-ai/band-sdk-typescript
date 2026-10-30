@@ -92,7 +92,7 @@ export class AgentRuntime {
     this.presence = new RoomPresence({
       link: this.link,
       roomFilter: options.roomFilter,
-      autoSubscribeExistingRooms: options.agentConfig?.autoSubscribeExistingRooms ?? false,
+      autoSubscribeExistingRooms: options.agentConfig?.autoSubscribeExistingRooms,
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {

@@ -40,7 +40,6 @@ export function createOpenAIAgent(
       ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
       ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
-    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 
