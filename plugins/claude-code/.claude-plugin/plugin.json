@@ -1,7 +1,7 @@
 {
   "name": "band",
   "displayName": "Band",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connects each Claude Code session to Band as one of your existing agents: Band messages arrive as a channel, and Claude replies through the Band tools.",
   "author": {
     "name": "Band",
