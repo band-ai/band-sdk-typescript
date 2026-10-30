@@ -96,8 +96,8 @@ importers:
         specifier: ~1.2.13
         version: 1.2.13(@langchain/core@1.1.36(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(openai@7.8.0(undici@8.10.2)(ws@8.21.3)(zod@4.6.5))(ws@8.21.3))(ws@8.21.3)
       '@linear/sdk':
-        specifier: ^95.1.0
-        version: 95.1.0(graphql@16.13.2)
+        specifier: ^99.0.0
+        version: 99.0.0(graphql@16.13.2)
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
@@ -1252,9 +1252,9 @@ packages:
   '@letta-ai/letta-client@1.10.0':
     resolution: {integrity: sha512-DKBQNUyYdXjKVu6Lxg1+uKqvUQDoBA9/hHxGH0LJSzSeMM0RUX03GSlAOOLu1/L/Mp5H0s2UoW5K3BGObKH8gQ==}
 
-  '@linear/sdk@95.1.0':
-    resolution: {integrity: sha512-c1BzIWqVEDcTV42EuEOVFYrYjmsqFBmaR/105xbOY9SmMPBrtcE4+BNHFfTa4WtrWN2cL3EJ9c+zcccZxNSWsQ==}
-    engines: {node: '>=18.x'}
+  '@linear/sdk@99.0.0':
+    resolution: {integrity: sha512-VPzig11GUM9Ttz+UlQToUsOFdLfMpaOVaL/KGSOIdi+o1/yno3VXQrShkHXBxXLQd6Cl/N/eSclD9sZSq19crg==}
+    engines: {node: ^20.19.0 || >=22.12.0}
 
   '@lydell/node-pty-darwin-arm64@1.2.0-beta.15':
     resolution: {integrity: sha512-6TSBbzdcLiNTHl1mTuzflqXrkmcC36USVGvERoDgvHk2ItEDaMaFZuAJ1CqPmwYj0DyhCS16TVS8OGK9xZnjyQ==}
@@ -5865,7 +5865,7 @@ snapshots:
 
   '@letta-ai/letta-client@1.10.0': {}
 
-  '@linear/sdk@95.1.0(graphql@16.13.2)':
+  '@linear/sdk@99.0.0(graphql@16.13.2)':
     dependencies:
       '@graphql-typed-document-node/core': 3.2.0(graphql@16.13.2)
     transitivePeerDependencies:
