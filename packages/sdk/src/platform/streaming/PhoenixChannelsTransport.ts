@@ -9,10 +9,10 @@ import { ChannelRegistry, supersededJoinError } from "./ChannelRegistry";
 import {
   WebSocketDisconnectError,
   type CloseEventLike,
+  controlJoinFailedReason,
   genericCloseReason,
   parseSupersedeDisconnectReason,
   parseUpgradeDisconnectReason,
-  controlJoinFailedReason,
   rapidDisconnectReason,
   type WebSocketConflictPolicy,
   type WebSocketDisconnectReason,
