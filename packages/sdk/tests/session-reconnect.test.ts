@@ -51,8 +51,8 @@ function transportFor(
     apiKey: "test-key",
     agentId: AGENT_ID,
     sessionPolicy: fastSessionPolicy(policy),
-    onTerminalDisconnect: (reason) => terminals.push(reason),
   });
+  transport.onTerminal((error) => terminals.push(error.reason));
   return {
     transport,
     terminals,
@@ -773,7 +773,9 @@ describe("core Session owns reconnects (real wire)", () => {
       peer.closeConnections(1008);
 
       await onWireClock(starting);
-      await expect(onWireClock(runtime.stop())).resolves.toBe(true);
+      // The session's end failed the runtime, so stop() reports that failure rather than hang.
+      await expect(onWireClock(runtime.stop())).rejects.toBeInstanceOf(WebSocketDisconnectError);
+      expect(runtime.state.status).toBe("failed");
     });
 
     it("aborting connect() rejects it and ends the boot's retries", async () => {

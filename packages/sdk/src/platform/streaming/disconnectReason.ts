@@ -2,9 +2,7 @@ import { z } from "zod";
 import { classifyClose, classifyUpgrade, validateEventPayload } from "@band-ai/band-sdk-core";
 
 export type WebSocketConflictPolicy = "supersede" | "reject";
-const DISCONNECT_SOURCES = ["agent_control", "upgrade", "websocket_close"] as const;
-
-export type WebSocketDisconnectSource = (typeof DISCONNECT_SOURCES)[number];
+export type WebSocketDisconnectSource = "agent_control" | "upgrade" | "websocket_close";
 
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
@@ -203,10 +201,6 @@ export function controlJoinFailedReason(): GenericWebSocketCloseReason {
     closeCode: null,
     closeReason: null,
   };
-}
-
-export function isWebSocketDisconnectReason(value: unknown): value is WebSocketDisconnectReason {
-  return typeof value === "object" && value !== null && "source" in value && (DISCONNECT_SOURCES as readonly unknown[]).includes(value.source);
 }
 
 function closeCodeOf(event?: CloseEventLike): number | null {

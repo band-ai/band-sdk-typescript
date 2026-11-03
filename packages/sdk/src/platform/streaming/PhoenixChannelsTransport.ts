@@ -25,6 +25,7 @@ import {
   type ReconnectObserver,
   type ReconnectSnapshot,
   type StreamingTransport,
+  type TerminalObserver,
   type TopicHandlers,
   type TopicRejoinObserver,
 } from "./transport";
@@ -47,7 +48,6 @@ interface PhoenixChannelsTransportOptions {
   sessionPolicy?: SessionPolicy;
   websocketFactory?: typeof WebSocket;
   conflictPolicy?: WebSocketConflictPolicy;
-  onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
 }
 
 export class PhoenixChannelsTransport implements StreamingTransport {
@@ -72,9 +72,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private reconnectBarrier: Deferred<void> | null = null;
   private readonly observerChain = new Serializer();
   private readonly logger: Logger;
-  private readonly onTerminalDisconnect?: (
-    reason: WebSocketDisconnectReason,
-  ) => void;
+  private readonly terminalObservers = new Set<TerminalObserver>();
   private onHandlerError?: (error: unknown) => void;
   private readonly connectFlight = new SingleFlight<void>();
   private readonly disconnectFlight = new SingleFlight<void>();
@@ -87,7 +85,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = resolveLogger(options.logger);
     this.controlTopic = options.agentId ? agentControlTopic(options.agentId) : null;
-    this.onTerminalDisconnect = options.onTerminalDisconnect;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
     // Strip it if the user-provided URL already includes it.
@@ -220,7 +217,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.logger.warn("Phoenix session ended", { reason: error.reason });
     this.terminal.abort(error);
-    this.onTerminalDisconnect?.(error.reason);
+    for (const observer of [...this.terminalObservers]) {
+      try {
+        observer(error);
+      } catch (observerError) {
+        this.logger.error("Terminal disconnect observer failed", { error: observerError });
+      }
+    }
     this.registry.failPendingJoins(error);
     void this.closeSocketLogged();
   }
@@ -255,6 +258,17 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   /** The latest run's failure: the one being retried, or why it ended. */
   public getDisconnectReason(): WebSocketDisconnectReason | null {
     return this.run?.lastReason ?? null;
+  }
+
+  public getTerminalError(): WebSocketDisconnectError | null {
+    return this.terminal.signal.aborted ? (this.terminal.signal.reason as WebSocketDisconnectError) : null;
+  }
+
+  public onTerminal(observer: TerminalObserver): () => void {
+    this.terminalObservers.add(observer);
+    return () => {
+      this.terminalObservers.delete(observer);
+    };
   }
 
   public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
@@ -304,8 +318,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private throwIfTerminal(): void {
-    if (this.terminal.signal.aborted) {
-      throw this.terminal.signal.reason as WebSocketDisconnectError;
+    const error = this.getTerminalError();
+    if (error) {
+      throw error;
     }
   }
 

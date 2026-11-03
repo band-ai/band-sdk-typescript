@@ -14,17 +14,16 @@ import type {
   BandLinkRestApi,
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
-import { TransportError, UnsupportedFeatureError } from "../core/errors";
+import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
-import {
+import type {
   WebSocketDisconnectError,
-  isWebSocketDisconnectReason,
-  type WebSocketConflictPolicy,
-  type WebSocketDisconnectReason,
+  WebSocketConflictPolicy,
+  WebSocketDisconnectReason,
 } from "./streaming/disconnectReason";
 import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
@@ -115,8 +114,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly eventQueue: PlatformEvent[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
-  private lastDisconnectReason: WebSocketDisconnectReason | null = null;
-  private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private readonly connectFlight = new SingleFlight<void>();
   /** Aborts the in-flight connect, so a disconnect never waits out a retrying boot. */
   private connectAbort: AbortController | null = null;
@@ -160,10 +157,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         agentId: this.agentId,
         logger: this.logger,
         conflictPolicy: options.conflictPolicy,
-        onTerminalDisconnect: (reason) => {
-          this.recordDisconnectReason(reason);
-        },
       });
+    this.transport.onTerminal((error) => this.handleTerminal(error));
 
     this.subscriptionManager = new SubscriptionManager({
       transport: this.transport,
@@ -176,7 +171,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public getDisconnectReason(): WebSocketDisconnectReason | null {
-    return this.lastDisconnectReason;
+    return this.transport.getDisconnectReason();
   }
 
   public async connect(signal?: AbortSignal): Promise<void> {
@@ -227,16 +222,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       // machinery with no session left to own them.
       await this.transport.disconnect().catch(() => undefined);
       this.subscriptionManager.endSession();
-      if (error instanceof WebSocketDisconnectError) {
-        if (error.reason.retryable) {
-          this.lastDisconnectReason = error.reason;
-        } else {
-          this.recordDisconnectError(error);
-        }
-      } else if (error instanceof TransportError && isWebSocketDisconnectReason(error.cause)) {
-        // A boot that ran out of time reports the last failure it saw.
-        this.lastDisconnectReason = error.cause;
-      }
       throw error;
     }
     this.connected = true;
@@ -284,21 +269,21 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
-    if (this.terminalDisconnectError) {
-      throw this.terminalDisconnectError;
-    }
+    this.throwIfTerminal();
 
     await this.transport.runForever(signal);
   }
 
-  private recordDisconnectReason(reason: WebSocketDisconnectReason): void {
-    this.recordDisconnectError(new WebSocketDisconnectError(reason));
+  private throwIfTerminal(): void {
+    const error = this.transport.getTerminalError();
+    if (error) {
+      throw error;
+    }
   }
 
-  private recordDisconnectError(error: WebSocketDisconnectError): void {
+  /** The transport's session ended for good: nothing more will arrive. */
+  private handleTerminal(error: WebSocketDisconnectError): void {
     this.connected = false;
-    this.lastDisconnectReason = error.reason;
-    this.terminalDisconnectError = error;
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
       waiter?.reject(error);
@@ -376,9 +361,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {
-    if (this.terminalDisconnectError) {
-      throw this.terminalDisconnectError;
-    }
+    this.throwIfTerminal();
 
     if (signal?.aborted) {
       return null;

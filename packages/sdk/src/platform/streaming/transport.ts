@@ -1,3 +1,5 @@
+import type { WebSocketDisconnectError, WebSocketDisconnectReason } from "./disconnectReason";
+
 export interface TopicHandlers {
   [event: string]: (payload: Record<string, unknown>) => Promise<void> | void;
 }
@@ -46,6 +48,8 @@ export type ReconnectObserver = (
 
 export type TopicRejoinObserver = (topic: string) => void;
 
+export type TerminalObserver = (error: WebSocketDisconnectError) => void;
+
 export interface StreamingTransport {
   /**
    * Connects, rejecting if `signal` aborts first. `disconnect()` may run while
@@ -57,6 +61,15 @@ export interface StreamingTransport {
   leave(topic: string): Promise<void>;
   runForever(signal: AbortSignal): Promise<void>;
   isConnected(): boolean;
+  /** The latest failure: the one being retried, or why the session ended; null before any. */
+  getDisconnectReason(): WebSocketDisconnectReason | null;
+  /** The error the session ended with for good, or null while it can still connect. */
+  getTerminalError(): WebSocketDisconnectError | null;
+  /**
+   * Called once when the session ends for good, including a terminal connect
+   * failure, before that connect rejects. Returns an unsubscribe function.
+   */
+  onTerminal(observer: TerminalObserver): () => void;
   /**
    * Optional: a transport that can observe its own automatic reconnects
    * registers here. Omitted by transports (and test doubles) with no

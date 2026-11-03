@@ -189,13 +189,29 @@ describe("BandLink event waiting", () => {
     await link.connect();
     await link.subscribeRoom("room-1");
 
-    (link as unknown as { recordDisconnectError(error: WebSocketDisconnectError): void })
-      .recordDisconnectError(new WebSocketDisconnectError(supersededReason));
+    transport.terminate(new WebSocketDisconnectError(supersededReason));
 
     await link.disconnect();
 
     expect(transport.disconnectCount).toBe(1);
     expect(transport.observers.size).toBe(0);
+  });
+
+  it("ends with an injected transport's terminal end after boot: waiters reject and the link reports it", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "key", restApi: new FakeRestApi(), transport });
+    await link.connect();
+    const waiting = link.nextEvent();
+    const running = link.runForever(new AbortController().signal);
+    const error = new WebSocketDisconnectError(supersededReason);
+
+    transport.terminate(error);
+
+    await expect(waiting).rejects.toBe(error);
+    await expect(link.nextEvent()).rejects.toBe(error);
+    expect(link.isConnected()).toBe(false);
+    expect(link.getDisconnectReason()).toBe(supersededReason);
+    await expect(running).rejects.toBe(error);
   });
 
   it("propagates a non-retryable connect failure through the real transport.connect() path, then allows a fresh session afterward", async () => {
@@ -381,9 +397,10 @@ describe("BandLink event waiting", () => {
   it.each([
     ["a retryable disconnect error", new WebSocketDisconnectError(retryableReason)],
     ["a boot deadline caused by a retryable refusal", new TransportError("Timed out waiting for Phoenix socket connection", retryableReason)],
-  ])("records %s without poisoning runForever", async (_case, failure) => {
+  ])("reports the transport's reason after %s, without poisoning runForever", async (_case, failure) => {
     const rejectingTransport = new FakeTransport();
     rejectingTransport.failConnect(failure);
+    rejectingTransport.disconnectReason = retryableReason;
     const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",

@@ -810,13 +810,13 @@ describe("PhoenixChannelsTransport", () => {
   });
 
   it("records agent_control supersede as terminal", async () => {
-    const onTerminalDisconnect = vi.fn();
+    const onTerminal = vi.fn();
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
       apiKey: "key-1",
       agentId: "agent-1",
-      onTerminalDisconnect,
     });
+    transport.onTerminal(onTerminal);
 
     await transport.connect();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -846,7 +846,8 @@ describe("PhoenixChannelsTransport", () => {
       targetSocketId: "agent_socket:agent-1",
       correlationId: "evict-1",
     });
-    expect(onTerminalDisconnect).toHaveBeenCalledWith(reason);
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ reason }));
+    expect(transport.getTerminalError()?.reason).toBe(reason);
     expect(socket?.disconnectCount).toBeGreaterThan(0);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
@@ -1479,13 +1480,13 @@ describe("PhoenixChannelsTransport", () => {
     });
 
     it("delivers agent_control supersede without waiting for room-topic settlement", async () => {
-      const onTerminalDisconnect = vi.fn();
+      const onTerminal = vi.fn();
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
         apiKey: "key-1",
         agentId: "agent-1",
-        onTerminalDisconnect,
       });
+      transport.onTerminal(onTerminal);
       await transport.connect();
       await transport.join("room:1", {});
 
@@ -1498,7 +1499,7 @@ describe("PhoenixChannelsTransport", () => {
         correlation_id: "supersede-1",
       });
 
-      expect(onTerminalDisconnect).toHaveBeenCalledTimes(1);
+      expect(onTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("omits topics whose rejoin settles as rejected or timed out", async () => {

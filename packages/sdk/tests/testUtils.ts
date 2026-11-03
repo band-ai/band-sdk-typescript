@@ -29,9 +29,28 @@ import type {
   ReconnectObserver,
   ReconnectSnapshot,
   StreamingTransport,
+  TerminalObserver,
   TopicHandlers,
   TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
+import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
+
+type SessionOutcome = Pick<StreamingTransport, "getDisconnectReason" | "getTerminalError" | "onTerminal">;
+
+/** The session-outcome part of `StreamingTransport` for a double whose session never fails. */
+export abstract class NeverFailingTransport implements SessionOutcome {
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return null;
+  }
+
+  public getTerminalError(): WebSocketDisconnectError | null {
+    return null;
+  }
+
+  public onTerminal(_observer: TerminalObserver): () => void {
+    return () => undefined;
+  }
+}
 
 interface CapturedToolEvent {
   content: string;
@@ -294,6 +313,10 @@ export class FakeTransport implements StreamingTransport {
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
   public readonly left = new RecordLog<string>();
   public disconnectCount = 0;
+  /** What `getDisconnectReason()` reports; a test sets it as a retried failure would. */
+  public disconnectReason: WebSocketDisconnectReason | null = null;
+  private terminalError: WebSocketDisconnectError | null = null;
+  private readonly terminalObservers = new Set<TerminalObserver>();
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
   private readonly joinOutcomes = new Map<string, JoinLeaveOutcome>();
@@ -316,9 +339,38 @@ export class FakeTransport implements StreamingTransport {
     aborted.catch(() => undefined);
     await Promise.race([this.connectGate, aborted]);
     if (this.connectError) {
+      // As the contract asks, a terminal connect failure ends the session before connect rejects.
+      if (this.connectError instanceof WebSocketDisconnectError && !this.connectError.reason.retryable) {
+        this.terminate(this.connectError);
+      }
       throw this.connectError;
     }
     this.connected = true;
+  }
+
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return this.disconnectReason;
+  }
+
+  public getTerminalError(): WebSocketDisconnectError | null {
+    return this.terminalError;
+  }
+
+  public onTerminal(observer: TerminalObserver): () => void {
+    this.terminalObservers.add(observer);
+    return () => {
+      this.terminalObservers.delete(observer);
+    };
+  }
+
+  /** Ends the session for good, as a terminal verdict does. */
+  public terminate(error: WebSocketDisconnectError): void {
+    this.terminalError = error;
+    this.disconnectReason = error.reason;
+    this.connected = false;
+    for (const observer of [...this.terminalObservers]) {
+      observer(error);
+    }
   }
 
   /** Makes every future `connect()` call reject with `error` until cleared. */
@@ -428,11 +480,21 @@ export class FakeTransport implements StreamingTransport {
     return this.joinCalls.filter((t) => t === topic).length;
   }
 
+  /** As the contract asks: resolves on `signal`'s abort, rejects once the session ends for good. */
   public async runForever(signal?: AbortSignal): Promise<void> {
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
     if (!signal) {
       return;
     }
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    await new Promise<void>((resolve, reject) => {
+      const stopObserving = this.onTerminal(reject);
+      signal.addEventListener("abort", () => {
+        stopObserving();
+        resolve();
+      }, { once: true });
+    });
   }
 
   public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {

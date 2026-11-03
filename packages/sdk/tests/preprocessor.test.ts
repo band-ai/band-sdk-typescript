@@ -5,9 +5,9 @@ import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { BandLink } from "../src/platform/BandLink";
 import type { MentionPayload } from "../src/platform/events";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
-import { FakeRestApi, wireMention } from "./testUtils";
+import { FakeRestApi, NeverFailingTransport, wireMention } from "./testUtils";
 
-class FakeTransport implements StreamingTransport {
+class FakeTransport extends NeverFailingTransport implements StreamingTransport {
   public async connect() {}
   public async disconnect() {}
   public async join() {}

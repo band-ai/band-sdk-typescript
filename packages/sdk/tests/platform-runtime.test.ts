@@ -1005,6 +1005,9 @@ describe("PlatformRuntime", () => {
       leave: vi.fn(async () => undefined),
       runForever: vi.fn(async () => undefined),
       isConnected: vi.fn(() => false),
+      getDisconnectReason: () => null,
+      getTerminalError: () => null,
+      onTerminal: () => () => undefined,
     };
 
     await using runtime = new PlatformRuntime({
