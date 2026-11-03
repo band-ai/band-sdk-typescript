@@ -62,7 +62,8 @@ perAdapter(
     const marker = uniqueMarker("mem");
     await takeTurn(room, agent, storeRequest(marker));
 
-    assertToolFired(await memoryCalls(room, agent), MEMORY_TOOL.store, { content: marker, ...NOTE });
+    // The scope is checked where it lands: an omitted one defaults to agent, as the API documents.
+    assertToolFired(await memoryCalls(room, agent), MEMORY_TOOL.store, { content: marker, system: NOTE.system, type: NOTE.type });
     expect(await storedMemories(agent, privateWith(marker))).toContainEqual(memoryLike(marker, NOTE));
   },
   WITH_MEMORY,
