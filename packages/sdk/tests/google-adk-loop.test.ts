@@ -83,12 +83,13 @@ describe("Google ADK tool loop", () => {
     expect(failureMessages(room.events)).toEqual([]);
   });
 
-  it("runs every call of the round that declines, then ends", async () => {
-    const { model, room, turn } = await runTurn(() => [send("Noted."), decline]);
+  it("runs and reports every call of the round that declines, then ends", async () => {
+    const { model, room, turn } = await runTurn(() => [send("Noted."), decline], { enableExecutionReporting: true });
     await turn;
 
     expect(model.requests).toBe(1);
     expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
+    expect(room.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_call", "tool_result", "tool_result"]);
   });
 
   it("asks the model again when a call beside the decline failed, so it sees the failure", async () => {

@@ -510,7 +510,12 @@ function asMessageText(value: unknown): string | null {
   return asMessageContent(record.content);
 }
 
-type LangChainMessageType = "ai" | "human";
+const LANGCHAIN_MESSAGE_TYPES = ["ai", "human"] as const;
+type LangChainMessageType = (typeof LANGCHAIN_MESSAGE_TYPES)[number];
+
+function isLangChainMessageType(value: unknown): value is LangChainMessageType {
+  return LANGCHAIN_MESSAGE_TYPES.includes(value as LangChainMessageType);
+}
 
 /** LangChain's serialized class names, by the type `getType()` reports for an instance. */
 const LANGCHAIN_MESSAGE_CLASSES: Readonly<Record<string, LangChainMessageType>> = {
@@ -536,7 +541,7 @@ function langChainMessageType(record: Record<string, unknown>): LangChainMessage
   if (typeof getType === "function") {
     try {
       const type = (getType as () => unknown).call(record);
-      return type === "ai" || type === "human" ? type : null;
+      return isLangChainMessageType(type) ? type : null;
     } catch {
       return null;
     }
