@@ -1,6 +1,5 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
-  isFailedToolOutput,
   isSyntheticTurn,
   type MessagingTools,
   type ToolExecutor,
@@ -216,7 +215,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               output = await tools.executeToolCall(call.name, call.input);
             }
           }
-          const isError = isFailedToolOutput(round.record(output));
+          const isError = round.record(output);
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,

@@ -27,16 +27,19 @@ export class RoundOutcome {
     this.failed = false;
   }
 
-  /** Records one call's output, and returns it. */
-  public record<T>(output: T): T {
-    this.failed ||= isFailedToolOutput(output);
-    return output;
+  /** Records one call's output; returns whether the call failed. */
+  public record(output: unknown): boolean {
+    const failed = isFailedToolOutput(output);
+    this.failed ||= failed;
+    return failed;
   }
 
   /** Runs one call, counting a throw as a failed call before rethrowing it to the framework. */
   public async run<T>(execute: () => Promise<T>): Promise<T> {
     try {
-      return this.record(await execute());
+      const output = await execute();
+      this.record(output);
+      return output;
     } catch (error) {
       this.failed = true;
       throw error;

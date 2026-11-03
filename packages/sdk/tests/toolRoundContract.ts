@@ -59,6 +59,10 @@ export function describeToolRoundContract(adapter: string, run: RunRounds): void
       expect(await run(() => calls(send, decline), [])).toEqual({ requests: 1, messages: ["Noted."], failures: [] });
     });
 
+    it("runs the calls after the decline in its round too", async () => {
+      expect(await run(() => calls(decline, send), [])).toEqual({ requests: 1, messages: ["Noted."], failures: [] });
+    });
+
     it("keeps going after a send, and relays no closing text on top of it", async () => {
       const result = await run((request) => request === 1 ? calls(send) : done, []);
       expect(result).toEqual({ requests: 2, messages: ["Noted."], failures: [] });
@@ -66,6 +70,11 @@ export function describeToolRoundContract(adapter: string, run: RunRounds): void
 
     it("asks the model again when a call beside the decline failed", async () => {
       const result = await run((request) => request === 1 ? calls(failedSend, decline) : request === 2 ? calls(send) : done, []);
+      expect(result).toEqual({ requests: 3, messages: ["Noted."], failures: [] });
+    });
+
+    it("asks the model again when a call after the decline failed", async () => {
+      const result = await run((request) => request === 1 ? calls(decline, failedSend) : request === 2 ? calls(send) : done, []);
       expect(result).toEqual({ requests: 3, messages: ["Noted."], failures: [] });
     });
 
