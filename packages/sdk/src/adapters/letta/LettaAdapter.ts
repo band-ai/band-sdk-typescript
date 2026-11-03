@@ -10,6 +10,7 @@ import { asErrorMessage, asOptionalRecord, toWireString } from "../shared/coerci
 import { selectCompleteExchanges } from "../shared/history";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { DEFAULT_MAX_TOOL_ROUNDS } from "../shared/toolRounds";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
 import { withNativeActivity } from "../../runtime/workingState";
@@ -242,7 +243,6 @@ export interface LettaAdapterOptions {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MODEL = "openai/gpt-4o";
-const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_RESPONSE_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_HISTORY_MESSAGES = 100;
 // ~32 000 chars ≈ 8 000 tokens — a safe budget for a single injected

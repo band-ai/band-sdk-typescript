@@ -10,12 +10,14 @@ import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
-import { relayReply, type TurnTools } from "../../core/turn";
+import { DECLINE_EFFECT, relayReply, type TurnTools } from "../../core/turn";
+import { BAND_TOOL_EFFECTS, isBandToolName } from "../../contracts/toolSchemas";
 import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 
 import {
   buildCustomToolIndex,
   assertCustomToolNamesAvailable,
+  customToolEffect,
   customToolToOpenAISchema,
   executeCustomTool,
   type CustomToolDef,
@@ -52,6 +54,8 @@ interface LangGraphSdk {
       name: string;
       description: string;
       schema: Record<string, unknown>;
+      /** `createReactAgent` ends the graph after this tool instead of asking the model again. */
+      returnDirect?: boolean;
     },
   ) => unknown;
 }
@@ -153,6 +157,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
           logger: this.logger,
           customTools: this.customTools,
           additionalTools: this.additionalTools,
+          endOnDecline: !this.usesCustomGraph,
         });
         langGraphTools = built.tools;
         observedNames = built.observedNames;
@@ -391,6 +396,11 @@ function buildLangGraphTools(input: {
   additionalTools: unknown[];
   includeMemoryTools: boolean;
   logger: Logger;
+  /**
+   * Mark decline tools `returnDirect`, so a landed decline ends the built-in graph instead of the model
+   * declining again. A caller's graph keeps its own control flow.
+   */
+  endOnDecline: boolean;
 }): { tools: unknown[]; observedNames: Set<string> } {
   const schemas = input.tools.getToolSchemas("openai", {
     includeMemory: input.includeMemoryTools,
@@ -406,13 +416,21 @@ function buildLangGraphTools(input: {
       ...input.additionalTools.map((tool) => asOptionalRecord(tool)?.name),
     ]);
   }
-  const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
-    input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
+  const wrap = (spec: LangGraphToolLike, declines: boolean, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
+    input.sdk.tool(
+      async (args) => stringifyToolResult(await execute(args), input.logger, spec.name),
+      input.endOnDecline && declines ? { ...spec, returnDirect: true } : spec,
+    );
+  const bandToolDeclines = (name: string) => isBandToolName(name) && BAND_TOOL_EFFECTS[name] === DECLINE_EFFECT;
 
   return {
     tools: [
-      ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
-      ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn, input.tools))),
+      ...specs.map((spec) => wrap(spec, bandToolDeclines(spec.name), (args) => input.tools.executeToolCall(spec.name, args))),
+      ...portable.map(({ def, spec }) => wrap(
+        spec,
+        customToolEffect(def) === DECLINE_EFFECT,
+        (args) => executeCustomTool(def, args, input.tools.turn, input.tools),
+      )),
       ...input.additionalTools,
     ],
     observedNames: new Set([...specs, ...portable.map(({ spec }) => spec)].map(({ name }) => name)),
@@ -474,7 +492,8 @@ function extractAssistantText(result: unknown): string | null {
   }
 
   const messages = Array.isArray(record.messages) ? record.messages : [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  // Messages before this turn's input are earlier turns: their text is not this turn's answer.
+  for (let index = messages.length - 1; index >= 0 && !isHumanMessage(messages[index]); index -= 1) {
     const text = asMessageText(messages[index]);
     if (text && !isInternalLangGraphMarker(text)) {
       return text;
@@ -509,28 +528,52 @@ function asMessageText(value: unknown): string | null {
   return asMessageContent(record.content);
 }
 
-// Detects a LangChain assistant message in either shape:
-//  - serialized: { id: [..., "AIMessage" | "AIMessageChunk"], kwargs: { content } }
-//  - in-memory instance (real createReactAgent stream): getType() === "ai", content on the instance
-function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+/** LangChain's serialized class names, by the type `getType()` reports for an instance. */
+const LANGCHAIN_MESSAGE_CLASSES: Readonly<Record<string, string>> = {
+  AIMessage: "ai",
+  AIMessageChunk: "ai",
+  HumanMessage: "human",
+  HumanMessageChunk: "human",
+};
+
+// A LangChain message's type in either shape:
+//  - serialized: { id: [..., "AIMessage" | "HumanMessage" | …], kwargs: { content } }
+//  - in-memory instance (real createReactAgent stream): getType(), content on the instance
+function langChainMessageType(record: Record<string, unknown>): string | null {
   const id = record.id;
   if (Array.isArray(id)) {
-    const typeName = String(id[id.length - 1] ?? "");
-    if (typeName === "AIMessage" || typeName === "AIMessageChunk") {
-      return true;
+    const type = LANGCHAIN_MESSAGE_CLASSES[String(id[id.length - 1] ?? "")];
+    if (type) {
+      return type;
     }
   }
 
   const getType = (record as { getType?: unknown }).getType;
   if (typeof getType === "function") {
     try {
-      return (getType as () => unknown).call(record) === "ai";
+      return String((getType as () => unknown).call(record));
     } catch {
-      return false;
+      return null;
     }
   }
 
-  return false;
+  return null;
+}
+
+function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+  return langChainMessageType(record) === "ai";
+}
+
+/** This turn's input, in any shape a graph's state holds it: a tuple, a role record, or a LangChain message. */
+function isHumanMessage(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value[0] === "user" || value[0] === "human";
+  }
+  const record = asOptionalRecord(value);
+  if (!record) {
+    return false;
+  }
+  return langChainMessageType(record) === "human" || record.role === "user";
 }
 
 // Serialized messages carry text under kwargs.content; instances expose it directly.

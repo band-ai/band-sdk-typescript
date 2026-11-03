@@ -23,6 +23,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { DEFAULT_MAX_TOOL_ROUNDS, toolLoopLimitError } from "../shared/toolRounds";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -115,6 +116,8 @@ export interface GoogleADKAdapterOptions {
   additionalTools?: CustomToolDef[];
   maxHistoryMessages?: number;
   maxTranscriptChars?: number;
+  /** Tool rounds one turn may run before it is stopped and reported as failed. */
+  maxToolRounds?: number;
   logger?: Logger;
   sdkFactory?: () => Promise<GoogleAdkSdkLike>;
 }
@@ -166,6 +169,12 @@ function executionResult(response: unknown): { output: unknown; isError: boolean
       || isFailedToolOutput(envelope?.result)
       || isFailedToolOutput(output),
   };
+}
+
+/** Whether `event` carries a round's tool results, every one of them a success. */
+function roundSucceeded(sdk: GoogleAdkSdkLike, event: unknown): boolean {
+  const responses = sdk.getFunctionResponses(event);
+  return responses.length > 0 && responses.every((response) => !executionResult(response.response).isError);
 }
 
 async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
@@ -229,6 +238,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private readonly customTools: CustomToolDef[];
   private readonly maxHistoryMessages: number;
   private readonly maxTranscriptChars: number;
+  private readonly maxToolRounds: number;
   private readonly logger: Logger;
   private readonly historyConverterInstance: GoogleADKHistoryConverter;
   private readonly sdkLoader: LazyAsyncValue<GoogleAdkSdkLike>;
@@ -249,6 +259,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     this.customTools = [...(options.additionalTools ?? [])];
     this.maxHistoryMessages = options.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
     this.maxTranscriptChars = options.maxTranscriptChars ?? DEFAULT_MAX_TRANSCRIPT_CHARS;
+    this.maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     this.logger = resolveLogger(options.logger);
     this.historyConverterInstance = historyConverter;
     this.sdkLoader = new LazyAsyncValue({
@@ -327,6 +338,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       });
 
       await withNativeActivity(tools, built.observedNames, async (native) => {
+        let toolRounds = 0;
+        let declinesBefore = tools.turn.declines;
         for await (const event of runner.runAsync({
           userId: context.roomId,
           sessionId,
@@ -335,6 +348,13 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             parts: [{ text: prompt }],
           },
         })) {
+          // ADK yields a round's calls before running them, so leaving here stops them unrun and unreported.
+          if (sdk.getFunctionCalls(event).length > 0) {
+            if (++toolRounds > this.maxToolRounds) {
+              throw toolLoopLimitError(this.maxToolRounds);
+            }
+            declinesBefore = tools.turn.declines;
+          }
           throwIfModelError(event);
           this.trackNativeEvent(sdk, event, native);
           if (this.enableExecutionReporting) {
@@ -342,6 +362,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
           }
           if (sdk.isFinalResponse(event)) {
             finalResponseText = sdk.stringifyContent(event);
+          }
+          // ADK would hand the results back to the model; a decline ends the turn unless a sibling failed.
+          if (tools.turn.declines > declinesBefore && roundSucceeded(sdk, event)) {
+            break;
           }
         }
       });

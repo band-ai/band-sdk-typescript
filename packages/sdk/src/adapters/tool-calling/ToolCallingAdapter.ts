@@ -15,6 +15,7 @@ import { withMemoryGuidance } from "../../runtime/prompts";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { DEFAULT_MAX_TOOL_ROUNDS, toolLoopLimitError } from "../shared/toolRounds";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { TurnBudget } from "./turnBudget";
 import {
@@ -92,7 +93,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       options.systemPrompt === undefined && !this.includeMemoryTools
         ? undefined
         : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
-    this.maxToolRounds = options.maxToolRounds ?? 8;
+    this.maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
     assertTurnTimeoutMs(this.turnTimeoutMs);
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
@@ -157,9 +158,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       while ((response.toolCalls?.length ?? 0) > 0) {
         roundCount += 1;
         if (roundCount > this.maxToolRounds) {
-          throw new Error(
-            `Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`,
-          );
+          throw toolLoopLimitError(this.maxToolRounds);
         }
 
         const roundToolCalls = response.toolCalls ?? [];

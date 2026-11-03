@@ -49,7 +49,36 @@ describe("send-tool delivery proof", () => {
     expect(() => assertToolReply(calls, [{ ...success[0]!, toolCallId: "other" }], [reply], expected)).toThrow();
     expect(() => assertToolReply(calls, result({ success: true, id: "reply" }, true), [reply], expected)).toThrow();
     expect(() => assertToolReply(calls, success, [{ ...reply, mentionIds: ["agent"] }], expected)).toThrow();
-    expect(() => assertToolReply(calls, success, [reply, message("closing", MESSAGE_TYPE.Text, "I sent it.")], expected))
-      .toThrow("exactly one");
+  });
+
+  it("rejects closing text relayed after the send, even when it repeats the marker", () => {
+    const success = result({ success: true, id: "reply" });
+    for (const closing of ["I sent it.", "@[[user]] pineapple"]) {
+      expect(() => assertToolReply(calls, success, [reply, message("closing", MESSAGE_TYPE.Text, closing)], expected))
+        .toThrow("no successful send-tool result posted");
+    }
+  });
+
+  /** Two sends, each with its own call and result; `ids` are their tool-call ids. */
+  const twoSends = (ids: [string, string]) => ({
+    calls: readToolCalls(ids.map((id, index) => message(`call-${index}`, MESSAGE_TYPE.ToolCall, {
+      name: SEND_MESSAGE_TOOL_NAME, tool_call_id: id, args: { content: index === 0 ? "pineapple" : "I sent pineapple", mentions: ["user-handle"] },
+    }))),
+    results: readToolResults(ids.map((id, index) => message(`result-${index}`, MESSAGE_TYPE.ToolResult, {
+      name: SEND_MESSAGE_TOOL_NAME, tool_call_id: id, output: { success: true, id: `reply-${index}` }, is_error: false,
+    }))),
+    replies: [message("reply-0", MESSAGE_TYPE.Text, "@[[user]] pineapple"), message("reply-1", MESSAGE_TYPE.Text, "@[[user]] I sent pineapple")],
+  });
+
+  it("accepts a second send the model made itself, even when the adapter reuses a positional call id", () => {
+    for (const ids of [["call-a", "call-b"], ["gemini_call_1", "gemini_call_1"]] as [string, string][]) {
+      const { calls: sendCalls, results, replies } = twoSends(ids);
+      assertToolReply(sendCalls, results, replies, expected);
+    }
+  });
+
+  it("rejects a send that ran more often than the model called it", () => {
+    const { calls: sendCalls, results, replies } = twoSends(["call", "call"]);
+    expect(() => assertToolReply(sendCalls.slice(0, 1), results, replies, expected)).toThrow("at most one per call");
   });
 });
