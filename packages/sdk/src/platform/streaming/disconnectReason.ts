@@ -14,16 +14,20 @@ export interface AgentControlSupersedeDisconnectReason {
   correlationId: string | null;
 }
 
+const UPGRADE_CODES = [
+  "invalid_on_conflict",
+  "connection_conflict",
+  "too_many_requests",
+  "tracking_failed",
+] as const;
+
+type UpgradeCode = (typeof UPGRADE_CODES)[number];
+
 export interface WebSocketUpgradeDisconnectReason {
   source: "upgrade";
   status: number;
   /** The platform's code, or `upgrade_rejected` when the refusal carries none (e.g. a 403 from the edge). */
-  code:
-    | "invalid_on_conflict"
-    | "connection_conflict"
-    | "too_many_requests"
-    | "tracking_failed"
-    | "upgrade_rejected";
+  code: UpgradeCode | "upgrade_rejected";
   message: string;
   retryable: boolean;
   retryAfter: number | null;
@@ -48,15 +52,6 @@ export type WebSocketDisconnectReason =
   | AgentControlSupersedeDisconnectReason
   | WebSocketUpgradeDisconnectReason
   | GenericWebSocketCloseReason;
-
-const UPGRADE_CODES = [
-  "invalid_on_conflict",
-  "connection_conflict",
-  "too_many_requests",
-  "tracking_failed",
-] as const;
-
-type UpgradeCode = (typeof UPGRADE_CODES)[number];
 
 // Whether each is retryable is core's call (`classifyUpgrade`), not this table's.
 const UPGRADE_REASONS: Record<UpgradeCode, { status: number; message: string }> = {

@@ -43,6 +43,8 @@ export class SessionRun {
   private epoch: bigint | null = null;
   private delayMs: number | null = null;
   private connected = false;
+  /** The owner closed the current attempt's connection; it stays unusable until the next attempt. */
+  private closing = false;
   private up: Deferred<void> = createDeferred();
   /** Why the owner closed the live socket itself, reported with that close. */
   private ownCloseReason: WebSocketDisconnectReason | null = null;
@@ -86,6 +88,7 @@ export class SessionRun {
   public beginAttempt(): boolean {
     // A close phoenix dropped never consumed its reason; it belongs to no later connection.
     this.ownCloseReason = null;
+    this.closing = false;
     if (!this.isLive) {
       return false;
     }
@@ -105,7 +108,7 @@ export class SessionRun {
 
   /** The connection is ready for the owner's use. */
   public markConnected(): void {
-    if (!this.isLive) {
+    if (!this.isLive || this.closing) {
       return;
     }
     this.connected = true;
@@ -141,6 +144,7 @@ export class SessionRun {
   /** The owner is closing the live connection for `reason`: unusable now, and its close reports `reason`. */
   public closeOwnConnection(reason: WebSocketDisconnectReason): void {
     this.ownCloseReason = reason;
+    this.closing = true;
     this.markDisconnected();
   }
 

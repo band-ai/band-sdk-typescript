@@ -17,7 +17,7 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
-import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
+import { Deadline, MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
 import { SessionRun } from "./sessionRun";
 import {
   isOptionalTopic,
@@ -156,8 +156,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         this.logger.warn("Phoenix socket error", { event });
         return;
       }
-      this.logger.warn("Phoenix socket upgrade failed", { reason: upgradeReason });
-      this.run?.onUpgradeRejected(upgradeReason);
+      const verdict = this.run?.onUpgradeRejected(upgradeReason);
+      this.logger.warn("Phoenix socket upgrade failed", { reason: upgradeReason, verdict });
     });
   }
 
@@ -457,7 +457,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
             });
             return;
           }
-          if (this.run?.onSupersede(reason).kind === "retry") {
+          const verdict = this.run?.onSupersede(reason);
+          // Its close reaches Session as stale, so this is the one record of why the socket bounced.
+          this.logger.warn("Phoenix session superseded", { reason, verdict });
+          if (verdict?.kind === "retry") {
             this.dropLiveConnection(reason);
           }
         },
@@ -508,10 +511,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
+    using deadline = new Deadline(BOOT_CONNECT_DEADLINE_MS);
     const settled = new AbortController();
     try {
       await new Promise<void>((resolve, reject) => {
         void run.whenConnected().then(resolve);
+        void deadline.expired.then(() =>
+          reject(new TransportError("Timed out waiting for Phoenix socket connection", run.lastReason ?? undefined)),
+        );
         const stops = signal ? AbortSignal.any([run.signal, signal]) : run.signal;
         const stopped = (): void =>
           reject(run.signal.aborted ? (run.signal.reason as Error) : new RuntimeStateError("Transport connect was aborted"));
@@ -520,11 +527,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         } else {
           stops.addEventListener("abort", stopped, { once: true, signal: settled.signal });
         }
-        const timeout = setTimeout(
-          () => reject(new TransportError("Timed out waiting for Phoenix socket connection", run.lastReason ?? undefined)),
-          BOOT_CONNECT_DEADLINE_MS,
-        );
-        settled.signal.addEventListener("abort", () => clearTimeout(timeout), { once: true });
       });
     } finally {
       settled.abort();

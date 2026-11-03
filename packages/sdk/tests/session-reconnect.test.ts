@@ -38,6 +38,20 @@ function platformRefusal(status: number, code: string, extra: Record<string, unk
   };
 }
 
+/** Pushes a supersede on the agent's control channel, as the platform does. */
+function pushSupersede(
+  peer: FakePhoenixPeer,
+  { reason = "session.reconnect", retryable = true, retryAfter }: { reason?: string; retryable?: boolean; retryAfter?: number } = {},
+): void {
+  peer.push(CONTROL_TOPIC, "supersede", {
+    reason,
+    message: reason,
+    retryable,
+    ...(retryAfter === undefined ? {} : { retry_after: retryAfter }),
+    correlation_id: null,
+  });
+}
+
 /** A real transport for `AGENT_ID` that records every terminal disconnect; disposing it disconnects. */
 function transportFor(
   peer: { url: string },
@@ -94,15 +108,22 @@ async function onWireClock<T>(work: Promise<T>, budgetMs = PAST_ANY_DELAY_MS): P
   return tracked;
 }
 
+/** Waits on real IO alone, with the fake clock still, until `holds()` is true. */
+async function ioUntil(holds: () => boolean): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const poll = () => (holds() ? resolve() : setImmediate(poll));
+    poll();
+  });
+}
+
+/** Resolves once the client has handled an upgrade refusal, which starts Session's delay. */
+async function clientSawRefusal(transport: PhoenixChannelsTransport): Promise<void> {
+  await ioUntil(() => transport.getDisconnectReason()?.source === "upgrade");
+}
+
 /** Steps the fake clock until `holds()` is true. */
 async function wireUntil(holds: () => boolean, budgetMs?: number): Promise<void> {
-  await onWireClock(
-    new Promise<void>((resolve) => {
-      const poll = () => (holds() ? resolve() : setImmediate(poll));
-      poll();
-    }),
-    budgetMs,
-  );
+  await onWireClock(ioUntil(holds), budgetMs);
 }
 
 /** Steps the fake clock until `transport.isConnected()` reads `connected`. */
@@ -320,14 +341,10 @@ describe("core Session owns reconnects (real wire)", () => {
       for (let accepted = 1; accepted <= threshold; accepted += 1) {
         await reconnected(peer, accepted);
         await onWireClock(peer.joined.until(() => peer.joined.entries.filter((topic) => topic === CONTROL_TOPIC).length >= accepted));
-        peer.push(CONTROL_TOPIC, "supersede", {
-          reason: "session.reconnect",
-          message: "reconnect",
-          retryable: true,
-          correlation_id: null,
-        });
+        pushSupersede(peer);
         await advanceWireClock(200);
       }
+      await wireUntil(() => agent.terminals.length > 0);
 
       expect(agent.terminals).toEqual([
         expect.objectContaining({ code: "websocket.rapid_disconnect", retryable: false }),
@@ -369,12 +386,13 @@ describe("core Session owns reconnects (real wire)", () => {
       peer.refuseUpgrades(refusal);
       peer.severAllConnections();
       await refused(peer);
+      await clientSawRefusal(agent.transport);
       peer.acceptUpgrades();
 
       await advanceWireClock(6_800);
       expect(peer.connections.entries).toHaveLength(1);
       await advanceWireClock(400);
-      await connectionNumber(peer, 2);
+      await reconnected(peer, 2);
       expect(peer.refusals.entries).toHaveLength(1);
       expect(agent.terminals).toEqual([]);
     });
@@ -399,13 +417,7 @@ describe("core Session owns reconnects (real wire)", () => {
       await using agent = transportFor(peer);
       await agent.transport.connect();
 
-      peer.push(CONTROL_TOPIC, "supersede", {
-        reason: "session.reconnect",
-        message: "reconnect",
-        retryable: true,
-        retry_after: -1,
-        correlation_id: null,
-      });
+      pushSupersede(peer, { retryAfter: -1 });
       await reconnected(peer, 2);
 
       expect(agent.terminals).toEqual([]);
@@ -493,6 +505,7 @@ describe("core Session owns reconnects (real wire)", () => {
       peer.refuseUpgrades({ status: 503, headers: { "Retry-After": "7" } });
       peer.severAllConnections();
       await refused(peer);
+      await clientSawRefusal(agent.transport);
 
       const again = agent.transport.connect();
       await advanceWireClock(6_800);
@@ -546,6 +559,26 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(agent.terminals).toEqual([expect.objectContaining({ code: "websocket.closed", closeCode: 1008 })]);
     });
 
+    it("does not report connected over a socket a supersede dropped in the same chunk as the agent_control reply", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      peer.queueJoinOutcomes(CONTROL_TOPIC, ["pending"]);
+      const connecting = agent.transport.connect();
+      await onWireClock(peer.joins.until(() => peer.joins.entries.some((join) => join.topic === CONTROL_TOPIC)));
+
+      peer.inOneChunk(() => {
+        peer.settleJoin(CONTROL_TOPIC, "ok");
+        pushSupersede(peer, { retryAfter: 1 });
+      });
+      // Both frames are handled before the join's continuation runs; that continuation is what this checks.
+      await ioUntil(() => agent.transport.getDisconnectReason()?.source === "agent_control");
+
+      expect(agent.transport.isConnected(), "the superseded connection is closing").toBe(false);
+      await reconnected(peer, 2);
+      await onWireClock(connecting);
+      expect(agent.transport.isConnected()).toBe(true);
+    });
+
     it("stops reporting connected at once, even if phoenix later drops that close", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
@@ -553,13 +586,7 @@ describe("core Session owns reconnects (real wire)", () => {
 
       peer.stallReads();
       await advanceWireClock(100, 10);
-      peer.push(CONTROL_TOPIC, "supersede", {
-        reason: "session.reconnect",
-        message: "reconnect",
-        retryable: true,
-        retry_after: 20,
-        correlation_id: null,
-      });
+      pushSupersede(peer, { retryAfter: 20 });
       // Before phoenix's ~1.5 s close polling gives up and reports the close itself.
       await connectedState(agent.transport, false, 1_000);
       peer.resumeReads();
@@ -708,12 +735,7 @@ describe("core Session owns reconnects (real wire)", () => {
       const connecting = agent.transport.connect();
       const outcome = connecting.then(() => null, (error: unknown) => error);
       await peer.joined.next((topic) => topic === CONTROL_TOPIC);
-      peer.push(CONTROL_TOPIC, "supersede", {
-        reason: "session.already_connected",
-        message: "superseded",
-        retryable: false,
-        correlation_id: null,
-      });
+      pushSupersede(peer, { reason: "session.already_connected", retryable: false });
 
       expect(await outcome).toBeInstanceOf(WebSocketDisconnectError);
       await advanceWireClock(PAST_ANY_DELAY_MS);

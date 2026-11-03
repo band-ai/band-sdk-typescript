@@ -1,4 +1,4 @@
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 
@@ -94,6 +94,8 @@ export class FakePhoenixPeer implements AsyncDisposable {
   private constructor({ rejectConflicts = false, takeoverCooldownMs = TAKEOVER_COOLDOWN_MS }: FakePhoenixPeerOptions) {
     this.takeoverCooldownMs = takeoverCooldownMs;
     this.wss = new WebSocketServer({
+      // The exact address `url` dials, so a port collision fails loudly instead of reaching a foreign server.
+      host: "127.0.0.1",
       port: 0,
       verifyClient: ({ req }, done) => {
         if (this.refusal) {
@@ -179,6 +181,21 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public stallReads(): void {
     for (const socket of this.sockets.keys()) {
       socket.pause();
+    }
+  }
+
+  /**
+   * Runs `work` with every connection's output corked, so the frames it sends
+   * reach the client in one TCP chunk, which `ws` then delivers synchronously.
+   */
+  public inOneChunk(work: () => void): void {
+    // `ws` keeps its net.Socket as `_socket`; corking it is the only way to batch frames.
+    const sockets = [...this.sockets.keys()].map((socket) => (socket as unknown as { _socket: Socket })._socket);
+    sockets.forEach((socket) => socket.cork());
+    try {
+      work();
+    } finally {
+      sockets.forEach((socket) => socket.uncork());
     }
   }
 

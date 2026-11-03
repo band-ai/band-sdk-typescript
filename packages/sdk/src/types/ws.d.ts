@@ -3,6 +3,7 @@ declare module "ws" {
 
   export class WebSocketServer {
     public constructor(options: {
+      host?: string;
       port: number;
       verifyClient?: (
         info: { req: import("node:http").IncomingMessage },
