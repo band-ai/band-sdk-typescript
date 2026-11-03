@@ -36,6 +36,8 @@ export class SessionDriver {
   private session: Session | null = null;
   private epoch: bigint | null = null;
   private endedLocally = false;
+  /** Whether the owner already acted on this run's end, terminal or local. */
+  private settled = false;
   /** The delay Session chose after the current epoch's failure, if one was observed. */
   private pendingDelayMs: number | null = null;
 
@@ -50,6 +52,19 @@ export class SessionDriver {
     return this.session !== null && !this.endedLocally && this.session.state !== "dead";
   }
 
+  public get isSettled(): boolean {
+    return this.settled;
+  }
+
+  /** Claims the run's end for the owner to act on; false when it was already claimed. */
+  public settle(): boolean {
+    if (this.settled) {
+      return false;
+    }
+    this.settled = true;
+    return true;
+  }
+
   /** Starts a new run unless one is live; returns whether it did. */
   public begin(): boolean {
     if (this.isLive) {
@@ -58,12 +73,15 @@ export class SessionDriver {
     this.session = new Session(this.policy);
     this.epoch = null;
     this.endedLocally = false;
+    this.settled = false;
     this.pendingDelayMs = null;
     return true;
   }
 
+  /** Ends the run locally; nothing later in it is reported. */
   public end(): void {
     this.endedLocally = true;
+    this.settled = true;
     this.session?.end();
   }
 

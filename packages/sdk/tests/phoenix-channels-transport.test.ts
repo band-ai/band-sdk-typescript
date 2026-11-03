@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
-import { TransportError } from "../src/core/errors";
+import { RuntimeStateError, TransportError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import { WebSocketDisconnectError } from "../src/platform/streaming/disconnectReason";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
@@ -249,6 +249,8 @@ const phoenixMock = vi.hoisted(() => {
     // As in phoenix 1.8.16, every close passes through here before the close callbacks.
     protected onConnClose(event?: { code?: number; reason?: string }): void {
       if (this.conn) this.conn.readyState = 3;
+      // A closed attempt never opens afterwards.
+      this.connectGeneration += 1;
       this.closeHandler?.(event);
     }
 
@@ -966,13 +968,13 @@ describe("PhoenixChannelsTransport", () => {
   });
 
   it.each([
-    [409, "connection_conflict", null, null],
-    [429, "too_many_requests", 7, "req-1"],
-    [400, "invalid_on_conflict", null, "req-1"],
-    [503, "tracking_failed", null, "req-1"],
+    [409, "connection_conflict", null, null, true],
+    [429, "too_many_requests", 7, "req-1", false],
+    [400, "invalid_on_conflict", null, "req-1", true],
+    [503, "tracking_failed", null, "req-1", false],
   ] as const)(
     "parses HTTP %s upgrade error %s",
-    async (status, code, retryAfter, requestId) => {
+    async (status, code, retryAfter, requestId, terminal) => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
         apiKey: "key-1",
@@ -994,22 +996,28 @@ describe("PhoenixChannelsTransport", () => {
         headers:
           retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
       });
+      // As `ws` does after a refused upgrade.
+      socket?.emitClose({ code: 1006, reason: "" });
 
-      if (status === 409 || status === 400) {
+      if (terminal) {
         await expect(connectPromise).rejects.toBeInstanceOf(WebSocketDisconnectError);
       } else {
-        // Retryable: Session retries, and connect() keeps waiting.
-        void connectPromise.catch(() => undefined);
+        const pending = Symbol("pending");
+        await expect(Promise.race([connectPromise, Promise.resolve(pending)]), "Session retries; connect() keeps waiting").resolves.toBe(pending);
       }
       expect(transport.getDisconnectReason()).toMatchObject({
         source: "upgrade",
         status,
-        retryable: status !== 409 && status !== 400,
+        retryable: !terminal,
         code,
         message: `upgrade failed: ${code}`,
         requestId,
         retryAfter,
       });
+      if (!terminal) {
+        await transport.disconnect();
+        await expect(connectPromise).rejects.toBeInstanceOf(RuntimeStateError);
+      }
     },
   );
 

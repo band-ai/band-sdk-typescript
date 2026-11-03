@@ -13,6 +13,7 @@ import type { AgentToolsProtocol, Logger } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
+import { RuntimeStateError } from "../src/core/errors";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -303,8 +304,17 @@ export class FakeTransport implements StreamingTransport {
   private releaseConnectGate: (() => void) | null = null;
   private connectError: unknown = null;
 
-  public async connect(): Promise<void> {
-    await this.connectGate;
+  /** As the transport contract asks, an abort of `signal` rejects a connect still waiting. */
+  public async connect(signal?: AbortSignal): Promise<void> {
+    const aborted = new Promise<never>((_, reject) => {
+      const onAbort = () => reject(new RuntimeStateError("Transport connect was aborted"));
+      if (signal?.aborted) {
+        onAbort();
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    aborted.catch(() => undefined);
+    await Promise.race([this.connectGate, aborted]);
     if (this.connectError) {
       throw this.connectError;
     }

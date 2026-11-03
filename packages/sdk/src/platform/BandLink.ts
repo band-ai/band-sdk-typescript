@@ -189,16 +189,10 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
     await this.connectFlight.run(async () => {
       const abort = new AbortController();
-      const forwardAbort = (): void => abort.abort();
-      signal?.addEventListener("abort", forwardAbort, { once: true });
-      if (signal?.aborted) {
-        abort.abort();
-      }
       this.connectAbort = abort;
       try {
-        await this.connectSession(this.session.begin(), abort.signal);
+        await this.connectSession(this.session.begin(), signal ? AbortSignal.any([signal, abort.signal]) : abort.signal);
       } finally {
-        signal?.removeEventListener("abort", forwardAbort);
         this.connectAbort = null;
       }
     });

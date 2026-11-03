@@ -116,7 +116,8 @@ export function parseSupersedeDisconnectReason(
       code: normalized.reason as string,
       message: normalized.message as string,
       retryable: normalized.retryable as boolean,
-      retryAfter: (normalized.retry_after as number | null) ?? null,
+      // Core's payload contract accepts a negative hint that its Session rejects.
+      retryAfter: validRetryAfter(normalized.retry_after),
       targetSocketId: (normalized.target_socket_id as string | null) ?? null,
       correlationId: normalized.correlation_id as string | null,
     };
@@ -158,7 +159,8 @@ export function parseUpgradeDisconnectReason(
   };
 }
 
-interface CloseEventLike {
+/** The close event phoenix hands its close callbacks. */
+export interface CloseEventLike {
   code?: number;
   reason?: string;
 }
@@ -207,7 +209,7 @@ const DISCONNECT_SOURCES: ReadonlySet<unknown> = new Set<WebSocketDisconnectSour
 ]);
 
 export function isWebSocketDisconnectReason(value: unknown): value is WebSocketDisconnectReason {
-  return typeof value === "object" && value !== null && DISCONNECT_SOURCES.has((value as { source?: unknown }).source);
+  return typeof value === "object" && value !== null && "source" in value && DISCONNECT_SOURCES.has(value.source);
 }
 
 function closeCodeOf(event?: CloseEventLike): number | null {

@@ -6,7 +6,6 @@ import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import type { PlatformEvent } from "../src/platform/events";
-import { NoopLogger } from "../src/core/logger";
 import { TransportError } from "../src/core/errors";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FAKE_WIRE_CLOCK, FakeRestApi, advanceWireClock, fastSessionPolicy } from "./testUtils";
@@ -508,6 +507,35 @@ describe("Phoenix reconnect (real wire)", () => {
       expect(joinsWhenServed).toBe(2);
     }, 20_000);
   });
+
+  // INT-1858: a server's normal close used to end the session for good.
+  it("rejoins every room after a normal server close and catches up what it missed", async () => {
+    await using peer = await FakePhoenixPeer.start();
+    let missed: ReturnType<typeof wireMessage> | null = null;
+    await using agent = await startAgentInTwoRooms(peer, (roomId) => {
+      const message = roomId === "room-1" ? missed : null;
+      missed = null;
+      return message;
+    });
+    const listedBefore = agent.calls.listChats;
+    peer.receivedEvents.length = 0;
+
+    missed = wireMessage("missed-message", "sent while the socket was gone");
+    peer.closeConnections(1000);
+
+    await vi.waitFor(
+      () =>
+        expect(agent.executed).toEqual([
+          expect.objectContaining({ type: "message_created", payload: expect.objectContaining({ id: "missed-message" }) }),
+        ]),
+      { timeout: 10_000 },
+    );
+    expect(peer.receivedEvents).toEqual(
+      expect.arrayContaining(TWO_ROOMS.map((room) => ({ topic: chatRoomTopic(room), event: "phx_join" }))),
+    );
+    // One whole-agent reconnect: the room snapshot is fetched again exactly once.
+    expect(agent.calls.listChats).toBe(listedBefore + 1);
+  }, 15_000);
 
   describe("intentional disconnects stay disconnected", () => {
     const HEARTBEAT_INTERVAL_MS = 100;

@@ -8,6 +8,7 @@ import { Epoch } from "../../core/epoch";
 import { ChannelRegistry, supersededJoinError } from "./ChannelRegistry";
 import {
   WebSocketDisconnectError,
+  type CloseEventLike,
   genericCloseReason,
   parseSupersedeDisconnectReason,
   parseUpgradeDisconnectReason,
@@ -87,8 +88,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private runForeverWaiters = new Set<PendingRunForever>();
   private readonly driver: SessionDriver;
-  /** Whether the current run already reached its end, terminal or local; reset by the next run. */
-  private decided = false;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = resolveLogger(options.logger);
@@ -195,15 +194,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     // A connect while a run is still reconnecting joins it instead of resetting its backoff.
     const startsRun = this.driver.begin();
     if (startsRun) {
-      this.decided = false;
+      // A boot's deadline reports only what this run saw.
+      this.lastDisconnectReason = null;
       this.socket.open();
     }
     try {
       await this.waitForConnection(signal);
     } catch (error) {
       const ownsTeardown = error instanceof RuntimeStateError || (error instanceof TransportError && startsRun);
-      if (ownsTeardown && !this.decided) {
-        await this.stopSocket().catch((stopError: unknown) => this.logger.warn("Phoenix socket close failed", { error: stopError }));
+      if (ownsTeardown && !this.driver.isSettled) {
+        await this.stopSocketLogged();
       }
       throw error;
     }
@@ -354,13 +354,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     // Runs synchronously, before this function's first `await` yields back to
     // the socket's onOpen dispatch loop, so the snapshot is taken before
     // Phoenix's own per-channel onOpen callbacks resend their join pushes.
+    // Only a socket that once got past agent_control has a session to resume.
     if (this.hasOpenedOnce) {
       this.bufferingGeneration = this.generationTracker.beginGeneration(this.registry.topics());
       if (!this.reconnectBarrier) {
         this.reconnectBarrier = createDeferred<void>();
       }
-    } else {
-      this.hasOpenedOnce = true;
     }
 
     try {
@@ -375,7 +374,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       }
       return;
     }
+    // The run may have ended while the join was in flight.
+    if (!this.driver.isLive) {
+      return;
+    }
 
+    this.hasOpenedOnce = true;
     this.connected = true;
     this.connectResolve?.();
     this.connectResolve = null;
@@ -453,7 +457,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   /** Asks Session whether phoenix may start its next connect attempt. */
   private beforeAttempt(): boolean {
     const decision = this.driver.beginAttempt();
-    if (decision === "dead" && !this.decided) {
+    if (decision === "dead" && !this.driver.isSettled) {
       // Session refuses an attempt it has not reported dead only when its
       // breaker trips as the attempt retires a socket still marked up.
       this.endSession(rapidDisconnectReason());
@@ -462,7 +466,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   /** Runs before phoenix asks for the reconnect delay, so Session's verdict sets it. */
-  private handleSocketClose(event?: { code?: number; reason?: string }): void {
+  private handleSocketClose(event?: CloseEventLike): void {
     this.connected = false;
     const verdict = this.driver.onSocketClose(event?.code);
     this.logger.info("Phoenix socket closed", {
@@ -482,27 +486,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return verdict.delayMs;
     }
     if (verdict.kind === "terminal") {
-      this.endSession(verdict.rapidDisconnect ? rapidDisconnectReason() : genericCloseReason());
+      this.applyVerdict(verdict, verdict.rapidDisconnect ? rapidDisconnectReason() : genericCloseReason());
     }
-    // Never reached: the attempt gate refuses. A finite delay, since Node fires an infinite one at once.
+    // Unused, since the attempt gate refuses the next attempt; finite because Node fires an infinite delay at once.
     return MAX_TIMER_DELAY_MS;
   }
 
   private applyVerdict(verdict: SessionVerdict, reason: WebSocketDisconnectReason): void {
     if (verdict.kind === "terminal") {
       this.endSession({ ...reason, retryable: false });
-    } else if (verdict.kind === "retry" && !this.decided) {
+    } else if (verdict.kind === "retry" && !this.driver.isSettled) {
       this.lastDisconnectReason = reason;
     }
   }
 
   /** The single terminal path: reports the end once per run and stops the socket. */
   private endSession(reason: WebSocketDisconnectReason): void {
-    if (this.decided) {
+    if (!this.driver.settle()) {
       return;
     }
 
-    this.decided = true;
     const error = new WebSocketDisconnectError(reason);
     this.lastDisconnectReason = reason;
     this.terminalDisconnectError = error;
@@ -512,7 +515,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       waiter.reject(error);
     }
     this.runForeverWaiters.clear();
-    void this.stopSocket().catch((error: unknown) => this.logger.warn("Phoenix socket close failed", { error }));
+    void this.stopSocketLogged();
   }
 
   /**
@@ -521,9 +524,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
    */
   private async stopSocket(): Promise<void> {
     this.connected = false;
-    this.decided = true;
     this.driver.end();
     await this.socket.close();
+  }
+
+  /** Stops the socket where nobody awaits the close's failure. */
+  private async stopSocketLogged(): Promise<void> {
+    await this.stopSocket().catch((error: unknown) => this.logger.warn("Phoenix socket close failed", { error }));
   }
 
   private async waitForConnection(signal?: AbortSignal): Promise<void> {
@@ -591,7 +598,7 @@ interface SocketHooks {
   /** Whether the next connect attempt may start. */
   beforeAttempt(): boolean;
   /** Called with every close, before phoenix asks `reconnectAfterMs` for the next delay. */
-  onSocketClose(event?: { code?: number; reason?: string }): void;
+  onSocketClose(event?: CloseEventLike): void;
 }
 
 /**
@@ -635,14 +642,6 @@ class GatedSocket extends Socket {
     });
   }
 
-  public override connect(): void {
-    if (this.opened) {
-      super.connect();
-    } else {
-      this.transportLogger.debug("Suppressed phoenix reconnect; socket is closed");
-    }
-  }
-
   /**
    * Closes the live WebSocket without phoenix's `disconnect()`, so phoenix
    * treats it as an unexpected close and reconnects after the owner's delay.
@@ -659,7 +658,7 @@ class GatedSocket extends Socket {
     }
   }
 
-  protected override onConnClose(event?: { code?: number; reason?: string }): void {
+  protected override onConnClose(event?: CloseEventLike): void {
     this.hooks.onSocketClose(event);
     super.onConnClose(event);
   }

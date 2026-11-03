@@ -13,15 +13,24 @@ type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
 type NodeWebSocketConstructor = new (
   address: string | URL,
   protocols?: string | string[],
-  options?: { headers?: Record<string, string> },
+  options?: { headers?: Record<string, string>; handshakeTimeout?: number },
 ) => NodeUpgradeWebSocket;
 
-export function createNodeWebSocketFactory(headers?: Record<string, string>): typeof WebSocket {
+/**
+ * How long an upgrade may go unanswered. `ws` then closes the attempt (1006),
+ * so a hung handshake reaches core `Session` as a failure it can retry.
+ */
+export const WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+export function createNodeWebSocketFactory(
+  headers?: Record<string, string>,
+  handshakeTimeoutMs = WEBSOCKET_HANDSHAKE_TIMEOUT_MS,
+): typeof WebSocket {
   const Constructor = NodeWebSocket as unknown as NodeWebSocketConstructor;
 
   class BandNodeWebSocket {
     public constructor(address: string | URL, protocols?: string | string[]) {
-      const socket = new Constructor(address, protocols, headers ? { headers } : undefined);
+      const socket = new Constructor(address, protocols, { headers, handshakeTimeout: handshakeTimeoutMs });
       socket.once("unexpected-response", (request, response) => {
         void emitUpgradeError(socket, request, response);
       });

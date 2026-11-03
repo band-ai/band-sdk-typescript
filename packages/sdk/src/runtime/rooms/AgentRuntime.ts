@@ -219,8 +219,9 @@ export class AgentRuntime {
     // A stop landing mid-start must not report a teardown of resources that
     // start() has not created yet, so wait for it to settle first — which is
     // also what `RoomPresence` does internally, since its own start/stop pair
-    // is serialised. The one step that can wait long, the link connect retrying
-    // through an outage, is aborted first, so waiting cannot strand the caller.
+    // is serialised. The link connect, which retries through an outage, is
+    // aborted first; a channel join the start already sent can still hold the
+    // stop until the platform answers it.
     // Nothing is awaited when no start is in flight, keeping the transition
     // below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;

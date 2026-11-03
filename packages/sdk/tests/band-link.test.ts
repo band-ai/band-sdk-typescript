@@ -7,7 +7,7 @@ import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
 } from "../src/platform/streaming/disconnectReason";
-import { UnsupportedFeatureError } from "../src/core/errors";
+import { RuntimeStateError, TransportError, UnsupportedFeatureError } from "../src/core/errors";
 import { FakeRestApi, FakeTransport } from "./testUtils";
 
 const supersededReason = {
@@ -292,7 +292,7 @@ describe("BandLink event waiting", () => {
     await expect(link.subscribeRoom("room-1")).resolves.toBeUndefined();
   });
 
-  it("waits for an in-flight connect() before completing a concurrent disconnect()", async () => {
+  it("aborts an in-flight connect() when disconnect() lands, instead of waiting it out", async () => {
     const transport = new FakeTransport();
     transport.gateConnect();
     const link = new BandLink({
@@ -303,21 +303,10 @@ describe("BandLink event waiting", () => {
     });
 
     const connect = link.connect();
-    let disconnectResolved = false;
-    const disconnect = link.disconnect().then(() => {
-      disconnectResolved = true;
-    });
+    await link.disconnect();
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(disconnectResolved).toBe(false);
-
-    transport.releaseConnection();
-    await connect;
-    await disconnect;
-
-    expect(disconnectResolved).toBe(true);
+    await expect(connect).rejects.toBeInstanceOf(RuntimeStateError);
     expect(link.isConnected()).toBe(false);
-    expect(transport.disconnectCount).toBe(1);
   });
 
   it("coalesces concurrent disconnect calls into one transport teardown", async () => {
@@ -378,18 +367,22 @@ describe("BandLink event waiting", () => {
     await expect(next).resolves.toBeNull();
   });
 
-  it("does not poison runForever after a retryable websocket disconnect", async () => {
-    const retryableReason = {
-      source: "upgrade",
-      status: 429,
-      code: "too_many_requests",
-      message: "Too many websocket connection attempts.",
-      retryable: true,
-      retryAfter: 7,
-      requestId: null,
-    } satisfies WebSocketDisconnectReason;
+  const retryableReason = {
+    source: "upgrade",
+    status: 429,
+    code: "too_many_requests",
+    message: "Too many websocket connection attempts.",
+    retryable: true,
+    retryAfter: 7,
+    requestId: null,
+  } satisfies WebSocketDisconnectReason;
+
+  it.each([
+    ["a retryable disconnect error", new WebSocketDisconnectError(retryableReason)],
+    ["a boot deadline caused by a retryable refusal", new TransportError("Timed out waiting for Phoenix socket connection", retryableReason)],
+  ])("records %s without poisoning runForever", async (_case, failure) => {
     const rejectingTransport = new FakeTransport();
-    rejectingTransport.failConnect(new WebSocketDisconnectError(retryableReason));
+    rejectingTransport.failConnect(failure);
     const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
@@ -397,9 +390,7 @@ describe("BandLink event waiting", () => {
       transport: rejectingTransport,
     });
 
-    await expect(link.connect()).rejects.toBeInstanceOf(
-      WebSocketDisconnectError,
-    );
+    await expect(link.connect()).rejects.toBe(failure);
     expect(link.getDisconnectReason()).toBe(retryableReason);
     const controller = new AbortController();
     const runForever = link.runForever(controller.signal);

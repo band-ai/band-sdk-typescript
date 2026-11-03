@@ -222,11 +222,6 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
   }
 
-  /** The request URL of every connection, in order. */
-  public get connectionUrls(): readonly string[] {
-    return this.connections.entries;
-  }
-
   public get connectionCount(): number {
     return this.connections.entries.length;
   }

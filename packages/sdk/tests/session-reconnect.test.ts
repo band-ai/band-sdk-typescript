@@ -1,3 +1,4 @@
+import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 
@@ -11,9 +12,10 @@ import {
   BOOT_CONNECT_DEADLINE_MS,
   PhoenixChannelsTransport,
 } from "../src/platform/streaming/PhoenixChannelsTransport";
+import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSocketFactory";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
-import { FAKE_WIRE_CLOCK, FakeRestApi, advanceWireClock, fastSessionPolicy } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
 
 /**
  * Core `Session` as the transport's only reconnect policy, over the real
@@ -37,10 +39,15 @@ function platformRefusal(status: number, code: string, extra: Record<string, unk
 }
 
 /** A real transport for `AGENT_ID` that records every terminal disconnect; disposing it disconnects. */
-function transportFor(peer: FakePhoenixPeer, policy: PolicyOverrides = {}) {
+function transportFor(
+  peer: { url: string },
+  policy: PolicyOverrides = {},
+  websocketFactory?: typeof WebSocket,
+) {
   const terminals: WebSocketDisconnectReason[] = [];
   const transport = new PhoenixChannelsTransport({
     wsUrl: peer.url,
+    websocketFactory,
     apiKey: "test-key",
     agentId: AGENT_ID,
     sessionPolicy: fastSessionPolicy(policy),
@@ -51,7 +58,8 @@ function transportFor(peer: FakePhoenixPeer, policy: PolicyOverrides = {}) {
     terminals,
     [Symbol.asyncDispose]: async () => {
       // Phoenix polls its closing socket on timers already queued on the fake clock.
-      await onWireClock(transport.disconnect().catch(() => undefined));
+      const stopping = transport.disconnect().catch(() => undefined);
+      await (vi.isFakeTimers() ? onWireClock(stopping) : stopping);
       vi.useRealTimers();
     },
   };
@@ -83,6 +91,38 @@ async function onWireClock<T>(work: Promise<T>): Promise<T> {
 /** Advances the clock until the peer has accepted `count` connections in total. */
 async function reconnected(peer: FakePhoenixPeer, count: number): Promise<void> {
   await onWireClock(connectionNumber(peer, count));
+}
+
+/**
+ * A TCP front for `peer` that forwards, or while `hanging` accepts the
+ * connection and never answers its upgrade, as a stuck load balancer does.
+ */
+async function startFront(peer: FakePhoenixPeer) {
+  const target = new URL(peer.url);
+  const front = { hanging: false, accepted: new RecordLog<number>(), url: "" };
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((client) => {
+    sockets.add(client);
+    client.on("close", () => sockets.delete(client));
+    client.on("error", () => undefined);
+    front.accepted.record(front.accepted.entries.length + 1);
+    if (front.hanging) {
+      return;
+    }
+    const upstream = net.connect(Number(target.port), target.hostname);
+    upstream.on("error", () => client.destroy());
+    upstream.on("close", () => client.destroy());
+    client.on("close", () => upstream.destroy());
+    client.pipe(upstream).pipe(client);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  front.url = `ws://127.0.0.1:${(server.address() as net.AddressInfo).port}/socket`;
+  return Object.assign(front, {
+    [Symbol.asyncDispose]: async () => {
+      sockets.forEach((socket) => socket.destroy());
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  });
 }
 
 afterEach(() => {
@@ -237,6 +277,39 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(agent.terminals).toEqual([]);
     });
 
+    it("reconnects on a retryable supersede whose retry_after is negative", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      await agent.transport.connect();
+
+      peer.push(CONTROL_TOPIC, "supersede", {
+        reason: "session.reconnect",
+        message: "reconnect",
+        retryable: true,
+        retry_after: -1,
+        correlation_id: null,
+      });
+      await reconnected(peer, 2);
+
+      expect(agent.terminals).toEqual([]);
+    });
+
+    it("retries an attempt whose upgrade is never answered", async () => {
+      // Real time: the handshake timeout is a socket timer the fake clock doesn't drive.
+      vi.useRealTimers();
+      await using peer = await FakePhoenixPeer.start();
+      await using front = await startFront(peer);
+      await using agent = transportFor(front, {}, createNodeWebSocketFactory(undefined, 50));
+      front.hanging = true;
+
+      const connecting = agent.transport.connect();
+      await front.accepted.until(() => front.accepted.entries.length >= 2);
+      front.hanging = false;
+      await connecting;
+
+      expect(agent.transport.isConnected()).toBe(true);
+    });
+
     it("treats a negative Retry-After as no hint", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
@@ -260,6 +333,10 @@ describe("core Session owns reconnects (real wire)", () => {
       await onWireClock(agent.transport.connect());
 
       peer.severAllConnections();
+      while (agent.transport.isConnected()) {
+        await advanceWireClock(100);
+      }
+      // Now inside the 1 s backoff, with phoenix's reconnect already scheduled.
       await onWireClock(agent.transport.disconnect());
       await advanceWireClock(PAST_ANY_DELAY_MS);
 
@@ -281,18 +358,21 @@ describe("core Session owns reconnects (real wire)", () => {
 
     it("joins a reconnect in progress instead of restarting it", async () => {
       await using peer = await startPeer();
-      await using agent = transportFor(peer, { baseDelayS: 1, maxDelayS: 1 });
+      await using agent = transportFor(peer);
       await agent.transport.connect();
-
+      peer.refuseUpgrades({ status: 503, headers: { "Retry-After": "7" } });
       peer.severAllConnections();
-      while (agent.transport.isConnected()) {
+      while (peer.refusals.entries.length === 0) {
         await advanceWireClock(100);
       }
+
       const again = agent.transport.connect();
+      await advanceWireClock(6_800);
+      expect(peer.refusals.entries, "no attempt inside the server's 7 s floor").toHaveLength(1);
+      peer.acceptUpgrades();
       await reconnected(peer, 2);
       await again;
 
-      expect(peer.connections.entries).toHaveLength(2);
       expect(agent.transport.isConnected()).toBe(true);
     });
   });
@@ -344,17 +424,42 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(agent.transport.isConnected()).toBe(true);
     });
 
-    it("retries when the mandatory agent_control join fails", async () => {
+    it("retries when the mandatory agent_control join fails, without reporting a reconnect", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
       peer.queueJoinOutcomes(CONTROL_TOPIC, ["error"]);
 
-      const connecting = agent.transport.connect();
+      const connecting = link.connect();
       await reconnected(peer, 2);
       await connecting;
 
       expect(agent.transport.isConnected()).toBe(true);
       expect(agent.terminals).toEqual([]);
+      // A boot that never connected has no session to resume, so nothing queues a catch-up.
+      const abort = new AbortController();
+      const next = link.nextEvent(abort.signal);
+      abort.abort();
+      await expect(next).resolves.toBeNull();
+    });
+
+    it("starts each run with no disconnect reason from the last one", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      peer.refuseUpgrades({ status: 503 });
+      const first = agent.transport.connect();
+      while (peer.refusals.entries.length === 0) {
+        await advanceWireClock(100);
+      }
+      peer.acceptUpgrades();
+      await onWireClock(first);
+      await onWireClock(agent.transport.disconnect());
+      expect(agent.transport.getDisconnectReason()).toMatchObject({ status: 503 });
+
+      const second = agent.transport.connect();
+
+      expect(agent.transport.getDisconnectReason()).toBeNull();
+      await onWireClock(second);
     });
 
     it("rejects connect() on a supersede that arrives while agent_control is joining", async () => {
@@ -413,23 +518,29 @@ describe("core Session owns reconnects (real wire)", () => {
       }
       await onWireClock(runtime.stop());
 
-      expect(await onWireClock(starting)).toBeInstanceOf(Error);
+      expect(await onWireClock(starting)).toBeInstanceOf(RuntimeStateError);
       const refusals = peer.refusals.entries.length;
       await advanceWireClock(PAST_ANY_DELAY_MS);
       expect(peer.refusals.entries).toHaveLength(refusals);
       expect(agent.terminals).toEqual([]);
     });
 
-    it("aborting connect() rejects it at once", async () => {
+    it("aborting connect() rejects it and ends the boot's retries", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       peer.refuseUpgrades({ status: 503 });
       const abort = new AbortController();
 
       const connecting = agent.transport.connect(abort.signal);
+      while (peer.refusals.entries.length === 0) {
+        await advanceWireClock(100);
+      }
       abort.abort();
 
       await expect(onWireClock(connecting)).rejects.toBeInstanceOf(RuntimeStateError);
+      const refusals = peer.refusals.entries.length;
+      await advanceWireClock(PAST_ANY_DELAY_MS);
+      expect(peer.refusals.entries).toHaveLength(refusals);
     });
   });
 });
