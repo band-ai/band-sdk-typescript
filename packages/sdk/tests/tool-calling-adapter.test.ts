@@ -14,7 +14,7 @@ import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
 import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
-import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
+import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce, FakeTools as RecordingTools } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
 import { trackTurn, Turn } from "../src/core/turn";
 import type {
@@ -774,6 +774,19 @@ describe("ToolCallingAdapter", () => {
       provider: "openai",
       message: "provider exploded",
     });
+  });
+
+  it("ends the turn once band_no_reply lands, without asking a model that would decline again", async () => {
+    // A live Gemini model asked again after declining declines again, every round.
+    const model: ToolCallingModel = {
+      complete: async () => ({ toolCalls: [{ id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS }] }),
+    };
+    const tools = new RecordingTools();
+
+    await new OpenAIAdapter({ model }).onEvent(turnInput(tools));
+
+    expect(failureEvents(tools)).toEqual([]);
+    expect(tools.messages).toEqual([]);
   });
 
   it("stops the tool loop after maxToolRounds and reports a single sendFailure, not a double report", async () => {

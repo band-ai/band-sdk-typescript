@@ -7,6 +7,7 @@ import {
   type ToolSchemaProvider,
 } from "../../contracts/protocols";
 import type { ToolModelMessage } from "../../contracts/dtos";
+import { BAND_TOOL_EFFECTS, isBandToolName } from "../../contracts/toolSchemas";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -237,6 +238,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         }
 
         toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
+        if (roundToolResults.some(isLandedDecline)) {
+          break;
+        }
 
         response = await this.complete(turn, {
           systemPrompt: this.systemPrompt,
@@ -358,6 +362,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       });
     }
   }
+}
+
+/** A landed `band_no_reply` ends the turn on purpose, so the model is not asked again. */
+function isLandedDecline(result: ToolResult): boolean {
+  return !result.isError && isBandToolName(result.name) && BAND_TOOL_EFFECTS[result.name] === "decline";
 }
 
 export function runSingleToolRound(
