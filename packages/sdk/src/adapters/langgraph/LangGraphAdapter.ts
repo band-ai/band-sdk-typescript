@@ -557,7 +557,7 @@ function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
 /** The roles LangChain reads as a human message, in a tuple or a role record. */
 const HUMAN_ROLES: ReadonlySet<unknown> = new Set(["user", "human"]);
 
-/** This turn's input, in any shape a graph's state holds it: a tuple, a role record, or a LangChain message. */
+/** A human message, in any shape a graph's state holds it: a tuple, a role record, or a LangChain message. */
 function isHumanMessage(value: unknown): boolean {
   if (Array.isArray(value)) {
     return HUMAN_ROLES.has(value[0]);

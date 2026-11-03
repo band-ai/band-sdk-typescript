@@ -14,13 +14,12 @@ import {
   stringifyContent,
 } from "@google/adk";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
 
 import { GoogleADKAdapter, type GoogleADKAdapterOptions } from "../src/adapters/google-adk";
 import { DEFAULT_MAX_TOOL_ROUNDS } from "../src/adapters/shared/toolRounds";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import { failureMessages, recordingRoom, SENDER } from "./helpers/recordingRoom";
+import { describeToolRoundContract } from "./toolRoundContract";
 import { expectTurnFailed, makeMessage } from "./testUtils";
 import { turnInput } from "./turnOutcomeContract";
 
@@ -28,7 +27,6 @@ import { turnInput } from "./turnOutcomeContract";
 type Part = { text: string } | { functionCall: { name: string; args: Record<string, unknown> } };
 
 const call = (name: string, args: Record<string, unknown> = {}): Part => ({ functionCall: { name, args } });
-const text = (value: string): Part => ({ text: value });
 const send = (content: string) => call(SEND_MESSAGE_TOOL_NAME, { content, mentions: [SENDER.handle] });
 const decline = call(NO_REPLY_TOOL_NAME, { reason: "FYI" });
 
@@ -73,78 +71,22 @@ async function runTurn(script: (request: number) => Part[], options: GoogleADKAd
   return { model, room, turn };
 }
 
+describeToolRoundContract("GoogleADKAdapter (real ADK runner)", async (script, additionalTools) => {
+  const { model, room, turn } = await runTurn((request) => {
+    const step = script(request);
+    return "text" in step ? [{ text: step.text }] : step.calls.map((scripted) => call(scripted.name, scripted.args));
+  }, { additionalTools });
+  await turn;
+  return { requests: model.requests, messages: room.messages.map((message) => message.content), failures: failureMessages(room.events) };
+});
+
 describe("Google ADK tool loop", () => {
-  it("ends the run at a decline, so a model that would decline again is not asked", async () => {
-    const { model, room, turn } = await runTurn(() => [decline]);
-    await turn;
-
-    expect(model.requests).toBe(1);
-    expect(room.messages).toEqual([]);
-    expect(failureMessages(room.events)).toEqual([]);
-  });
-
-  it("runs and reports every call of the round that declines, then ends", async () => {
+  it("reports every call of the round that declines before it ends", async () => {
     const { model, room, turn } = await runTurn(() => [send("Noted."), decline], { enableExecutionReporting: true });
     await turn;
 
     expect(model.requests).toBe(1);
-    expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
     expect(room.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_call", "tool_result", "tool_result"]);
-  });
-
-  it("asks the model again when a call beside the decline failed, so it sees the failure", async () => {
-    const { model, room, turn } = await runTurn(
-      (request) => request === 1
-        ? [call(SEND_MESSAGE_TOOL_NAME, { content: "Noted.", mentions: ["@nobody"] }), decline]
-        : request === 2 ? [send("Noted.")] : [text("done")],
-    );
-    await turn;
-
-    expect(model.requests).toBe(3);
-    expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
-  });
-
-  it("keeps going after a send, and relays no closing text on top of it", async () => {
-    const { model, room, turn } = await runTurn((request) => request === 1 ? [send("Noted.")] : [text("I sent it.")]);
-    await turn;
-
-    expect(model.requests).toBe(2);
-    expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
-  });
-
-  describe("a custom decline tool", () => {
-    const skip = (handler: CustomToolDef["handler"]): CustomToolDef => ({
-      name: "skip_turn", schema: z.object({}), effect: "decline", handler,
-    });
-
-    it("ends the run when it succeeds", async () => {
-      const { model, turn } = await runTurn(() => [call("skip_turn")], { additionalTools: [skip(() => "skipped")] });
-      await turn;
-
-      expect(model.requests).toBe(1);
-    });
-
-    // ToolCallingAdapter and `Turn` judge the handler's own output; a JSON string is not a failure to them.
-    it("ends the run when it returns a JSON string that reads like a failure", async () => {
-      const { model, turn } = await runTurn(
-        (request) => request === 1 ? [call("skip_turn")] : [send("Noted.")],
-        { additionalTools: [skip(() => '{"ok":false,"message":"nothing to add"}')] },
-      );
-      await turn;
-
-      expect(model.requests).toBe(1);
-    });
-
-    it("lets the model carry on when it fails", async () => {
-      const { model, room, turn } = await runTurn(
-        (request) => request === 1 ? [call("skip_turn")] : request === 2 ? [send("Noted.")] : [text("done")],
-        { additionalTools: [skip(() => ({ ok: false, message: "refused" }))] },
-      );
-      await turn;
-
-      expect(model.requests).toBe(3);
-      expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
-    });
   });
 
   it("stops a model that never stops calling tools, without running or reporting the round past the cap", async () => {

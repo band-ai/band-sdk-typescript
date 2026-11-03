@@ -23,7 +23,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { DEFAULT_MAX_TOOL_ROUNDS, toolLoopLimitError } from "../shared/toolRounds";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome, toolLoopLimitError } from "../shared/toolRounds";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -169,38 +169,6 @@ function executionResult(response: unknown): { output: unknown; isError: boolean
       || isFailedToolOutput(envelope?.result)
       || isFailedToolOutput(output),
   };
-}
-
-/**
- * One tool round's outcome, judged from each call's own output as `Turn`
- * judges it, not from ADK's stringified envelope, which can read differently.
- */
-class ToolRound {
-  private declinesBefore = 0;
-  private failed = false;
-
-  public constructor(private readonly turn: TurnTools["turn"]) {}
-
-  public start(): void {
-    this.declinesBefore = this.turn.declines;
-    this.failed = false;
-  }
-
-  public async run(execute: () => Promise<unknown>): Promise<unknown> {
-    try {
-      const output = await execute();
-      this.failed ||= isFailedToolOutput(output);
-      return output;
-    } catch (error) {
-      this.failed = true;
-      throw error;
-    }
-  }
-
-  /** A decline landed and no call beside it failed, so the turn is over. */
-  public get declined(): boolean {
-    return this.turn.declines > this.declinesBefore && !this.failed;
-  }
 }
 
 async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
@@ -351,7 +319,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     let finalResponseText = "";
     try {
       const sdk = await this.sdkLoader.get();
-      const round = new ToolRound(tools.turn);
+      const round = new RoundOutcome(tools.turn);
       const built = this.buildTools(sdk, tools, round);
       const runner = sdk.createRunner({
         agent: this.buildAgent(sdk, built.tools),
@@ -463,7 +431,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
-    round: ToolRound,
+    round: RoundOutcome,
   ): { tools: unknown[]; observedNames: Set<string> } {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
@@ -482,7 +450,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildPlatformTool(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
-    round: ToolRound,
+    round: RoundOutcome,
     schema: Record<string, unknown>,
   ): { name: string; tool: unknown } | null {
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -504,7 +472,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
     tools: TurnTools,
-    round: ToolRound,
+    round: RoundOutcome,
   ): { name: string; tool: unknown } {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};

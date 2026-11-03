@@ -15,7 +15,7 @@ import { withMemoryGuidance } from "../../runtime/prompts";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { DEFAULT_MAX_TOOL_ROUNDS, toolLoopLimitError } from "../shared/toolRounds";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome, toolLoopLimitError } from "../shared/toolRounds";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { TurnBudget } from "./turnBudget";
 import {
@@ -155,6 +155,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       });
 
       let roundCount = 0;
+      const round = new RoundOutcome(tools.turn);
       while ((response.toolCalls?.length ?? 0) > 0) {
         roundCount += 1;
         if (roundCount > this.maxToolRounds) {
@@ -162,7 +163,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         }
 
         const roundToolCalls = response.toolCalls ?? [];
-        const declinesBefore = tools.turn.declines;
+        round.start();
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {
@@ -215,7 +216,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               output = await tools.executeToolCall(call.name, call.input);
             }
           }
-          const isError = isFailedToolOutput(output);
+          const isError = isFailedToolOutput(round.record(output));
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,
@@ -241,8 +242,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
           toolResults: roundToolResults,
           providerData: response.providerData,
         });
-        // A decline ends the turn on purpose, unless a sibling failed: the model must still see that.
-        if (tools.turn.declines > declinesBefore && roundToolResults.every((result) => !result.isError)) {
+        if (round.declined) {
           break;
         }
 
