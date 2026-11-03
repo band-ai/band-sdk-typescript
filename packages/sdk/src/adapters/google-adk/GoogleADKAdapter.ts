@@ -23,6 +23,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome } from "../shared/toolRounds";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -115,6 +116,8 @@ export interface GoogleADKAdapterOptions {
   additionalTools?: CustomToolDef[];
   maxHistoryMessages?: number;
   maxTranscriptChars?: number;
+  /** Tool rounds one turn may run before it is stopped and reported as failed. */
+  maxToolRounds?: number;
   logger?: Logger;
   sdkFactory?: () => Promise<GoogleAdkSdkLike>;
 }
@@ -229,6 +232,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private readonly customTools: CustomToolDef[];
   private readonly maxHistoryMessages: number;
   private readonly maxTranscriptChars: number;
+  private readonly maxToolRounds: number;
   private readonly logger: Logger;
   private readonly historyConverterInstance: GoogleADKHistoryConverter;
   private readonly sdkLoader: LazyAsyncValue<GoogleAdkSdkLike>;
@@ -249,6 +253,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     this.customTools = [...(options.additionalTools ?? [])];
     this.maxHistoryMessages = options.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
     this.maxTranscriptChars = options.maxTranscriptChars ?? DEFAULT_MAX_TRANSCRIPT_CHARS;
+    this.maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     this.logger = resolveLogger(options.logger);
     this.historyConverterInstance = historyConverter;
     this.sdkLoader = new LazyAsyncValue({
@@ -314,7 +319,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     let finalResponseText = "";
     try {
       const sdk = await this.sdkLoader.get();
-      const built = this.buildTools(sdk, tools);
+      const round = new RoundOutcome(tools.turn, this.maxToolRounds);
+      const built = this.buildTools(sdk, tools, round);
       const runner = sdk.createRunner({
         agent: this.buildAgent(sdk, built.tools),
         appName: APP_NAME,
@@ -335,6 +341,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             parts: [{ text: prompt }],
           },
         })) {
+          // ADK yields a round's calls before running them, so leaving here stops them unrun and unreported.
+          if (sdk.getFunctionCalls(event).length > 0) {
+            round.start();
+          }
           throwIfModelError(event);
           this.trackNativeEvent(sdk, event, native);
           if (this.enableExecutionReporting) {
@@ -342,6 +352,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
           }
           if (sdk.isFinalResponse(event)) {
             finalResponseText = sdk.stringifyContent(event);
+          }
+          // ADK would hand the results back to the model; a decline ends the turn unless a sibling failed.
+          if (sdk.getFunctionResponses(event).length > 0 && round.declined) {
+            break;
           }
         }
       });
@@ -413,16 +427,17 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
+    round: RoundOutcome,
   ): { tools: unknown[]; observedNames: Set<string> } {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
+      .map((schema) => this.buildPlatformTool(sdk, tools, round, schema))
       .filter((tool): tool is { name: string; tool: unknown } => tool !== null);
 
     for (const customTool of this.customTools) {
-      adkTools.push(this.buildCustomTool(sdk, customTool, tools));
+      adkTools.push(this.buildCustomTool(sdk, customTool, tools, round));
     }
 
     return { tools: adkTools.map(({ tool }) => tool), observedNames: new Set(adkTools.map(({ name }) => name)) };
@@ -431,6 +446,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildPlatformTool(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
+    round: RoundOutcome,
     schema: Record<string, unknown>,
   ): { name: string; tool: unknown } | null {
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -443,9 +459,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => {
-        return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
-      },
+      execute: async (input) => stringifyToolResult(await round.run(() => tools.executeToolCall(name, asToolArgs(input)))),
     });
     return { name, tool };
   }
@@ -454,6 +468,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
     tools: TurnTools,
+    round: RoundOutcome,
   ): { name: string; tool: unknown } {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -462,7 +477,9 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
+      execute: async (input) => stringifyToolResult(
+        await round.run(() => executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
+      ),
     });
     return { name, tool };
   }

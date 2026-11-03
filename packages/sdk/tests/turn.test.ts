@@ -80,6 +80,7 @@ describe("trackTurn", () => {
     await reply(tools);
 
     expect(tools.turn.replied).toBe(true);
+    expect(tools.turn.declines).toBe(0);
     expect(tools.turn.verdict()).toBe("complete");
   });
 
@@ -89,6 +90,7 @@ describe("trackTurn", () => {
 
     expect(tools.turn.verdict()).toBe("complete");
     expect(tools.turn.replied).toBe(false);
+    expect(tools.turn.declines).toBe(0);
   });
 
   it("records a decline through band_no_reply", async () => {
@@ -96,6 +98,7 @@ describe("trackTurn", () => {
     await tools.executeToolCall(NO_REPLY_TOOL_NAME, {});
 
     expect(tools.turn.replied).toBe(true);
+    expect(tools.turn.declines).toBe(1);
     expect(tools.turn.verdict()).toBe("complete");
   });
 
@@ -240,6 +243,16 @@ describe("custom tool effect", () => {
     await executeCustomTool({ ...tool("reply"), handler: () => ({ ok: false, message: "upstream refused" }) }, {}, turn);
 
     expect(turn.verdict()).toBe("missing_reply");
+  });
+
+  it("marks the turn declined only when a decline tool succeeds", async () => {
+    const landed = new Turn();
+    await executeCustomTool(tool("decline"), {}, landed);
+    expect(landed.declines).toBe(1);
+
+    const failed = new Turn();
+    await executeCustomTool({ ...tool("decline"), handler: () => ({ ok: false, message: "refused" }) }, {}, failed);
+    expect(failed.declines).toBe(0);
   });
 
   it.each(["", 0, false, null, undefined])("credits a successful falsy result %j", async (output) => {

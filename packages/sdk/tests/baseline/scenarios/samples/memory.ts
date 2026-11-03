@@ -79,7 +79,7 @@ export function storeSubjectRequest(marker: string, subjectId: string): string {
 
 /** A request that names neither the scope nor the subject: both are left for the agent to infer. */
 export function inferredSubjectRequest(marker: string): string {
-  return `Please remember this about me personally so you can recall it later: my project code phrase is ${marker}.`;
+  return `Please remember this about me personally so you can recall it later: my project code phrase is ${marker}. Look up my id; don't guess it.`;
 }
 
 /** Stores a note, then applies `followUp` to the id the store call returns. */

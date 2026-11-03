@@ -15,6 +15,8 @@ import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
 import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
+import { failureMessages, recordingRoom } from "./helpers/recordingRoom";
+import { describeToolRoundContract } from "./toolRoundContract";
 import { createDeferred } from "../src/core/deferred";
 import { trackTurn, Turn } from "../src/core/turn";
 import type {
@@ -1095,3 +1097,18 @@ function scriptedModel(script: TurnScript): ToolCallingModel {
   let round = 0;
   return { complete: async () => responses[round++] ?? {} };
 }
+
+describeToolRoundContract("ToolCallingAdapter", async (script, customTools) => {
+  let requests = 0;
+  const model: ToolCallingModel = {
+    complete: async () => {
+      const step = script(++requests);
+      return "text" in step
+        ? { text: step.text }
+        : { toolCalls: step.calls.map((scripted, index) => ({ id: `call-${requests}-${index}`, name: scripted.name, input: scripted.args })) };
+    },
+  };
+  const room = recordingRoom();
+  await new OpenAIAdapter({ model, customTools }).onEvent(turnInput(room.tools));
+  return { requests, messages: room.messages.map((message) => message.content), failures: failureMessages(room.events) };
+});

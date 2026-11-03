@@ -1,6 +1,5 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
-  isFailedToolOutput,
   isSyntheticTurn,
   type MessagingTools,
   type ToolExecutor,
@@ -15,6 +14,7 @@ import { withMemoryGuidance } from "../../runtime/prompts";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome } from "../shared/toolRounds";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { TurnBudget } from "./turnBudget";
 import {
@@ -92,7 +92,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       options.systemPrompt === undefined && !this.includeMemoryTools
         ? undefined
         : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
-    this.maxToolRounds = options.maxToolRounds ?? 8;
+    this.maxToolRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
     assertTurnTimeoutMs(this.turnTimeoutMs);
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
@@ -153,17 +153,10 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         tools: schemas,
       });
 
-      let roundCount = 0;
+      const round = new RoundOutcome(tools.turn, this.maxToolRounds);
       while ((response.toolCalls?.length ?? 0) > 0) {
-        roundCount += 1;
-        if (roundCount > this.maxToolRounds) {
-          throw new Error(
-            `Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`,
-          );
-        }
-
+        round.start();
         const roundToolCalls = response.toolCalls ?? [];
-        const declinesBefore = tools.turn.declines;
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {
@@ -216,7 +209,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               output = await tools.executeToolCall(call.name, call.input);
             }
           }
-          const isError = isFailedToolOutput(output);
+          const isError = round.record(output);
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,
@@ -242,8 +235,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
           toolResults: roundToolResults,
           providerData: response.providerData,
         });
-        // A decline ends the turn on purpose, unless a sibling failed: the model must still see that.
-        if (tools.turn.declines > declinesBefore && roundToolResults.every((result) => !result.isError)) {
+        if (round.declined) {
           break;
         }
 

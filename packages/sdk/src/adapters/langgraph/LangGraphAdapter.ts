@@ -474,7 +474,8 @@ function extractAssistantText(result: unknown): string | null {
   }
 
   const messages = Array.isArray(record.messages) ? record.messages : [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  // Messages before this turn's input are earlier turns: their text is not this turn's answer.
+  for (let index = messages.length - 1; index >= 0 && !isHumanMessage(messages[index]); index -= 1) {
     const text = asMessageText(messages[index]);
     if (text && !isInternalLangGraphMarker(text)) {
       return text;
@@ -509,28 +510,63 @@ function asMessageText(value: unknown): string | null {
   return asMessageContent(record.content);
 }
 
-// Detects a LangChain assistant message in either shape:
-//  - serialized: { id: [..., "AIMessage" | "AIMessageChunk"], kwargs: { content } }
-//  - in-memory instance (real createReactAgent stream): getType() === "ai", content on the instance
-function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+const LANGCHAIN_MESSAGE_TYPES = ["ai", "human"] as const;
+type LangChainMessageType = (typeof LANGCHAIN_MESSAGE_TYPES)[number];
+
+function isLangChainMessageType(value: unknown): value is LangChainMessageType {
+  return LANGCHAIN_MESSAGE_TYPES.includes(value as LangChainMessageType);
+}
+
+/** LangChain's serialized class names, by the type `getType()` reports for an instance. */
+const LANGCHAIN_MESSAGE_CLASSES: Readonly<Record<string, LangChainMessageType>> = {
+  AIMessage: "ai",
+  AIMessageChunk: "ai",
+  HumanMessage: "human",
+  HumanMessageChunk: "human",
+};
+
+// A LangChain message's type in either shape:
+//  - serialized: { id: [..., "AIMessage" | "HumanMessage" | …], kwargs: { content } }
+//  - in-memory instance (real createReactAgent stream): getType(), content on the instance
+function langChainMessageType(record: Record<string, unknown>): LangChainMessageType | null {
   const id = record.id;
   if (Array.isArray(id)) {
-    const typeName = String(id[id.length - 1] ?? "");
-    if (typeName === "AIMessage" || typeName === "AIMessageChunk") {
-      return true;
+    const type = LANGCHAIN_MESSAGE_CLASSES[String(id[id.length - 1] ?? "")];
+    if (type) {
+      return type;
     }
   }
 
   const getType = (record as { getType?: unknown }).getType;
   if (typeof getType === "function") {
     try {
-      return (getType as () => unknown).call(record) === "ai";
+      const type = (getType as () => unknown).call(record);
+      return isLangChainMessageType(type) ? type : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
-  return false;
+  return null;
+}
+
+function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+  return langChainMessageType(record) === "ai";
+}
+
+/** The roles LangChain reads as a human message, in a tuple or a role record. */
+const HUMAN_ROLES: ReadonlySet<unknown> = new Set(["user", "human"]);
+
+/** A human message, in any shape a graph's state holds it: a tuple, a role record, or a LangChain message. */
+function isHumanMessage(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return HUMAN_ROLES.has(value[0]);
+  }
+  const record = asOptionalRecord(value);
+  if (!record) {
+    return false;
+  }
+  return langChainMessageType(record) === "human" || HUMAN_ROLES.has(record.role);
 }
 
 // Serialized messages carry text under kwargs.content; instances expose it directly.
