@@ -7,7 +7,7 @@ import type {
   ToolResult,
 } from "../tool-calling";
 import { UnsupportedFeatureError } from "../../core/errors";
-import { toDisplayText, toWireString } from "../shared/coercion";
+import { asOptionalRecord, toDisplayText, toWireString } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   normalizeConversationRole,
@@ -248,7 +248,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
       calls.push({
         id,
         name,
-        input: args && typeof args === "object" && !Array.isArray(args) ? args : {},
+        input: asOptionalRecord(args) ?? {},
         providerData: modelTurn,
       });
     }
@@ -275,16 +275,12 @@ function responseParts(response: GeminiGenerateResponseLike): unknown[] | undefi
 }
 
 function isGeminiModelTurn(value: unknown): value is GeminiModelTurn {
-  return Boolean(value) && typeof value === "object"
-    && (value as { role?: unknown }).role === "model"
-    && Array.isArray((value as { parts?: unknown }).parts);
+  const turn = asOptionalRecord(value);
+  return turn?.role === "model" && Array.isArray(turn.parts);
 }
 
 function isFunctionCallPart(value: unknown): value is GeminiFunctionCallPart {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const call = (value as { functionCall?: unknown }).functionCall;
+  const call = asOptionalRecord(value)?.functionCall;
   return Boolean(call) && typeof call === "object";
 }
 
