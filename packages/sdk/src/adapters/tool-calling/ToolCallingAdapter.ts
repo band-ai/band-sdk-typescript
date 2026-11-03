@@ -14,7 +14,7 @@ import { withMemoryGuidance } from "../../runtime/prompts";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome, toolLoopLimitError } from "../shared/toolRounds";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome } from "../shared/toolRounds";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { TurnBudget } from "./turnBudget";
 import {
@@ -153,16 +153,10 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         tools: schemas,
       });
 
-      let roundCount = 0;
-      const round = new RoundOutcome(tools.turn);
+      const round = new RoundOutcome(tools.turn, this.maxToolRounds);
       while ((response.toolCalls?.length ?? 0) > 0) {
-        roundCount += 1;
-        if (roundCount > this.maxToolRounds) {
-          throw toolLoopLimitError(this.maxToolRounds);
-        }
-
-        const roundToolCalls = response.toolCalls ?? [];
         round.start();
+        const roundToolCalls = response.toolCalls ?? [];
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {

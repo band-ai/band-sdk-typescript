@@ -5,7 +5,7 @@ import type { Turn } from "../../core/turn";
 export const DEFAULT_MAX_TOOL_ROUNDS = 8;
 
 /** What a tool loop throws when the model asks for a round past `maxToolRounds`. */
-export function toolLoopLimitError(maxToolRounds: number): Error {
+function toolLoopLimitError(maxToolRounds: number): Error {
   return new Error(`Stopped tool loop after ${maxToolRounds} rounds to prevent infinite recursion.`);
 }
 
@@ -13,16 +13,21 @@ export function toolLoopLimitError(maxToolRounds: number): Error {
  * The round rule of docs/turn-outcome.md for a loop the SDK drives: a round
  * ends the turn when a decline landed in it and no call beside it failed, so
  * the model still sees a failure. Each call is judged from its own output,
- * as `Turn` judged it, never from a framework's re-encoding of it.
+ * as `Turn` judged it, never from a framework's re-encoding of it. It also
+ * caps the rounds a turn may run.
  */
 export class RoundOutcome {
+  private rounds = 0;
   private declinesBefore = 0;
   private failed = false;
 
-  public constructor(private readonly turn: Turn) {}
+  public constructor(private readonly turn: Turn, private readonly maxToolRounds: number) {}
 
-  /** Opens a round, before any of its calls run. */
+  /** Opens a round, before any of its calls run; throws once the model asks for one past the cap. */
   public start(): void {
+    if (++this.rounds > this.maxToolRounds) {
+      throw toolLoopLimitError(this.maxToolRounds);
+    }
     this.declinesBefore = this.turn.declines;
     this.failed = false;
   }

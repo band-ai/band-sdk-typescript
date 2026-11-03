@@ -23,7 +23,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome, toolLoopLimitError } from "../shared/toolRounds";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome } from "../shared/toolRounds";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -319,7 +319,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     let finalResponseText = "";
     try {
       const sdk = await this.sdkLoader.get();
-      const round = new RoundOutcome(tools.turn);
+      const round = new RoundOutcome(tools.turn, this.maxToolRounds);
       const built = this.buildTools(sdk, tools, round);
       const runner = sdk.createRunner({
         agent: this.buildAgent(sdk, built.tools),
@@ -333,7 +333,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       });
 
       await withNativeActivity(tools, built.observedNames, async (native) => {
-        let toolRounds = 0;
         for await (const event of runner.runAsync({
           userId: context.roomId,
           sessionId,
@@ -344,9 +343,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         })) {
           // ADK yields a round's calls before running them, so leaving here stops them unrun and unreported.
           if (sdk.getFunctionCalls(event).length > 0) {
-            if (++toolRounds > this.maxToolRounds) {
-              throw toolLoopLimitError(this.maxToolRounds);
-            }
             round.start();
           }
           throwIfModelError(event);
