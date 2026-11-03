@@ -237,7 +237,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
           }
         }
 
-        toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
+        toolRounds.push({
+          toolCalls: roundToolCalls,
+          toolResults: roundToolResults,
+          providerData: response.providerData,
+        });
         // A decline ends the turn on purpose, unless a sibling failed: the model must still see that.
         if (tools.turn.declines > declinesBefore && roundToolResults.every((result) => !result.isError)) {
           break;

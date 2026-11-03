@@ -5,8 +5,6 @@ export interface ToolCall {
   name: string;
   input: MetadataMap;
   inputParseError?: string;
-  /** Opaque state the producing model needs when it replays this call in a later round; others pass it through untouched. */
-  providerData?: unknown;
 }
 
 export interface ToolResult {
@@ -19,11 +17,15 @@ export interface ToolResult {
 export interface ToolCallingResponse {
   text?: string;
   toolCalls?: ToolCall[];
+  /** Opaque state the producing model needs when it replays this round; others pass it through untouched. */
+  providerData?: unknown;
 }
 
 export interface ToolRound {
   toolCalls: ToolCall[];
   toolResults: ToolResult[];
+  /** The `providerData` of the response that made these calls. */
+  providerData?: unknown;
 }
 
 export interface ToolCallingModelRequest {

@@ -778,13 +778,18 @@ describe("ToolCallingAdapter", () => {
 
   it("ends the turn once band_no_reply lands, without asking a model that would decline again", async () => {
     // A live Gemini model asked again after declining declines again, every round.
+    let requests = 0;
     const model: ToolCallingModel = {
-      complete: async () => ({ toolCalls: [{ id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS }] }),
+      complete: async () => {
+        requests += 1;
+        return { toolCalls: [{ id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS }] };
+      },
     };
     const tools = new FakeTools();
 
     await new OpenAIAdapter({ model }).onEvent(turnInput(tools));
 
+    expect(requests).toBe(1);
     expect(failureEvents(tools)).toEqual([]);
     expect(tools.messages).toEqual([]);
   });
@@ -802,15 +807,30 @@ describe("ToolCallingAdapter", () => {
     expect(tools.messages).toEqual([]);
   });
 
-  it("asks the model again when a call beside band_no_reply failed, so it sees that failure", async () => {
-    const lookup: CustomToolDef = { name: "lookup_order", schema: z.object({}), handler: () => { throw new Error("order service down"); } };
+  it("asks the model again when a call beside band_no_reply failed, and keeps going after its retry", async () => {
+    let lookups = 0;
+    const lookup: CustomToolDef = {
+      name: "lookup_order",
+      schema: z.object({}),
+      handler: () => {
+        lookups += 1;
+        if (lookups === 1) {
+          throw new Error("order service down");
+        }
+        return { order: "found" };
+      },
+    };
     const requests: ToolCallingModelRequest[] = [];
-    const responses: ToolCallingResponse[] = [{
-      toolCalls: [
-        { id: "lookup", name: lookup.name, input: {} },
-        { id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS },
-      ],
-    }];
+    // The retry round declines nothing, so only a turn-wide decline check would end the turn after it.
+    const responses: ToolCallingResponse[] = [
+      {
+        toolCalls: [
+          { id: "lookup", name: lookup.name, input: {} },
+          { id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS },
+        ],
+      },
+      { toolCalls: [{ id: "retry", name: lookup.name, input: {} }] },
+    ];
     const model: ToolCallingModel = {
       complete: async (request) => {
         requests.push(request);
@@ -820,10 +840,13 @@ describe("ToolCallingAdapter", () => {
 
     await new OpenAIAdapter({ model, customTools: [lookup] }).onEvent(turnInput(new FakeTools()));
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
     expect(requests[1]?.toolRounds?.[0]?.toolResults).toContainEqual(
       expect.objectContaining({ toolCallId: "lookup", isError: true }),
     );
+    expect(requests[2]?.toolRounds?.[1]?.toolResults).toEqual([
+      expect.objectContaining({ toolCallId: "retry", isError: false }),
+    ]);
   });
 
   it("stops the tool loop after maxToolRounds and reports a single sendFailure, not a double report", async () => {

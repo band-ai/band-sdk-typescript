@@ -143,9 +143,11 @@ export class GeminiToolCallingModel implements ToolCallingModel {
       },
     });
 
+    const toolTurn = this.toToolTurn(responseParts(response));
     return {
       text: (response.text ?? "").trim() || undefined,
-      toolCalls: this.toToolCalls(responseParts(response)),
+      toolCalls: toolTurn?.toolCalls,
+      providerData: toolTurn?.modelTurn,
     };
   }
 
@@ -188,8 +190,8 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     for (const round of rounds) {
       // Gemini 3 rejects a replayed call without its original thoughtSignature, so the turn goes back as received.
-      const original = round.toolCalls[0]?.providerData;
-      merged.push(isGeminiModelTurn(original) ? original : {
+      // Rebuilding from the calls only serves rounds this model did not produce.
+      merged.push(isGeminiModelTurn(round.providerData) ? round.providerData : {
         role: "model",
         parts: round.toolCalls.map((call) => partFromCall(call.name, call.input)),
       });
@@ -227,8 +229,8 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     return { role: "user", parts: [{ text: content }] };
   }
 
-  /** Every call carries the model turn it came from, ids filled in, so a replay returns each thought signature. */
-  private toToolCalls(parts: unknown[] | undefined): ToolCall[] | undefined {
+  /** The calls plus their model turn with ids filled in, so a replay returns each thought signature. */
+  private toToolTurn(parts: unknown[] | undefined): { toolCalls: ToolCall[]; modelTurn: GeminiModelTurn } | undefined {
     const calls: ToolCall[] = [];
     const modelTurn: GeminiModelTurn = { role: "model", parts: [] };
     for (const part of parts ?? []) {
@@ -245,15 +247,10 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
       const id = typeof givenId === "string" && givenId ? givenId : `gemini_call_${calls.length + 1}`;
       modelTurn.parts.push({ ...part, functionCall: { ...part.functionCall, id } });
-      calls.push({
-        id,
-        name,
-        input: asOptionalRecord(args) ?? {},
-        providerData: modelTurn,
-      });
+      calls.push({ id, name, input: asOptionalRecord(args) ?? {} });
     }
 
-    return calls.length > 0 ? calls : undefined;
+    return calls.length > 0 ? { toolCalls: calls, modelTurn } : undefined;
   }
 
   private async getClient(): Promise<GeminiClientLike> {
@@ -280,8 +277,7 @@ function isGeminiModelTurn(value: unknown): value is GeminiModelTurn {
 }
 
 function isFunctionCallPart(value: unknown): value is GeminiFunctionCallPart {
-  const call = asOptionalRecord(value)?.functionCall;
-  return Boolean(call) && typeof call === "object";
+  return asOptionalRecord(asOptionalRecord(value)?.functionCall) !== undefined;
 }
 
 function asFunctionResponsePayload(result: ToolResult): Record<string, unknown> {

@@ -5,6 +5,7 @@ import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
 import { GeminiToolCallingModel, DEFAULT_GEMINI_MODEL } from "../src/adapters";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
+import type { GeminiGenerateResponseLike } from "../src/adapters/gemini/model";
 import { geminiCall, geminiResponse } from "./support/geminiResponses";
 import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
 
@@ -51,6 +52,36 @@ const history = {
   convert: () => [],
   length: 0,
 } as unknown as HistoryProvider;
+
+type GeminiRequest = { contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> };
+
+function recordingGeminiModel(responses: GeminiGenerateResponseLike[]) {
+  const requests: GeminiRequest[] = [];
+  const model = new GeminiToolCallingModel({
+    model: DEFAULT_GEMINI_MODEL,
+    clientFactory: async () => ({
+      models: {
+        generateContent: async (params) => {
+          requests.push(structuredClone(params) as GeminiRequest);
+          return responses.shift()!;
+        },
+      },
+    }),
+    partFactory: { createPartFromFunctionCall, createPartFromFunctionResponse },
+  });
+  return { model, requests };
+}
+
+function responseIds(entry: GeminiRequest["contents"][number] | undefined): unknown[] | undefined {
+  return entry?.parts.map((part) => (part.functionResponse as { id?: string }).id);
+}
+
+async function runTurn(model: GeminiToolCallingModel, tools: GeminiTestTools): Promise<void> {
+  await new GeminiAdapter({ model }).onMessage(makeMessage("hello"), tools, history, null, null, {
+    isSessionBootstrap: true,
+    roomId: "room-1",
+  });
+}
 
 describe("GeminiAdapter", () => {
   it("uses official SDK-style generateContent flow with function call loop", async () => {
@@ -154,26 +185,10 @@ describe("GeminiAdapter", () => {
     const note = { text: "Checking both pages.", thoughtSignature: "sig-text" };
     const signed = geminiCall("band_lookup_peers", { page: 1 }, { id: "c1", thoughtSignature: "sig-c1" });
     const unsigned = geminiCall("band_lookup_peers", { page: 2 });
-    const requests: Array<{ contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> }> = [];
-    const responses = [geminiResponse(note, signed, unsigned), geminiResponse({ text: "done" })];
-    const model = new GeminiToolCallingModel({
-      model: DEFAULT_GEMINI_MODEL,
-      clientFactory: async () => ({
-        models: {
-          generateContent: async (params) => {
-            requests.push(structuredClone(params) as (typeof requests)[number]);
-            return responses.shift()!;
-          },
-        },
-      }),
-      partFactory: { createPartFromFunctionCall, createPartFromFunctionResponse },
-    });
+    const { model, requests } = recordingGeminiModel([geminiResponse(note, signed, unsigned), geminiResponse({ text: "done" })]);
     const tools = new GeminiTestTools();
 
-    await new GeminiAdapter({ model }).onMessage(makeMessage("hello"), tools, history, null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-1",
-    });
+    await runTurn(model, tools);
 
     expect(tools.executed.map(({ input }) => input)).toEqual([{ page: 1 }, { page: 2 }]);
     expect(tools.messages).toEqual(["done"]);
@@ -184,8 +199,44 @@ describe("GeminiAdapter", () => {
       signed,
       { functionCall: { name: "band_lookup_peers", args: { page: 2 }, id: "gemini_call_2" } },
     ]);
-    const responseIds = contents.at(-1)?.parts.map((part) => (part.functionResponse as { id?: string }).id);
-    expect(responseIds).toEqual(["c1", "gemini_call_2"]);
+    expect(responseIds(contents.at(-1))).toEqual(["c1", "gemini_call_2"]);
+  });
+
+  it("replays each tool round with its own model turn and signature", async () => {
+    const first = geminiCall("band_lookup_peers", { page: 1 }, { id: "c1", thoughtSignature: "sig-1" });
+    const second = geminiCall("band_lookup_peers", { page: 2 }, { id: "c2", thoughtSignature: "sig-2" });
+    const { model, requests } = recordingGeminiModel([
+      geminiResponse(first),
+      geminiResponse(second),
+      geminiResponse({ text: "done" }),
+    ]);
+    const tools = new GeminiTestTools();
+
+    await runTurn(model, tools);
+
+    expect(tools.messages).toEqual(["done"]);
+    expect(requests).toHaveLength(3);
+    const [firstCall, firstResult, secondCall, secondResult] = requests[2]?.contents.slice(-4) ?? [];
+    expect(firstCall).toEqual({ role: "model", parts: [first] });
+    expect(responseIds(firstResult)).toEqual(["c1"]);
+    expect(secondCall).toEqual({ role: "model", parts: [second] });
+    expect(responseIds(secondResult)).toEqual(["c2"]);
+  });
+
+  it("leaves a nameless function call out of the replay and gives it no response", async () => {
+    const named = geminiCall("band_lookup_peers", { page: 1 }, { id: "c1" });
+    const { model, requests } = recordingGeminiModel([
+      geminiResponse({ functionCall: { args: { page: 9 } } }, named),
+      geminiResponse({ text: "done" }),
+    ]);
+    const tools = new GeminiTestTools();
+
+    await runTurn(model, tools);
+
+    expect(tools.executed).toEqual([{ name: "band_lookup_peers", input: { page: 1 } }]);
+    const contents = requests[1]?.contents ?? [];
+    expect(contents.find(({ role }) => role === "model")?.parts).toEqual([named]);
+    expect(responseIds(contents.at(-1))).toEqual(["c1"]);
   });
 
   it("still reads calls from a custom client that returns only functionCalls", async () => {
