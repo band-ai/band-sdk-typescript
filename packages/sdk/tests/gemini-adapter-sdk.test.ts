@@ -149,12 +149,13 @@ describe("GeminiAdapter", () => {
     ).toBe(true);
   });
 
-  it("replays each function-call part with its thoughtSignature on the next request", async () => {
-    // Parallel calls: Gemini signs only the first part, and the replay must keep both parts as returned.
+  it("replays the model turn as received, signatures included, with each call's id matching its response", async () => {
+    // Gemini signs only the first of parallel calls; a text part may carry a signature too, and ids may be absent.
+    const note = { text: "Checking both pages.", thoughtSignature: "sig-text" };
     const signed = geminiCall("band_lookup_peers", { page: 1 }, { id: "c1", thoughtSignature: "sig-c1" });
-    const unsigned = geminiCall("band_lookup_peers", { page: 2 }, { id: "c2" });
-    const requests: Array<{ contents: Array<{ role: string; parts: unknown[] }> }> = [];
-    const responses = [geminiResponse(signed, unsigned), geminiResponse({ text: "done" })];
+    const unsigned = geminiCall("band_lookup_peers", { page: 2 });
+    const requests: Array<{ contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> }> = [];
+    const responses = [geminiResponse(note, signed, unsigned), geminiResponse({ text: "done" })];
     const model = new GeminiToolCallingModel({
       model: DEFAULT_GEMINI_MODEL,
       clientFactory: async () => ({
@@ -176,8 +177,36 @@ describe("GeminiAdapter", () => {
 
     expect(tools.executed.map(({ input }) => input)).toEqual([{ page: 1 }, { page: 2 }]);
     expect(tools.messages).toEqual(["done"]);
-    const modelTurn = requests[1]?.contents.find(({ role }) => role === "model");
-    expect(modelTurn?.parts).toEqual([signed, unsigned]);
+    const contents = requests[1]?.contents ?? [];
+    const modelTurn = contents.find(({ role }) => role === "model");
+    expect(modelTurn?.parts).toEqual([
+      note,
+      signed,
+      { functionCall: { name: "band_lookup_peers", args: { page: 2 }, id: "gemini_call_2" } },
+    ]);
+    const responseIds = contents.at(-1)?.parts.map((part) => (part.functionResponse as { id?: string }).id);
+    expect(responseIds).toEqual(["c1", "gemini_call_2"]);
+  });
+
+  it("still reads calls from a custom client that returns only functionCalls", async () => {
+    const responses = [
+      { functionCalls: [{ id: "c1", name: "band_lookup_peers", args: { page: 1 } }] },
+      { text: "done" },
+    ];
+    const model = new GeminiToolCallingModel({
+      model: DEFAULT_GEMINI_MODEL,
+      clientFactory: async () => ({ models: { generateContent: async () => responses.shift()! } }),
+      partFactory: { createPartFromFunctionCall, createPartFromFunctionResponse },
+    });
+    const tools = new GeminiTestTools();
+
+    await new GeminiAdapter({ model }).onMessage(makeMessage("hello"), tools, history, null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-1",
+    });
+
+    expect(tools.executed).toEqual([{ name: "band_lookup_peers", input: { page: 1 } }]);
+    expect(tools.messages).toEqual(["done"]);
   });
 
   it("routes a provider failure through sendFailure with provider: 'gemini', then fails the turn", async () => {

@@ -45,9 +45,16 @@ interface GeminiFunctionCallPart {
   };
 }
 
-interface GeminiGenerateResponseLike {
+interface GeminiModelTurn {
+  role: "model";
+  parts: unknown[];
+}
+
+export interface GeminiGenerateResponseLike {
   text?: string;
   candidates?: Array<{ content?: { parts?: unknown[] } }>;
+  /** Read only when `candidates` is absent, as from a custom factory; it carries no thought signatures. */
+  functionCalls?: Array<GeminiFunctionCallPart["functionCall"]>;
 }
 
 interface GeminiClientLike {
@@ -138,7 +145,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     return {
       text: (response.text ?? "").trim() || undefined,
-      toolCalls: this.toToolCalls(response.candidates?.[0]?.content?.parts),
+      toolCalls: this.toToolCalls(responseParts(response)),
     };
   }
 
@@ -180,12 +187,11 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     }
 
     for (const round of rounds) {
-      merged.push({
+      // Gemini 3 rejects a replayed call without its original thoughtSignature, so the turn goes back as received.
+      const original = round.toolCalls[0]?.providerData;
+      merged.push(isGeminiModelTurn(original) ? original : {
         role: "model",
-        // Gemini 3 rejects a replayed call without its original part's thoughtSignature.
-        parts: round.toolCalls.map((call) =>
-          isFunctionCallPart(call.providerData) ? call.providerData : partFromCall(call.name, call.input),
-        ),
+        parts: round.toolCalls.map((call) => partFromCall(call.name, call.input)),
       });
 
       merged.push({
@@ -221,26 +227,29 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     return { role: "user", parts: [{ text: content }] };
   }
 
+  /** Every call carries the model turn it came from, ids filled in, so a replay returns each thought signature. */
   private toToolCalls(parts: unknown[] | undefined): ToolCall[] | undefined {
     const calls: ToolCall[] = [];
-    for (const [i, part] of (parts ?? []).filter(isFunctionCallPart).entries()) {
-      const call = part.functionCall;
-      const name = typeof call.name === "string" ? call.name : null;
-      if (!name) {
+    const modelTurn: GeminiModelTurn = { role: "model", parts: [] };
+    for (const part of parts ?? []) {
+      if (!isFunctionCallPart(part)) {
+        modelTurn.parts.push(part);
         continue;
       }
 
-      const id = typeof call.id === "string" && call.id
-        ? call.id
-        : `gemini_call_${i + 1}`;
+      const { id: givenId, name, args } = part.functionCall;
+      // A nameless call gets no result, so it is left out of the replay too.
+      if (typeof name !== "string" || !name) {
+        continue;
+      }
 
+      const id = typeof givenId === "string" && givenId ? givenId : `gemini_call_${calls.length + 1}`;
+      modelTurn.parts.push({ ...part, functionCall: { ...part.functionCall, id } });
       calls.push({
         id,
         name,
-        input: call.args && typeof call.args === "object" && !Array.isArray(call.args)
-          ? call.args
-          : {},
-        providerData: part,
+        input: args && typeof args === "object" && !Array.isArray(args) ? args : {},
+        providerData: modelTurn,
       });
     }
 
@@ -258,6 +267,17 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     return this.partFactoryLoader.get();
   }
+}
+
+function responseParts(response: GeminiGenerateResponseLike): unknown[] | undefined {
+  return response.candidates?.[0]?.content?.parts
+    ?? response.functionCalls?.map((functionCall) => ({ functionCall }));
+}
+
+function isGeminiModelTurn(value: unknown): value is GeminiModelTurn {
+  return Boolean(value) && typeof value === "object"
+    && (value as { role?: unknown }).role === "model"
+    && Array.isArray((value as { parts?: unknown }).parts);
 }
 
 function isFunctionCallPart(value: unknown): value is GeminiFunctionCallPart {

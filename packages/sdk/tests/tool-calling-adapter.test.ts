@@ -14,7 +14,7 @@ import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
 import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
-import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce, FakeTools as RecordingTools } from "./testUtils";
+import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
 import { trackTurn, Turn } from "../src/core/turn";
 import type {
@@ -781,9 +781,22 @@ describe("ToolCallingAdapter", () => {
     const model: ToolCallingModel = {
       complete: async () => ({ toolCalls: [{ id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS }] }),
     };
-    const tools = new RecordingTools();
+    const tools = new FakeTools();
 
     await new OpenAIAdapter({ model }).onEvent(turnInput(tools));
+
+    expect(failureEvents(tools)).toEqual([]);
+    expect(tools.messages).toEqual([]);
+  });
+
+  it("ends the turn once a custom tool declared as a decline lands", async () => {
+    const skip: CustomToolDef = { name: "skip_turn", schema: z.object({}), effect: "decline", handler: () => ({ skipped: true }) };
+    const model: ToolCallingModel = {
+      complete: async () => ({ toolCalls: [{ id: "skip", name: skip.name, input: {} }] }),
+    };
+    const tools = new FakeTools();
+
+    await new OpenAIAdapter({ model, customTools: [skip] }).onEvent(turnInput(tools));
 
     expect(failureEvents(tools)).toEqual([]);
     expect(tools.messages).toEqual([]);
@@ -805,7 +818,7 @@ describe("ToolCallingAdapter", () => {
       },
     };
 
-    await new OpenAIAdapter({ model, customTools: [lookup] }).onEvent(turnInput(new RecordingTools()));
+    await new OpenAIAdapter({ model, customTools: [lookup] }).onEvent(turnInput(new FakeTools()));
 
     expect(requests).toHaveLength(2);
     expect(requests[1]?.toolRounds?.[0]?.toolResults).toContainEqual(
@@ -1048,7 +1061,8 @@ describe("ToolCallingAdapter", () => {
 function scriptedModel(script: TurnScript): ToolCallingModel {
   const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ id: "call-1", name, input }] });
   const rounds: Record<TurnScript, ToolCallingResponse[]> = {
-    decline: [call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), { text: CLOSING_TEXT }],
+    // The closing text rides on the declining response: the loop ends there, and the relay must still drop it.
+    decline: [{ ...call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), text: CLOSING_TEXT }],
     toolReply: [call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), { text: CLOSING_TEXT }],
     act: [call(ACT_TOOL, ACT_ARGS), {}],
     finalText: [{ text: CLOSING_TEXT }],
