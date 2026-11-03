@@ -6,6 +6,7 @@ import { GeminiToolCallingModel } from "../../../src/adapters/gemini/model";
 import type { ToolCallingModelRequest } from "../../../src/adapters/tool-calling";
 import { ADAPTER } from "./adapters";
 import { fakeSpec } from "./fakeSpec";
+import { geminiCall, geminiResponse } from "../../support/geminiResponses";
 import { runScenario, type OpenCast } from "./perAdapter";
 import type { Room } from "./rooms";
 import {
@@ -40,7 +41,7 @@ describe("provider diagnostics", () => {
     vi.stubEnv("BAND_BASELINE_PROVIDER_TRACE", "1");
     const secret = "a-provider-key-without-a-known-prefix";
     const nativeAnthropic = { content: [{ type: "tool_use", id: "store", name: "band_store_memory", input: { scope: "subject" } }] };
-    const nativeGemini = { functionCalls: [{ id: "send", name: "band_send_message", args: { content: "pineapple" } }] };
+    const nativeGemini = geminiResponse(geminiCall("band_send_message", { content: "pineapple" }, { id: "send" }));
     await runWithProviderTrace(SEND_SCENARIO, async () => {
       const anthropic = new AnthropicToolCallingModel({
         model: "anthropic-model", apiKey: secret,

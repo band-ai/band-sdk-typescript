@@ -37,13 +37,17 @@ function mergeConsecutiveGeminiContents(
   return merged;
 }
 
-interface GeminiGenerateResponseLike {
-  text?: string;
-  functionCalls?: Array<{
+interface GeminiFunctionCallPart {
+  functionCall: {
     id?: string;
     name?: string;
     args?: Record<string, unknown>;
-  }>;
+  };
+}
+
+interface GeminiGenerateResponseLike {
+  text?: string;
+  candidates?: Array<{ content?: { parts?: unknown[] } }>;
 }
 
 interface GeminiClientLike {
@@ -134,7 +138,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     return {
       text: (response.text ?? "").trim() || undefined,
-      toolCalls: this.toToolCalls(response.functionCalls),
+      toolCalls: this.toToolCalls(response.candidates?.[0]?.content?.parts),
     };
   }
 
@@ -178,7 +182,10 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     for (const round of rounds) {
       merged.push({
         role: "model",
-        parts: round.toolCalls.map((call) => partFromCall(call.name, call.input)),
+        // Gemini 3 rejects a replayed call without its original part's thoughtSignature.
+        parts: round.toolCalls.map((call) =>
+          isFunctionCallPart(call.providerData) ? call.providerData : partFromCall(call.name, call.input),
+        ),
       });
 
       merged.push({
@@ -214,20 +221,10 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     return { role: "user", parts: [{ text: content }] };
   }
 
-  private toToolCalls(
-    functionCalls: GeminiGenerateResponseLike["functionCalls"],
-  ): ToolCall[] | undefined {
-    if (!Array.isArray(functionCalls) || functionCalls.length === 0) {
-      return undefined;
-    }
-
+  private toToolCalls(parts: unknown[] | undefined): ToolCall[] | undefined {
     const calls: ToolCall[] = [];
-    for (let i = 0; i < functionCalls.length; i += 1) {
-      const call = functionCalls[i];
-      if (!call || typeof call !== "object") {
-        continue;
-      }
-
+    for (const [i, part] of (parts ?? []).filter(isFunctionCallPart).entries()) {
+      const call = part.functionCall;
       const name = typeof call.name === "string" ? call.name : null;
       if (!name) {
         continue;
@@ -243,6 +240,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
         input: call.args && typeof call.args === "object" && !Array.isArray(call.args)
           ? call.args
           : {},
+        providerData: part,
       });
     }
 
@@ -260,6 +258,14 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     return this.partFactoryLoader.get();
   }
+}
+
+function isFunctionCallPart(value: unknown): value is GeminiFunctionCallPart {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const call = (value as { functionCall?: unknown }).functionCall;
+  return Boolean(call) && typeof call === "object";
 }
 
 function asFunctionResponsePayload(result: ToolResult): Record<string, unknown> {

@@ -1,20 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { createPartFromFunctionCall, createPartFromFunctionResponse } from "@google/genai";
+import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
 import { GeminiToolCallingModel, DEFAULT_GEMINI_MODEL } from "../src/adapters";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
+import { geminiCall, geminiResponse } from "./support/geminiResponses";
 import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
-
-// An omitted model still loads part factories from the optional peer before generateContent.
-vi.mock("@google/genai", () => ({
-  createPartFromFunctionCall: (name: string, args: Record<string, unknown>) => ({
-    functionCall: { name, args },
-  }),
-  createPartFromFunctionResponse: (id: string, name: string, response: Record<string, unknown>) => ({
-    functionResponse: { id, name, response },
-  }),
-}));
 
 class GeminiTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -64,18 +56,8 @@ describe("GeminiAdapter", () => {
   it("uses official SDK-style generateContent flow with function call loop", async () => {
     const requests: Array<Record<string, unknown>> = [];
     const responses = [
-      {
-        functionCalls: [
-          {
-            id: "gcall_1",
-            name: "band_lookup_peers",
-            args: { page: 1 },
-          },
-        ],
-      },
-      {
-        text: "Gemini final response",
-      },
+      geminiResponse(geminiCall("band_lookup_peers", { page: 1 }, { id: "gcall_1" })),
+      geminiResponse({ text: "Gemini final response" }),
     ];
 
     const model = new GeminiToolCallingModel({
@@ -165,6 +147,37 @@ describe("GeminiAdapter", () => {
           JSON.stringify(entry.parts).includes("\"functionResponse\""),
       ),
     ).toBe(true);
+  });
+
+  it("replays each function-call part with its thoughtSignature on the next request", async () => {
+    // Parallel calls: Gemini signs only the first part, and the replay must keep both parts as returned.
+    const signed = geminiCall("band_lookup_peers", { page: 1 }, { id: "c1", thoughtSignature: "sig-c1" });
+    const unsigned = geminiCall("band_lookup_peers", { page: 2 }, { id: "c2" });
+    const requests: Array<{ contents: Array<{ role: string; parts: unknown[] }> }> = [];
+    const responses = [geminiResponse(signed, unsigned), geminiResponse({ text: "done" })];
+    const model = new GeminiToolCallingModel({
+      model: DEFAULT_GEMINI_MODEL,
+      clientFactory: async () => ({
+        models: {
+          generateContent: async (params) => {
+            requests.push(structuredClone(params) as (typeof requests)[number]);
+            return responses.shift()!;
+          },
+        },
+      }),
+      partFactory: { createPartFromFunctionCall, createPartFromFunctionResponse },
+    });
+    const tools = new GeminiTestTools();
+
+    await new GeminiAdapter({ model }).onMessage(makeMessage("hello"), tools, history, null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-1",
+    });
+
+    expect(tools.executed.map(({ input }) => input)).toEqual([{ page: 1 }, { page: 2 }]);
+    expect(tools.messages).toEqual(["done"]);
+    const modelTurn = requests[1]?.contents.find(({ role }) => role === "model");
+    expect(modelTurn?.parts).toEqual([signed, unsigned]);
   });
 
   it("routes a provider failure through sendFailure with provider: 'gemini', then fails the turn", async () => {

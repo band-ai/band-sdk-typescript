@@ -5,6 +5,8 @@ export interface ToolCall {
   name: string;
   input: MetadataMap;
   inputParseError?: string;
+  /** Opaque state the producing model needs when it replays this call in a later round; others pass it through untouched. */
+  providerData?: unknown;
 }
 
 export interface ToolResult {

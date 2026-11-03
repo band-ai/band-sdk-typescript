@@ -5,6 +5,7 @@ import { GeminiAdapter } from "../src/adapters/gemini/GeminiAdapter";
 import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import type { HistoryProvider } from "../src/runtime";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
+import { geminiCall, geminiResponse } from "./support/geminiResponses";
 import { FakeTools, makeMessage } from "./testUtils";
 
 const POLICY = "Keep confidential information private. Reply briefly.";
@@ -28,21 +29,20 @@ function identity(request: Record<string, unknown>) {
 describe.each(["anthropic", "gemini"] as const)("%s current recipient context", (provider) => {
   it("transmits transient identity on every round without changing policy or remembering an earlier recipient", async () => {
     const requests: Array<Record<string, unknown>> = [];
-    const capture = async (request: Record<string, unknown>) => {
+    const capture = <T>(toolRound: T, final: T) => async (request: Record<string, unknown>) => {
       requests.push(request);
-      if (provider === "anthropic") {
-        return requests.length === 1
-          ? { content: [{ type: "tool_use", id: "lookup", name: "band_get_participants", input: {} }] }
-          : { content: [{ type: "text", text: "ok" }] };
-      }
-      return requests.length === 1
-        ? { functionCalls: [{ id: "lookup", name: "band_get_participants", args: {} }] }
-        : { text: "ok" };
+      return requests.length === 1 ? toolRound : final;
     };
     const common = { systemPrompt: POLICY, includeMemoryTools: true };
     const adapter = provider === "anthropic"
-      ? new AnthropicAdapter({ ...common, clientFactory: async () => ({ messages: { create: capture } }) })
-      : new GeminiAdapter({ ...common, clientFactory: async () => ({ models: { generateContent: capture } }) });
+      ? new AnthropicAdapter({ ...common, clientFactory: async () => ({ messages: { create: capture(
+        { content: [{ type: "tool_use", id: "lookup", name: "band_get_participants", input: {} }] },
+        { content: [{ type: "text", text: "ok" }] },
+      ) } }) })
+      : new GeminiAdapter({ ...common, clientFactory: async () => ({ models: { generateContent: capture(
+        geminiResponse(geminiCall("band_get_participants", {}, { id: "lookup" })),
+        geminiResponse({ text: "ok" }),
+      ) } }) });
     await adapter.onStarted("helper", "personal secretary");
     const jane = { ...makeMessage("remember my preference"), senderName: "Jane", senderId: "jane-id", senderType: "User" };
     const bob = { ...makeMessage("please reply to me"), id: "bob-message", senderName: "Bob", senderId: "bob-id", senderType: "Agent" };
