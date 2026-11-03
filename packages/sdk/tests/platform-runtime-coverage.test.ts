@@ -7,9 +7,9 @@ import type { StreamingTransport } from "../src/platform/streaming/transport";
 import type { ContactEvent } from "../src/platform/events";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { ContactEventHandler } from "../src/runtime/ContactEventHandler";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, NeverFailingTransport } from "./testUtils";
 
-class MinimalTransport implements StreamingTransport {
+class MinimalTransport extends NeverFailingTransport implements StreamingTransport {
   public async connect() {}
   public async disconnect() {}
   public async join() {}

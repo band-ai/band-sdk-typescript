@@ -1,5 +1,6 @@
 import { ValidationError } from "../../core/errors";
-import { MAX_SETTIMEOUT_DELAY_MS, assertWithinSetTimeoutBound } from "./withTimeout";
+import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
+import { assertWithinSetTimeoutBound } from "./withTimeout";
 
 /** Validates a `turnTimeoutMs` option: a positive number, or `Infinity` for no limit. */
 export function assertTurnTimeoutMs(value: number): void {

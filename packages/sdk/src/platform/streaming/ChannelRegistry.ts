@@ -274,13 +274,21 @@ export class ChannelRegistry {
    * leave `doJoin()`'s awaiter hanging on a Phoenix reply that a `leave()`
    * just made unroutable.
    */
-  private abandonChannel(topic: string, pending: PendingJoin): void {
+  private abandonChannel(topic: string, pending: PendingJoin, error: Error = supersededJoinError(topic)): void {
     for (const [event, ref] of pending.refs) {
       pending.channel.off(event, ref);
     }
     pending.channel.leave();
     removeSocketChannel(this.socket, pending.channel);
-    pending.reject(supersededJoinError(topic));
+    pending.reject(error);
+  }
+
+  /** Rejects every join still in flight with `error`, for a socket nothing will reconnect. */
+  public failPendingJoins(error: Error): void {
+    for (const [topic, pending] of this.pendingChannels) {
+      this.abandonChannel(topic, pending, error);
+    }
+    this.pendingChannels.clear();
   }
 
   public async leave(topic: string): Promise<void> {

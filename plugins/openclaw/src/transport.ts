@@ -134,7 +134,7 @@ export function platformEventToInboundContext(
 /** Minimal structural views of the SDK objects, so the lifecycle is testable. */
 interface LinkLike {
   agentId: string;
-  connect: () => Promise<unknown>;
+  connect: (signal?: AbortSignal) => Promise<unknown>;
   disconnect: () => Promise<unknown>;
   isConnected: () => boolean;
   rest: {
@@ -306,7 +306,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
 
       const conn = resolveConnectionConfig(ctx.account);
       const link = createLink(conn);
-      await link.connect();
+      await link.connect(ctx.abortSignal);
 
       const me = await link.rest.getAgentMe();
       const selfAgentId = me.id ?? link.agentId;

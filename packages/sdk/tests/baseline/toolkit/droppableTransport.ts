@@ -1,8 +1,9 @@
 /**
  * An agent's real Phoenix transport whose live socket a scenario can drop
- * mid-session, as a network failure would: `terminate()` destroys the socket
- * with no close handshake, so the transport's own reconnect logic runs rather
- * than a clean disconnect's. Built only from the transport's constructor
+ * mid-session, either as a network failure would (`terminate()`, no close
+ * handshake) or with a normal close frame (1000), which earlier SDKs wrongly
+ * treated as final. Either way the transport's own reconnect logic runs
+ * rather than a clean disconnect's. Built only from the transport's constructor
  * options and its `onReconnected` hook, and handed to the agent through
  * `RunOptions.transport`; no private state is touched.
  */
@@ -15,10 +16,16 @@ import type { AgentIdentity } from "./agents";
 import { liveRun } from "./liveRun";
 import { waitFor } from "./waitFor";
 
-/** The `ws` socket the Node transport opens; `terminate()` is its forcible close. */
+/** The `ws` socket the Node transport opens; `terminate()` is its forcible close, `close()` its handshake. */
 interface NodeSocket {
   terminate(): void;
+  close(code: number): void;
 }
+
+/** How a scenario drops the live socket. */
+export type SocketDrop = "sever" | "normal_close";
+
+const NORMAL_CLOSURE = 1000;
 
 type SocketConstructor = new (address: string | URL, protocols?: string | string[]) => NodeSocket;
 
@@ -52,13 +59,17 @@ export class DroppableTransport {
     return new DroppableTransport(identity, env.wsUrl ?? DEFAULT_WS_URL);
   }
 
-  /** Drops the live socket without a close handshake, and returns the reconnect the transport settles after it. */
-  public async dropAndReconnect(timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<ReconnectSnapshot> {
+  /** Drops the live socket, and returns the reconnect the transport settles after it. */
+  public async dropAndReconnect(drop: SocketDrop = "sever", timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<ReconnectSnapshot> {
     if (!this.live) {
       throw new Error("the transport has no socket to drop; start the agent first");
     }
     const settledBefore = this.reconnects.entries.length;
-    this.live.terminate();
+    if (drop === "sever") {
+      this.live.terminate();
+    } else {
+      this.live.close(NORMAL_CLOSURE);
+    }
     const reconnect = await waitFor(this.reconnects, () => this.reconnects.entries[settledBefore], timeoutMs);
     if (!reconnect) {
       throw new Error(`the transport did not reconnect within ${timeoutMs}ms of the drop`);

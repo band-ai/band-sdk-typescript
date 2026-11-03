@@ -23,7 +23,7 @@ describe("the connection to Band", () => {
     await using session = await ClaudeCodeSession.connect(() => ({ restApi: platform.rest }), { env: { [WS_URL_ENV]: peer.url } });
     await session.pushOf(waiting);
 
-    expect(peer.connectionUrls.map((url) => new URL(url, peer.url).searchParams.get("on_conflict"))).toEqual(["supersede"]);
+    expect(peer.connections.entries.map((url) => new URL(url, peer.url).searchParams.get("on_conflict"))).toEqual(["supersede"]);
   });
 
   it("reports a failed close handshake instead of a successful exit when Claude Code leaves", async () => {

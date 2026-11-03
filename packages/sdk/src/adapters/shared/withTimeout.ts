@@ -1,7 +1,5 @@
+import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
 import { ValidationError } from "../../core/errors";
-
-/** The longest delay `setTimeout` honours; it silently truncates anything past this to ~1ms. */
-export const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 
 /**
  * Rejects a config value past `setTimeout`'s bound rather than let it fire

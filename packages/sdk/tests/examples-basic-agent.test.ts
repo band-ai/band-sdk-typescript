@@ -6,9 +6,9 @@ import type {
   StreamingTransport,
   TopicHandlers,
 } from "../src/platform/streaming/transport";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, NeverFailingTransport } from "./testUtils";
 
-class NoopTransport implements StreamingTransport {
+class NoopTransport extends NeverFailingTransport implements StreamingTransport {
   public async connect(): Promise<void> {}
   public async disconnect(): Promise<void> {}
   public async join(_topic: string, _handlers: TopicHandlers): Promise<void> {}

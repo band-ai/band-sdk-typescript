@@ -21,8 +21,13 @@ declare module "phoenix" {
   }
 
   export class Socket {
-    conn: WebSocket | null;
+    readonly conn: WebSocket | null;
     constructor(url: string, options?: SocketOptions);
+    // Private in phoenix; re-verify against the pinned version on every phoenix bump.
+    // Every connect attempt passes through transportConnect().
+    protected transportConnect(): void;
+    // Runs before phoenix asks reconnectAfterMs for the next delay.
+    protected onConnClose(event?: { code?: number; reason?: string }): void;
     channel(topic: string, params?: Record<string, unknown>): Channel;
     connect(): void;
     disconnect(callback?: () => void, code?: number, reason?: string): void;

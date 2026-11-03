@@ -41,8 +41,6 @@ const VALID_WRITEBACK_MODES: ReadonlySet<WritebackMode> = new Set(["final_only",
 const DISPATCH_RETRY_LIMIT = 2;
 const DISPATCH_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_ROOM_RESET_TIMEOUT_MS = 5_000;
-const EMBEDDED_AGENT_START_RETRY_LIMIT = 4;
-const EMBEDDED_AGENT_START_RETRY_BASE_DELAY_MS = 2_000;
 const DEFAULT_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS = 2_000;
 const DEFAULT_BAND_BRIDGE_RETRY_LIMIT = 4;
 const DEFAULT_BAND_BRIDGE_RETRY_BASE_DELAY_MS = 2_000;
@@ -548,37 +546,6 @@ export function createRateLimitedRestApi(input: {
   };
 }
 
-function isRetryableEmbeddedStartupError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  return /\b429\b/.test(error.message)
-    || /Timed out waiting for Phoenix socket connection/.test(error.message);
-}
-
-export async function startEmbeddedAgentWithRetry(agent: Agent, logger: Logger): Promise<void> {
-  for (let attempt = 1; attempt <= EMBEDDED_AGENT_START_RETRY_LIMIT; attempt += 1) {
-    try {
-      await agent.start();
-      return;
-    } catch (error) {
-      if (!isRetryableEmbeddedStartupError(error) || attempt === EMBEDDED_AGENT_START_RETRY_LIMIT) {
-        throw error;
-      }
-
-      const delayMs = EMBEDDED_AGENT_START_RETRY_BASE_DELAY_MS * attempt;
-      logger.warn("linear_thenvoi_bridge.embedded_agent_start_retrying", {
-        attempt,
-        maxAttempts: EMBEDDED_AGENT_START_RETRY_LIMIT,
-        delayMs,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await sleep(delayMs);
-    }
-  }
-}
-
 async function runLinearBandBridgeServer(): Promise<void> {
   const logger = new ConsoleLogger();
   const port = Number(process.env.PORT ?? "8787");
@@ -624,7 +591,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
       linearAccessToken,
       stateDbPath,
     });
-    embeddedAgentStartPromise = startEmbeddedAgentWithRetry(embeddedAgent, logger);
+    embeddedAgentStartPromise = embeddedAgent.start();
     void embeddedAgentStartPromise.catch(async (error) => {
       logger.warn("linear_thenvoi_bridge.embedded_agent_background_start_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -641,7 +608,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
         }
 
         if (!embeddedAgentStartPromise) {
-          embeddedAgentStartPromise = startEmbeddedAgentWithRetry(embeddedAgent, logger);
+          embeddedAgentStartPromise = embeddedAgent.start();
         }
         try {
           await embeddedAgentStartPromise;

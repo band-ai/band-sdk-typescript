@@ -60,6 +60,8 @@ export class AgentRuntime {
   private readonly stopGate = new SingleFlight<boolean>();
   /** Set while a stop waits on a start, so rooms joined meanwhile stop on its terms too. */
   private stopMidStart: { readonly timeoutMs?: number } | null = null;
+  /** Cancels the in-flight start's link connect, which can retry for minutes during an outage. */
+  private startAbort: AbortController | null = null;
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -159,11 +161,16 @@ export class AgentRuntime {
   }
 
   private async runStart(): Promise<void> {
+    const abort = new AbortController();
+    // Set before the first await, so any stop that sees this start can abort it.
+    this.startAbort = abort;
     try {
-      await this.presence.start();
+      await this.presence.start(abort.signal);
     } catch (error) {
       await this.finishFailedStart();
       throw error;
+    } finally {
+      this.startAbort = null;
     }
 
     if (this.lifecycle.is("starting")) {
@@ -209,12 +216,14 @@ export class AgentRuntime {
     // A stop landing mid-start must not report a teardown of resources that
     // start() has not created yet, so wait for it to settle first — which is
     // also what `RoomPresence` does internally, since its own start/stop pair
-    // is serialised. Unlike `PlatformRuntime` there is no third-party adapter
-    // here whose startup could park forever, so waiting cannot strand the
-    // caller. Nothing is awaited when no start is in flight, keeping the
-    // transition below observable in the caller's own tick.
+    // is serialised. The link connect, which retries through an outage, is
+    // aborted first; a channel join the start already sent can still hold the
+    // stop until the platform answers it or the session ends.
+    // Nothing is awaited when no start is in flight, keeping the transition
+    // below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
+      this.startAbort?.abort();
       // Rooms the start has joined stop taking turns now, not after the joins still to come.
       this.stopMidStart = { timeoutMs };
       for (const execution of this.executions.values()) {

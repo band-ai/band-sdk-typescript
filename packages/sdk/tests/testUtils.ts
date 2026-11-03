@@ -6,13 +6,14 @@ import { ProviderTurnFailedError } from "../src/core/providerFailure";
 import { Turn, TURN_FAILURE_PROVIDER } from "../src/core/turn";
 import { expect, onTestFinished, vi, type Mock } from "vitest";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
-import { missingReplyMessage, ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
+import { missingReplyMessage, ParticipantRoster, SessionPolicy, type AgentFailure, type SessionPolicyConfig } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { ToolCallingModel } from "../src/adapters";
 import type { AgentToolsProtocol, Logger } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
+import { RuntimeStateError } from "../src/core/errors";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -28,9 +29,28 @@ import type {
   ReconnectObserver,
   ReconnectSnapshot,
   StreamingTransport,
+  TerminalObserver,
   TopicHandlers,
   TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
+import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
+
+type SessionOutcome = Pick<StreamingTransport, "getDisconnectReason" | "getTerminalError" | "onTerminal">;
+
+/** The session-outcome part of `StreamingTransport` for a double whose session never fails. */
+export abstract class NeverFailingTransport implements SessionOutcome {
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return null;
+  }
+
+  public getTerminalError(): WebSocketDisconnectError | null {
+    return null;
+  }
+
+  public onTerminal(_observer: TerminalObserver): () => void {
+    return () => undefined;
+  }
+}
 
 interface CapturedToolEvent {
   content: string;
@@ -293,6 +313,10 @@ export class FakeTransport implements StreamingTransport {
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
   public readonly left = new RecordLog<string>();
   public disconnectCount = 0;
+  /** What `getDisconnectReason()` reports; a test sets it as a retried failure would. */
+  public disconnectReason: WebSocketDisconnectReason | null = null;
+  private terminalError: WebSocketDisconnectError | null = null;
+  private readonly terminalObservers = new Set<TerminalObserver>();
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
   private readonly joinOutcomes = new Map<string, JoinLeaveOutcome>();
@@ -303,12 +327,54 @@ export class FakeTransport implements StreamingTransport {
   private releaseConnectGate: (() => void) | null = null;
   private connectError: unknown = null;
 
-  public async connect(): Promise<void> {
-    await this.connectGate;
+  /** As the transport contract asks, an abort of `signal` rejects a connect still waiting. */
+  public async connect(signal?: AbortSignal): Promise<void> {
+    // Like the real transport, a session that ended for good never connects again.
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
+    const aborted = new Promise<never>((_, reject) => {
+      const onAbort = () => reject(new RuntimeStateError("Transport connect was aborted"));
+      if (signal?.aborted) {
+        onAbort();
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    aborted.catch(() => undefined);
+    await Promise.race([this.connectGate, aborted]);
     if (this.connectError) {
+      // As the contract asks, a terminal connect failure ends the session before connect rejects.
+      if (this.connectError instanceof WebSocketDisconnectError && !this.connectError.reason.retryable) {
+        this.terminate(this.connectError);
+      }
       throw this.connectError;
     }
     this.connected = true;
+  }
+
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return this.disconnectReason;
+  }
+
+  public getTerminalError(): WebSocketDisconnectError | null {
+    return this.terminalError;
+  }
+
+  public onTerminal(observer: TerminalObserver): () => void {
+    this.terminalObservers.add(observer);
+    return () => {
+      this.terminalObservers.delete(observer);
+    };
+  }
+
+  /** Ends the session for good, as a terminal verdict does. */
+  public terminate(error: WebSocketDisconnectError): void {
+    this.terminalError = error;
+    this.disconnectReason = error.reason;
+    this.connected = false;
+    for (const observer of [...this.terminalObservers]) {
+      observer(error);
+    }
   }
 
   /** Makes every future `connect()` call reject with `error` until cleared. */
@@ -418,11 +484,21 @@ export class FakeTransport implements StreamingTransport {
     return this.joinCalls.filter((t) => t === topic).length;
   }
 
+  /** As the contract asks: resolves on `signal`'s abort, rejects once the session ends for good. */
   public async runForever(signal?: AbortSignal): Promise<void> {
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
     if (!signal) {
       return;
     }
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    await new Promise<void>((resolve, reject) => {
+      const stopObserving = this.onTerminal(reject);
+      signal.addEventListener("abort", () => {
+        stopObserving();
+        resolve();
+      }, { once: true });
+    });
   }
 
   public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
@@ -679,4 +755,61 @@ export function hangsOnce(reply: string): { readonly model: ToolCallingModel; re
     },
   };
   return { model, hung };
+}
+
+/**
+ * A core `SessionPolicy` for real-wire transport tests: reconnects within tens
+ * of milliseconds and no rapid-disconnect floors or breaker unless overridden.
+ */
+export function fastSessionPolicy(overrides: Partial<SessionPolicyConfig> = {}): SessionPolicy {
+  return new SessionPolicy({
+    baseDelayS: 0.01,
+    factor: 1,
+    maxDelayS: 0.05,
+    stableResetS: 60,
+    rapidDisconnectUptimeS: 0,
+    rapidWindowS: 300,
+    rapidFirstMinDelayS: 0,
+    rapidSecondMinDelayS: 0,
+    rapidCooldownBaseS: 0,
+    rapidCooldownStepS: 0,
+    rapidCooldownMaxS: 0,
+    rapidThreshold: 1_000,
+    heartbeatIntervalS: 30,
+    deadThresholdS: 60,
+    ...overrides,
+  });
+}
+
+/**
+ * Fakes the clock phoenix's timers and core `Session` read, while socket IO
+ * stays real. Inside a delay window, await recorded events and advance the
+ * clock; `vi.waitFor` would advance it on every poll.
+ */
+export const FAKE_WIRE_CLOCK: Parameters<typeof vi.useFakeTimers>[0] = {
+  toFake: ["setTimeout", "clearTimeout", "performance"],
+};
+
+/**
+ * Advances `FAKE_WIRE_CLOCK` in small steps, so real socket IO gets turns
+ * between the timers phoenix chains (close polling, reconnects) instead of
+ * one long advance running them back to back.
+ */
+export async function advanceWireClock(ms: number, stepMs = 100): Promise<void> {
+  for (let elapsed = 0; elapsed < ms; elapsed += stepMs) {
+    await vi.advanceTimersByTimeAsync(Math.min(stepMs, ms - elapsed));
+    await realIoTurn();
+  }
+}
+
+/**
+ * Lets at least one real millisecond of IO run, so a loaded machine cannot
+ * spend a whole wire budget before a local round trip completes. `Date.now`
+ * and `setImmediate` are real under `FAKE_WIRE_CLOCK`.
+ */
+async function realIoTurn(): Promise<void> {
+  const start = Date.now();
+  while (Date.now() === start) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }

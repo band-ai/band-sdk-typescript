@@ -13,17 +13,39 @@ type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
 type NodeWebSocketConstructor = new (
   address: string | URL,
   protocols?: string | string[],
-  options?: { headers?: Record<string, string> },
+  options?: { headers?: Record<string, string>; handshakeTimeout?: number; closeTimeout?: number },
 ) => NodeUpgradeWebSocket;
 
-export function createNodeWebSocketFactory(headers?: Record<string, string>): typeof WebSocket {
+/**
+ * How long an upgrade may go unanswered. `ws` then closes the attempt (1006),
+ * so a hung handshake reaches core `Session` as a failure it can retry.
+ */
+export const WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/**
+ * How long a close waits for the peer's close frame. `ws` defaults to 30 s;
+ * phoenix gives up on its own close polling after about 1.5 s, and a close the
+ * transport starts itself would otherwise hold Session's next attempt.
+ */
+export const WEBSOCKET_CLOSE_TIMEOUT_MS = 2_000;
+
+export function createNodeWebSocketFactory(
+  headers?: Record<string, string>,
+  handshakeTimeoutMs = WEBSOCKET_HANDSHAKE_TIMEOUT_MS,
+): typeof WebSocket {
   const Constructor = NodeWebSocket as unknown as NodeWebSocketConstructor;
 
   class BandNodeWebSocket {
     public constructor(address: string | URL, protocols?: string | string[]) {
-      const socket = new Constructor(address, protocols, headers ? { headers } : undefined);
+      const socket = new Constructor(address, protocols, {
+        headers,
+        handshakeTimeout: handshakeTimeoutMs,
+        closeTimeout: WEBSOCKET_CLOSE_TIMEOUT_MS,
+      });
       socket.once("unexpected-response", (request, response) => {
-        void emitUpgradeError(socket, request, response);
+        // The refusal is in: stop `ws` aborting it as unanswered, and bound its body instead.
+        request.setTimeout(0);
+        void emitUpgradeError(socket, request, response, handshakeTimeoutMs);
       });
       return socket;
     }
@@ -36,8 +58,14 @@ async function emitUpgradeError(
   websocket: NodeUpgradeWebSocket,
   request: ClientRequest,
   response: IncomingMessage,
+  bodyTimeoutMs: number,
 ): Promise<void> {
-  const body = await readResponseBody(response);
+  const body = await readResponseBody(response, bodyTimeoutMs);
+  request.destroy();
+  // A local close while the body was in flight already reported this attempt.
+  if (websocket.readyState !== NodeWebSocket.CONNECTING) {
+    return;
+  }
   const error = new Error(
     `Unexpected server response: ${response.statusCode ?? "unknown"}`,
   ) as Error & {
@@ -50,15 +78,31 @@ async function emitUpgradeError(
   error.body = body;
   error.headers = response.headers;
 
-  request.destroy();
   websocket.emit("error", error);
   websocket.emit("close", 1006, Buffer.alloc(0));
 }
 
-async function readResponseBody(response: IncomingMessage): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response as AsyncIterable<Uint8Array | string>) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
+/** Only a small JSON error object is parsed from a refusal; a larger body is cut off here. */
+const MAX_REFUSAL_BODY_BYTES = 64 * 1024;
+
+/** A best-effort read bounded by `timeoutMs` and the size cap; never rejects, since the status and headers matter more. */
+function readResponseBody(response: IncomingMessage, timeoutMs: number): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    const timer = setTimeout(() => response.destroy(), timeoutMs);
+    response.on("data", (chunk: Buffer | string) => {
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      chunks.push(buffer);
+      bytes += buffer.length;
+      if (bytes > MAX_REFUSAL_BODY_BYTES) {
+        response.destroy();
+      }
+    });
+    response.on("error", () => undefined);
+    response.once("close", () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+  });
 }

@@ -1,23 +1,31 @@
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 
 import { RecordLog } from "./testUtils";
 
 type ReplyOutcome = "ok" | "error" | "pending";
+
+/** An HTTP answer to a WebSocket upgrade, as the platform or an edge proxy refuses one. */
+export interface UpgradeRefusal {
+  readonly status: number;
+  readonly headers?: Record<string, string>;
+  readonly body?: string;
+}
 type PhoenixMessage = [string | null, string | null, string, string, unknown];
 
 export interface FakePhoenixPeerOptions {
   /** As the platform does, refuse with 409 a connection asking `on_conflict=reject` while its agent already has one. */
   readonly rejectConflicts?: boolean;
+  /** How long after an eviction the platform refuses another take-over of the same agent. */
+  readonly takeoverCooldownMs?: number;
 }
 
 const CONFLICT_STATUS = 409;
 const CONFLICT_BODY = JSON.stringify({ error: { code: "connection_conflict", message: "Connection already exists for this agent." } });
-/** How long after an eviction the platform refuses another take-over of the same agent. */
 const TAKEOVER_COOLDOWN_MS = 30_000;
 /** Why the platform refuses a take-over within the cooldown. */
-export const TAKEOVER_COOLDOWN_MESSAGE = "Agent was just taken over; try again shortly.";
+const TAKEOVER_COOLDOWN_MESSAGE = "Agent was just taken over; try again shortly.";
 const TAKEN_OVER_REASON = "session.already_connected";
 const COOLDOWN_STATUS = 429;
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -46,6 +54,7 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
   on(event: "message", listener: (data: Buffer) => void): ServerSocket;
   send(data: string): void;
   terminate(): void;
+  close(code: number, reason: string): void;
   pause(): void;
   resume(): void;
 };
@@ -72,19 +81,34 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public readonly joined = new RecordLog<string>();
   public readonly left = new RecordLog<string>();
   public readonly closed = new RecordLog<string | null>();
-  /** The request URL of every connection, in order, with its query parameters. */
-  public readonly connectionUrls: string[] = [];
+  /** Every accepted connection's URL, with its query parameters; await it instead of polling for a reconnect. */
+  public readonly connections = new RecordLog<string>();
+  /** The status of every refused upgrade, in order. */
+  public readonly refusals = new RecordLog<number>();
+  private refusal: UpgradeRefusal | null = null;
   /** When each evicted agent may be taken over again, in ms since the epoch. */
   private readonly cooldownEnds = new Map<string, number>();
 
-  private constructor({ rejectConflicts = false }: FakePhoenixPeerOptions) {
+  private readonly takeoverCooldownMs: number;
+
+  private constructor({ rejectConflicts = false, takeoverCooldownMs = TAKEOVER_COOLDOWN_MS }: FakePhoenixPeerOptions) {
+    this.takeoverCooldownMs = takeoverCooldownMs;
     this.wss = new WebSocketServer({
+      // The exact address `url` dials, so a port collision fails loudly instead of reaching a foreign server.
+      host: "127.0.0.1",
       port: 0,
       verifyClient: ({ req }, done) => {
+        if (this.refusal) {
+          const { status, headers = {}, body = "" } = this.refusal;
+          this.refusals.record(status);
+          done(false, status, body, headers);
+          return;
+        }
         const params = connectionParams(req.url ?? "");
         const agentId = params.get("agent_id");
         const held = agentId !== null && [...this.sockets.values()].includes(agentId);
         if (rejectConflicts && held && params.get("on_conflict") === "reject") {
+          this.refusals.record(CONFLICT_STATUS);
           done(false, CONFLICT_STATUS, CONFLICT_BODY, JSON_HEADERS);
         } else if (held && params.get("on_conflict") === "supersede") {
           this.takeOver(agentId, done);
@@ -124,6 +148,22 @@ export class FakePhoenixPeer implements AsyncDisposable {
     this.leaveOutcomeQueues.set(topic, [...outcomes]);
   }
 
+  /** Refuses every upgrade with `refusal` until `acceptUpgrades()`. */
+  public refuseUpgrades(refusal: UpgradeRefusal): void {
+    this.refusal = refusal;
+  }
+
+  public acceptUpgrades(): void {
+    this.refusal = null;
+  }
+
+  /** Closes every open connection with a close frame carrying `code`, as the server or an edge proxy does. */
+  public closeConnections(code: number, reason = ""): void {
+    for (const socket of this.sockets.keys()) {
+      socket.close(code, reason);
+    }
+  }
+
   /** Forcibly drops every open connection, simulating a network failure. */
   public severAllConnections(): void {
     for (const socket of this.sockets.keys()) {
@@ -141,6 +181,21 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public stallReads(): void {
     for (const socket of this.sockets.keys()) {
       socket.pause();
+    }
+  }
+
+  /**
+   * Runs `work` with every connection's output corked, so the frames it sends
+   * reach the client in one TCP chunk, which `ws` then delivers synchronously.
+   */
+  public inOneChunk(work: () => void): void {
+    // `ws` keeps its net.Socket as `_socket`; corking it is the only way to batch frames.
+    const sockets = [...this.sockets.keys()].map((socket) => (socket as unknown as { _socket: Socket })._socket);
+    sockets.forEach((socket) => socket.cork());
+    try {
+      work();
+    } finally {
+      sockets.forEach((socket) => socket.uncork());
     }
   }
 
@@ -184,10 +239,6 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
   }
 
-  public get connectionCount(): number {
-    return this.connectionUrls.length;
-  }
-
   /** Once the agent has joined its control channel, hands the agent to another connection, as the platform does for a second socket by default. */
   public async supersede(agentId: string): Promise<void> {
     await this.joined.next((joinedTopic) => joinedTopic === agentControlTopic(agentId));
@@ -217,6 +268,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
     if (remainingMs > 0) {
       const retryAfter = Math.ceil(remainingMs / 1000);
       const body = JSON.stringify({ error: { code: "too_many_requests", message: TAKEOVER_COOLDOWN_MESSAGE, retry_after: retryAfter } });
+      this.refusals.record(COOLDOWN_STATUS);
       done(false, COOLDOWN_STATUS, body, { ...JSON_HEADERS, "Retry-After": String(retryAfter) });
       return;
     }
@@ -226,7 +278,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
 
   /** Tells the agent's connections they lost it, and stamps the take-over cooldown. */
   private evict(agentId: string): void {
-    this.cooldownEnds.set(agentId, Date.now() + TAKEOVER_COOLDOWN_MS);
+    this.cooldownEnds.set(agentId, Date.now() + this.takeoverCooldownMs);
     this.pushControl(agentId, TAKEN_OVER_REASON, "superseded");
   }
 
@@ -246,8 +298,8 @@ export class FakePhoenixPeer implements AsyncDisposable {
   }
 
   private handleConnection(socket: ServerSocket, url: string): void {
-    this.connectionUrls.push(url);
-    this.connectionIds.set(socket, this.connectionUrls.length);
+    this.connections.record(url);
+    this.connectionIds.set(socket, this.connections.entries.length);
     this.sockets.set(socket, connectionParams(url).get("agent_id"));
     socket.on("close", () => {
       const agentId = this.sockets.get(socket) ?? null;

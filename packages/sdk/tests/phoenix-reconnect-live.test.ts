@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
@@ -6,10 +6,9 @@ import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import type { PlatformEvent } from "../src/platform/events";
-import { NoopLogger } from "../src/core/logger";
 import { TransportError } from "../src/core/errors";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
-import { FakeRestApi } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, advanceWireClock, fastSessionPolicy } from "./testUtils";
 
 function wireMessage(id: string, content: string) {
   return {
@@ -36,7 +35,7 @@ async function startAgentInTwoRooms(
     wsUrl: peer.url,
     apiKey: "test-key",
     agentId: "agent-1",
-    reconnectAfterMs: () => 10,
+    sessionPolicy: fastSessionPolicy(),
   });
   const calls = { listChats: 0, next: new Map<string, number>() };
   const link = new BandLink({
@@ -96,7 +95,7 @@ describe("Phoenix reconnect (real wire)", () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: peer.url,
       apiKey: "test-key",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
     const topic = "room:pending-disconnect";
 
@@ -127,7 +126,7 @@ describe("Phoenix reconnect (real wire)", () => {
       wsUrl: peer.url,
       apiKey: "test-key",
       agentId: "agent-1",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
     const link = new BandLink({
       agentId: "agent-1",
@@ -190,7 +189,7 @@ describe("Phoenix reconnect (real wire)", () => {
       wsUrl: peer.url,
       apiKey: "test-key",
       agentId: "agent-1",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
     const manager = new SubscriptionManager({ transport });
 
@@ -239,7 +238,7 @@ describe("Phoenix reconnect (real wire)", () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: peer.url,
       apiKey: "test-key",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
     const manager = new SubscriptionManager({ transport });
     transport.onReconnected((snapshot) => manager.reconcileReconnect(snapshot));
@@ -297,7 +296,7 @@ describe("Phoenix reconnect (real wire)", () => {
       wsUrl: peer.url,
       apiKey: "test-key",
       agentId: "agent-1",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
 
     let releaseMissedMessage = false;
@@ -376,7 +375,7 @@ describe("Phoenix reconnect (real wire)", () => {
       wsUrl: peer.url,
       apiKey: "test-key",
       agentId: "agent-1",
-      reconnectAfterMs: () => 10,
+      sessionPolicy: fastSessionPolicy(),
     });
 
     let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-1", title: "Room 1" }];
@@ -509,32 +508,62 @@ describe("Phoenix reconnect (real wire)", () => {
     }, 20_000);
   });
 
+  // A server's normal close used to end the session for good.
+  it("rejoins every room after a normal server close and catches up what it missed", async () => {
+    await using peer = await FakePhoenixPeer.start();
+    let missed: ReturnType<typeof wireMessage> | null = null;
+    await using agent = await startAgentInTwoRooms(peer, (roomId) => {
+      if (roomId !== "room-1" || !missed) {
+        return null;
+      }
+      const message = missed;
+      missed = null;
+      return message;
+    });
+    const listedBefore = agent.calls.listChats;
+    peer.receivedEvents.length = 0;
+
+    missed = wireMessage("missed-message", "sent while the socket was gone");
+    peer.closeConnections(1000);
+
+    await vi.waitFor(
+      () =>
+        expect(agent.executed).toEqual([
+          expect.objectContaining({ type: "message_created", payload: expect.objectContaining({ id: "missed-message" }) }),
+        ]),
+      { timeout: 10_000 },
+    );
+    expect(peer.receivedEvents).toEqual(
+      expect.arrayContaining(TWO_ROOMS.map((room) => ({ topic: chatRoomTopic(room), event: "phx_join" }))),
+    );
+    // One whole-agent reconnect: the room snapshot is fetched again exactly once.
+    expect(agent.calls.listChats).toBe(listedBefore + 1);
+  }, 15_000);
+
   describe("intentional disconnects stay disconnected", () => {
     const HEARTBEAT_INTERVAL_MS = 100;
     // Phoenix gives up waiting on a stalled close after ~1.5s, then a heartbeat
-    // timeout schedules its reconnect; this leaves room for both.
-    const SUPPRESSED_RECONNECT_TIMEOUT_MS = 5_000;
+    // timeout would schedule a reconnect; this leaves room for both.
+    const RECONNECT_WINDOW_MS = 5_000;
 
-    /** A real transport, plus a check that waits for the gate to refuse phoenix's reconnect; disposing it disconnects. */
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * A real transport, plus a check that drives the clock through the window
+     * a reconnect would need and asserts none happened; disposing it disconnects.
+     */
     function transportOn(peer: FakePhoenixPeer, agentId?: string) {
-      const logger = { ...new NoopLogger(), debug: vi.fn() };
       const transport = new PhoenixChannelsTransport({
         wsUrl: peer.url,
         apiKey: "test-key",
         agentId,
-        logger,
-        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-        reconnectAfterMs: () => 10,
+        sessionPolicy: fastSessionPolicy({ heartbeatIntervalS: HEARTBEAT_INTERVAL_MS / 1000, deadThresholdS: (2 * HEARTBEAT_INTERVAL_MS) / 1000 }),
       });
       const expectNoReconnect = async (): Promise<void> => {
-        await vi.waitFor(
-          () =>
-            expect(logger.debug.mock.calls.map(([message]) => message)).toContainEqual(
-              expect.stringContaining("Suppressed phoenix reconnect"),
-            ),
-          { timeout: SUPPRESSED_RECONNECT_TIMEOUT_MS },
-        );
-        expect(peer.connectionCount).toBe(1);
+        await advanceWireClock(RECONNECT_WINDOW_MS);
+        expect(peer.connections.entries).toHaveLength(1);
         expect(transport.isConnected()).toBe(false);
       };
       return {
@@ -546,6 +575,8 @@ describe("Phoenix reconnect (real wire)", () => {
 
     it("never reconnects after a supersede whose close handshake stalls", async () => {
       await using peer = await FakePhoenixPeer.start();
+      // Before connecting: Session's epochs are stamped with this clock.
+      vi.useFakeTimers(FAKE_WIRE_CLOCK);
       await using agent = transportOn(peer, "agent-1");
       await agent.transport.connect();
 
@@ -554,17 +585,22 @@ describe("Phoenix reconnect (real wire)", () => {
 
       await agent.expectNoReconnect();
       expect(agent.transport.getDisconnectReason()?.code).toBe("session.already_connected");
+      // Disposal leaves over the stalled link, which waits on real time.
+      vi.useRealTimers();
     }, 10_000);
 
     it("never reconnects after disconnect() when its close handshake stalls", async () => {
       await using peer = await FakePhoenixPeer.start();
+      // Before connecting: Session's epochs are stamped with this clock.
+      vi.useFakeTimers(FAKE_WIRE_CLOCK);
       await using agent = transportOn(peer);
       await agent.transport.connect();
 
       peer.stallReads();
-      await expect(agent.transport.disconnect()).rejects.toBeInstanceOf(TransportError);
+      const stopping = expect(agent.transport.disconnect()).rejects.toBeInstanceOf(TransportError);
 
       await agent.expectNoReconnect();
+      await stopping;
     }, 10_000);
 
     it("waits for the socket close before allowing the next session to claim its agent", async () => {

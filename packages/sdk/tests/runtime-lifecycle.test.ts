@@ -26,7 +26,7 @@ import {
 // The lifecycle union must be one declaration, reachable from both public entry points.
 import type { RuntimeLifecycleState as RootLifecycleState } from "../src/index";
 import type { RuntimeLifecycleState as RuntimeSubpathLifecycleState } from "../src/runtime/index";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, NeverFailingTransport } from "./testUtils";
 
 const AGENT_ID = "a1";
 const API_KEY = "k";
@@ -79,7 +79,7 @@ function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   );
 }
 
-class FakeTransport implements StreamingTransport {
+class FakeTransport extends NeverFailingTransport implements StreamingTransport {
   public connectCount = 0;
   public disconnectCount = 0;
   /** Optional gate so a test can hold a connect open mid-start. */
