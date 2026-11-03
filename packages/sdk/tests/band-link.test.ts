@@ -307,6 +307,7 @@ describe("BandLink event waiting", () => {
 
     await expect(connect).rejects.toBeInstanceOf(RuntimeStateError);
     expect(link.isConnected()).toBe(false);
+    expect(transport.disconnectCount).toBe(1);
   });
 
   it("coalesces concurrent disconnect calls into one transport teardown", async () => {

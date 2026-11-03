@@ -1,8 +1,5 @@
 import { Session, SessionPolicy, type SessionOutcome } from "@band-ai/band-sdk-core";
-import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
-
-/** Core's policy speaks seconds; timers speak milliseconds. */
-export const MS_PER_SECOND = 1000;
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
 
 /** What core `Session` decided about one observed event. */
 export type SessionVerdict =

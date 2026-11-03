@@ -1002,8 +1002,10 @@ describe("PhoenixChannelsTransport", () => {
       if (terminal) {
         await expect(connectPromise).rejects.toBeInstanceOf(WebSocketDisconnectError);
       } else {
-        const pending = Symbol("pending");
-        await expect(Promise.race([connectPromise, Promise.resolve(pending)]), "Session retries; connect() keeps waiting").resolves.toBe(pending);
+        let settled = false;
+        connectPromise.then(() => (settled = true), () => (settled = true));
+        await flush();
+        expect(settled, "Session retries; connect() keeps waiting").toBe(false);
       }
       expect(transport.getDisconnectReason()).toMatchObject({
         source: "upgrade",

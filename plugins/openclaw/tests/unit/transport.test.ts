@@ -324,6 +324,26 @@ describe("gateway lifecycle", () => {
     expect(getAccount("default")).toBeUndefined();
   });
 
+  it("abandons a boot connect still retrying when the account is aborted, registering nothing", async () => {
+    // As `BandLink.connect(signal)` does: it retries through an outage until aborted.
+    const connect = vi.fn(
+      (signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) =>
+          signal?.addEventListener("abort", () => reject(new Error("connect aborted")), { once: true }),
+        ),
+    );
+    const d = deps();
+    const gw = createBandGateway({ ...d.base, createLink: () => makeLink({ connect }) });
+    const { ctx, controller } = makeCtx();
+
+    const started = gw.startAccount!(ctx);
+    controller.abort();
+
+    await expect(started).rejects.toThrow("connect aborted");
+    expect(d.runtime.start).not.toHaveBeenCalled();
+    expect(getAccount("default")).toBeUndefined();
+  });
+
   it("race-guard: a concurrent startAccount for the same account is skipped", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);

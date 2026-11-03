@@ -1,5 +1,8 @@
-/** The longest delay `setTimeout` honours; it silently truncates anything past this to ~1ms. */
+/** The longest delay `setTimeout` honours; it fires anything past this, `Infinity` included, after ~1ms. */
 export const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
+
+/** Core's policies speak seconds; timers speak milliseconds. */
+export const MS_PER_SECOND = 1000;
 
 /**
  * A one-shot timer owned by a `using` scope: leaving the scope cancels it, so

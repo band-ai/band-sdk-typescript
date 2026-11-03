@@ -82,7 +82,7 @@ async function emitUpgradeError(
   websocket.emit("close", 1006, Buffer.alloc(0));
 }
 
-/** What arrived of the body by its end, a failure, or `timeoutMs`; the status and headers matter more. */
+/** Resolves with the body read before it ends, fails, or runs past `timeoutMs`; never rejects, since the status and headers matter more. */
 function readResponseBody(response: IncomingMessage, timeoutMs: number): Promise<string> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];

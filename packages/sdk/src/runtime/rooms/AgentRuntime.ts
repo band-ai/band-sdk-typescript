@@ -221,7 +221,7 @@ export class AgentRuntime {
     // also what `RoomPresence` does internally, since its own start/stop pair
     // is serialised. The link connect, which retries through an outage, is
     // aborted first; a channel join the start already sent can still hold the
-    // stop until the platform answers it.
+    // stop until the platform answers it or the session ends.
     // Nothing is awaited when no start is in flight, keeping the transition
     // below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;

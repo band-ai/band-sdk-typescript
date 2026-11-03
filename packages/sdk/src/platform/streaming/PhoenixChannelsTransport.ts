@@ -19,8 +19,8 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
-import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
-import { MS_PER_SECOND, SessionDriver, type SessionVerdict } from "./sessionDriver";
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
+import { SessionDriver, type SessionVerdict } from "./sessionDriver";
 import {
   isOptionalTopic,
   type JoinOptions,
@@ -84,6 +84,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private readonly connectFlight = new SingleFlight<void>();
+  private readonly disconnectFlight = new SingleFlight<void>();
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
@@ -187,6 +188,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       throw this.terminalDisconnectError;
     }
 
+    // A connect during a teardown would join the run that teardown ends.
+    const stopping = this.disconnectFlight.current;
+    if (stopping) {
+      await stopping.catch(() => undefined);
+    }
     if (this.connected) {
       return;
     }
@@ -213,7 +219,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
   }
 
-  public async disconnect(): Promise<void> {
+  public disconnect(): Promise<void> {
+    return this.disconnectFlight.run(() => this.teardown());
+  }
+
+  private async teardown(): Promise<void> {
     this.connectReject?.(new RuntimeStateError("Transport connect was superseded by disconnect()"));
     this.registry.notifyUnavailable();
     this.epoch.bump();
@@ -223,11 +233,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.registry.forceTeardown();
 
     this.hasOpenedOnce = false;
-    this.bufferingGeneration = null;
-    this.reconnectBarrier?.resolve();
-    this.reconnectBarrier = null;
-    this.bufferedTopicEvents.splice(0);
-    this.generationTracker.reset();
+    this.abandonReconnect();
 
     if (failures.length > 0) {
       // A lone failure is rethrown as-is rather than masked inside a
@@ -252,6 +258,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     const epoch = this.epoch.current;
     if (!isOptionalTopic(options)) await this.reconnectBarrier?.promise;
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
     if (this.epoch.isStale(epoch)) {
       this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
       throw supersededJoinError(topic);
@@ -468,15 +477,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const verdict = this.driver.onSocketClose(event?.code);
     const ownReason = this.ownCloseReason;
     this.ownCloseReason = null;
-    const reason = verdict.kind === "terminal" && verdict.rapidDisconnect
-      ? rapidDisconnectReason(event)
-      : ownReason ?? genericCloseReason(event);
+    const reason = ownReason ?? genericCloseReason(event);
     this.logger.info("Phoenix socket closed", {
       code: event?.code ?? null,
       reason,
       verdict,
     });
-    this.applyVerdict(verdict, reason);
+    this.applyVerdict(verdict, reason, event);
   }
 
   private nextAttemptDelayMs(): number {
@@ -485,7 +492,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       // close stalled past its polling), so report that close now.
       this.handleSocketClose();
     }
-    // Null once the run has ended, when the attempt gate refuses anyway; finite because Node fires an infinite delay at once.
+    // Null once the run has ended, when the attempt gate refuses anyway.
     return this.driver.pendingDelayMs ?? MAX_SETTIMEOUT_DELAY_MS;
   }
 
@@ -497,9 +504,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.socket.closeLiveConnection();
   }
 
-  private applyVerdict(verdict: SessionVerdict, reason: WebSocketDisconnectReason): void {
+  /** `event` is the close the verdict judged, if any; a tripped breaker reports it instead of `reason`. */
+  private applyVerdict(verdict: SessionVerdict, reason: WebSocketDisconnectReason, event?: CloseEventLike): void {
     if (verdict.kind === "terminal") {
-      this.endSession({ ...reason, retryable: false });
+      this.endSession(verdict.rapidDisconnect ? rapidDisconnectReason(event) : { ...reason, retryable: false });
     } else if (verdict.kind === "retry" && !this.driver.isSettled) {
       this.lastDisconnectReason = reason;
     }
@@ -521,7 +529,19 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       waiter.reject(error);
     }
     this.runForeverWaiters.clear();
+    // No rejoin will ever answer a join still in flight or waiting on the barrier.
+    this.registry.failPendingJoins(error);
+    this.abandonReconnect();
     void this.stopSocketLogged();
+  }
+
+  /** Drops a reconnect in progress: releases the joins waiting on it and its buffered events. */
+  private abandonReconnect(): void {
+    this.bufferingGeneration = null;
+    this.reconnectBarrier?.resolve();
+    this.reconnectBarrier = null;
+    this.bufferedTopicEvents.splice(0);
+    this.generationTracker.reset();
   }
 
   /**
