@@ -81,4 +81,11 @@ describe("send-tool delivery proof", () => {
     const { calls: sendCalls, results, replies } = twoSends(["call", "call"]);
     expect(() => assertToolReply(sendCalls.slice(0, 1), results, replies, expected)).toThrow("at most one per call");
   });
+
+  it("rejects a re-run hidden behind a later failed call that reuses its positional id", () => {
+    const { calls: sendCalls, results, replies } = twoSends(["gemini_call_1", "gemini_call_1"]);
+    const rerun = { ...results[0]!, output: { success: true, id: "reply-1" } };
+    const failed = { ...results[1]!, output: { ok: false, message: "unknown mention" }, isError: true };
+    expect(() => assertToolReply(sendCalls, [results[0]!, rerun, failed], replies, expected)).toThrow("at most one per call");
+  });
 });

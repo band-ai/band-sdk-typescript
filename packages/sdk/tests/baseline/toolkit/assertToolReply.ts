@@ -28,8 +28,8 @@ export function assertToolReply(
   expected: { marker: string; senderId: string; recipientId: string },
 ): void {
   const sends = calls.filter((call) => call.name === SEND_MESSAGE_TOOL_NAME);
-  const posted = results
-    .filter((result) => result.name === SEND_MESSAGE_TOOL_NAME)
+  const sendResults = results.filter((result) => result.name === SEND_MESSAGE_TOOL_NAME);
+  const posted = sendResults
     .flatMap((result) => {
       const messageId = postedMessageId(result);
       return messageId ? [{ toolCallId: result.toolCallId, messageId }] : [];
@@ -49,9 +49,10 @@ export function assertToolReply(
   expect(replies.filter((reply) => !postedIds.has(reply.id)).map((reply) => reply.content), "replies no successful send-tool result posted")
     .toEqual([]);
 
-  for (const toolCallId of new Set(posted.map((send) => send.toolCallId))) {
-    const ran = posted.filter((send) => send.toolCallId === toolCallId).length;
+  // Every run reports a result, failed or not, so a re-run shows as more results than calls.
+  for (const toolCallId of new Set(sendResults.map((result) => result.toolCallId))) {
+    const ran = sendResults.filter((result) => result.toolCallId === toolCallId).length;
     const called = sends.filter((call) => call.toolCallId === toolCallId).length;
-    expect(ran, `successful send-tool results for ${toolCallId}, at most one per call`).toBeLessThanOrEqual(called);
+    expect(ran, `send-tool results for ${toolCallId}, at most one per call`).toBeLessThanOrEqual(called);
   }
 }

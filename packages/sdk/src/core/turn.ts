@@ -19,9 +19,6 @@ import { agentFailure, safeSendFailure } from "./providerFailure";
 /** `AgentFailure.provider` of a missing-reply report: the runtime's verdict, not any provider's. */
 export const TURN_FAILURE_PROVIDER = "band-runtime";
 
-/** The effect of `band_no_reply`, or a custom tool that ends its turn without an answer. */
-export const DECLINE_EFFECT = "decline" satisfies TurnEffect;
-
 /**
  * One turn's progress toward a reply, judged by band-sdk-core's rule: it is
  * complete once it replied, declined, acted, was settled, or reported a failure.
@@ -37,7 +34,7 @@ export class Turn {
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
-    if (effect === DECLINE_EFFECT) {
+    if (effect === "decline") {
       this.declineCount += 1;
     }
   }

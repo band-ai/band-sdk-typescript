@@ -151,7 +151,7 @@ export function assertCustomToolNamesAvailable(customNames: string[], activeName
  * `def`'s effect, checked against core's: an untyped caller's misspelled one
  * fails here, before the handler's side effect, not after it.
  */
-export function customToolEffect(def: CustomToolDef): TurnEffect {
+function customToolEffect(def: CustomToolDef): TurnEffect {
   const effect = def.effect ?? DEFAULT_CUSTOM_TOOL_EFFECT;
   if (!TURN_EFFECTS.has(effect)) {
     throw new CustomToolDefinitionError(
