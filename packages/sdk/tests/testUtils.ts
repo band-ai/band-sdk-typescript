@@ -329,6 +329,10 @@ export class FakeTransport implements StreamingTransport {
 
   /** As the transport contract asks, an abort of `signal` rejects a connect still waiting. */
   public async connect(signal?: AbortSignal): Promise<void> {
+    // Like the real transport, a session that ended for good never connects again.
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
     const aborted = new Promise<never>((_, reject) => {
       const onAbort = () => reject(new RuntimeStateError("Transport connect was aborted"));
       if (signal?.aborted) {

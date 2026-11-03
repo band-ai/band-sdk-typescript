@@ -21,6 +21,8 @@ export type SessionVerdict =
   /** The run already ended; nothing to act on. */
   | { kind: "ended" };
 
+export const ENDED_VERDICT: SessionVerdict = Object.freeze({ kind: "ended" });
+
 export interface SessionRunOptions {
   policy: SessionPolicy;
   /** Monotonic seconds. */
@@ -68,6 +70,11 @@ export class SessionRun {
 
   public get isConnected(): boolean {
     return this.isLive && this.connected;
+  }
+
+  /** The owner closed the current attempt's connection; nothing more arrives for it. */
+  public get isClosing(): boolean {
+    return this.closing;
   }
 
   public get lastReason(): WebSocketDisconnectReason | null {
@@ -163,7 +170,7 @@ export class SessionRun {
     event?: CloseEventLike,
   ): SessionVerdict {
     if (!this.isLive || this.epoch === null) {
-      return { kind: "ended" };
+      return ENDED_VERDICT;
     }
     const outcome = call(this.session, this.epoch);
     if (outcome.staleReason !== undefined) {

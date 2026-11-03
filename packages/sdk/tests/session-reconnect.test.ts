@@ -27,6 +27,7 @@ import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionP
 
 const AGENT_ID = "agent-1";
 const CONTROL_TOPIC = agentControlTopic(AGENT_ID);
+const ROOM = "chat_room:room-1";
 /** Longer than any delay the fast policy picks, plus phoenix's own teardown. */
 const PAST_ANY_DELAY_MS = 5_000;
 
@@ -246,6 +247,57 @@ describe("core Session owns reconnects (real wire)", () => {
       // The dropped socket's generation is discarded, not reported as a reconnect that joined nothing.
       expect(snapshots.map((snapshot) => [...snapshot.joinedTopics])).toEqual([[CONTROL_TOPIC]]);
       expect(agent.terminals).toEqual([]);
+    });
+
+    it("settles no rejoin on a socket dropped for a failed agent_control rejoin", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      await agent.transport.connect();
+      await onWireClock(agent.transport.join(ROOM, {}));
+      const rejoins: string[] = [];
+      agent.transport.onTopicRejoined((topic) => rejoins.push(topic));
+      const snapshots: ReconnectSnapshot[] = [];
+      const recovered = createDeferred<void>();
+      agent.transport.onReconnected((snapshot) => {
+        snapshots.push(snapshot);
+        recovered.resolve();
+      });
+      // The room's ok follows the control error on the socket being dropped.
+      peer.queueJoinOutcomes(CONTROL_TOPIC, ["error"]);
+
+      peer.severAllConnections();
+      await reconnected(peer, 3);
+      await onWireClock(recovered.promise);
+
+      expect(rejoins).toEqual([]);
+      expect(snapshots.map((snapshot) => [...snapshot.joinedTopics].sort())).toEqual([[CONTROL_TOPIC, ROOM].sort()]);
+    });
+
+    it("reports no reconnect for a socket a retryable supersede drops mid-rejoin", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      await agent.transport.connect();
+      await onWireClock(agent.transport.join(ROOM, {}));
+      const snapshotConnections: number[] = [];
+      const recovered = createDeferred<void>();
+      agent.transport.onReconnected(() => {
+        snapshotConnections.push(peer.connections.entries.length);
+        recovered.resolve();
+      });
+      peer.queueJoinOutcomes(ROOM, ["pending"]);
+      peer.severAllConnections();
+      await reconnected(peer, 2);
+      await connectedState(agent.transport, true);
+
+      // The room's held ok lands right behind the supersede, on the socket it drops.
+      peer.inOneChunk(() => {
+        pushSupersede(peer);
+        peer.settleJoin(ROOM, "ok");
+      });
+      await reconnected(peer, 3);
+      await onWireClock(recovered.promise);
+
+      expect(snapshotConnections).toEqual([3]);
     });
 
     it("stops reporting connected once a heartbeat timeout's close stalls", async () => {
@@ -614,19 +666,22 @@ describe("core Session owns reconnects (real wire)", () => {
 
   describe("a connect that joins a running reconnect", () => {
     it("can time out without ending that reconnect", async () => {
+      const retryFloorS = 400;
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       await agent.transport.connect();
-      peer.refuseUpgrades({ status: 503, headers: { "Retry-After": "400" } });
+      peer.refuseUpgrades({ status: 503, headers: { "Retry-After": String(retryFloorS) } });
       peer.severAllConnections();
       await refused(peer);
 
+      const joinedTimeoutMs = BOOT_CONNECT_DEADLINE_MS + 1_000;
       const joined = agent.transport.connect().then(() => null, (error: unknown) => error);
-      await advanceWireClock(BOOT_CONNECT_DEADLINE_MS + 1_000, 1_000);
+      await advanceWireClock(joinedTimeoutMs, 1_000);
       expect(await joined).toBeInstanceOf(TransportError);
 
+      // The running reconnect still waits out the floor, then connects.
       peer.acceptUpgrades();
-      await advanceWireClock(100_000, 1_000);
+      await advanceWireClock(retryFloorS * 1_000 - joinedTimeoutMs + 1_000, 1_000);
       await reconnected(peer, 2);
       await connectedState(agent.transport, true);
     });

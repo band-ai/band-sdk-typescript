@@ -214,9 +214,10 @@ describe("BandLink event waiting", () => {
     await expect(running).rejects.toBe(error);
   });
 
-  it("propagates a non-retryable connect failure through the real transport.connect() path, then allows a fresh session afterward", async () => {
+  it("keeps a session that a non-retryable connect failure ended terminal", async () => {
     const transport = new FakeTransport();
-    transport.failConnect(new WebSocketDisconnectError(supersededReason));
+    const error = new WebSocketDisconnectError(supersededReason);
+    transport.failConnect(error);
     const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
@@ -229,8 +230,9 @@ describe("BandLink event waiting", () => {
     expect(transport.observers.size).toBe(0);
 
     transport.clearConnectFailure();
-    await expect(link.connect()).resolves.toBeUndefined();
-    expect(link.isConnected()).toBe(true);
+    await expect(link.connect()).rejects.toBe(error);
+    await expect(link.runForever(new AbortController().signal)).rejects.toBe(error);
+    expect(link.isConnected()).toBe(false);
   });
 
   it("disconnects the transport when connect() fails, so a partially-opened socket/channels don't leak", async () => {

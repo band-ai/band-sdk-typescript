@@ -82,12 +82,23 @@ async function emitUpgradeError(
   websocket.emit("close", 1006, Buffer.alloc(0));
 }
 
-/** Resolves with the body read before it ends, fails, or runs past `timeoutMs`; never rejects, since the status and headers matter more. */
+/** Only a small JSON error object is parsed from a refusal; a larger body is cut off here. */
+const MAX_REFUSAL_BODY_BYTES = 64 * 1024;
+
+/** Resolves with the body read before it ends, fails, runs past `timeoutMs` or the size cap; never rejects, since the status and headers matter more. */
 function readResponseBody(response: IncomingMessage, timeoutMs: number): Promise<string> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
+    let bytes = 0;
     const timer = setTimeout(() => response.destroy(), timeoutMs);
-    response.on("data", (chunk: Buffer | string) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+    response.on("data", (chunk: Buffer | string) => {
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      chunks.push(buffer);
+      bytes += buffer.length;
+      if (bytes > MAX_REFUSAL_BODY_BYTES) {
+        response.destroy();
+      }
+    });
     response.on("error", () => undefined);
     response.once("close", () => {
       clearTimeout(timer);

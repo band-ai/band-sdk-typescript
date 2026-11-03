@@ -19,7 +19,7 @@ import {
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
 import { Deadline, MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
-import { SessionRun } from "./sessionRun";
+import { ENDED_VERDICT, SessionRun } from "./sessionRun";
 import {
   isOptionalTopic,
   type JoinOptions,
@@ -340,10 +340,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private handleJoinSettled(topic: string, joined: boolean): void {
+    // Replies still arriving on a connection being dropped settle nothing; the next socket rejoins.
+    if (this.run?.isClosing) {
+      return;
+    }
     if (!joined && topic === this.controlTopic && this.run?.isLive) {
       // At boot or on any rejoin: a dropped socket as far as Session is concerned.
-      // Its generation would otherwise finalize as a reconnect on the socket being dropped.
-      this.generationTracker.discardCurrent();
       this.dropLiveConnection(controlJoinFailedReason());
       return;
     }
@@ -475,7 +477,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   /** Runs before phoenix asks for the reconnect delay, so Session's verdict sets it. */
   private handleSocketClose(event?: CloseEventLike): void {
-    const verdict = this.run?.onSocketClose(event) ?? { kind: "ended" };
+    const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
   }
 
@@ -491,6 +493,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   /** Closes the live socket for `reason`, so phoenix reconnects after Session's delay. */
   private dropLiveConnection(reason: WebSocketDisconnectReason): void {
+    // Its generation must not finalize as a reconnect; the next socket's generation reports it.
+    this.generationTracker.discardCurrent();
     this.run?.closeOwnConnection(reason);
     this.socket.closeLiveConnection();
   }
