@@ -35,8 +35,12 @@ export interface WebSocketUpgradeDisconnectReason {
 
 export interface GenericWebSocketCloseReason {
   source: "websocket_close";
-  /** `websocket.rapid_disconnect` when sockets kept dropping right after connecting. */
-  code: "websocket.closed" | "websocket.rapid_disconnect";
+  /**
+   * `websocket.rapid_disconnect` when sockets kept dropping right after
+   * connecting; `websocket.control_join_failed` when the transport dropped the
+   * socket because the mandatory agent_control join failed.
+   */
+  code: "websocket.closed" | "websocket.rapid_disconnect" | "websocket.control_join_failed";
   message: string;
   retryable: boolean;
   closeCode: number | null;
@@ -187,6 +191,18 @@ export function rapidDisconnectReason(event?: CloseEventLike): GenericWebSocketC
     retryable: false,
     closeCode: closeCodeOf(event),
     closeReason: closeReasonOf(event),
+  };
+}
+
+/** The transport dropped the socket because the mandatory agent_control join failed; Session decides the retry. */
+export function controlJoinFailedReason(): GenericWebSocketCloseReason {
+  return {
+    source: "websocket_close",
+    code: "websocket.control_join_failed",
+    message: "Mandatory agent_control channel join failed.",
+    retryable: true,
+    closeCode: null,
+    closeReason: null,
   };
 }
 

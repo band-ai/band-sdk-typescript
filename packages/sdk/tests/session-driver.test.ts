@@ -16,7 +16,7 @@ describe("SessionDriver", () => {
     const verdict = driver.onUpgradeRejected(503, 10_000_000);
 
     expect(verdict).toEqual({ kind: "retry", delayMs: MAX_TIMER_DELAY_MS });
-    expect(driver.nextDelay()).toEqual(verdict);
+    expect(driver.pendingDelayMs).toBe(MAX_TIMER_DELAY_MS);
   });
 
   it("starts a fresh run after a terminal verdict, since core never revives a dead Session", () => {

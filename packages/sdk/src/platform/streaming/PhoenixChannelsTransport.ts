@@ -12,6 +12,7 @@ import {
   genericCloseReason,
   parseSupersedeDisconnectReason,
   parseUpgradeDisconnectReason,
+  controlJoinFailedReason,
   rapidDisconnectReason,
   staleConnectionReason,
   type WebSocketConflictPolicy,
@@ -19,7 +20,7 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
-import { MAX_TIMER_DELAY_MS, SessionDriver, type SessionVerdict } from "./sessionDriver";
+import { MAX_TIMER_DELAY_MS, MS_PER_SECOND, SessionDriver, type SessionVerdict } from "./sessionDriver";
 import {
   isOptionalTopic,
   type JoinOptions,
@@ -57,7 +58,8 @@ interface PendingRunForever {
 
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: GatedSocket;
-  private readonly agentId?: string;
+  /** The mandatory per-agent channel, when the transport is for an agent. */
+  private readonly controlTopic: string | null;
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
   private readonly topicRejoinObservers = new Set<TopicRejoinObserver>();
@@ -88,10 +90,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private runForeverWaiters = new Set<PendingRunForever>();
   private readonly driver: SessionDriver;
+  /** Why the transport closed the live socket itself, reported with that close. */
+  private ownCloseReason: WebSocketDisconnectReason | null = null;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = resolveLogger(options.logger);
-    this.agentId = options.agentId;
+    this.controlTopic = options.agentId ? agentControlTopic(options.agentId) : null;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
@@ -110,7 +114,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           ? { on_conflict: options.conflictPolicy }
           : {}),
       },
-      heartbeatIntervalMs: policy.heartbeatIntervalS * 1000,
+      heartbeatIntervalMs: policy.heartbeatIntervalS * MS_PER_SECOND,
       reconnectAfterMs: () => this.nextAttemptDelayMs(),
       transport:
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
@@ -320,6 +324,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private handleJoinSettled(topic: string, joined: boolean): void {
+    if (!joined && topic === this.controlTopic && this.driver.isLive) {
+      // At boot or on any rejoin: a dropped socket as far as Session is concerned.
+      this.dropLiveConnection(controlJoinFailedReason());
+    }
     const inGeneration = this.generationTracker.recordSettled(topic, joined);
     // A settlement no reconnect generation waited on is a channel rejoining by
     // itself. An initial join is not registered yet, and a rejoin that failed
@@ -365,13 +373,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     try {
       await this.subscribeAgentControl();
     } catch (error) {
+      // A failed join already dropped the socket (handleJoinSettled); Session decides the retry.
       this.logger.warn("Failed to join mandatory agent_control channel", {
         error,
       });
-      // A dropped socket as far as Session is concerned: it decides whether to retry.
-      if (this.driver.isLive) {
-        this.socket.closeLiveConnection();
-      }
       return;
     }
     // The run may have ended while the join was in flight.
@@ -427,11 +432,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private async subscribeAgentControl(): Promise<void> {
-    if (!this.agentId) {
+    const topic = this.controlTopic;
+    if (!topic) {
       return;
     }
 
-    const topic = agentControlTopic(this.agentId);
     await this.join(
       topic,
       {
@@ -446,7 +451,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           const verdict = this.driver.onSupersede(reason.retryable, reason.retryAfter);
           this.applyVerdict(verdict, reason);
           if (verdict.kind === "retry") {
-            this.socket.closeLiveConnection();
+            this.dropLiveConnection(reason);
           }
         },
       },
@@ -474,22 +479,28 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       reason: event?.reason ?? null,
       verdict,
     });
+    const ownReason = this.ownCloseReason;
+    this.ownCloseReason = null;
     const reason = verdict.kind === "terminal" && verdict.rapidDisconnect
       ? rapidDisconnectReason(event)
-      : genericCloseReason(event);
+      : ownReason ?? genericCloseReason(event);
     this.applyVerdict(verdict, reason);
   }
 
   private nextAttemptDelayMs(): number {
-    const verdict = this.driver.nextDelay();
-    if (verdict.kind === "retry") {
-      return verdict.delayMs;
+    if (this.driver.pendingDelayMs === null) {
+      // Phoenix asks before a close it then drops (a heartbeat timeout whose
+      // close stalled past its polling), so report that close now.
+      this.handleSocketClose();
     }
-    if (verdict.kind === "terminal") {
-      this.applyVerdict(verdict, verdict.rapidDisconnect ? rapidDisconnectReason() : genericCloseReason());
-    }
-    // Unused, since the attempt gate refuses the next attempt; finite because Node fires an infinite delay at once.
-    return MAX_TIMER_DELAY_MS;
+    // Null once the run has ended, when the attempt gate refuses anyway; finite because Node fires an infinite delay at once.
+    return this.driver.pendingDelayMs ?? MAX_TIMER_DELAY_MS;
+  }
+
+  /** Closes the live socket for `reason`, so phoenix reconnects after Session's delay. */
+  private dropLiveConnection(reason: WebSocketDisconnectReason): void {
+    this.ownCloseReason = reason;
+    this.socket.closeLiveConnection();
   }
 
   private applyVerdict(verdict: SessionVerdict, reason: WebSocketDisconnectReason): void {
@@ -505,6 +516,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     if (!this.driver.settle()) {
       return;
     }
+    this.logger.warn("Phoenix session ended", { reason });
 
     const error = new WebSocketDisconnectError(reason);
     this.lastDisconnectReason = reason;

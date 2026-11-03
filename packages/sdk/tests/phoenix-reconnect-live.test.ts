@@ -513,7 +513,10 @@ describe("Phoenix reconnect (real wire)", () => {
     await using peer = await FakePhoenixPeer.start();
     let missed: ReturnType<typeof wireMessage> | null = null;
     await using agent = await startAgentInTwoRooms(peer, (roomId) => {
-      const message = roomId === "room-1" ? missed : null;
+      if (roomId !== "room-1" || !missed) {
+        return null;
+      }
+      const message = missed;
       missed = null;
       return message;
     });

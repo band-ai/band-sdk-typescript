@@ -3,6 +3,9 @@ import { Session, SessionPolicy, type SessionOutcome } from "@band-ai/band-sdk-c
 /** The longest delay a Node timer holds; a larger one fires after 1 ms. */
 export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
+/** Core's policy speaks seconds; timers speak milliseconds. */
+export const MS_PER_SECOND = 1000;
+
 /** What core `Session` decided about one observed event. */
 export type SessionVerdict =
   | { kind: "up" }
@@ -38,12 +41,11 @@ export class SessionDriver {
   private endedLocally = false;
   /** Whether the owner already acted on this run's end, terminal or local. */
   private settled = false;
-  /** The delay Session chose after the current epoch's failure, if one was observed. */
-  private pendingDelayMs: number | null = null;
+  private delayMs: number | null = null;
 
   public constructor(options: SessionDriverOptions) {
     this.policy = options.policy;
-    this.now = options.now ?? (() => performance.now() / 1000);
+    this.now = options.now ?? (() => performance.now() / MS_PER_SECOND);
     this.jitter = options.jitter ?? Math.random;
   }
 
@@ -74,7 +76,7 @@ export class SessionDriver {
     this.epoch = null;
     this.endedLocally = false;
     this.settled = false;
-    this.pendingDelayMs = null;
+    this.delayMs = null;
     return true;
   }
 
@@ -95,7 +97,7 @@ export class SessionDriver {
       return "dead";
     }
     this.epoch = epoch;
-    this.pendingDelayMs = null;
+    this.delayMs = null;
     return "proceed";
   }
 
@@ -117,16 +119,9 @@ export class SessionDriver {
     return this.judge((session) => session.onSupersede(this.now(), retryable, retryAfterS ?? undefined, this.jitter()));
   }
 
-  /**
-   * The delay before phoenix's next attempt. A forced close (phoenix's own
-   * heartbeat timeout) can ask before its close event arrives; that close is
-   * reported now, with no code.
-   */
-  public nextDelay(): SessionVerdict {
-    if (this.pendingDelayMs !== null) {
-      return { kind: "retry", delayMs: this.pendingDelayMs };
-    }
-    return this.onSocketClose(undefined);
+  /** The delay Session chose after the current attempt failed; null until a failure is reported. */
+  public get pendingDelayMs(): number | null {
+    return this.delayMs;
   }
 
   private judge(call: (session: Session, epoch: bigint) => SessionOutcome): SessionVerdict {
@@ -143,7 +138,7 @@ export class SessionDriver {
     if (outcome.state === "up") {
       return { kind: "up" };
     }
-    this.pendingDelayMs = Math.min((outcome.retryAfterS ?? 0) * 1000, MAX_TIMER_DELAY_MS);
-    return { kind: "retry", delayMs: this.pendingDelayMs };
+    this.delayMs = Math.min((outcome.retryAfterS ?? 0) * MS_PER_SECOND, MAX_TIMER_DELAY_MS);
+    return { kind: "retry", delayMs: this.delayMs };
   }
 }
