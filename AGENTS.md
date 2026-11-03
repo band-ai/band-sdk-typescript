@@ -424,7 +424,8 @@ Rules:
   behind the completed teardown. It does not queue behind the start — several adapters only
   abandon a parked `onStarted()` once `onRuntimeStop()` runs, so a stop that waited would be
   waiting on itself. `AgentRuntime.stop()` does wait for its own start, since it drives no
-  third-party adapter that can park indefinitely.
+  third-party adapter that can park indefinitely; it first aborts the start's link connect, which
+  core `Session` may otherwise keep retrying through an outage until the boot deadline.
 - "Was I superseded?" is asked through the lifecycle, not a second counter beside it: a start
   captures the `"starting"` state instance `startWithGate()` installed and later checks
   `LifecycleTracker.isCurrent()`. Every accepted transition installs a fresh frozen state, so this

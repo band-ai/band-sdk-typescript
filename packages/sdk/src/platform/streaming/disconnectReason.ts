@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { validateEventPayload } from "@band-ai/band-sdk-core";
+import { classifyClose, classifyUpgrade, validateEventPayload } from "@band-ai/band-sdk-core";
 
 export type WebSocketConflictPolicy = "supersede" | "reject";
 export type WebSocketDisconnectSource =
@@ -19,12 +19,14 @@ export interface AgentControlSupersedeDisconnectReason {
 
 export interface WebSocketUpgradeDisconnectReason {
   source: "upgrade";
-  status: 400 | 409 | 429 | 503;
+  status: number;
+  /** The platform's code, or `upgrade_rejected` when the refusal carries none (e.g. a 403 from the edge). */
   code:
     | "invalid_on_conflict"
     | "connection_conflict"
     | "too_many_requests"
-    | "tracking_failed";
+    | "tracking_failed"
+    | "upgrade_rejected";
   message: string;
   retryable: boolean;
   retryAfter: number | null;
@@ -33,7 +35,8 @@ export interface WebSocketUpgradeDisconnectReason {
 
 export interface GenericWebSocketCloseReason {
   source: "websocket_close";
-  code: "websocket.closed";
+  /** `websocket.rapid_disconnect` when sockets kept dropping right after connecting. */
+  code: "websocket.closed" | "websocket.rapid_disconnect";
   message: string;
   retryable: boolean;
   closeCode: number | null;
@@ -54,59 +57,39 @@ const UPGRADE_CODES = [
 
 type UpgradeCode = (typeof UPGRADE_CODES)[number];
 
-const UPGRADE_REASONS: Record<
-  UpgradeCode,
-  {
-    status: WebSocketUpgradeDisconnectReason["status"];
-    message: string;
-    retryable: boolean;
-  }
-> = {
-  invalid_on_conflict: {
-    status: 400,
-    message: "Invalid websocket conflict policy.",
-    retryable: false,
-  },
-  connection_conflict: {
-    status: 409,
-    message: "Websocket connection conflict.",
-    retryable: false,
-  },
-  too_many_requests: {
-    status: 429,
-    message: "Too many websocket connection attempts.",
-    retryable: true,
-  },
-  tracking_failed: {
-    status: 503,
-    message: "Websocket connection tracking failed.",
-    retryable: true,
-  },
+// Whether each is retryable is core's call (`classifyUpgrade`), not this table's.
+const UPGRADE_REASONS: Record<UpgradeCode, { status: number; message: string }> = {
+  invalid_on_conflict: { status: 400, message: "Invalid websocket conflict policy." },
+  connection_conflict: { status: 409, message: "Websocket connection conflict." },
+  too_many_requests: { status: 429, message: "Too many websocket connection attempts." },
+  tracking_failed: { status: 503, message: "Websocket connection tracking failed." },
 };
 
-const upgradeErrorSchema = z.object({
-  status: z.number(),
-  body: z.preprocess(
-    (body) => {
-      if (typeof body !== "string") {
-        return body;
-      }
+const platformUpgradeBodySchema = z.preprocess(
+  (body) => {
+    if (typeof body !== "string") {
+      return body;
+    }
 
-      try {
-        return JSON.parse(body) as unknown;
-      } catch {
-        return null;
-      }
-    },
-    z.object({
-      error: z.object({
-        code: z.enum(UPGRADE_CODES),
-        message: z.string().optional(),
-        retry_after: z.number().nullable().optional(),
-        request_id: z.string().nullable().optional(),
-      }),
+    try {
+      return JSON.parse(body) as unknown;
+    } catch {
+      return null;
+    }
+  },
+  z.object({
+    error: z.object({
+      code: z.enum(UPGRADE_CODES),
+      message: z.string().optional(),
+      retry_after: z.number().nullable().optional(),
+      request_id: z.string().nullable().optional(),
     }),
-  ),
+  }),
+);
+
+const upgradeErrorSchema = z.object({
+  status: z.number().int(),
+  body: z.unknown().optional(),
   headers: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -142,6 +125,11 @@ export function parseSupersedeDisconnectReason(
   }
 }
 
+/**
+ * The reason for an HTTP upgrade the server refused, or `null` when `event`
+ * carries no HTTP status (a network failure before any response). The
+ * platform's own code is kept when its body and status match one.
+ */
 export function parseUpgradeDisconnectReason(
   event: unknown,
 ): WebSocketUpgradeDisconnectReason | null {
@@ -151,55 +139,96 @@ export function parseUpgradeDisconnectReason(
   }
 
   const { status, body, headers } = parsed.data;
-  const {
-    code,
-    message,
-    retry_after: retryAfter,
-    request_id: requestId,
-  } = body.error;
-  const reason = UPGRADE_REASONS[code];
-  if (status !== reason.status) {
-    return null;
-  }
+  const [terminal] = classifyUpgrade(status);
+  const platform = platformUpgradeBodySchema.safeParse(body);
+  const platformError = platform.success && UPGRADE_REASONS[platform.data.error.code].status === status
+    ? platform.data.error
+    : null;
 
   return {
     source: "upgrade",
-    status: reason.status,
-    code,
-    message: message ?? reason.message,
-    retryable: reason.retryable,
-    retryAfter: retryAfter ?? retryAfterFromHeaders(headers),
-    requestId: requestId ?? null,
+    status,
+    code: platformError?.code ?? "upgrade_rejected",
+    message: platformError
+      ? platformError.message ?? UPGRADE_REASONS[platformError.code].message
+      : `Websocket upgrade rejected with HTTP ${status}.`,
+    retryable: !terminal,
+    retryAfter: validRetryAfter(platformError?.retry_after) ?? retryAfterFromHeaders(headers),
+    requestId: platformError?.request_id ?? null,
   };
 }
 
-export function genericCloseReason(event?: {
+interface CloseEventLike {
   code?: number;
   reason?: string;
-}): GenericWebSocketCloseReason {
+}
+
+export function genericCloseReason(event?: CloseEventLike): GenericWebSocketCloseReason {
+  const closeCode = closeCodeOf(event);
+  const [terminal] = classifyClose(closeCode ?? undefined);
   return {
     source: "websocket_close",
     code: "websocket.closed",
     message: "Phoenix socket closed without a platform disconnect reason.",
-    retryable: true,
-    closeCode: typeof event?.code === "number" ? event.code : null,
-    closeReason:
-      typeof event?.reason === "string" && event.reason.length > 0
-        ? event.reason
-        : null,
+    retryable: !terminal,
+    closeCode,
+    closeReason: closeReasonOf(event),
   };
+}
+
+/** Sockets kept dropping right after connecting, so core's breaker ended the session. */
+export function rapidDisconnectReason(event?: CloseEventLike): GenericWebSocketCloseReason {
+  return {
+    source: "websocket_close",
+    code: "websocket.rapid_disconnect",
+    message: "Phoenix socket kept disconnecting right after connecting.",
+    retryable: false,
+    closeCode: closeCodeOf(event),
+    closeReason: closeReasonOf(event),
+  };
+}
+
+/** A socket opened for an attempt the session had already retired. */
+export function staleConnectionReason(): GenericWebSocketCloseReason {
+  return {
+    source: "websocket_close",
+    code: "websocket.closed",
+    message: "Phoenix socket opened for a connection attempt that was no longer current.",
+    retryable: false,
+    closeCode: null,
+    closeReason: null,
+  };
+}
+
+const DISCONNECT_SOURCES: ReadonlySet<unknown> = new Set<WebSocketDisconnectSource>([
+  "agent_control",
+  "upgrade",
+  "websocket_close",
+]);
+
+export function isWebSocketDisconnectReason(value: unknown): value is WebSocketDisconnectReason {
+  return typeof value === "object" && value !== null && DISCONNECT_SOURCES.has((value as { source?: unknown }).source);
+}
+
+function closeCodeOf(event?: CloseEventLike): number | null {
+  return typeof event?.code === "number" ? event.code : null;
+}
+
+function closeReasonOf(event?: CloseEventLike): string | null {
+  return typeof event?.reason === "string" && event.reason.length > 0 ? event.reason : null;
+}
+
+/** A usable `Retry-After` in seconds; a negative or non-finite one is no hint. */
+function validRetryAfter(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function retryAfterFromHeaders(
   headers: Record<string, unknown> | undefined,
 ): number | null {
   const value = headers?.["retry-after"] ?? headers?.["Retry-After"];
-  if (typeof value === "number") {
-    return value;
-  }
   if (typeof value === "string" && value.trim() !== "") {
-    const seconds = Number(value);
-    return Number.isFinite(seconds) ? seconds : null;
+    return validRetryAfter(Number(value));
   }
-  return null;
+  return validRetryAfter(value);
 }

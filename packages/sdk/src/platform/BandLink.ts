@@ -22,6 +22,7 @@ import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
 import {
   WebSocketDisconnectError,
+  isWebSocketDisconnectReason,
   type WebSocketConflictPolicy,
   type WebSocketDisconnectReason,
 } from "./streaming/disconnectReason";
@@ -117,6 +118,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private readonly connectFlight = new SingleFlight<void>();
+  /** Aborts the in-flight connect, so a disconnect never waits out a retrying boot. */
+  private connectAbort: AbortController | null = null;
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
 
@@ -176,7 +179,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     return this.lastDisconnectReason;
   }
 
-  public async connect(): Promise<void> {
+  public async connect(signal?: AbortSignal): Promise<void> {
     if (this.disconnectFlight.current) {
       await this.disconnectFlight.current.catch(() => undefined);
     }
@@ -184,13 +187,24 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await this.connectFlight.run(() => {
-      const epoch = this.session.begin();
-      return this.connectSession(epoch);
+    await this.connectFlight.run(async () => {
+      const abort = new AbortController();
+      const forwardAbort = (): void => abort.abort();
+      signal?.addEventListener("abort", forwardAbort, { once: true });
+      if (signal?.aborted) {
+        abort.abort();
+      }
+      this.connectAbort = abort;
+      try {
+        await this.connectSession(this.session.begin(), abort.signal);
+      } finally {
+        signal?.removeEventListener("abort", forwardAbort);
+        this.connectAbort = null;
+      }
     });
   }
 
-  private async connectSession(epoch: number): Promise<void> {
+  private async connectSession(epoch: number, signal: AbortSignal): Promise<void> {
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
       await this.subscriptionManager.reconcileReconnect(snapshot);
       if (this.session.isStale(epoch)) {
@@ -208,7 +222,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     };
 
     try {
-      await this.transport.connect();
+      await this.transport.connect(signal);
     } catch (error) {
       this.session.clearReconnectObserver();
       this.session.deactivate();
@@ -225,6 +239,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         } else {
           this.recordDisconnectError(error);
         }
+      } else if (error instanceof Error && isWebSocketDisconnectReason(error.cause)) {
+        // A boot that ran out of time reports the last failure it saw.
+        this.lastDisconnectReason = error.cause;
       }
       throw error;
     }
@@ -253,6 +270,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async disconnectSession(): Promise<void> {
+    this.connectAbort?.abort();
     await this.connectFlight.current?.catch(() => undefined);
     // By now any in-flight connect has fully settled, so the session's own
     // active flag alone reflects whether there is a session to tear down.

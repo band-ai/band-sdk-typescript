@@ -14,7 +14,7 @@ import { QUESTION_MESSAGE } from "../../src/question";
 import { SESSION_TEXT } from "../../src/sessions";
 import { CONNECT_TOOL, TOOL } from "../../src/tools";
 import { AGENT_API_KEY, AGENT_HANDLE, AGENT_ID, BandPlatform, person } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { FakePhoenixPeer, TAKEOVER_COOLDOWN_MESSAGE } from "../../../../packages/sdk/tests/fakePhoenixPeer";
+import { FakePhoenixPeer } from "../../../../packages/sdk/tests/fakePhoenixPeer";
 import { BandRestPeer } from "../support/bandRestPeer";
 import { CLOSED, pick } from "../support/channelClient";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
@@ -260,8 +260,8 @@ describe("when Band ends the connection for another reason", () => {
 });
 
 describe("when another session picks the same agent", () => {
-  it("connects it, sends the first back to connect with its working indicator cleared, and Band refuses the first's pick back for a while", async () => {
-    await using peer = await FakePhoenixPeer.start();
+  it("connects it, sends the first back to connect with its working indicator cleared, and the first's pick back waits out Band's cooldown", async () => {
+    await using peer = await FakePhoenixPeer.start({ takeoverCooldownMs: 1_000 });
     const platform = BandPlatform.host([person(USER), { id: "qa", name: "QA", handle: "owner/qa", type: "Agent" }]);
     const room = await platform.room(ROOM);
     const waiting = room.postBeforeConnect(USER, MESSAGE);
@@ -288,8 +288,10 @@ describe("when another session picks the same agent", () => {
     expect(platform.rest.workingReports.entries.at(-1)).toEqual({ roomId: ROOM, working: false });
 
     first.answer(pick(AGENT_NAME));
-    const refused = await first.callTool(CONNECT_TOOL, {});
-    expect(refused.text).toBe(SESSION_TEXT.connectFailed(AGENT_NAME, TAKEOVER_COOLDOWN_MESSAGE));
-    expect(await second.status()).toBe(`connected: ${CONNECTED}`);
+    const pickedBack = await first.callTool(CONNECT_TOOL, {});
+    expect(peer.refusals.entries, "Band refused the take-over back within its cooldown").toEqual([429]);
+    expect(pickedBack.text).toBe(CONNECTED);
+    expect(await second.toolNamesWhen((names) => names.includes(CONNECT_TOOL))).toEqual([CONNECT_TOOL]);
+    expect(await second.status()).toBe(`off: ${takenOver}`);
   });
 });

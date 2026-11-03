@@ -169,7 +169,9 @@ const phoenixMock = vi.hoisted(() => {
     public connectCount = 0;
     // A close handshake that stalls: phoenix's close callback never fires.
     public closeStalls = false;
-    public conn: { readyState: number } | null = null;
+    public conn: { readyState: number; close(): void } | null = null;
+    /** Live connections the transport closed itself, so phoenix reconnects them. */
+    public liveCloses = 0;
     private disconnectCallback?: () => void;
     // Bumped by disconnect(), so an open queued before it never fires, as a
     // real socket closed mid-handshake never opens.
@@ -179,6 +181,7 @@ const phoenixMock = vi.hoisted(() => {
       | ((event?: { code?: number; reason?: string }) => void)
       | null = null;
     private errorHandler: ((payload: unknown) => void) | null = null;
+    private openSynchronously = false;
 
     public constructor(
       url: string,
@@ -204,20 +207,49 @@ const phoenixMock = vi.hoisted(() => {
     }
 
     public connect(): void {
+      this.transportConnect();
+    }
+
+    // As in phoenix 1.8.16, every connect attempt passes through here.
+    protected transportConnect(): void {
       this.connectCount += 1;
-      this.conn = { readyState: 0 };
+      this.conn = {
+        readyState: 0,
+        close: () => {
+          this.liveCloses += 1;
+          this.onConnClose({ code: 1000, reason: "" });
+        },
+      };
+      const open = (): void => {
+        this.conn!.readyState = 1;
+        this.openHandler?.();
+      };
+      if (this.openSynchronously) {
+        open();
+        return;
+      }
       const generation = this.connectGeneration;
       queueMicrotask(() => {
         if (generation === this.connectGeneration) {
-          this.conn!.readyState = 1;
-          this.openHandler?.();
+          open();
         }
       });
     }
 
-    /** Simulates a later automatic reconnect's socket re-open. */
+    /** Simulates phoenix's own reconnect: a new attempt whose socket opens at once. */
     public emitOpen(): void {
-      this.openHandler?.();
+      this.openSynchronously = true;
+      try {
+        this.transportConnect();
+      } finally {
+        this.openSynchronously = false;
+      }
+    }
+
+    // As in phoenix 1.8.16, every close passes through here before the close callbacks.
+    protected onConnClose(event?: { code?: number; reason?: string }): void {
+      if (this.conn) this.conn.readyState = 3;
+      this.closeHandler?.(event);
     }
 
     public disconnect(callback?: () => void): void {
@@ -233,15 +265,14 @@ const phoenixMock = vi.hoisted(() => {
     /** Phoenix can finish its bounded polling before the raw socket reaches CLOSED. */
     public finishDisconnect(readyState = 3): void {
       if (this.conn) this.conn.readyState = readyState;
-      if (readyState === 3) this.closeHandler?.();
+      if (readyState === 3) this.onConnClose();
       const callback = this.disconnectCallback;
       this.disconnectCallback = undefined;
       callback?.();
     }
 
     public emitClose(event?: { code?: number; reason?: string }): void {
-      if (this.conn) this.conn.readyState = 3;
-      this.closeHandler?.(event);
+      this.onConnClose(event);
     }
 
     public channel(topic: string): FakeChannel {
@@ -719,31 +750,40 @@ describe("PhoenixChannelsTransport", () => {
     expect(transport.isConnected()).toBe(false);
 
     socket?.emitError({ status: 403 });
-    await expect(connectPromise).rejects.toBeInstanceOf(TransportError);
+    await expect(connectPromise).rejects.toBeInstanceOf(WebSocketDisconnectError);
   });
 
-  it("rejects connect when mandatory agent_control join fails", async () => {
+  it("hands a failed mandatory agent_control join to Session as a dropped socket", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
       apiKey: "key-1",
       agentId: "agent-1",
     });
+    let failedOnce = false;
 
     const socket = phoenixMock.FakeSocket.instances[0];
     if (socket) {
       const originalChannel = socket.channel.bind(socket);
       socket.channel = (topic: string) => {
         const channel = originalChannel(topic);
-        if (topic === "agent_control:agent-1") {
+        if (topic === "agent_control:agent-1" && !failedOnce) {
+          failedOnce = true;
           channel.joinOutcome = "error";
         }
         return channel;
       };
     }
 
-    await expect(transport.connect()).rejects.toBeInstanceOf(TransportError);
+    const connecting = transport.connect();
+    await flush();
+    // Not a local stop: the live socket is closed so phoenix reconnects as Session decides.
+    expect(socket?.liveCloses).toBe(1);
+    expect(socket?.disconnectCount).toBe(0);
     expect(transport.isConnected()).toBe(false);
-    expect(socket?.disconnectCount).toBeGreaterThan(0);
+
+    socket?.emitOpen();
+    await connecting;
+    expect(transport.isConnected()).toBe(true);
   });
 
   it("does not require agent_control when no agent id is configured", async () => {
@@ -907,10 +947,13 @@ describe("PhoenixChannelsTransport", () => {
     });
     const socket = phoenixMock.FakeSocket.instances[0]!;
 
-    const connecting = transport.connect();
+    await transport.connect();
     socket.closeStalls = true;
-    socket.emitError({ status: 403 });
-    await expect(connecting).rejects.toBeInstanceOf(TransportError);
+    const stopping = transport.disconnect();
+    await vi.waitFor(() => expect(socket.disconnectCount).toBe(1));
+    // Phoenix's bounded close polling gives up while the wire is still closing.
+    socket.finishDisconnect(2);
+    await expect(stopping).rejects.toBeInstanceOf(TransportError);
     socket.closeStalls = false;
 
     await transport.connect();
@@ -952,12 +995,16 @@ describe("PhoenixChannelsTransport", () => {
           retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
       });
 
-      await expect(connectPromise).rejects.toBeInstanceOf(
-        WebSocketDisconnectError,
-      );
+      if (status === 409 || status === 400) {
+        await expect(connectPromise).rejects.toBeInstanceOf(WebSocketDisconnectError);
+      } else {
+        // Retryable: Session retries, and connect() keeps waiting.
+        void connectPromise.catch(() => undefined);
+      }
       expect(transport.getDisconnectReason()).toMatchObject({
         source: "upgrade",
         status,
+        retryable: status !== 409 && status !== 400,
         code,
         message: `upgrade failed: ${code}`,
         requestId,
@@ -1015,24 +1062,6 @@ describe("PhoenixChannelsTransport", () => {
         },
       },
       {
-        name: "a failed agent_control join",
-        agentId: "agent-1",
-        terminal: false,
-        stop: async (transport, socket) => {
-          socket.joinOutcomes.set(CONTROL_TOPIC, "error");
-          await expect(transport.connect()).rejects.toThrow();
-          socket.joinOutcomes.delete(CONTROL_TOPIC);
-        },
-      },
-      {
-        name: "a drop with no channels left",
-        terminal: false,
-        stop: async (transport, socket) => {
-          await transport.connect();
-          socket.emitClose({ code: 1006, reason: "" });
-        },
-      },
-      {
         name: "a supersede",
         agentId: "agent-1",
         terminal: true,
@@ -1083,51 +1112,6 @@ describe("PhoenixChannelsTransport", () => {
         expect(transport.isConnected()).toBe(true);
       }
     });
-  });
-
-  it("keeps retryable upgrade failures non-terminal", async () => {
-    const transport = new PhoenixChannelsTransport({
-      wsUrl: "wss://example.test/socket",
-      apiKey: "key-1",
-      agentId: "agent-1",
-    });
-
-    const connectPromise = transport.connect();
-    const socket = phoenixMock.FakeSocket.instances[0];
-    socket?.emitError({
-      status: 429,
-      body: {
-        error: {
-          code: "too_many_requests",
-          message: "Too many websocket connection attempts.",
-          retry_after: 7,
-          request_id: null,
-        },
-      },
-    });
-
-    await expect(connectPromise).rejects.toBeInstanceOf(
-      WebSocketDisconnectError,
-    );
-    expect(socket?.disconnectCount).toBeGreaterThan(0);
-    await transport.connect();
-    expect(transport.isConnected()).toBe(true);
-  });
-
-  it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
-    const transport = new PhoenixChannelsTransport({
-      wsUrl: "wss://example.test/socket",
-      apiKey: "key-1",
-      agentId: "agent-1",
-    });
-
-    const connectPromise = transport.connect();
-    const socket = phoenixMock.FakeSocket.instances[0];
-    socket?.emitError({ status: 403 });
-
-    await expect(connectPromise).rejects.toBeInstanceOf(TransportError);
-    expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(transport.getDisconnectReason()).toBeNull();
   });
 
   it("propagates terminal supersede through the agent runtime", async () => {

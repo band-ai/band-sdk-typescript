@@ -6,7 +6,7 @@ import { ProviderTurnFailedError } from "../src/core/providerFailure";
 import { Turn, TURN_FAILURE_PROVIDER } from "../src/core/turn";
 import { expect, onTestFinished, vi, type Mock } from "vitest";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
-import { missingReplyMessage, ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
+import { missingReplyMessage, ParticipantRoster, SessionPolicy, type AgentFailure, type SessionPolicyConfig } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { ToolCallingModel } from "../src/adapters";
 import type { AgentToolsProtocol, Logger } from "../src/core";
@@ -679,4 +679,48 @@ export function hangsOnce(reply: string): { readonly model: ToolCallingModel; re
     },
   };
   return { model, hung };
+}
+
+/**
+ * A core `SessionPolicy` for real-wire transport tests: reconnects within tens
+ * of milliseconds and no rapid-disconnect floors or breaker unless overridden.
+ */
+export function fastSessionPolicy(overrides: Partial<SessionPolicyConfig> = {}): SessionPolicy {
+  return new SessionPolicy({
+    baseDelayS: 0.01,
+    factor: 1,
+    maxDelayS: 0.05,
+    stableResetS: 60,
+    rapidDisconnectUptimeS: 0,
+    rapidWindowS: 300,
+    rapidFirstMinDelayS: 0,
+    rapidSecondMinDelayS: 0,
+    rapidCooldownBaseS: 0,
+    rapidCooldownStepS: 0,
+    rapidCooldownMaxS: 0,
+    rapidThreshold: 1_000,
+    heartbeatIntervalS: 30,
+    deadThresholdS: 60,
+    ...overrides,
+  });
+}
+
+/**
+ * Fakes the clock phoenix's timers and core `Session` read, while socket IO
+ * stays real. Inside a delay window, await recorded events and advance the
+ * clock; `vi.waitFor` would advance it on every poll.
+ */
+export const FAKE_WIRE_CLOCK: Parameters<typeof vi.useFakeTimers>[0] = {
+  toFake: ["setTimeout", "clearTimeout", "performance"],
+};
+
+/**
+ * Advances `FAKE_WIRE_CLOCK` in small steps, so real socket IO gets turns
+ * between the timers phoenix chains (close polling, reconnects) instead of
+ * one long advance running them back to back.
+ */
+export async function advanceWireClock(ms: number, stepMs = 100): Promise<void> {
+  for (let elapsed = 0; elapsed < ms; elapsed += stepMs) {
+    await vi.advanceTimersByTimeAsync(Math.min(stepMs, ms - elapsed));
+  }
 }

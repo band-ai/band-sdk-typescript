@@ -3,7 +3,7 @@ import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
-import { RecordLog } from "./testUtils";
+import { RecordLog, fastSessionPolicy } from "./testUtils";
 
 const optional = "optional:room";
 const chat = "chat_room:room";
@@ -11,7 +11,7 @@ const participants = "room_participants:room";
 
 async function connected(logger?: Logger) {
   const peer = await FakePhoenixPeer.start();
-  const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "test", logger, reconnectAfterMs: () => 10 });
+  const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "test", logger, sessionPolicy: fastSessionPolicy() });
   await transport.connect();
   return { peer, transport, async [Symbol.asyncDispose]() {
     vi.useRealTimers();

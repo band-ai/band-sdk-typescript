@@ -4,14 +4,15 @@
  * answered. The transport's reconnect notification is the structural proof the
  * reconnect path ran. The runtime has no idle REST re-poll, so an answer after
  * the drop can only come through the rejoined channels or the reconnect's own
- * sync. A transport concern, not an adapter one, so the agent just echoes.
+ * sync. A normal close (1000) must reconnect too; only core `Session` decides
+ * which closes are terminal. A transport concern, not an adapter one, so the agent just echoes.
  */
 import { describe, expect, it } from "vitest";
 
 import { GenericAdapter } from "../../../../src/index";
 import { Agents, type AgentIdentity } from "../../toolkit/agents";
 import { assertReplyContains } from "../../toolkit/assertMessages";
-import { DroppableTransport } from "../../toolkit/droppableTransport";
+import { DroppableTransport, type SocketDrop } from "../../toolkit/droppableTransport";
 import { observeRoom } from "../../toolkit/observeMessages";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms, type Room } from "../../toolkit/rooms";
@@ -31,7 +32,7 @@ async function answersProbe(room: Room, agent: AgentIdentity, label: string): Pr
 }
 
 describe(SCENARIO, () => {
-  it("keeps the room working across a real transport drop", async () => {
+  it.each<SocketDrop>(["sever", "normal_close"])("keeps the room working across a real transport drop (%s)", async (drop) => {
     await using identity = await Agents.provision(SCENARIO, "agent");
     await using room = await Rooms.create();
     await Rooms.addParticipant(room, identity);
@@ -40,7 +41,7 @@ describe(SCENARIO, () => {
 
     await answersProbe(room, identity, "before");
 
-    const reconnect = await link.dropAndReconnect();
+    const reconnect = await link.dropAndReconnect(drop);
     expect(reconnect.joinedTopics, "every channel rejoined").toEqual(reconnect.attemptedTopics);
 
     await answersProbe(room, identity, "after");

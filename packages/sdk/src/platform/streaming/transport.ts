@@ -47,7 +47,11 @@ export type ReconnectObserver = (
 export type TopicRejoinObserver = (topic: string) => void;
 
 export interface StreamingTransport {
-  connect(): Promise<void>;
+  /**
+   * Connects, rejecting if `signal` aborts first. `disconnect()` may run while
+   * a connect is still in flight and should settle it.
+   */
+  connect(signal?: AbortSignal): Promise<void>;
   disconnect(): Promise<void>;
   join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void>;
   leave(topic: string): Promise<void>;

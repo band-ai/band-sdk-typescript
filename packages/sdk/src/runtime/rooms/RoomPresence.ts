@@ -56,8 +56,9 @@ export class RoomPresence implements AsyncDisposable {
     this.logger = resolveLogger(options.logger);
   }
 
-  public async start(): Promise<void> {
-    return this.lifecycle.run(() => this.startBody());
+  /** Starts presence; aborting `signal` cancels a link connect that is still retrying. */
+  public async start(signal?: AbortSignal): Promise<void> {
+    return this.lifecycle.run(() => this.startBody(signal));
   }
 
   public async stop(): Promise<void> {
@@ -160,13 +161,13 @@ export class RoomPresence implements AsyncDisposable {
     return roomIsAdmitted;
   }
 
-  private async startBody(): Promise<void> {
+  private async startBody(signal?: AbortSignal): Promise<void> {
     if (this.eventTask) {
       throw new RuntimeStateError("RoomPresence is already started");
     }
 
     if (!this.link.isConnected()) {
-      await this.link.connect();
+      await this.link.connect(signal);
     }
 
     // Independent of the rooms channel/REST hydration below (no shared

@@ -56,7 +56,6 @@ describe("PhoenixChannelsTransport upgrade failures", () => {
       wsUrl: `ws://127.0.0.1:${port}/socket`,
       apiKey: "key-1",
       agentId: "agent-1",
-      reconnectAfterMs: () => 60_000,
     });
 
     await expect(transport.connect()).rejects.toBeInstanceOf(
