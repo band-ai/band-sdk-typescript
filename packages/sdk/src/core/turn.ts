@@ -27,12 +27,21 @@ export class Turn {
   private readonly ledger = new TurnLedger();
   private readonly sent: string[] = [];
   private isDetached = false;
+  private declineCount = 0;
 
   /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
   public constructor(public readonly judged = true) {}
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
+    if (effect === "decline") {
+      this.declineCount += 1;
+    }
+  }
+
+  /** How many declines landed, so a tool loop can tell whether its latest round declined. */
+  public get declines(): number {
+    return this.declineCount;
   }
 
   /** Records a Band tool call that landed, by the tool's effect. */

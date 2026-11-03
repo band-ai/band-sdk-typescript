@@ -9,7 +9,7 @@ import type { AgentToolsProtocol } from "../src/core";
 import { FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
+import type { ToolCallingModel, ToolCallingModelRequest, ToolCallingResponse } from "../src/adapters";
 import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -776,6 +776,79 @@ describe("ToolCallingAdapter", () => {
     });
   });
 
+  it("ends the turn once band_no_reply lands, without asking a model that would decline again", async () => {
+    // A live Gemini model asked again after declining declines again, every round.
+    let requests = 0;
+    const model: ToolCallingModel = {
+      complete: async () => {
+        requests += 1;
+        return { toolCalls: [{ id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS }] };
+      },
+    };
+    const tools = new FakeTools();
+
+    await new OpenAIAdapter({ model }).onEvent(turnInput(tools));
+
+    expect(requests).toBe(1);
+    expect(failureEvents(tools)).toEqual([]);
+    expect(tools.messages).toEqual([]);
+  });
+
+  it("ends the turn once a custom tool declared as a decline lands", async () => {
+    const skip: CustomToolDef = { name: "skip_turn", schema: z.object({}), effect: "decline", handler: () => ({ skipped: true }) };
+    const model: ToolCallingModel = {
+      complete: async () => ({ toolCalls: [{ id: "skip", name: skip.name, input: {} }] }),
+    };
+    const tools = new FakeTools();
+
+    await new OpenAIAdapter({ model, customTools: [skip] }).onEvent(turnInput(tools));
+
+    expect(failureEvents(tools)).toEqual([]);
+    expect(tools.messages).toEqual([]);
+  });
+
+  it("asks the model again when a call beside band_no_reply failed, and keeps going after its retry", async () => {
+    let lookups = 0;
+    const lookup: CustomToolDef = {
+      name: "lookup_order",
+      schema: z.object({}),
+      handler: () => {
+        lookups += 1;
+        if (lookups === 1) {
+          throw new Error("order service down");
+        }
+        return { order: "found" };
+      },
+    };
+    const requests: ToolCallingModelRequest[] = [];
+    // The retry round declines nothing, so only a turn-wide decline check would end the turn after it.
+    const responses: ToolCallingResponse[] = [
+      {
+        toolCalls: [
+          { id: "lookup", name: lookup.name, input: {} },
+          { id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS },
+        ],
+      },
+      { toolCalls: [{ id: "retry", name: lookup.name, input: {} }] },
+    ];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        requests.push(request);
+        return responses.shift() ?? {};
+      },
+    };
+
+    await new OpenAIAdapter({ model, customTools: [lookup] }).onEvent(turnInput(new FakeTools()));
+
+    expect(requests).toHaveLength(3);
+    expect(requests[1]?.toolRounds?.[0]?.toolResults).toContainEqual(
+      expect.objectContaining({ toolCallId: "lookup", isError: true }),
+    );
+    expect(requests[2]?.toolRounds?.[1]?.toolResults).toEqual([
+      expect.objectContaining({ toolCallId: "retry", isError: false }),
+    ]);
+  });
+
   it("stops the tool loop after maxToolRounds and reports a single sendFailure, not a double report", async () => {
     class InfiniteToolCallModel implements ToolCallingModel {
       public async complete(): Promise<{
@@ -1011,7 +1084,8 @@ describe("ToolCallingAdapter", () => {
 function scriptedModel(script: TurnScript): ToolCallingModel {
   const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ id: "call-1", name, input }] });
   const rounds: Record<TurnScript, ToolCallingResponse[]> = {
-    decline: [call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), { text: CLOSING_TEXT }],
+    // The closing text rides on the declining response: the loop ends there, and the relay must still drop it.
+    decline: [{ ...call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), text: CLOSING_TEXT }],
     toolReply: [call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), { text: CLOSING_TEXT }],
     act: [call(ACT_TOOL, ACT_ARGS), {}],
     finalText: [{ text: CLOSING_TEXT }],

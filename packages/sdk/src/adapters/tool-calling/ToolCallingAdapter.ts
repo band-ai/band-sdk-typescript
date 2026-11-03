@@ -163,6 +163,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         }
 
         const roundToolCalls = response.toolCalls ?? [];
+        const declinesBefore = tools.turn.declines;
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {
@@ -236,7 +237,15 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
           }
         }
 
-        toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
+        toolRounds.push({
+          toolCalls: roundToolCalls,
+          toolResults: roundToolResults,
+          providerData: response.providerData,
+        });
+        // A decline ends the turn on purpose, unless a sibling failed: the model must still see that.
+        if (tools.turn.declines > declinesBefore && roundToolResults.every((result) => !result.isError)) {
+          break;
+        }
 
         response = await this.complete(turn, {
           systemPrompt: this.systemPrompt,

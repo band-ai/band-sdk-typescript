@@ -27,6 +27,11 @@ description and parameter come from core's `noReplyTool()`, and the base
 prompt teaches it next to `band_send_message`. A declined turn is complete,
 and its closing text is not relayed.
 
+An adapter that runs its own tool loop stops after the round in which a
+decline landed, any tool whose effect is `decline`, without asking the model
+again. If another call in that round failed, the loop continues so the model
+sees the failure. `ToolCallingAdapter` reads this from `Turn.declines`.
+
 ## What counts
 
 The tools a turn receives (`TurnTools`, so `tools.turn` is its `Turn`) record

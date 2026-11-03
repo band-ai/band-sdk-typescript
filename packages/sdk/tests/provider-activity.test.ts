@@ -15,6 +15,7 @@ import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { activitySequence, recordRuntimeActivity } from "./support/activityReports";
+import { geminiCall, geminiResponse } from "./support/geminiResponses";
 import { activityWhileProviderFails } from "./support/providerFailure";
 import { createFakeGoogleAdkSdk, createRealEventGoogleAdkSdk } from "./helpers/fakeGoogleAdkSdk";
 
@@ -51,7 +52,7 @@ const families: Array<{ name: string; create: (tool: CustomToolDef, narration: b
     let round = 0;
     return new GeminiAdapter({ customTools: [tool], enableExecutionReporting: narration,
       clientFactory: async () => ({ models: { generateContent: async (params) => {
-        if (++round === 1) return { functionCalls: [{ id: "call", name: NAME, args: { query: MARKER } }] };
+        if (++round === 1) return geminiResponse(geminiCall(NAME, { query: MARKER }, { id: "call" }));
         expect(JSON.stringify(params)).toContain(RESULT);
         return { text: ANSWER };
       } } }),
