@@ -34,7 +34,7 @@ the existing skills relevant to the task. Reassess when moving from research
 to implementation, testing, or review. Discovery alone does not load instructions.
 Read the linked `SKILL.md` directly when automatic loading is unavailable.
 
-Follow each activation rule: `band-code-review` requires explicit invocation.
+Follow each activation rule: `band-code-review` runs when a review is requested.
 Use only skills that actually exist and disclose missing guidance when it
 materially affects the work. Read [the shared runtime guidance](.claude/skills/workflow-runtime.md)
 for host capabilities, authorization, delegation and cleanup.
