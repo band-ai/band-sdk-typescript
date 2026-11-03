@@ -9,7 +9,7 @@ import type { AgentToolsProtocol } from "../src/core";
 import { FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
+import type { ToolCallingModel, ToolCallingModelRequest, ToolCallingResponse } from "../src/adapters";
 import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -787,6 +787,30 @@ describe("ToolCallingAdapter", () => {
 
     expect(failureEvents(tools)).toEqual([]);
     expect(tools.messages).toEqual([]);
+  });
+
+  it("asks the model again when a call beside band_no_reply failed, so it sees that failure", async () => {
+    const lookup: CustomToolDef = { name: "lookup_order", schema: z.object({}), handler: () => { throw new Error("order service down"); } };
+    const requests: ToolCallingModelRequest[] = [];
+    const responses: ToolCallingResponse[] = [{
+      toolCalls: [
+        { id: "lookup", name: lookup.name, input: {} },
+        { id: "decline", name: NO_REPLY_TOOL_NAME, input: NO_REPLY_ARGS },
+      ],
+    }];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        requests.push(request);
+        return responses.shift() ?? {};
+      },
+    };
+
+    await new OpenAIAdapter({ model, customTools: [lookup] }).onEvent(turnInput(new RecordingTools()));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.toolRounds?.[0]?.toolResults).toContainEqual(
+      expect.objectContaining({ toolCallId: "lookup", isError: true }),
+    );
   });
 
   it("stops the tool loop after maxToolRounds and reports a single sendFailure, not a double report", async () => {

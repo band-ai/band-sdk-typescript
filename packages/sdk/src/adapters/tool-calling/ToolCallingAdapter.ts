@@ -238,7 +238,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         }
 
         toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
-        if (roundToolResults.some(isLandedDecline)) {
+        if (endsTurnByDecline(roundToolResults)) {
           break;
         }
 
@@ -364,9 +364,13 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   }
 }
 
-/** A landed `band_no_reply` ends the turn on purpose, so the model is not asked again. */
-function isLandedDecline(result: ToolResult): boolean {
-  return !result.isError && isBandToolName(result.name) && BAND_TOOL_EFFECTS[result.name] === "decline";
+/**
+ * `band_no_reply` ends the turn on purpose, so the model is not asked again,
+ * unless a sibling call failed: the model must still see and handle that.
+ */
+function endsTurnByDecline(results: ToolResult[]): boolean {
+  return results.every((result) => !result.isError)
+    && results.some(({ name }) => isBandToolName(name) && BAND_TOOL_EFFECTS[name] === "decline");
 }
 
 export function runSingleToolRound(
