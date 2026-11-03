@@ -13,7 +13,8 @@ import {
   takeLast,
 } from "../src/adapters/shared/history";
 import { assertTurnTimeoutMs } from "../src/adapters/shared/turnTimeout";
-import { MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../src/adapters/shared/withTimeout";
+import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
+import { withTimeout } from "../src/adapters/shared/withTimeout";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
 
 describe("adapter shared utilities", () => {

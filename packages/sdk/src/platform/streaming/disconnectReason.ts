@@ -2,10 +2,9 @@ import { z } from "zod";
 import { classifyClose, classifyUpgrade, validateEventPayload } from "@band-ai/band-sdk-core";
 
 export type WebSocketConflictPolicy = "supersede" | "reject";
-export type WebSocketDisconnectSource =
-  | "agent_control"
-  | "upgrade"
-  | "websocket_close";
+const DISCONNECT_SOURCES = ["agent_control", "upgrade", "websocket_close"] as const;
+
+export type WebSocketDisconnectSource = (typeof DISCONNECT_SOURCES)[number];
 
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
@@ -206,26 +205,8 @@ export function controlJoinFailedReason(): GenericWebSocketCloseReason {
   };
 }
 
-/** A socket opened for an attempt the session had already retired. */
-export function staleConnectionReason(): GenericWebSocketCloseReason {
-  return {
-    source: "websocket_close",
-    code: "websocket.closed",
-    message: "Phoenix socket opened for a connection attempt that was no longer current.",
-    retryable: false,
-    closeCode: null,
-    closeReason: null,
-  };
-}
-
-const DISCONNECT_SOURCES: ReadonlySet<unknown> = new Set<WebSocketDisconnectSource>([
-  "agent_control",
-  "upgrade",
-  "websocket_close",
-]);
-
 export function isWebSocketDisconnectReason(value: unknown): value is WebSocketDisconnectReason {
-  return typeof value === "object" && value !== null && "source" in value && DISCONNECT_SOURCES.has(value.source);
+  return typeof value === "object" && value !== null && "source" in value && (DISCONNECT_SOURCES as readonly unknown[]).includes(value.source);
 }
 
 function closeCodeOf(event?: CloseEventLike): number | null {

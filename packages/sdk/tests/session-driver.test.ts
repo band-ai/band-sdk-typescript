@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { SessionPolicy } from "@band-ai/band-sdk-core";
 
-import { MAX_TIMER_DELAY_MS, SessionDriver } from "../src/platform/streaming/sessionDriver";
+import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
+import { SessionDriver } from "../src/platform/streaming/sessionDriver";
 
 function driverAt(clock: { nowS: number }): SessionDriver {
   return new SessionDriver({ policy: SessionPolicy.default(), now: () => clock.nowS, jitter: () => 1 });
@@ -15,8 +16,8 @@ describe("SessionDriver", () => {
 
     const verdict = driver.onUpgradeRejected(503, 10_000_000);
 
-    expect(verdict).toEqual({ kind: "retry", delayMs: MAX_TIMER_DELAY_MS });
-    expect(driver.pendingDelayMs).toBe(MAX_TIMER_DELAY_MS);
+    expect(verdict).toEqual({ kind: "retry", delayMs: MAX_SETTIMEOUT_DELAY_MS });
+    expect(driver.pendingDelayMs).toBe(MAX_SETTIMEOUT_DELAY_MS);
   });
 
   it("starts a fresh run after a terminal verdict, since core never revives a dead Session", () => {
@@ -24,10 +25,10 @@ describe("SessionDriver", () => {
     driver.begin();
     driver.beginAttempt();
     expect(driver.onUpgradeRejected(403, null)).toEqual({ kind: "terminal", rapidDisconnect: false });
-    expect(driver.beginAttempt()).toBe("dead");
+    expect(driver.beginAttempt()).toBe(false);
 
     expect(driver.begin()).toBe(true);
-    expect(driver.beginAttempt()).toBe("proceed");
+    expect(driver.beginAttempt()).toBe(true);
   });
 
   it("does not let a local end be undone by a late attempt", () => {
@@ -35,7 +36,7 @@ describe("SessionDriver", () => {
     driver.begin();
     driver.end();
 
-    expect(driver.beginAttempt()).toBe("ended");
+    expect(driver.beginAttempt()).toBe(false);
     expect(driver.onSocketClose(1000)).toEqual({ kind: "ended" });
   });
 });

@@ -1,7 +1,5 @@
 import { Session, SessionPolicy, type SessionOutcome } from "@band-ai/band-sdk-core";
-
-/** The longest delay a Node timer holds; a larger one fires after 1 ms. */
-export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
 
 /** Core's policy speaks seconds; timers speak milliseconds. */
 export const MS_PER_SECOND = 1000;
@@ -15,8 +13,6 @@ export type SessionVerdict =
   | { kind: "stale" }
   /** The owner ended this run locally; nothing to report. */
   | { kind: "ended" };
-
-export type AttemptDecision = "proceed" | "ended" | "dead";
 
 export interface SessionDriverOptions {
   policy: SessionPolicy;
@@ -38,9 +34,8 @@ export class SessionDriver {
   private readonly jitter: () => number;
   private session: Session | null = null;
   private epoch: bigint | null = null;
-  private endedLocally = false;
-  /** Whether the owner already acted on this run's end, terminal or local. */
-  private settled = false;
+  /** How this run ended for the owner: not yet, reported (a terminal end it acted on), or locally. */
+  private runEnd: "none" | "reported" | "local" = "none";
   private delayMs: number | null = null;
 
   public constructor(options: SessionDriverOptions) {
@@ -51,19 +46,20 @@ export class SessionDriver {
 
   /** Whether a run is in progress: not ended locally and not dead. */
   public get isLive(): boolean {
-    return this.session !== null && !this.endedLocally && this.session.state !== "dead";
+    return this.session !== null && this.runEnd !== "local" && this.session.state !== "dead";
   }
 
+  /** Whether the owner already acted on this run's end, terminal or local. */
   public get isSettled(): boolean {
-    return this.settled;
+    return this.runEnd !== "none";
   }
 
   /** Claims the run's end for the owner to act on; false when it was already claimed. */
   public settle(): boolean {
-    if (this.settled) {
+    if (this.isSettled) {
       return false;
     }
-    this.settled = true;
+    this.runEnd = "reported";
     return true;
   }
 
@@ -74,31 +70,30 @@ export class SessionDriver {
     }
     this.session = new Session(this.policy);
     this.epoch = null;
-    this.endedLocally = false;
-    this.settled = false;
+    this.runEnd = "none";
     this.delayMs = null;
     return true;
   }
 
   /** Ends the run locally; nothing later in it is reported. */
   public end(): void {
-    this.endedLocally = true;
-    this.settled = true;
+    this.runEnd = "local";
     this.session?.end();
   }
 
   /** Asks Session whether the next connect attempt may start. */
-  public beginAttempt(): AttemptDecision {
-    if (!this.session || this.endedLocally) {
-      return "ended";
+  public beginAttempt(): boolean {
+    if (!this.session || this.runEnd === "local") {
+      return false;
     }
+    // Undefined once dead; Session always reports a death before refusing an attempt.
     const epoch = this.session.beginAttempt(this.now());
     if (epoch === undefined) {
-      return "dead";
+      return false;
     }
     this.epoch = epoch;
     this.delayMs = null;
-    return "proceed";
+    return true;
   }
 
   public onConnected(): SessionVerdict {
@@ -125,7 +120,7 @@ export class SessionDriver {
   }
 
   private judge(call: (session: Session, epoch: bigint) => SessionOutcome): SessionVerdict {
-    if (!this.session || this.endedLocally || this.epoch === null) {
+    if (!this.session || this.runEnd === "local" || this.epoch === null) {
       return { kind: "ended" };
     }
     const outcome = call(this.session, this.epoch);
@@ -138,7 +133,7 @@ export class SessionDriver {
     if (outcome.state === "up") {
       return { kind: "up" };
     }
-    this.delayMs = Math.min((outcome.retryAfterS ?? 0) * MS_PER_SECOND, MAX_TIMER_DELAY_MS);
+    this.delayMs = Math.min((outcome.retryAfterS ?? 0) * MS_PER_SECOND, MAX_SETTIMEOUT_DELAY_MS);
     return { kind: "retry", delayMs: this.delayMs };
   }
 }

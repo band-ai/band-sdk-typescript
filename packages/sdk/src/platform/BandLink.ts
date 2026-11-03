@@ -14,7 +14,7 @@ import type {
   BandLinkRestApi,
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
-import { UnsupportedFeatureError } from "../core/errors";
+import { TransportError, UnsupportedFeatureError } from "../core/errors";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
@@ -233,7 +233,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         } else {
           this.recordDisconnectError(error);
         }
-      } else if (error instanceof Error && isWebSocketDisconnectReason(error.cause)) {
+      } else if (error instanceof TransportError && isWebSocketDisconnectReason(error.cause)) {
         // A boot that ran out of time reports the last failure it saw.
         this.lastDisconnectReason = error.cause;
       }

@@ -14,13 +14,13 @@ import {
   parseUpgradeDisconnectReason,
   controlJoinFailedReason,
   rapidDisconnectReason,
-  staleConnectionReason,
   type WebSocketConflictPolicy,
   type WebSocketDisconnectReason,
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
-import { MAX_TIMER_DELAY_MS, MS_PER_SECOND, SessionDriver, type SessionVerdict } from "./sessionDriver";
+import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
+import { MS_PER_SECOND, SessionDriver, type SessionVerdict } from "./sessionDriver";
 import {
   isOptionalTopic,
   type JoinOptions,
@@ -350,12 +350,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private async handleOpen(): Promise<void> {
-    const verdict = this.driver.onConnected();
-    if (verdict.kind === "ended") {
-      return;
-    }
-    if (verdict.kind !== "up") {
-      this.endSession(staleConnectionReason());
+    // Phoenix opens only the attempt just begun, so anything but "up" means the run already ended.
+    if (this.driver.onConnected().kind !== "up") {
       return;
     }
 
@@ -461,29 +457,25 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   /** Asks Session whether phoenix may start its next connect attempt. */
   private beforeAttempt(): boolean {
-    const decision = this.driver.beginAttempt();
-    if (decision === "dead" && !this.driver.isSettled) {
-      // Session refuses an attempt it has not reported dead only when its
-      // breaker trips as the attempt retires a socket still marked up.
-      this.endSession(rapidDisconnectReason());
-    }
-    return decision === "proceed";
+    // A close phoenix dropped never consumed its reason; it belongs to no later connection.
+    this.ownCloseReason = null;
+    return this.driver.beginAttempt();
   }
 
   /** Runs before phoenix asks for the reconnect delay, so Session's verdict sets it. */
   private handleSocketClose(event?: CloseEventLike): void {
     this.connected = false;
     const verdict = this.driver.onSocketClose(event?.code);
-    this.logger.info("Phoenix socket closed", {
-      code: event?.code ?? null,
-      reason: event?.reason ?? null,
-      verdict,
-    });
     const ownReason = this.ownCloseReason;
     this.ownCloseReason = null;
     const reason = verdict.kind === "terminal" && verdict.rapidDisconnect
       ? rapidDisconnectReason(event)
       : ownReason ?? genericCloseReason(event);
+    this.logger.info("Phoenix socket closed", {
+      code: event?.code ?? null,
+      reason,
+      verdict,
+    });
     this.applyVerdict(verdict, reason);
   }
 
@@ -494,11 +486,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       this.handleSocketClose();
     }
     // Null once the run has ended, when the attempt gate refuses anyway; finite because Node fires an infinite delay at once.
-    return this.driver.pendingDelayMs ?? MAX_TIMER_DELAY_MS;
+    return this.driver.pendingDelayMs ?? MAX_SETTIMEOUT_DELAY_MS;
   }
 
   /** Closes the live socket for `reason`, so phoenix reconnects after Session's delay. */
   private dropLiveConnection(reason: WebSocketDisconnectReason): void {
+    // Retired here: phoenix may give up on this close before it arrives.
+    this.connected = false;
     this.ownCloseReason = reason;
     this.socket.closeLiveConnection();
   }
@@ -536,6 +530,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
    */
   private async stopSocket(): Promise<void> {
     this.connected = false;
+    this.ownCloseReason = null;
     this.driver.end();
     await this.socket.close();
   }

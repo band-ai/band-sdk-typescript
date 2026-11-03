@@ -94,14 +94,19 @@ async function onWireClock<T>(work: Promise<T>, budgetMs = PAST_ANY_DELAY_MS): P
   return tracked;
 }
 
-/** Steps the fake clock until `transport.isConnected()` reads `connected`. */
-async function connectedState(transport: PhoenixChannelsTransport, connected: boolean): Promise<void> {
+/** Steps the fake clock until `holds()` is true. */
+async function wireUntil(holds: () => boolean): Promise<void> {
   await onWireClock(
     new Promise<void>((resolve) => {
-      const poll = () => (transport.isConnected() === connected ? resolve() : setImmediate(poll));
+      const poll = () => (holds() ? resolve() : setImmediate(poll));
       poll();
     }),
   );
+}
+
+/** Steps the fake clock until `transport.isConnected()` reads `connected`. */
+async function connectedState(transport: PhoenixChannelsTransport, connected: boolean): Promise<void> {
+  await wireUntil(() => transport.isConnected() === connected);
 }
 
 /** Steps the fake clock until the peer has refused at least `count` upgrades. */
@@ -451,6 +456,55 @@ describe("core Session owns reconnects (real wire)", () => {
       await again;
 
       expect(agent.transport.isConnected()).toBe(true);
+    });
+  });
+
+  describe("a close the transport starts itself", () => {
+    it("is not blamed for a later run's close when phoenix gives up on it", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      peer.queueJoinOutcomes(CONTROL_TOPIC, ["pending"]);
+      const first = agent.transport.connect().catch(() => undefined);
+      await onWireClock(peer.joined.next((topic) => topic === CONTROL_TOPIC));
+
+      // The join times out against a silent peer, so its drop's close goes unanswered;
+      // the stop lands before ws gives up on it, and phoenix stops waiting first.
+      peer.stallReads();
+      await advanceWireClock(10_200);
+      // It rejects: the close handshake never finished, which is the point.
+      await onWireClock(agent.transport.disconnect().catch(() => undefined));
+      await onWireClock(first);
+      peer.resumeReads();
+
+      await onWireClock(agent.transport.connect());
+      peer.closeConnections(1008);
+      await wireUntil(() => agent.terminals.length > 0);
+
+      expect(agent.terminals).toEqual([expect.objectContaining({ code: "websocket.closed", closeCode: 1008 })]);
+    });
+
+    it("stops reporting connected at once, even if phoenix later drops that close", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer, { heartbeatIntervalS: 0.1, deadThresholdS: 0.2 });
+      await agent.transport.connect();
+
+      peer.stallReads();
+      await advanceWireClock(100, 10);
+      peer.push(CONTROL_TOPIC, "supersede", {
+        reason: "session.reconnect",
+        message: "reconnect",
+        retryable: true,
+        retry_after: 20,
+        correlation_id: null,
+      });
+      await connectedState(agent.transport, false);
+      peer.resumeReads();
+      await advanceWireClock(21_000, 100);
+      await connectedState(agent.transport, true);
+
+      peer.closeConnections(1008);
+      await wireUntil(() => agent.terminals.length > 0);
+      expect(agent.terminals).toEqual([expect.objectContaining({ source: "websocket_close", closeCode: 1008 })]);
     });
   });
 
