@@ -171,10 +171,36 @@ function executionResult(response: unknown): { output: unknown; isError: boolean
   };
 }
 
-/** Whether `event` carries a round's tool results, every one of them a success. */
-function roundSucceeded(sdk: GoogleAdkSdkLike, event: unknown): boolean {
-  const responses = sdk.getFunctionResponses(event);
-  return responses.length > 0 && responses.every((response) => !executionResult(response.response).isError);
+/**
+ * One tool round's outcome, judged from each call's own output as `Turn`
+ * judges it, not from ADK's stringified envelope, which can read differently.
+ */
+class ToolRound {
+  private declinesBefore = 0;
+  private failed = false;
+
+  public constructor(private readonly turn: TurnTools["turn"]) {}
+
+  public start(): void {
+    this.declinesBefore = this.turn.declines;
+    this.failed = false;
+  }
+
+  public async run(execute: () => Promise<unknown>): Promise<unknown> {
+    try {
+      const output = await execute();
+      this.failed ||= isFailedToolOutput(output);
+      return output;
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    }
+  }
+
+  /** A decline landed and no call beside it failed, so the turn is over. */
+  public get declined(): boolean {
+    return this.turn.declines > this.declinesBefore && !this.failed;
+  }
 }
 
 async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
@@ -325,7 +351,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     let finalResponseText = "";
     try {
       const sdk = await this.sdkLoader.get();
-      const built = this.buildTools(sdk, tools);
+      const round = new ToolRound(tools.turn);
+      const built = this.buildTools(sdk, tools, round);
       const runner = sdk.createRunner({
         agent: this.buildAgent(sdk, built.tools),
         appName: APP_NAME,
@@ -339,7 +366,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
 
       await withNativeActivity(tools, built.observedNames, async (native) => {
         let toolRounds = 0;
-        let declinesBefore = tools.turn.declines;
         for await (const event of runner.runAsync({
           userId: context.roomId,
           sessionId,
@@ -353,7 +379,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             if (++toolRounds > this.maxToolRounds) {
               throw toolLoopLimitError(this.maxToolRounds);
             }
-            declinesBefore = tools.turn.declines;
+            round.start();
           }
           throwIfModelError(event);
           this.trackNativeEvent(sdk, event, native);
@@ -364,7 +390,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             finalResponseText = sdk.stringifyContent(event);
           }
           // ADK would hand the results back to the model; a decline ends the turn unless a sibling failed.
-          if (tools.turn.declines > declinesBefore && roundSucceeded(sdk, event)) {
+          if (sdk.getFunctionResponses(event).length > 0 && round.declined) {
             break;
           }
         }
@@ -437,16 +463,17 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
+    round: ToolRound,
   ): { tools: unknown[]; observedNames: Set<string> } {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
+      .map((schema) => this.buildPlatformTool(sdk, tools, round, schema))
       .filter((tool): tool is { name: string; tool: unknown } => tool !== null);
 
     for (const customTool of this.customTools) {
-      adkTools.push(this.buildCustomTool(sdk, customTool, tools));
+      adkTools.push(this.buildCustomTool(sdk, customTool, tools, round));
     }
 
     return { tools: adkTools.map(({ tool }) => tool), observedNames: new Set(adkTools.map(({ name }) => name)) };
@@ -455,6 +482,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildPlatformTool(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
+    round: ToolRound,
     schema: Record<string, unknown>,
   ): { name: string; tool: unknown } | null {
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -467,9 +495,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => {
-        return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
-      },
+      execute: async (input) => stringifyToolResult(await round.run(() => tools.executeToolCall(name, asToolArgs(input)))),
     });
     return { name, tool };
   }
@@ -478,6 +504,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
     tools: TurnTools,
+    round: ToolRound,
   ): { name: string; tool: unknown } {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -486,7 +513,9 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
+      execute: async (input) => stringifyToolResult(
+        await round.run(() => executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
+      ),
     });
     return { name, tool };
   }

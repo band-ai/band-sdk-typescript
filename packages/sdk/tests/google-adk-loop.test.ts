@@ -124,6 +124,17 @@ describe("Google ADK tool loop", () => {
       expect(model.requests).toBe(1);
     });
 
+    // ToolCallingAdapter and `Turn` judge the handler's own output; a JSON string is not a failure to them.
+    it("ends the run when it returns a JSON string that reads like a failure", async () => {
+      const { model, turn } = await runTurn(
+        (request) => request === 1 ? [call("skip_turn")] : [send("Noted.")],
+        { additionalTools: [skip(() => '{"ok":false,"message":"nothing to add"}')] },
+      );
+      await turn;
+
+      expect(model.requests).toBe(1);
+    });
+
     it("lets the model carry on when it fails", async () => {
       const { model, room, turn } = await runTurn(
         (request) => request === 1 ? [call("skip_turn")] : request === 2 ? [send("Noted.")] : [text("done")],

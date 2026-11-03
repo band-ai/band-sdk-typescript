@@ -554,16 +554,19 @@ function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
   return langChainMessageType(record) === "ai";
 }
 
+/** The roles LangChain reads as a human message, in a tuple or a role record. */
+const HUMAN_ROLES: ReadonlySet<unknown> = new Set(["user", "human"]);
+
 /** This turn's input, in any shape a graph's state holds it: a tuple, a role record, or a LangChain message. */
 function isHumanMessage(value: unknown): boolean {
   if (Array.isArray(value)) {
-    return value[0] === "user" || value[0] === "human";
+    return HUMAN_ROLES.has(value[0]);
   }
   const record = asOptionalRecord(value);
   if (!record) {
     return false;
   }
-  return langChainMessageType(record) === "human" || record.role === "user";
+  return langChainMessageType(record) === "human" || HUMAN_ROLES.has(record.role);
 }
 
 // Serialized messages carry text under kwargs.content; instances expose it directly.

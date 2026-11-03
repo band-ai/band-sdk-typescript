@@ -1,8 +1,9 @@
 /**
  * Which text in a graph's final state is this turn's answer: only what follows
  * this turn's input. Earlier turns replayed into the state are not, whether the
- * state holds LangChain messages (the real `createReactAgent`) or the adapter's
- * own `[role, content]` tuples handed back by a caller's graph.
+ * state holds LangChain messages (the real `createReactAgent`) or a caller's
+ * graph hands back the adapter's input as tuples, role records or serialized
+ * messages, the shapes the adapter reads an answer from.
  */
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -41,9 +42,16 @@ const answeredBefore = new HistoryProvider([
   { id: "earlier-reply", content: EARLIER_REPLY, sender_type: "Agent", sender_name: "helper" },
 ]);
 
-/** A caller's graph that hands back the adapter's input, plus `appended` after this turn's input. */
-const echoGraph = (...appended: unknown[]) => ({
-  invoke: async (input: Record<string, unknown>) => ({ messages: [...(input.messages as unknown[]), ...appended] }),
+type Tuple = [role: string, content: string];
+/** The adapter's `[role, content]` input, as a graph's state may hold it. */
+const asRoleRecord = ([role, content]: Tuple) => ({ role, content });
+const asSerialized = ([role, content]: Tuple) => ({
+  lc: 1, type: "constructor", id: ["langchain_core", "messages", role === "assistant" ? "AIMessage" : "HumanMessage"], kwargs: { content },
+});
+
+/** A caller's graph that hands back the adapter's input in `shape`, plus `appended` after this turn's input. */
+const echoGraph = (shape: (message: Tuple) => unknown = (message) => message, ...appended: unknown[]) => ({
+  invoke: async (input: Record<string, unknown>) => ({ messages: [...(input.messages as Tuple[]).map(shape), ...appended] }),
 });
 
 async function runTurn(options: LangGraphAdapterOptions) {
@@ -58,6 +66,8 @@ describe("LangGraph reply boundary", () => {
   it.each([
     ["the built-in graph's LangChain messages", { llm: new FixedChatModel("") }],
     ["a caller's graph returning the adapter's tuples", { graphFactory: () => echoGraph() }],
+    ["a caller's graph returning role records", { graphFactory: () => echoGraph(asRoleRecord) }],
+    ["a caller's graph returning serialized LangChain messages", { graphFactory: () => echoGraph(asSerialized) }],
   ])("never relays an earlier turn's reply as this turn's, in %s", async (_shape, options) => {
     const { room, turn } = await runTurn(options);
     await expectTurnFailed(turn);
@@ -67,7 +77,7 @@ describe("LangGraph reply boundary", () => {
   });
 
   it("relays the answer that follows this turn's input", async () => {
-    const { room, turn } = await runTurn({ graphFactory: () => echoGraph(["assistant", "Walks noted."]) });
+    const { room, turn } = await runTurn({ graphFactory: () => echoGraph(undefined, ["assistant", "Walks noted."]) });
     await turn;
 
     expect(room.messages.map((message) => message.content)).toEqual(["Walks noted."]);
