@@ -5,6 +5,7 @@ import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { Epoch } from "../../core/epoch";
+import { eitherSignal } from "../../core/signals";
 import { ChannelRegistry, supersededJoinError } from "./ChannelRegistry";
 import {
   WebSocketDisconnectError,
@@ -341,7 +342,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private handleJoinSettled(topic: string, joined: boolean): void {
     if (!joined && topic === this.controlTopic && this.run?.isLive) {
       // At boot or on any rejoin: a dropped socket as far as Session is concerned.
+      // Its generation would otherwise finalize as a reconnect on the socket being dropped.
+      this.generationTracker.discardCurrent();
       this.dropLiveConnection(controlJoinFailedReason());
+      return;
     }
     const inGeneration = this.generationTracker.recordSettled(topic, joined);
     // A settlement no reconnect generation waited on is a channel rejoining by
@@ -519,7 +523,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         void deadline.expired.then(() =>
           reject(new TransportError("Timed out waiting for Phoenix socket connection", run.lastReason ?? undefined)),
         );
-        const stops = signal ? AbortSignal.any([run.signal, signal]) : run.signal;
+        const stops = eitherSignal(run.signal, signal);
         const stopped = (): void =>
           reject(run.signal.aborted ? (run.signal.reason as Error) : new RuntimeStateError("Transport connect was aborted"));
         if (stops.aborted) {

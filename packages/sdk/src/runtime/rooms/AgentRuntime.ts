@@ -162,11 +162,8 @@ export class AgentRuntime {
 
   private async runStart(): Promise<void> {
     const abort = new AbortController();
+    // Set before the first await, so any stop that sees this start can abort it.
     this.startAbort = abort;
-    if (this.stopMidStart) {
-      // A stop that landed before this start began running.
-      abort.abort();
-    }
     try {
       await this.presence.start(abort.signal);
     } catch (error) {

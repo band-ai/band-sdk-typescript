@@ -1,5 +1,6 @@
 import { resolveLogger, type Logger } from "../core/logger";
 import { SingleFlight } from "../core/singleFlight";
+import { eitherSignal } from "../core/signals";
 import { Session } from "./Session";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import { ActivityCapability } from "../client/rest/activityCapability";
@@ -186,7 +187,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       const abort = new AbortController();
       this.connectAbort = abort;
       try {
-        await this.connectSession(this.session.begin(), signal ? AbortSignal.any([signal, abort.signal]) : abort.signal);
+        await this.connectSession(this.session.begin(), eitherSignal(abort.signal, signal));
       } finally {
         this.connectAbort = null;
       }

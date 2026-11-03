@@ -2,6 +2,7 @@ import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 
+import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import {
@@ -13,6 +14,7 @@ import {
   PhoenixChannelsTransport,
 } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSocketFactory";
+import type { ReconnectSnapshot } from "../src/platform/streaming/transport";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
 import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
@@ -227,12 +229,22 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       await agent.transport.connect();
+      const snapshots: ReconnectSnapshot[] = [];
+      const recovered = createDeferred<void>();
+      agent.transport.onReconnected((snapshot) => {
+        snapshots.push(snapshot);
+        if (snapshot.joinedTopics.has(CONTROL_TOPIC)) {
+          recovered.resolve();
+        }
+      });
       peer.queueJoinOutcomes(CONTROL_TOPIC, ["error"]);
 
       peer.severAllConnections();
       await reconnected(peer, 3);
+      await onWireClock(recovered.promise);
 
-      await onWireClock(peer.joined.next((topic) => topic === CONTROL_TOPIC, 2));
+      // The dropped socket's generation is discarded, not reported as a reconnect that joined nothing.
+      expect(snapshots.map((snapshot) => [...snapshot.joinedTopics])).toEqual([[CONTROL_TOPIC]]);
       expect(agent.terminals).toEqual([]);
     });
 
@@ -525,10 +537,11 @@ describe("core Session owns reconnects (real wire)", () => {
       peer.severAllConnections();
       await refused(peer);
 
+      // The stopped run would wait out the 400 s floor; only a fresh run connects now.
       const stopping = agent.transport.disconnect();
       const again = agent.transport.connect();
-      await onWireClock(stopping);
       peer.acceptUpgrades();
+      await onWireClock(stopping);
 
       await onWireClock(again);
       expect(agent.transport.isConnected()).toBe(true);
@@ -654,7 +667,8 @@ describe("core Session owns reconnects (real wire)", () => {
       const outcome = connecting.then(() => null, (error: unknown) => error);
       await advanceWireClock(BOOT_CONNECT_DEADLINE_MS + 1_000, 1_000);
 
-      const error = await outcome;
+      // The deadline's teardown polls phoenix's close on the fake clock, so keep it running.
+      const error = await onWireClock(outcome);
       expect(error).toBeInstanceOf(TransportError);
       expect((error as Error).cause).toMatchObject({ source: "upgrade", status: 503, retryable: true });
       expect(agent.transport.getDisconnectReason()).toMatchObject({ status: 503 });
@@ -708,7 +722,8 @@ describe("core Session owns reconnects (real wire)", () => {
       const outcome = agent.transport.connect().then(() => null, (error: unknown) => error);
       await advanceWireClock(BOOT_CONNECT_DEADLINE_MS + 1_000, 1_000);
 
-      const error = await outcome;
+      // The deadline's teardown polls phoenix's close on the fake clock, so keep it running.
+      const error = await onWireClock(outcome);
       expect(error).toBeInstanceOf(TransportError);
       expect((error as Error).cause).toMatchObject({ code: "websocket.control_join_failed" });
     });

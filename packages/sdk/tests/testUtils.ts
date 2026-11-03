@@ -794,5 +794,18 @@ export const FAKE_WIRE_CLOCK: Parameters<typeof vi.useFakeTimers>[0] = {
 export async function advanceWireClock(ms: number, stepMs = 100): Promise<void> {
   for (let elapsed = 0; elapsed < ms; elapsed += stepMs) {
     await vi.advanceTimersByTimeAsync(Math.min(stepMs, ms - elapsed));
+    await realIoTurn();
+  }
+}
+
+/**
+ * Lets at least one real millisecond of IO run, so a loaded machine cannot
+ * spend a whole wire budget before a local round trip completes. `Date.now`
+ * and `setImmediate` are real under `FAKE_WIRE_CLOCK`.
+ */
+async function realIoTurn(): Promise<void> {
+  const start = Date.now();
+  while (Date.now() === start) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }

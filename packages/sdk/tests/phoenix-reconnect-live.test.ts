@@ -508,7 +508,7 @@ describe("Phoenix reconnect (real wire)", () => {
     }, 20_000);
   });
 
-  // INT-1858: a server's normal close used to end the session for good.
+  // A server's normal close used to end the session for good.
   it("rejoins every room after a normal server close and catches up what it missed", async () => {
     await using peer = await FakePhoenixPeer.start();
     let missed: ReturnType<typeof wireMessage> | null = null;

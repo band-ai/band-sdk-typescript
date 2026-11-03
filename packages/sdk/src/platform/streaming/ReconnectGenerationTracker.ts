@@ -68,6 +68,15 @@ export class ReconnectGenerationTracker {
     }
   }
 
+  /** Discards the current generation unreported; its socket is being dropped. */
+  public discardCurrent(): void {
+    const record = this.generations.get(this.currentGeneration);
+    if (record) {
+      this.onGenerationDropped?.(this.currentGeneration, record.pending.size);
+      this.generations.delete(this.currentGeneration);
+    }
+  }
+
   public reset(): void {
     this.generations.clear();
     this.currentGeneration = 0;
