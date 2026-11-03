@@ -3,7 +3,11 @@ import { SessionPolicy } from "@band-ai/band-sdk-core";
 
 import { RuntimeStateError } from "../src/core/errors";
 import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
-import { WebSocketDisconnectError, type WebSocketUpgradeDisconnectReason } from "../src/platform/streaming/disconnectReason";
+import {
+  WebSocketDisconnectError,
+  controlJoinFailedReason,
+  type WebSocketUpgradeDisconnectReason,
+} from "../src/platform/streaming/disconnectReason";
 import { SessionRun } from "../src/platform/streaming/sessionRun";
 
 function runAt(clock: { nowS: number }): SessionRun {
@@ -35,6 +39,18 @@ describe("SessionRun", () => {
     expect(run.isLive).toBe(false);
     expect(run.signal.reason).toBeInstanceOf(WebSocketDisconnectError);
     expect(run.beginAttempt()).toBe(false);
+  });
+
+  it("reports a later connection's close as itself, not as an own close phoenix dropped", () => {
+    const run = runAt({ nowS: 0 });
+    run.beginAttempt();
+    run.onConnected();
+    run.closeOwnConnection(controlJoinFailedReason());
+    // Phoenix never reported that close; the next attempt is a new connection.
+    run.beginAttempt();
+    run.onConnected();
+
+    expect(run.onSocketClose({ code: 1008 })).toMatchObject({ kind: "terminal", reason: { code: "websocket.closed" } });
   });
 
   it("is never connected once stopped, and ignores what arrives after", () => {

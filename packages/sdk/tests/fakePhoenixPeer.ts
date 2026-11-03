@@ -239,10 +239,6 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
   }
 
-  public get connectionCount(): number {
-    return this.connections.entries.length;
-  }
-
   /** Once the agent has joined its control channel, hands the agent to another connection, as the platform does for a second socket by default. */
   public async supersede(agentId: string): Promise<void> {
     await this.joined.next((joinedTopic) => joinedTopic === agentControlTopic(agentId));

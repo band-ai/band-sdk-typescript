@@ -563,7 +563,7 @@ describe("Phoenix reconnect (real wire)", () => {
       });
       const expectNoReconnect = async (): Promise<void> => {
         await advanceWireClock(RECONNECT_WINDOW_MS);
-        expect(peer.connectionCount).toBe(1);
+        expect(peer.connections.entries).toHaveLength(1);
         expect(transport.isConnected()).toBe(false);
       };
       return {

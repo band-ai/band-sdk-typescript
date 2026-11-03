@@ -397,8 +397,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       });
       return;
     }
-    // The run may have ended while the join was in flight.
-    if (!run.isLive) {
+    // The run may have ended, or a supersede dropped this connection, while the join was in flight.
+    if (!run.isLive || run.isClosing) {
       return;
     }
 
@@ -461,6 +461,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
             this.logger.warn("Invalid agent_control supersede payload", {
               payload,
             });
+            return;
+          }
+          if (this.run?.isClosing) {
+            // Session already judged this connection; a second count would only inflate its backoff.
+            this.logger.debug("Ignoring supersede on a connection already being dropped", { reason });
             return;
           }
           const verdict = this.run?.onSupersede(reason);

@@ -85,7 +85,7 @@ async function emitUpgradeError(
 /** Only a small JSON error object is parsed from a refusal; a larger body is cut off here. */
 const MAX_REFUSAL_BODY_BYTES = 64 * 1024;
 
-/** Resolves with the body read before it ends, fails, runs past `timeoutMs` or the size cap; never rejects, since the status and headers matter more. */
+/** A best-effort read bounded by `timeoutMs` and the size cap; never rejects, since the status and headers matter more. */
 function readResponseBody(response: IncomingMessage, timeoutMs: number): Promise<string> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];

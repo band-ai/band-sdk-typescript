@@ -14,7 +14,6 @@ import { NO_REPLY_TOOL_NAME, SEND_EVENT_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from
 import { agentFailure } from "../src/core/providerFailure";
 import { SimpleAdapter } from "../src/core/simpleAdapter";
 import { relayReply } from "../src/core/turn";
-import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi, FakeTransport, makeMessage, MISSING_REPLY, reportedFailures, type ReportedFailure } from "./testUtils";
 import { NO_REPLY_ARGS } from "./turnOutcomeContract";
@@ -996,19 +995,8 @@ describe("PlatformRuntime", () => {
       onStarted: vi.fn(async () => undefined),
       onRuntimeStop: vi.fn(async () => undefined),
     };
-    const transport: StreamingTransport = {
-      connect: vi.fn(async () => {
-        throw new Error("connect failed");
-      }),
-      disconnect: vi.fn(async () => undefined),
-      join: vi.fn(async () => undefined),
-      leave: vi.fn(async () => undefined),
-      runForever: vi.fn(async () => undefined),
-      isConnected: vi.fn(() => false),
-      getDisconnectReason: () => null,
-      getTerminalError: () => null,
-      onTerminal: () => () => undefined,
-    };
+    const transport = new FakeTransport();
+    transport.failConnect(new Error("connect failed"));
 
     await using runtime = new PlatformRuntime({
       agentId: "a1",

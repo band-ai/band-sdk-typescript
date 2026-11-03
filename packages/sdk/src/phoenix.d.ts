@@ -23,7 +23,7 @@ declare module "phoenix" {
   export class Socket {
     readonly conn: WebSocket | null;
     constructor(url: string, options?: SocketOptions);
-    // Private in phoenix; verified against phoenix 1.8.16, which the SDK pins.
+    // Private in phoenix; re-verify against the pinned version on every phoenix bump.
     // Every connect attempt passes through transportConnect().
     protected transportConnect(): void;
     // Runs before phoenix asks reconnectAfterMs for the next delay.

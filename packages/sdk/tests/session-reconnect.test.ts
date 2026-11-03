@@ -199,6 +199,7 @@ async function startStalledRefusal(status: number, headers: Record<string, strin
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("core Session owns reconnects (real wire)", () => {
@@ -244,7 +245,7 @@ describe("core Session owns reconnects (real wire)", () => {
       await reconnected(peer, 3);
       await onWireClock(recovered.promise);
 
-      // The dropped socket's generation is discarded, not reported as a reconnect that joined nothing.
+      // Replies on the dropped socket settle nothing, so it is not reported as a reconnect that joined nothing.
       expect(snapshots.map((snapshot) => [...snapshot.joinedTopics])).toEqual([[CONTROL_TOPIC]]);
       expect(agent.terminals).toEqual([]);
     });
@@ -296,6 +297,31 @@ describe("core Session owns reconnects (real wire)", () => {
       });
       await reconnected(peer, 3);
       await onWireClock(recovered.promise);
+
+      expect(snapshotConnections).toEqual([3]);
+    });
+
+    it("reports no reconnect when a room still rejoining on a superseded socket is left", async () => {
+      await using peer = await startPeer();
+      // Long enough that the leave lands before the next socket opens.
+      await using agent = transportFor(peer, { baseDelayS: 1, maxDelayS: 1 });
+      await agent.transport.connect();
+      await onWireClock(agent.transport.join(ROOM, {}));
+      const snapshotConnections: number[] = [];
+      agent.transport.onReconnected(() => {
+        snapshotConnections.push(peer.connections.entries.length);
+      });
+      peer.queueJoinOutcomes(ROOM, ["pending"]);
+      peer.severAllConnections();
+      await reconnected(peer, 2);
+      await connectedState(agent.transport, true);
+
+      // The room was all the dropped socket's rejoin still waited on.
+      pushSupersede(peer);
+      await connectedState(agent.transport, false);
+      await onWireClock(agent.transport.leave(ROOM));
+      await reconnected(peer, 3);
+      await advanceWireClock(100);
 
       expect(snapshotConnections).toEqual([3]);
     });
@@ -627,6 +653,10 @@ describe("core Session owns reconnects (real wire)", () => {
     it("does not report connected over a socket a supersede dropped in the same chunk as the agent_control reply", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
+      const snapshots: ReconnectSnapshot[] = [];
+      agent.transport.onReconnected((snapshot) => {
+        snapshots.push(snapshot);
+      });
       peer.queueJoinOutcomes(CONTROL_TOPIC, ["pending"]);
       const connecting = agent.transport.connect();
       await onWireClock(peer.joins.until(() => peer.joins.entries.some((join) => join.topic === CONTROL_TOPIC)));
@@ -641,7 +671,27 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(agent.transport.isConnected(), "the superseded connection is closing").toBe(false);
       await reconnected(peer, 2);
       await onWireClock(connecting);
+      await advanceWireClock(100);
       expect(agent.transport.isConnected()).toBe(true);
+      // The superseded socket never became usable, so the next one is the boot, not a reconnect.
+      expect(snapshots).toEqual([]);
+    });
+
+    it("counts one supersede per connection, so a repeated push does not inflate the backoff", async () => {
+      // Full jitter, so the delay is exactly base * factor^failures.
+      vi.spyOn(Math, "random").mockReturnValue(1);
+      await using peer = await startPeer();
+      await using agent = transportFor(peer, { baseDelayS: 10, factor: 2, maxDelayS: 100 });
+      await agent.transport.connect();
+
+      peer.inOneChunk(() => {
+        pushSupersede(peer);
+        pushSupersede(peer);
+      });
+      // One counted failure waits 10 s; a second would wait 20 s.
+      await advanceWireClock(15_000);
+
+      expect(peer.connections.entries).toHaveLength(2);
     });
 
     it("stops reporting connected at once, even if phoenix later drops that close", async () => {
