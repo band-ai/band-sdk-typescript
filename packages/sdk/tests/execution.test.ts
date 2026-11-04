@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RecoverableTurnError } from "../src/core/errors";
+import { RecoverableTurnError, RuntimeStateError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution } from "../src/runtime/Execution";
 import { makeLoggerSpy } from "./testUtils";
@@ -717,5 +717,59 @@ describe("Execution reconnect handling", () => {
     await execution.stop();
 
     expect(processed).toEqual(["m1"]);
+  });
+});
+
+describe("Execution bootstrap messages", () => {
+  it("tells a queued bootstrap it will not run when the room fails before reaching it", async () => {
+    const running = createDeferred();
+    const release = createDeferred();
+    let reads = 0;
+    const execution = new Execution({
+      roomId: "room-1",
+      link: {
+        getStaleProcessingMessages: async () => [],
+        getNextMessage: async () => {
+          reads += 1;
+          if (reads > 1) throw new Error("503 on /messages/next");
+          return null;
+        },
+      } as never,
+      context: makeContext() as never,
+      onExecute: async (_context, event) => {
+        if (event.type === "message_created" && event.payload.id === "live") {
+          running.resolve();
+          await release.promise;
+        }
+      },
+    });
+    await execution.waitForIdle();
+    await execution.enqueue(makeEvent("live"));
+    await running.promise;
+    await execution.enqueue(makeReconnectedEvent());
+    const bootstrapping = execution.bootstrapMessage(makeBacklogMessage("boot") as never);
+    release.resolve();
+
+    await expect(bootstrapping).rejects.toThrow(RuntimeStateError);
+    await expect(execution.stop()).rejects.toThrow("503 on /messages/next");
+  });
+
+  it("lets a stop that waits for the room finish once the bootstrap turn ends", async () => {
+    const running = createDeferred();
+    const release = createDeferred();
+    const { execution } = createExecution({
+      onExecute: async () => {
+        running.resolve();
+        await release.promise;
+      },
+    });
+    await execution.waitForIdle();
+    const bootstrapping = execution.bootstrapMessage(makeBacklogMessage("boot") as never);
+    await running.promise;
+    const stopping = execution.stop();
+    release.resolve();
+
+    await bootstrapping;
+    await expect(stopping).resolves.toBe(true);
   });
 });

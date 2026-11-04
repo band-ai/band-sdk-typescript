@@ -264,6 +264,7 @@ export class Execution {
       await this.processLoop();
     } catch (error) {
       this.closed = true;
+      this.dropQueued();
       await this.context.closeWorkingState();
       this.markFailed(error, "process-loop-failed");
       throw error;
@@ -284,6 +285,7 @@ export class Execution {
       if (queued.bootstrap) {
         await this.runBootstrap(event);
         queued.bootstrap.resolve(null);
+        this.notifyIfIdle();
         continue;
       }
 
