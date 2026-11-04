@@ -8,7 +8,10 @@ import { RoomWorkspaces, type RoomWorkspaceOptions } from "./roomWorkspace";
 const ADAPTER_STOPPED_ERROR = "Adapter is stopped; start it again before sending messages";
 
 /** One room's adapter: owns that room's agent process and nothing shared. */
-export type RoomEngine<H, TTools> = SimpleAdapter<H, TTools> & { onRuntimeStop(): Promise<void> };
+export type RoomEngine<H, TTools> = SimpleAdapter<H, TTools> & {
+  onRuntimeStop(): Promise<void>;
+  isControlMessage?(message: PlatformMessageLike, roomId: string): boolean;
+};
 
 export interface RoomScopedAdapterOptions<H> extends RoomWorkspaceOptions {
   historyConverter?: HistoryConverter<H>;
@@ -67,6 +70,11 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
       });
     }
     await engine.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+  }
+
+  /** Asks the room's own engine; a room with no engine yet has nothing to answer. */
+  public isControlMessage(message: PlatformMessageLike, roomId: string): boolean {
+    return this.rooms.get(roomId)?.engine.isControlMessage?.(message, roomId) ?? false;
   }
 
   /** Stops the room's engine without waiting for its process to exit. */

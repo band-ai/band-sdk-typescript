@@ -248,17 +248,14 @@ export class CursorRoomAgent extends ACPRoomAgent {
     }
     const released = createDeferred<void>();
     // A released turn outlives this request, so it is judged when it really ends.
-    const releaseRoom = () => {
-      tools.turn.detach();
-      released.resolve();
-    };
+    const releaseRoom = () => released.resolve();
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom };
     this.turn = turn;
     const run = retainWorkingCycleUntil(tools,
       super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
         .finally(() => this.forgetTurn(turn)),
     );
-    await runUntilReleased(run, released.promise, (error) => {
+    await runUntilReleased(tools.turn, run, released.promise, (error) => {
       this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
     });
   }
@@ -467,12 +464,16 @@ export class CursorRoomAgent extends ACPRoomAgent {
     }
   }
 
+  /** A `/cursor` command, which answers the room's decisions or lists them. */
+  public isControlMessage(message: PlatformMessage): boolean {
+    return commandWords(message.content)[0]?.toLowerCase() === CURSOR_COMMAND;
+  }
+
   private async handleControl(message: PlatformMessage, tools: TurnTools, roomId: string): Promise<boolean> {
-    const words = commandWords(message.content);
-    if (words[0]?.toLowerCase() !== CURSOR_COMMAND) {
+    if (!this.isControlMessage(message)) {
       return false;
     }
-    await replyToSender(tools, this.controlReply(words, message.senderId, roomId), message.senderId);
+    await replyToSender(tools, this.controlReply(commandWords(message.content), message.senderId, roomId), message.senderId);
     return true;
   }
 

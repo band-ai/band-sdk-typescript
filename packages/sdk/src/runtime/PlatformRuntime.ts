@@ -13,14 +13,14 @@ import {
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
 import { RuntimeStateError, ValidationError } from "../core/errors";
-import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
+import { DefaultPreprocessor, toPlatformMessage } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
 import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
-import { evaluateAdapterResult } from "@band-ai/band-sdk-core";
+import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -301,7 +301,8 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
-        onExecute: (context, event, admitted) => this.executeAdapter(context, event, adapter, admitted),
+        onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
+        isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
         onContactEvent: (event) => this.handleContactEvent(event),
         onParticipantAdded: this._onParticipantAdded,
@@ -443,11 +444,23 @@ export class PlatformRuntime implements AsyncDisposable {
     return await this.runtime.resetRoomSession(roomId, timeoutMs);
   }
 
+  /** A room message, from someone else, that the adapter says answers what its held turn waits on. */
+  private isControlEvent(adapter: FrameworkAdapter, event: PlatformEvent): boolean {
+    if (event.type !== "message_created" || !event.roomId || !adapter.isControlMessage) {
+      return false;
+    }
+    const message = toPlatformMessage(event.roomId, event.payload);
+    return !isSelfEcho(message.senderId, message.senderType, this._agentId)
+      && !isSyntheticTurn(message)
+      && adapter.isControlMessage(message, event.roomId);
+  }
+
   private async executeAdapter(
     context: ExecutionContext,
     event: PlatformEvent,
     adapter: FrameworkAdapter,
     admitted: () => boolean,
+    holdRoomUntil: (ended: Promise<void>) => void,
   ): Promise<void> {
     if (!admitted()) return;
     const input = await this.preprocessor.process(context, event, this._agentId);
@@ -488,7 +501,7 @@ export class PlatformRuntime implements AsyncDisposable {
     try {
       await lease?.ready;
       if (!admitted()) return;
-      await adapter.onEvent(lease ? { ...input, tools: bindWorkingCycle(input.tools, lease) } : input);
+      await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
     } catch (error) {
       succeeded = false;
       caughtError = error;

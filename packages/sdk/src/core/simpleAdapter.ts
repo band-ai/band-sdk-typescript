@@ -74,6 +74,10 @@ export abstract class SimpleAdapter<H, TTools = TurnTools>
         roomId: input.roomId,
       },
     );
+    const ended = tools.turn.ended;
+    if (ended) {
+      input.holdRoomUntil?.(ended);
+    }
     if (!tools.turn.detached && tools.turn.unanswered) {
       await reportTurnFailure(tools, missingReplyFailure());
     }

@@ -16,10 +16,12 @@ import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 import { createDeferred, type Deferred } from "../core/deferred";
 
+/** `holdRoomUntil` keeps the room's other work queued until a turn that outlives the handler ends. */
 export type ExecutionHandler = (
   context: ExecutionContext,
   event: PlatformEvent,
   admitted: () => boolean,
+  holdRoomUntil: (ended: Promise<void>) => void,
 ) => Promise<void>;
 
 interface ExecutionOptions {
@@ -27,6 +29,8 @@ interface ExecutionOptions {
   link: BandLink;
   context: ExecutionContext;
   onExecute: ExecutionHandler;
+  /** Whether a message answers what a held turn waits on, so it runs during the hold. */
+  isControlEvent?: (event: PlatformEvent) => boolean;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   logger?: Logger;
 }
@@ -34,8 +38,12 @@ interface ExecutionOptions {
 interface QueuedEvent {
   event: PlatformEvent;
   syncBoundary: SyncBoundary | null;
+  /** Classified once, when a hold first sees it, so an ask made later can't claim it. */
+  control?: boolean;
   /** A bootstrap message's caller, told once it ran, or why it never will. */
   bootstrap?: Deferred<Error | null>;
+  /** A reconnect's catch-up, deferred until the hold ends. */
+  afterHold?: boolean;
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -64,10 +72,11 @@ export class Execution {
   private readonly context: ExecutionContext;
   private readonly retryTracker: RetryTracker;
   private readonly onExecute: ExecutionHandler;
+  private readonly isControlEvent: (event: PlatformEvent) => boolean;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;
   private readonly eventQueue: QueuedEvent[] = [];
-  private readonly waiters: Array<(event: QueuedEvent | null) => void> = [];
+  private readonly arrivals: Array<() => void> = [];
   private readonly idleWaiters = new Set<() => void>();
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
@@ -75,6 +84,8 @@ export class Execution {
   private readonly stopGate = new SingleFlight<boolean>();
   private readonly syncBoundaries = new SyncBoundaryTracker();
   private inFlight = 0;
+  /** While set, a turn that outlived its handler still runs: only its decision replies run. */
+  private hold: Promise<void> | null = null;
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
    * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
@@ -88,6 +99,7 @@ export class Execution {
     this.context = options.context;
     this.retryTracker = this.context.getRetryTracker();
     this.onExecute = options.onExecute;
+    this.isControlEvent = options.isControlEvent ?? (() => false);
     this.onFailure = options.onFailure;
     this.logger = resolveLogger(options.logger);
     this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
@@ -151,12 +163,8 @@ export class Execution {
       );
     }
 
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter(queued);
-    } else {
-      this.eventQueue.push(queued);
-    }
+    this.eventQueue.push(queued);
+    this.wake();
     this.logger.debug("event queued for room", {
       roomId: this.roomId,
       eventType: queued.event.type,
@@ -164,8 +172,9 @@ export class Execution {
     });
   }
 
+  /** Nothing in flight and nothing that may run now; work waiting on a hold does not count. */
   public isIdle(): boolean {
-    return this.syncBoundaries.isComplete && this.inFlight === 0 && this.eventQueue.length === 0;
+    return this.syncBoundaries.isComplete && this.inFlight === 0 && !this.eventQueue.some((queued) => this.mayRun(queued));
   }
 
   public async waitForIdle(timeoutMs?: number): Promise<boolean> {
@@ -232,7 +241,7 @@ export class Execution {
     // itself reporting "stopped": enqueue() must reject from this point on
     // even though the drain below hasn't finished yet.
     this.closed = true;
-    this.resolveEventWaiters(null);
+    this.wake();
 
     if (graceful || timeoutMs === undefined) {
       await this.processTask;
@@ -290,7 +299,7 @@ export class Execution {
       }
 
       if (event.type === "reconnected") {
-        await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
+        await this.catchUp(queued);
         continue;
       }
 
@@ -304,6 +313,58 @@ export class Execution {
       }
 
       await this.executeEvent(event);
+    }
+  }
+
+  private holdRoomUntil(ended: Promise<void>): void {
+    const hold: Promise<void> = ended.then(() => {
+      if (this.hold !== hold) return;
+      this.hold = null;
+      this.logger.debug("room released by its held turn", { roomId: this.roomId });
+      this.wake();
+      this.notifyIfIdle();
+    });
+    this.hold = hold;
+    this.logger.debug("room held until its turn ends", { roomId: this.roomId });
+  }
+
+  /** Whether `queued` may run now: anything without a hold; during one, controls and live reconnects. */
+  private mayRun(queued: QueuedEvent): boolean {
+    if (!this.hold) return true;
+    if (queued.event.type === "reconnected") return !queued.afterHold;
+    if (queued.control === undefined) {
+      queued.control = this.isControlEvent(queued.event);
+      if (!queued.control) {
+        this.logger.debug("event waits for the room's held turn", {
+          roomId: this.roomId,
+          eventType: queued.event.type,
+          messageId: messageIdOf(queued.event),
+        });
+      }
+    }
+    return queued.control;
+  }
+
+  /**
+   * A reconnect catches up on what the socket missed. During a hold the sweep
+   * defers itself; a decision reply the socket missed waits on Band until the
+   * held turn ends, by its ask's own expiry at the latest.
+   */
+  private async catchUp(queued: QueuedEvent): Promise<void> {
+    // Busy for the whole sweep, so a stop does not count the room idle between its messages.
+    this.inFlight += 1;
+    try {
+      await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
+    } finally {
+      this.inFlight -= 1;
+      this.notifyIfIdle();
+    }
+  }
+
+  /** Leaves the rest of a catch-up for once the hold ends, ahead of the work waiting on it. */
+  private deferCatchUp(): void {
+    if (!this.eventQueue.some((entry) => entry.afterHold)) {
+      this.eventQueue.unshift({ event: { type: "reconnected", roomId: null, payload: {} }, syncBoundary: null, afterHold: true });
     }
   }
 
@@ -345,7 +406,8 @@ export class Execution {
     });
 
     for (const message of staleMessages) {
-      if (!this.isActive()) {
+      // A recovered turn that is handed back holds the room; the catch-up serves the rest.
+      if (!this.isActive() || this.hold) {
         break;
       }
 
@@ -363,6 +425,11 @@ export class Execution {
 
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
+      // A message this sweep ran handed its turn back: the rest waits like any other work.
+      if (this.hold) {
+        this.deferCatchUp();
+        break;
+      }
       const nextMessage = await this.link.getNextMessage(this.roomId);
       // A forced stop can close the execution while the backlog read is in flight.
       if (!this.isActive()) {
@@ -417,7 +484,7 @@ export class Execution {
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event, () => this.isActive());
+      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended));
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
       if (error instanceof RecoverableTurnError) {
@@ -454,7 +521,7 @@ export class Execution {
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event, () => this.isActive());
+      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended));
     } catch (error: unknown) {
       // Scoped to the turn that raised it: `PlatformRuntime` has already
       // marked the message failed, and the queue below is every *other*
@@ -479,7 +546,7 @@ export class Execution {
       await this.context.closeWorkingState();
       this.markFailed(error, "execution-failed");
       this.dropQueued();
-      this.resolveEventWaiters(null);
+      this.wake();
       throw error;
     } finally {
       this.inFlight -= 1;
@@ -488,19 +555,20 @@ export class Execution {
     }
   }
 
+  /** The first queued event that may run, waiting through a hold for one; null once the queue closes. */
   private async nextQueuedEvent(): Promise<QueuedEvent | null> {
-    const queued = this.eventQueue.shift();
-    if (queued) {
-      return queued;
+    for (;;) {
+      if (this.closed || !this.isActive()) {
+        return null;
+      }
+      const index = this.eventQueue.findIndex((queued) => this.mayRun(queued));
+      if (index >= 0) {
+        return this.eventQueue.splice(index, 1)[0];
+      }
+      await new Promise<void>((resolve) => {
+        this.arrivals.push(resolve);
+      });
     }
-
-    if (this.closed || !this.isActive()) {
-      return null;
-    }
-
-    return new Promise<QueuedEvent | null>((resolve) => {
-      this.waiters.push(resolve);
-    });
   }
 
   /** True while the process loop should keep draining (`running` or mid-`stop()`, until the queue closes). */
@@ -531,17 +599,17 @@ export class Execution {
     }
   }
 
+  /** Wakes the loop to look at the queue again: an event arrived, a hold ended, or the queue closed. */
+  private wake(): void {
+    for (const arrival of this.arrivals.splice(0, this.arrivals.length)) {
+      arrival();
+    }
+  }
+
   /** Discards what is still queued; a bootstrap caller learns its message will not run here. */
   private dropQueued(): void {
     for (const { bootstrap } of this.eventQueue.splice(0, this.eventQueue.length)) {
       bootstrap?.resolve(new RuntimeStateError(`Execution for room ${this.roomId} stopped before its bootstrap message ran`));
-    }
-  }
-
-  private resolveEventWaiters(event: QueuedEvent | null): void {
-    const waiters = this.waiters.splice(0, this.waiters.length);
-    for (const waiter of waiters) {
-      waiter(event);
     }
   }
 

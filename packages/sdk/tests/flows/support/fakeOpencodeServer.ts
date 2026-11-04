@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { MCP_SERVER_NAME } from "../../../src/contracts/toolSchemas";
+import { createDeferred, type Deferred } from "../../../src/core/deferred";
 import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
 /** Where the adapter registers its Band tools server, and where it deregisters it. */
@@ -113,6 +114,7 @@ export class FakeOpencodeServer implements AsyncDisposable {
   private readonly streams = new Set<ServerResponse>();
   private readonly failures = new Map<string, Failure[]>();
   private readonly holds = new CallHolds<[route: string]>();
+  private heldAcceptance: Deferred<void> | null = null;
   private readonly asks = new Map<string, PendingAsk>();
   private ids = 0;
   private port = 0;
@@ -144,6 +146,16 @@ export class FakeOpencodeServer implements AsyncDisposable {
   /** The `index`th turn a prompt started, once it has. */
   public turn(index = 0): Promise<OpencodeTurn> {
     return this.turns.next(() => true, index);
+  }
+
+  /**
+   * Starts the next prompt's script before OpenCode answers `prompt_async`,
+   * and answers only once released, as when OpenCode asks before the call returns.
+   */
+  public holdPromptAcceptance(): { release: () => void } {
+    const accepted = createDeferred();
+    this.heldAcceptance = accepted;
+    return { release: () => accepted.resolve() };
   }
 
   /** Makes the next request to `route` (e.g. "POST /session/:id/abort") fail with `failure`. */
@@ -312,13 +324,16 @@ export class FakeOpencodeServer implements AsyncDisposable {
       return send(res, 200, { id: session[1] });
     }
     if (session && method === "POST" && session[2] === "/prompt_async") {
-      send(res, 204);
+      const held = this.heldAcceptance;
+      this.heldAcceptance = null;
+      if (!held) send(res, 204);
       const script = this.scripts.shift();
       if (script) {
         const turn = new OpencodeTurn(this, session[1]!, body);
         this.turns.record(turn);
         void Promise.resolve(script(turn));
       }
+      if (held) void held.promise.then(() => send(res, 204));
       return;
     }
     // Ask replies, aborts and MCP registration simply succeed.

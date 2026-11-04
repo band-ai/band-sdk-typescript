@@ -143,6 +143,7 @@ export class RecordingRestApi extends FakeRestApi {
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
+  public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
   public readonly participantHolds = new CallHolds<[roomId: string]>();
@@ -371,6 +372,7 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async markMessageProcessed(_roomId: string, messageId: string) {
+    await this.processedHolds.pass(messageId);
     return this.settle(messageId, "processed");
   }
 
@@ -433,6 +435,11 @@ export class BandRoom {
     return this.platform.post(this.id, senderId, content, options);
   }
 
+  /** Posts `content` from `senderId` and bootstraps the agent's turn on it, as the Linear bridge does. */
+  public bootstrap(senderId: string, content: string): { id: string; ran: Promise<void> } {
+    return this.platform.bootstrap(this.id, senderId, content);
+  }
+
   /** Posts `content` from `senderId` for the agent to find once it connects; returns its message id. */
   public postBeforeConnect(senderId: string, content: string, options?: PostOptions): string {
     return this.platform.postBeforeConnect(this.id, senderId, content, options);
@@ -491,6 +498,11 @@ export class BandRoom {
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */
   public holdProcessing(messageId: string): HeldCall<[messageId: string]> {
     return this.platform.rest.processingHolds.hold((id) => id === messageId);
+  }
+
+  /** Keeps the runtime's next processed mark in flight; with `error`, Band then refuses it. */
+  public holdNextProcessed(options: { error?: Error } = {}): HeldCall<[messageId: string]> {
+    return this.platform.rest.processedHolds.hold(() => true, options);
   }
 
   public until(predicate: () => boolean): Promise<void> {
@@ -602,6 +614,18 @@ export class BandPlatform implements AsyncDisposable {
     await this.transport.bound.until(() => this.transport.hasTopic(topic));
     await this.transport.emit(topic, "message_created", message);
     return message.id;
+  }
+
+  /** Posts `content` and hands it to the agent through `bootstrapRoomMessage`, as the Linear bridge does; `ran` settles once it ran. */
+  public bootstrap(roomId: string, senderId: string, content: string): { id: string; ran: Promise<void> } {
+    if (!this.runtime) throw new Error("bootstrap needs an agent started on this platform");
+    const message = this.message(senderId, content);
+    this.rest.addMessage(roomId, message);
+    const ran = this.runtime.bootstrapRoomMessage(roomId, {
+      id: message.id, roomId, content, senderId, senderType: message.sender_type, senderName: message.sender_name,
+      messageType: message.message_type, metadata: message.metadata, createdAt: new Date(message.inserted_at),
+    });
+    return { id: message.id, ran };
   }
 
   public postBeforeConnect(roomId: string, senderId: string, content: string, options?: PostOptions): string {

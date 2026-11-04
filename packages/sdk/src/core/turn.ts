@@ -27,6 +27,7 @@ export class Turn {
   private readonly ledger = new TurnLedger();
   private readonly sent: string[] = [];
   private isDetached = false;
+  private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
 
   /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
@@ -82,13 +83,24 @@ export class Turn {
   /**
    * The turn outlives `onMessage` (it was released to wait on a decision), so
    * the adapter judges it at its real end with {@link reportUnsettledTurn}.
+   * `untilEnded` is that end: the runtime holds the room's other work until it
+   * settles. Without it the room takes its next message at once.
    */
-  public detach(): void {
+  public detach(untilEnded?: Promise<unknown>): void {
     this.isDetached = true;
+    this.endedSignal = untilEnded?.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   public get detached(): boolean {
     return this.isDetached;
+  }
+
+  /** Settles when a turn detached with its end has really ended; never rejects. */
+  public get ended(): Promise<void> | undefined {
+    return this.endedSignal;
   }
 
   public verdict(): TurnVerdict {

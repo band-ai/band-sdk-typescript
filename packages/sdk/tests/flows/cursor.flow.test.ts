@@ -166,7 +166,7 @@ describe("Cursor in a Band room", () => {
 
   it("lets the room approve and deny tool permissions while the turn waits, however the owner phrases it", async () => {
     await using session = await cursorRoom();
-    const { room } = session;
+    const { room, agent } = session;
     const terminal = createDeferred();
     const { result, message, tokens: [write] } = await session.start(async (turn) => {
       const first = await turn.requestPermission(WRITE_FILE);
@@ -181,18 +181,27 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} approve ${write}`)).toEqual([SAYS.invalidCommand("permission", write!)]);
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${write} allow reject`)).toEqual([SAYS.invalidCommand("permission", write!)]);
     expect(await room.exchange(INTRUDER, `${CURSOR_COMMAND} select ${write} allow`)).toEqual([SAYS.notAuthorized()]);
-    expect(await room.exchange(OWNER, "Actually, also fix the typo")).toEqual([SAYS.turnInProgress()]);
+    // An ordinary request waits for the turn instead of being turned away.
+    const followUp = agent.nextTurn(answering(async () => undefined));
+    const typo = await room.say(OWNER, "Actually, also fix the typo");
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${write} allow`)).toContain(SAYS.resolved("permission", write!));
 
     const [, remove] = await promptTokens(room, 2);
     expect(await room.exchange(TEAMMATE, `${CURSOR_COMMAND} deny ${remove}`)).toContain(SAYS.resolved("permission", remove!));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${remove} allow`)).toEqual([SAYS.notPending(remove!)]);
+    expect(room.outcomes(typo), "the request is held while the turn is still running").toEqual([]);
 
     terminal.resolve();
     expect(await result).toEqual([selected("allow"), CANCELLED]);
     // The room was handed back when the first decision opened; the reply still reaches the requester.
     expect(await room.outcome(message)).toBe("processed");
     expect(await room.nextMessage((posted) => posted.content === "Updated the notes.")).toMatchObject({ mentions: [OWNER] });
+
+    // Once the turn ends, the held request runs as the room's next turn.
+    await followUp;
+    expect(await room.outcome(typo)).toBe("processed");
+    expect(JSON.stringify(agent.receivedOf("session/prompt").at(-1))).toContain("Actually, also fix the typo");
+    expect(room.messages.map((posted) => posted.content)).not.toContain(SAYS.turnInProgress());
   });
 
   it("walks a question through every malformed answer before taking the valid one", async () => {
@@ -545,18 +554,26 @@ describe("Cursor in a Band room", () => {
     const queued = await otherRoom.say(OWNER, "And summarise room-2");
     await promptTokens(otherRoom, 1);
     expect(await otherRoom.outcome(queued)).toBe("processed");
-    expect(await otherRoom.exchange(OWNER, "Anything yet?")).toEqual([SAYS.turnInProgress()]);
+    const held = await otherRoom.say(OWNER, "Anything yet?");
 
     await otherRoom.remove();
     await vi.waitFor(() => expect(agent.room("room-2").stopped).toBe(true));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
     expect(await result).toEqual(answered({ mode: ["plan"] }));
+    // Dropped with the room, never settled: Band keeps serving it on /messages/next.
+    expect(otherRoom.outcomes(held)).toEqual([]);
+    expect(otherRoom.messages.map((posted) => posted.content)).not.toContain(SAYS.turnInProgress());
 
     const rejoined = await platform.room("room-2");
+    const replayed = agent.room("room-2").nextTurn(answering(async (turn) => turn.sessionId));
     const next = agent.room("room-2").nextTurn(answering(async (turn) => turn.sessionId));
     const message = await rejoined.say(OWNER, "Summarise room-2 again");
-    expect(await next).toBe("cursor-session-1");
+    // The fresh process first catches up on the request the removal left unanswered.
+    expect(await replayed).toBe("cursor-session-1");
+    expect(JSON.stringify(agent.receivedOf("session/prompt").at(-1))).toContain("Anything yet?");
+    await next;
     expect(agent.room("room-2").launches).toBe(2);
+    expect(await rejoined.outcome(held)).toBe("processed");
     expect(await rejoined.outcome(message)).toBe("processed");
   });
 
@@ -652,18 +669,24 @@ describe("Cursor in a Band room", () => {
     expect(room.outcomes(message), "the request was already handed back").toEqual(["processed"]);
   });
 
-  it("settles busy and control messages during a handed-back turn, and keeps that turn's own reply on it", async () => {
+  it("holds an ordinary message and settles control messages during a handed-back turn, and keeps that turn's own reply on it", async () => {
     await using session = await cursorRoom();
-    const { room } = session;
+    const { room, agent } = session;
     const { message, tokens: [token] } = await session.start(async (turn) => {
       await turn.ask(MODE);
       await TURN_SCRIPTS.toolReply(turn);
     }, 1);
 
-    for (const content of ["Is it done yet?", CURSOR_COMMAND, `${CURSOR_COMMAND} answer ${token} mode=plan`]) {
-      expect(await room.outcome(await room.say(OWNER, content)), content).toBe("processed");
-    }
-    await session.afterTurn();
+    const followUp = agent.nextTurn(answering(async () => undefined));
+    const waiting = await room.say(OWNER, "Is it done yet?");
+    expect(await room.outcome(await room.say(OWNER, CURSOR_COMMAND))).toBe("processed");
+    expect(room.outcomes(waiting), "held while the turn waits on its decision").toEqual([]);
+    expect(await room.outcome(await room.say(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`))).toBe("processed");
+    // The held message runs as the next turn once the handed-back turn ends.
+    await followUp;
+    expect(await room.outcome(waiting)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).not.toContain(SAYS.turnInProgress());
+    await session.afterTurn(2);
 
     // Cursor's tool reply counted on its own turn: the closing text is not relayed, and nothing is reported.
     expect(room.messages.map((posted) => posted.content)).not.toContain(CLOSING_TEXT);
@@ -790,5 +813,58 @@ describe("Cursor in a Band room", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("Cursor holds the room's other work until a handed-back turn ends", () => {
+  it("answers a follow-up sent after the closing reply but before the prompt completes, as its own turn", async () => {
+    await using session = await cursorRoom();
+    const { room, agent } = session;
+    const replied = createDeferred();
+    const finish = createDeferred();
+    const { tokens: [token] } = await session.start(async (turn) => {
+      await turn.ask(MODE);
+      await turn.callTool(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: [OWNER] });
+      replied.resolve();
+      await finish.promise;
+      await turn.say(CLOSING_TEXT);
+    }, 1);
+    expect(await room.outcome(await room.say(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`))).toBe("processed");
+    await replied.promise;
+    void agent.nextTurn(async (turn) => {
+      await turn.say("Marker 42.");
+    });
+
+    const followUp = await room.say(OWNER, "Which marker?");
+    finish.resolve();
+
+    expect(await room.outcome(followUp)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Marker 42.");
+    expect(room.messages.map((posted) => posted.content)).not.toContain(SAYS.turnInProgress());
+  });
+
+  it("runs waiting messages and a bootstrap message in arrival order, each as its own turn, after the decision", async () => {
+    await using session = await cursorRoom();
+    const { room, agent, platform } = session;
+    const { message, tokens: [token] } = await session.start(answering(async (turn) => {
+      await turn.ask(MODE);
+    }), 1);
+    for (const label of ["First", "Second", "Bootstrapped"]) {
+      void agent.nextTurn(async (turn) => {
+        await turn.say(`${label} answer.`);
+      });
+    }
+
+    const first = await room.say(OWNER, "First question");
+    const second = await room.say(OWNER, "Second question");
+    const bootstrapped = room.bootstrap(OWNER, "Picked up from Linear");
+    const answer = await room.say(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`);
+    await bootstrapped.ran;
+
+    const processed = platform.rest.settled.entries.filter((entry) => entry.outcome === "processed").map((entry) => entry.messageId);
+    expect(processed).toEqual([message, answer, first, second, bootstrapped.id]);
+    expect(room.messages.filter((posted) => !isPrompt(posted)).map((posted) => posted.content).slice(-4)).toEqual([
+      DONE, "First answer.", "Second answer.", "Bootstrapped answer.",
+    ]);
   });
 });
