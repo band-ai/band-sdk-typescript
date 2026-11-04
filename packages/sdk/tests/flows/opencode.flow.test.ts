@@ -1711,4 +1711,29 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect(await room.outcome(early)).toBe("processed");
     expect(room.messages.at(-1)?.content).toBe("Noted.");
   });
+
+  it("does not let a reconnect's scan take free text the catch-up left waiting as a later question's answer", async () => {
+    await using server = await FakeOpencodeServer.start();
+    const adapter = new OpencodeAdapter({ config: { baseUrl: server.url, approvalMode: "manual" } });
+    const question = "que_x";
+    server.onPrompt(async (turn) => {
+      await turn.askQuestion([{ question: "Which file?" }], question).reply;
+      turn.answer(DONE);
+    });
+    server.onPrompt((turn) => turn.answer("Noted."));
+    await using platform = await BandPlatform.start(adapter, PEOPLE);
+    platform.rest.addRoom("room-1");
+    platform.postBeforeConnect("room-1", OWNER, "X question");
+    const early = platform.postBeforeConnect("room-1", OWNER, "src/a.ts");
+    const room = await platform.room("room-1");
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Which file?" }], question));
+
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    // Queued behind the reconnect, so the scan has finished once this is answered.
+    expect(await room.outcome(await room.say(OWNER, "src/b.ts"))).toBe("processed");
+
+    expect(server.questionReplies()).toEqual([[question, [["src/b.ts"]]]]);
+    expect(await room.outcome(early)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Noted.");
+  });
 });
