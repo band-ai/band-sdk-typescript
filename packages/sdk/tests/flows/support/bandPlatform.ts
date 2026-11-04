@@ -445,11 +445,17 @@ export class BandRoom {
     return this.platform.postBeforeConnect(this.id, senderId, content, options);
   }
 
+  /** Posts `content` from `senderId`; how the runtime settled it, and every message the agent posted meanwhile. */
+  public async sayAndSettle(senderId: string, content: string): Promise<{ outcome: Outcome; messages: Posted[] }> {
+    const after = this.messages.length;
+    const outcome = await this.outcome(await this.say(senderId, content));
+    return { outcome, messages: this.messages.slice(after) };
+  }
+
   /** Posts `content` from `senderId`, waits for the runtime to settle it, and returns what the agent told that sender meanwhile. */
   public async exchange(senderId: string, content: string): Promise<string[]> {
-    const after = this.messages.length;
-    await this.outcome(await this.say(senderId, content));
-    return this.messages.slice(after).filter((posted) => posted.mentions.includes(senderId)).map((posted) => posted.content);
+    const { messages } = await this.sayAndSettle(senderId, content);
+    return messages.filter((posted) => posted.mentions.includes(senderId)).map((posted) => posted.content);
   }
 
   /** Everything the agent posted here, messages and events, in order. */

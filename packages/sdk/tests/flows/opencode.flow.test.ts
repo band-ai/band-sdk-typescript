@@ -1020,7 +1020,7 @@ describe("OpenCode in a Band room", () => {
     expect(room.events("error")).toEqual([]);
   });
 
-  it("lets expiries that are already replying own their asks against late room replies and a redelivery", async () => {
+  it("tells a late room reply that an expiry already replying owns its ask, and lets that expiry own a redelivery", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS, questionWaitTimeoutMs: DEADLINE_MS });
     const { room, server } = session;
@@ -1035,9 +1035,15 @@ describe("OpenCode in a Band room", () => {
 
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     await Promise.all(expiryReplies.map((reply) => reply.sending));
-    // The expiries own both asks now: the room's replies neither answer them nor say they did.
-    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([]);
-    expect(await room.exchange(OWNER, `reject ${question}`)).toEqual([]);
+    // The expiries own both asks now: a reply naming one during the room's hold is consumed, and only its sender is told.
+    expect(await room.sayAndSettle(APPROVER, `approve ${permission}`)).toEqual({
+      outcome: "processed",
+      messages: [expect.objectContaining({ content: SAYS.noLongerPending("permission", permission), mentions: [APPROVER] })],
+    });
+    expect(await room.sayAndSettle(APPROVER, `reject ${question}`)).toEqual({
+      outcome: "processed",
+      messages: [expect.objectContaining({ content: SAYS.noLongerPending("question", question), mentions: [APPROVER] })],
+    });
     // With no live ask to answer, this is an ordinary message: held until the turn ends.
     const later = await room.say(OWNER, "yes please");
     // OpenCode redelivers the ask being expired; the marker behind it shows it was handled, and not prompted again.
@@ -1054,6 +1060,9 @@ describe("OpenCode in a Band room", () => {
       SAYS.approvalTimedOut(permission, "reject"),
       SAYS.questionTimedOut(question),
     ].sort());
+
+    // Once the expiry has landed, the same reply hears the same thing.
+    expect(await room.exchange(APPROVER, `approve ${permission}`)).toEqual([SAYS.noLongerPending("permission", permission)]);
 
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
     expect(server.questionReplies()).toEqual([[question, DECLINED]]);

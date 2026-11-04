@@ -45,6 +45,7 @@ import {
 } from "./client";
 import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "./messages";
 import {
+  ASK_KIND,
   declinedAnswers,
   REJECTED_PERMISSION_FEEDBACK,
   REPLY_WORDS,
@@ -57,6 +58,7 @@ import {
   REPLY_ACTION,
   RoomDecisions,
   type DecisionAction,
+  type DecisionKind,
 } from "./replies";
 
 /** How long a dropped event stream waits before reconnecting, doubling per failure up to the cap. */
@@ -870,24 +872,21 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       await replyToSender(tools, OPENCODE_DECISION_MESSAGES.notAuthorized(), senderId);
       return;
     }
-    const handled = await this.resolveDecision(roomState, action);
-    if (handled) {
-      await replyToSender(tools, handled, senderId);
-    }
+    await replyToSender(tools, await this.resolveDecision(roomState, action), senderId);
   }
 
-  // Sends the reply an action resolves to; the notice to post, or null when another path already owns the ask.
-  private async resolveDecision(roomState: RoomState, action: DecisionAction): Promise<string | null> {
+  // Sends the reply an action resolves to and returns the notice to post: what was done, or that another path already owns the ask.
+  private async resolveDecision(roomState: RoomState, action: DecisionAction): Promise<string> {
     const { permissions, questions } = roomState.decisions;
     switch (action.kind) {
       case REPLY_ACTION.permission:
-        return claimAndSend(permissions, action.id, OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply),
+        return claimAndSend(permissions, ASK_KIND.permission, action.id, OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply),
           (entry) => this.sendPermissionReply(roomState, entry, action.reply));
       case REPLY_ACTION.rejectQuestion:
-        return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionRejected(action.id),
+        return claimAndSend(questions, ASK_KIND.question, action.id, OPENCODE_DECISION_MESSAGES.questionRejected(action.id),
           (entry) => this.sendQuestionDecline(roomState, entry));
       case REPLY_ACTION.answerQuestion:
-        return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionAnswered(action.id),
+        return claimAndSend(questions, ASK_KIND.question, action.id, OPENCODE_DECISION_MESSAGES.questionAnswered(action.id),
           (entry) => this.sendQuestionReply(roomState, entry, action.answers));
     }
   }
@@ -1289,16 +1288,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
   }
 }
 
-/** Sends `id`'s reply and returns `notice`, or null when someone else already claimed it. */
+/** Sends `id`'s reply and returns `notice`; when someone else already claimed it, the sender is told it is no longer pending. */
 async function claimAndSend<T>(
   registry: DecisionRegistry<T>,
+  kind: DecisionKind,
   id: string,
   notice: string,
   send: (entry: DecisionEntry<T>) => Promise<void>,
-): Promise<string | null> {
+): Promise<string> {
   const entry = registry.tryClaim(id);
   if (!entry) {
-    return null;
+    return OPENCODE_DECISION_MESSAGES.noLongerPending(kind, id);
   }
   await send(entry);
   return notice;
