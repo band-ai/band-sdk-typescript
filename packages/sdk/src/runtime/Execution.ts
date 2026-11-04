@@ -15,8 +15,6 @@ import {
 import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 
-export const PERMANENT_FAILURE_ERROR = "Message permanently failed after max retries";
-
 export type ExecutionHandler = (
   context: ExecutionContext,
   event: PlatformEvent,
@@ -73,6 +71,8 @@ export class Execution {
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
   private readonly syncBoundaries = new SyncBoundaryTracker();
+  /** Backlog messages whose last turn failed with retries left; the sweep runs them again. */
+  private readonly retryableMessages = new Set<string>();
   private inFlight = 0;
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
@@ -348,40 +348,25 @@ export class Execution {
         break;
       }
 
-      // A failed mark is what moves /next past this message. One seen again
-      // (or whose mark did not take) is still the head, and re-polling would spin.
-      if (this.retryTracker.isPermanentlyFailed(nextMessage.id)) {
-        if (this.syncBoundaries.isExecuted(nextMessage.id) || !(await this.markPermanentlyFailed(nextMessage.id))) {
-          this.logger.warn("Permanently failed message still heads /next; ending sync", {
-            roomId: this.roomId,
-            messageId: nextMessage.id,
-          });
-          break;
+      // Band serves the oldest message not yet processed, a failed one
+      // included. A head handled here and still served has a mark that has
+      // not landed; Band's guidance is to stop draining there.
+      const messageId = nextMessage.id;
+      if (this.syncBoundaries.isExecuted(messageId) && !this.retryableMessages.has(messageId)) {
+        if (!this.syncBoundaries.isSyncPoint(boundary, messageId)) {
+          this.logger.warn("Handled message still heads /next; ending sync", { roomId: this.roomId, messageId });
         }
-        this.syncBoundaries.recordExecuted(nextMessage.id);
+        break;
       }
 
-      // Already executed — by this scan, an earlier scan, or bootstrap/stale
-      // recovery — is never redone.
-      if (!this.syncBoundaries.isExecuted(nextMessage.id)) {
-        await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
-        // Recorded unconditionally, not only when this happens to be
-        // recognized as the boundary's own live message: `boundary.messageId`
-        // is anchored asynchronously by a live delivery arriving through a
-        // separate path (`enqueue()`), so this scan can execute a message
-        // before that anchor lands. Marking every executed id lets the later
-        // live delivery (or a later scan re-fetching the same id before the
-        // backend's mark-as-processed effect propagates) find it already done
-        // regardless of whether this scan ever recognized it as "the" sync
-        // point in real time.
-        this.syncBoundaries.recordExecuted(nextMessage.id);
-      }
+      await this.executeSyncMessage(toMessageEvent(nextMessage), messageId);
+      // Recorded whatever the outcome, so the live delivery of this message,
+      // which can land before or after the boundary is anchored, is skipped.
+      this.syncBoundaries.recordExecuted(messageId);
 
-      // The boundary's own live message ends the scan, whether it ran now or
-      // before: nothing further in the backlog needs a REST round trip once
-      // we've caught up to live traffic.
-      if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
-        this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId: nextMessage.id });
+      // Caught up to live traffic once the boundary's own message is handled.
+      if (!this.retryableMessages.has(messageId) && this.syncBoundaries.isSyncPoint(boundary, messageId)) {
+        this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId });
         break;
       }
     }
@@ -391,14 +376,14 @@ export class Execution {
   }
 
   private async executeSyncMessage(event: PlatformEvent, messageId: string): Promise<void> {
-    const [, exceeded] = this.retryTracker.recordAttempt(messageId);
-    if (exceeded) {
-      this.logger.error("Message exceeded max retries during sync, marking permanently failed", {
+    this.retryableMessages.delete(messageId);
+    if (this.retryTracker.isPermanentlyFailed(messageId) || this.retryTracker.recordAttempt(messageId)[1]) {
+      this.logger.error("Message exceeded max retries during sync, giving up on it", {
         roomId: this.roomId,
         messageId,
         maxRetries: this.retryTracker.maxRetries,
       });
-      await this.markPermanentlyFailed(messageId);
+      await this.giveUp(messageId);
       return;
     }
 
@@ -409,6 +394,7 @@ export class Execution {
       await this.onExecute(this.context, event, () => this.isActive());
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
+      this.retryableMessages.add(messageId);
       if (error instanceof RecoverableTurnError) {
         this.warnTurnFailed(error, { messageId });
         return;
@@ -527,20 +513,13 @@ export class Execution {
     }
   }
 
-  /** Records on the platform that `messageId` is given up on; false when the platform did not take it. */
-  private async markPermanentlyFailed(messageId: string): Promise<boolean> {
+  /** Band has no give-up state: a message leaves /next only once claimed and marked processed. */
+  private async giveUp(messageId: string): Promise<void> {
     try {
-      // The platform records a failure only against an open processing attempt.
       await this.link.markProcessing(this.roomId, messageId);
-      await this.link.markFailed(this.roomId, messageId, PERMANENT_FAILURE_ERROR);
-      return true;
+      await this.link.markProcessed(this.roomId, messageId);
     } catch (error: unknown) {
-      this.logger.warn("Failed to mark message as failed on server", {
-        roomId: this.roomId,
-        messageId,
-        error,
-      });
-      return false;
+      this.logger.warn("Failed to settle a given-up message", { roomId: this.roomId, messageId, error });
     }
   }
 }
