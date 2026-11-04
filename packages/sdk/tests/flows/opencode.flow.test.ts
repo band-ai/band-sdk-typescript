@@ -171,13 +171,6 @@ async function timeOut(reports: ActivityReports): Promise<void> {
 
 type OpencodeRoom = Awaited<ReturnType<typeof opencodeRoom>>;
 
-/** Posts `text` from `senderId`; how the runtime settled it, and every message the agent posted meanwhile with its mentions. */
-async function settleReply(room: OpencodeRoom["room"], senderId: string, text: string) {
-  const after = room.messages.length;
-  const outcome = await room.outcome(await room.say(senderId, text));
-  return { outcome, said: room.messages.slice(after).map(({ content, mentions }) => ({ content, mentions })) };
-}
-
 /**
  * What the room's activity read while a turn's failure was still being posted; `fail` makes the turn
  * fail, and `meanwhile` is what the room and OpenCode do before the failure lands.
@@ -1043,13 +1036,13 @@ describe("OpenCode in a Band room", () => {
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     await Promise.all(expiryReplies.map((reply) => reply.sending));
     // The expiries own both asks now: a reply naming one during the room's hold is consumed, and only its sender is told.
-    expect(await settleReply(room, APPROVER, `approve ${permission}`)).toEqual({
+    expect(await room.sayAndSettle(APPROVER, `approve ${permission}`)).toEqual({
       outcome: "processed",
-      said: [{ content: SAYS.noLongerPending("permission", permission), mentions: [APPROVER] }],
+      messages: [expect.objectContaining({ content: SAYS.noLongerPending("permission", permission), mentions: [APPROVER] })],
     });
-    expect(await settleReply(room, APPROVER, `reject ${question}`)).toEqual({
+    expect(await room.sayAndSettle(APPROVER, `reject ${question}`)).toEqual({
       outcome: "processed",
-      said: [{ content: SAYS.noLongerPending("question", question), mentions: [APPROVER] }],
+      messages: [expect.objectContaining({ content: SAYS.noLongerPending("question", question), mentions: [APPROVER] })],
     });
     // With no live ask to answer, this is an ordinary message: held until the turn ends.
     const later = await room.say(OWNER, "yes please");
