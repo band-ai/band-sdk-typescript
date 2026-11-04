@@ -194,7 +194,7 @@ export function routeReply(raw: string, decisions: RoomDecisions): ReplyAction {
     : routeNamedCommand(raw, command.reply, command.id, decisions);
 }
 
-// A named id is resolved by membership, so a reply to a claimed ask reaches `tryClaim` and loses there quietly.
+// A named id is resolved by membership, so a reply to a claimed ask loses at the claim and is told it is no longer pending.
 function routeNamedCommand(raw: string, reply: OpencodeApprovalReply, id: string, decisions: RoomDecisions): ReplyAction {
   const rejects = reply === REPLY_WORDS.reject;
   switch (heldKind(id, rejects, decisions)) {

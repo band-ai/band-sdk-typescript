@@ -171,6 +171,13 @@ async function timeOut(reports: ActivityReports): Promise<void> {
 
 type OpencodeRoom = Awaited<ReturnType<typeof opencodeRoom>>;
 
+/** Posts `text` from `senderId`; how the runtime settled it, and every message the agent posted meanwhile with its mentions. */
+async function settleReply(room: OpencodeRoom["room"], senderId: string, text: string) {
+  const after = room.messages.length;
+  const outcome = await room.outcome(await room.say(senderId, text));
+  return { outcome, said: room.messages.slice(after).map(({ content, mentions }) => ({ content, mentions })) };
+}
+
 /**
  * What the room's activity read while a turn's failure was still being posted; `fail` makes the turn
  * fail, and `meanwhile` is what the room and OpenCode do before the failure lands.
@@ -1020,7 +1027,7 @@ describe("OpenCode in a Band room", () => {
     expect(room.events("error")).toEqual([]);
   });
 
-  it("lets expiries that are already replying own their asks against late room replies and a redelivery", async () => {
+  it("tells a late room reply that an expiry already replying owns its ask, and lets that expiry own a redelivery", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS, questionWaitTimeoutMs: DEADLINE_MS });
     const { room, server } = session;
@@ -1035,9 +1042,15 @@ describe("OpenCode in a Band room", () => {
 
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     await Promise.all(expiryReplies.map((reply) => reply.sending));
-    // The expiries own both asks now: the room's replies neither answer them nor say they did.
-    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([]);
-    expect(await room.exchange(OWNER, `reject ${question}`)).toEqual([]);
+    // The expiries own both asks now: a reply naming one during the room's hold is consumed, and only its sender is told.
+    expect(await settleReply(room, APPROVER, `approve ${permission}`)).toEqual({
+      outcome: "processed",
+      said: [{ content: SAYS.noLongerPending("permission", permission), mentions: [APPROVER] }],
+    });
+    expect(await settleReply(room, APPROVER, `reject ${question}`)).toEqual({
+      outcome: "processed",
+      said: [{ content: SAYS.noLongerPending("question", question), mentions: [APPROVER] }],
+    });
     // With no live ask to answer, this is an ordinary message: held until the turn ends.
     const later = await room.say(OWNER, "yes please");
     // OpenCode redelivers the ask being expired; the marker behind it shows it was handled, and not prompted again.
@@ -1054,6 +1067,9 @@ describe("OpenCode in a Band room", () => {
       SAYS.approvalTimedOut(permission, "reject"),
       SAYS.questionTimedOut(question),
     ].sort());
+
+    // Once the expiry has landed, the same reply hears the same thing.
+    expect(await room.exchange(APPROVER, `approve ${permission}`)).toEqual([SAYS.noLongerPending("permission", permission)]);
 
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
     expect(server.questionReplies()).toEqual([[question, DECLINED]]);
