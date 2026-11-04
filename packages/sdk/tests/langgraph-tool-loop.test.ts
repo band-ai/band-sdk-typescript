@@ -4,10 +4,10 @@
  * model, so LangGraph itself decides when the run ends.
  */
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { tool } from "@langchain/core/tools";
-import { MemorySaver } from "@langchain/langgraph";
+import { Command, MemorySaver } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -61,11 +61,10 @@ const send: ScriptedCall = { name: SEND_MESSAGE_TOOL_NAME, args: { content: "Not
 const calls = (...scripted: ScriptedCall[]): Answer => ({ calls: scripted });
 const done: Answer = { text: "done" };
 
-async function runTurn(script: (request: number) => Answer, options: Omit<LangGraphAdapterOptions, "llm"> = {}) {
+async function runTurn(script: (request: number) => Answer, options: Omit<LangGraphAdapterOptions, "llm"> = {}, room = recordingRoom()) {
   const model = new ScriptedChatModel(script);
   const adapter = new LangGraphAdapter({ ...options, llm: model });
   await adapter.onStarted("helper", "assistant");
-  const room = recordingRoom();
   const turn = adapter.onEvent(turnInput(room.tools, makeMessage("Remember: my dog is named Pixel.")));
   return { model, room, turn };
 }
@@ -80,9 +79,15 @@ const contractRun = (options: Omit<LangGraphAdapterOptions, "llm">) =>
 describeToolRoundContract("LangGraphAdapter (built-in graph, streamed events)", contractRun({}));
 describeToolRoundContract("LangGraphAdapter (built-in graph, invoke)", contractRun({ emitExecutionEvents: false }));
 
+/** An `additionalTools` tool that always throws. */
+const lookup: ScriptedCall = { name: "lookup", args: {} };
+const flakyLookup = tool(async () => {
+  throw new Error("lookup failed");
+}, { name: "lookup", description: "Look something up.", schema: z.object({}) });
+
 describe("LangGraph built-in tool loop", () => {
-  it("reports every call of the round that declines before it ends", async () => {
-    const { model, room, turn } = await runTurn(() => calls(send, decline));
+  it("reports every call of the round that declines before it ends, even over a slow network", async () => {
+    const { model, room, turn } = await runTurn(() => calls(send, decline), {}, recordingRoom({ latencyMs: 20 }));
     await turn;
 
     expect(model.requests).toBe(1);
@@ -94,19 +99,40 @@ describe("LangGraph built-in tool loop", () => {
   });
 
   it("asks the model again when an additional tool beside the decline threw", async () => {
-    const flaky = tool(async () => {
-      throw new Error("lookup failed");
-    }, { name: "lookup", description: "Look something up.", schema: z.object({}) });
-    const lookup: ScriptedCall = { name: "lookup", args: {} };
     const { model, room, turn } = await runTurn(
       (request) => request === 1 ? calls(lookup, decline) : request === 2 ? calls(send) : done,
-      { additionalTools: [flaky] },
+      { additionalTools: [flakyLookup] },
     );
     await turn;
 
     expect(model.requests).toBe(3);
     expect(room.messages.map((message) => message.content)).toEqual(["Noted."]);
     expect(failureMessages(room.events)).toEqual([]);
+  });
+
+  it("ends at a later round that only declines, once an additional tool's throw is behind it", async () => {
+    const { model, room, turn } = await runTurn((request) => request === 1 ? calls(lookup) : calls(decline), { additionalTools: [flakyLookup] });
+    await turn;
+
+    expect(model.requests).toBe(2);
+    expect(room.messages).toEqual([]);
+    expect(failureMessages(room.events)).toEqual([]);
+  });
+
+  it("still sees a throw when a later tool in its round appends a message of its own", async () => {
+    const handoff = tool(async (_args: Record<string, never>, config: { toolCall?: { id?: string } }) => new Command({
+      update: { messages: [
+        new ToolMessage({ content: "Handed off.", tool_call_id: config.toolCall?.id ?? "" }),
+        new AIMessage("Handing this to the billing agent."),
+      ] },
+    }), { name: "handoff", description: "Hand the conversation off.", schema: z.object({}) });
+    const { model, turn } = await runTurn(
+      (request) => request === 1 ? calls(lookup, decline, { name: "handoff", args: {} }) : done,
+      { additionalTools: [flakyLookup, handoff] },
+    );
+    await turn;
+
+    expect(model.requests).toBe(2);
   });
 
   it("never relays the side text of a round whose custom decline failed", async () => {
@@ -139,11 +165,14 @@ describe("LangGraph built-in tool loop", () => {
     expect(failureMessages(room.events)).toEqual([]);
   });
 
-  it("honors recursionLimit", async () => {
-    const { room, turn } = await runTurn(() => calls(send), { recursionLimit: 7 });
+  it.each([
+    [{ recursionLimit: 7 }, 7],
+    [{}, 50],
+  ])("stops a runaway loop at recursionLimit (%o)", async (options, limit) => {
+    const { room, turn } = await runTurn(() => calls(send), options);
     await expectTurnFailed(turn);
 
-    expect(failureMessages(room.events)).toEqual([expect.stringContaining("Recursion limit of 7 reached")]);
+    expect(failureMessages(room.events)).toEqual([expect.stringContaining(`Recursion limit of ${limit} reached`)]);
   });
 
   it("leaves a graphFactory graph's loop to the graph", async () => {

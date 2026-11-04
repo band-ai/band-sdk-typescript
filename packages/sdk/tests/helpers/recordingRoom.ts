@@ -13,17 +13,20 @@ type PostedEvent = Parameters<RestApi["createChatEvent"]>[1];
 /**
  * A room the real `AgentTools` drive, with the platform replaced by a REST
  * fake that records what a turn posted: its messages and its events (tool
- * calls, results, failures).
+ * calls, results, failures). `latencyMs` delays each post, as the network does.
  */
-export function recordingRoom(): { tools: AdapterToolsProtocol; messages: PostedMessage[]; events: PostedEvent[] } {
+export function recordingRoom({ latencyMs = 0 } = {}): { tools: AdapterToolsProtocol; messages: PostedMessage[]; events: PostedEvent[] } {
   const messages: PostedMessage[] = [];
   const events: PostedEvent[] = [];
+  const network = () => latencyMs > 0 ? new Promise((resolve) => setTimeout(resolve, latencyMs)) : Promise.resolve();
   const rest = new FakeRestApi({
     createChatMessage: async (_chatId, message) => {
+      await network();
       messages.push(message);
       return { id: `posted-${messages.length}` };
     },
     createChatEvent: async (_chatId, event) => {
+      await network();
       events.push(event);
       return { id: `event-${events.length}` };
     },

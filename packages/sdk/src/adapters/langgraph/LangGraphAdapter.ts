@@ -25,16 +25,8 @@ import {
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
 
-/** LangGraph steps one turn may run, as in the Python SDK; the built-in graph takes three per tool round. */
+/** The Python SDK's default for the same option. */
 const DEFAULT_RECURSION_LIMIT = 50;
-
-/** How the built-in graph stops before asking the model again after a round that declined. */
-class DeclinedRound extends Error {
-  public constructor() {
-    super("The turn was declined.");
-    this.name = "DeclinedRound";
-  }
-}
 
 export interface LangGraphGraph {
   invoke?(input: Record<string, unknown>, config?: Record<string, unknown>): Promise<unknown>;
@@ -59,6 +51,7 @@ interface LangGraphSdk {
     prompt?: string;
     preModelHook?: (state: { messages: unknown[] }) => Record<string, never>;
   }) => LangGraphGraph;
+  GraphInterrupt: new () => Error;
   tool: (
     fn: (input: Record<string, unknown>) => Promise<string>,
     fields: {
@@ -78,7 +71,7 @@ export interface LangGraphAdapterOptions {
   customTools?: CustomToolDef[];
   systemPrompt?: string;
   customSection?: string;
-  /** LangGraph steps one turn may run (default 50). The built-in graph takes three per tool round. */
+  /** LangGraph steps one turn may run (default 50); the built-in graph takes three per tool round. */
   recursionLimit?: number;
   maxHistoryMessages?: number;
   emitExecutionEvents?: boolean;
@@ -154,8 +147,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     let text: string | null = null;
-    // LangGraph's recursionLimit caps the rounds, so the round rule needs no cap of its own.
-    const round = new RoundOutcome(tools.turn, Number.POSITIVE_INFINITY);
+    // LangGraph's recursionLimit caps the rounds.
+    const round = new RoundOutcome(tools.turn);
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
@@ -218,9 +211,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         return;
       }
     } catch (error) {
-      if (!(error instanceof DeclinedRound)) {
-        await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
-      }
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
     }
 
     await relayReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
@@ -263,6 +254,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     if (!sdk) {
       throw new RuntimeStateError("LangGraphAdapter SDK failed to initialize.");
     }
+    const { GraphInterrupt } = sdk;
 
     return Promise.resolve(sdk.createReactAgent({
       llm: this.llm,
@@ -270,9 +262,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       checkpointer: this.checkpointer,
       prompt: this.renderedSystemPrompt,
       // The graph's only way on from a tools round is the model, so the round rule ends the run here.
+      // An empty interrupt, like a static interruptAfter, ends it cleanly: streams complete and nothing is reported as failed.
       preModelHook: ({ messages }) => {
         if (round.declined && !lastRoundThrew(messages)) {
-          throw new DeclinedRound();
+          throw new GraphInterrupt();
         }
         round.start();
         return {};
@@ -367,7 +360,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
             ...data,
             tool_call_id: data.run_id,
             output,
-            is_error: message?.status === "error" || isFailedToolOutput(parsedOutput),
+            is_error: (message !== undefined && isErrorToolMessage(message)) || isFailedToolOutput(parsedOutput),
           }, this.logger, {
             label: "LangGraph event",
             eventType,
@@ -584,18 +577,25 @@ function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
   return langChainMessageType(record) === "ai";
 }
 
+/** ToolNode's report of a tool that threw. */
+function isErrorToolMessage(record: Record<string, unknown>): boolean {
+  return record.status === "error";
+}
+
 /**
- * Whether a tool in the last round threw: ToolNode reports a throw as an error
- * ToolMessage, the only sign of failure an opaque `additionalTools` tool gives.
+ * Whether a tool in the last round threw, the only sign of failure an opaque
+ * `additionalTools` tool gives. The round runs back to the AI message that
+ * asked for it; a tool's `Command` may add other messages inside it.
  */
 function lastRoundThrew(messages: readonly unknown[]): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = asOptionalRecord(messages[index]);
-    if (!message || langChainMessageType(message) !== "tool") {
-      return false;
-    }
-    if (message.status === "error") {
+    const message = asOptionalRecord(messages[index]) ?? {};
+    const type = langChainMessageType(message);
+    if (type === "tool" && isErrorToolMessage(message)) {
       return true;
+    }
+    if (type === "human" || (type === "ai" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0)) {
+      return false;
     }
   }
   return false;
@@ -653,18 +653,20 @@ function asMessageContent(value: unknown): string | null {
 
 async function loadLangGraphSdk(): Promise<LangGraphSdk> {
   try {
-    const [prebuiltModule, coreToolsModule] = await Promise.all([
+    const [langGraphModule, prebuiltModule, coreToolsModule] = await Promise.all([
+      import("@langchain/langgraph").then((module) => module as { GraphInterrupt: LangGraphSdk["GraphInterrupt"] }),
       import("@langchain/langgraph/prebuilt").then((module) => module as { createReactAgent: LangGraphSdk["createReactAgent"] }),
       import("@langchain/core/tools").then((module) => module as { tool: LangGraphSdk["tool"] }),
     ]);
+    const { GraphInterrupt } = langGraphModule;
     const { createReactAgent } = prebuiltModule;
     const { tool } = coreToolsModule;
 
-    if (typeof createReactAgent !== "function" || typeof tool !== "function") {
+    if (typeof GraphInterrupt !== "function" || typeof createReactAgent !== "function" || typeof tool !== "function") {
       throw new UnsupportedFeatureError("LangGraph SDK exports are unavailable.");
     }
 
-    return { createReactAgent, tool };
+    return { GraphInterrupt, createReactAgent, tool };
   } catch (error) {
     throw new UnsupportedFeatureError(
       `LangGraphAdapter requires @langchain/langgraph and @langchain/core. Install them with "pnpm add @langchain/langgraph @langchain/core". (${asErrorMessage(error)})`,
