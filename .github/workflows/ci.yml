@@ -199,6 +199,9 @@ jobs:
       - name: Test baseline scorecard comment
         run: pnpm test:baseline-scorecard-comment
 
+      - name: Test OpenCode Zen sign-in
+        run: pnpm test:opencode-zen-sign-in
+
   packaging:
     if: *not-draft
     runs-on: ubuntu-latest
