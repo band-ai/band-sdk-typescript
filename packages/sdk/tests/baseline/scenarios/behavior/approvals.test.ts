@@ -45,7 +45,7 @@ async function approvalFlow(outcome: Outcome, scenario: ScenarioCell): Promise<v
 
   if (outcome === OUTCOME.timeout) {
     const notice = dialect.notice(outcome, asked.requestId);
-    await untilClosed(scenario, asked, notice);
+    await untilClosed(scenario, dialect, asked, notice);
     const contents = (await observeRoom(room).history()).map((message) => message.content);
     expect(contents, "the expired wait was announced").toContain(notice);
     await Rooms.sendMention(room, agent, dialect.reply(OUTCOME.approve, asked.requestId));

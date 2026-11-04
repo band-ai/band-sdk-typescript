@@ -11,9 +11,7 @@ import { expect } from "vitest";
 import type { TOOL_MODELS } from "../../../../src/contracts/toolSchemas";
 import { ADAPTER } from "../../toolkit/adapters";
 import type { AgentIdentity } from "../../toolkit/agents";
-import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
-import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
 import { observeRoom, toolCalls } from "../../toolkit/observeMessages";
 import { withAdapters } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
@@ -56,14 +54,12 @@ interface GatedWrite extends InRoom {
 }
 
 async function runsGatedWrite(write: GatedWrite): Promise<void> {
-  const request = await requestGatedWrite(write, write.marker, write.target);
+  await requestGatedWrite(write, write.marker, write.target);
   await decide(write, dialect, write.decision, await untilRequested(write, dialect));
-  // The closing reply can come before the turn ends; the next question waits for the
-  // request to be processed, or OpenCode answers that the room is still busy.
-  assertDeliveryStatus(await observeAgent(write.agent, write.room).untilProcessed(request), DELIVERY_STATUS.processed);
 }
 
 async function recallsItsOwnCommand({ agent, room, marker }: GatedWrite, other: GatedWrite): Promise<void> {
+  // Asked while the approved turn may still be finishing: the room holds it until that turn ends.
   await Rooms.sendMention(room, agent, "Which marker was in the shell command I asked you to run in this room? Reply with just that marker.");
   const reply = await observeRoom(room).untilReply(agent);
   assertReplied(reply);
