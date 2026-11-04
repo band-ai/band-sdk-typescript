@@ -91,15 +91,17 @@ jobs:
 
       # Exchanges the job's OIDC token for a short-lived Zen key (no stored secret to
       # expire). The console credential trusts only the branches it lists; client_id
-      # is public.
+      # is public. A failed sign-in leaves the key unset, so only the OpenCode cells
+      # fail (their requirement names it) instead of the whole baseline.
       - name: Sign in to OpenCode Zen
+        continue-on-error: true
         env:
           AUDIENCE: https://opencode.ai/console
           CLIENT_ID: sk_a176f5a2-922f-44b5-a746-71969e03aa1b
         run: |
-          oidc=$(curl -sSf --oauth2-bearer "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)
-          response=$(curl -sSf https://opencode.ai/console/auth/oauth/token \
+          oidc=$(curl -sSf --max-time 30 --oauth2-bearer "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -er .value)
+          response=$(curl -sS --fail-with-body --max-time 30 https://opencode.ai/console/auth/oauth/token \
             -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
             -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
             -d client_id="$CLIENT_ID" \
