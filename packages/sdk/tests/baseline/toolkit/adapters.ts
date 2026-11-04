@@ -49,7 +49,6 @@ const ENV = {
   cursorKey: "CURSOR_API_KEY",
   kiroKey: "KIRO_API_KEY",
   openaiKey: "OPENAI_API_KEY",
-  opencodeZenKey: "OPENCODE_ZEN_API_KEY",
   lettaUrl: "LETTA_BASE_URL",
   lettaKey: "LETTA_API_KEY",
   parlantEnvironment: "PARLANT_ENVIRONMENT",
@@ -109,20 +108,17 @@ export function buildLetta({ prompt }: BuildOptions, options: LettaAdapterOption
   });
 }
 
-/** OpenCode Zen, the provider the baseline runs OpenCode on, as in band-sdk-python. */
-const OPENCODE_PROVIDER = "opencode";
-/** A free Zen model; the Zen account is free tier, so no OpenCode call is paid. */
-const OPENCODE_MODEL = "mimo-v2.6-flash-free";
+/** The OpenCode provider the baseline runs it on, with our own key (BYOK). */
+const OPENCODE_PROVIDER = "anthropic";
 
-/** OpenCode on the free Zen model, `config` layered over the defaults. */
+/** OpenCode on Anthropic, `config` layered over the defaults. */
 export function buildOpencode({ prompt, workDir, reportToolCalls }: BuildOptions, config: OpencodeAdapterConfig = {}): OpencodeAdapter {
-  // Project config: OpenCode reaches Zen with our key, titles sessions on the same free model, and asks before any bash.
+  // Project config: OpenCode reaches Anthropic with our own key, and asks before any bash.
   writeFileSync(
     join(workDir, "opencode.json"),
     JSON.stringify({
       $schema: "https://opencode.ai/config.json",
-      small_model: `${OPENCODE_PROVIDER}/${OPENCODE_MODEL}`,
-      provider: { [OPENCODE_PROVIDER]: { options: { apiKey: `{env:${ENV.opencodeZenKey}}` } } },
+      provider: { [OPENCODE_PROVIDER]: { options: { apiKey: `{env:${ENV.anthropicKey}}` } } },
       permission: { bash: { "*": "ask" } },
     }),
   );
@@ -130,7 +126,7 @@ export function buildOpencode({ prompt, workDir, reportToolCalls }: BuildOptions
     config: {
       directory: workDir,
       providerId: OPENCODE_PROVIDER,
-      modelId: OPENCODE_MODEL,
+      modelId: ANTHROPIC_MODEL,
       customSection: prompt,
       ...reportsTools({ reportToolCalls }),
       ...config,
@@ -294,7 +290,7 @@ const SPECS = {
   },
   opencode: {
     id: "opencode",
-    requires: [requires.envVar(ENV.opencodeZenKey), requires.peerPackage("@opencode-ai/sdk"), requires.cli("opencode")],
+    requires: [ANTHROPIC_KEY, requires.peerPackage("@opencode-ai/sdk"), requires.cli("opencode")],
     supports: [CAPABILITY.approvals],
     build: (options) => buildOpencode(options),
   },

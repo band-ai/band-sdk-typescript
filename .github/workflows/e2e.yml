@@ -28,10 +28,6 @@ jobs:
     name: baseline (live)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # id-token: the OpenCode Zen sign-in below exchanges the job's OIDC token.
-    permissions:
-      contents: read
-      id-token: write
     concurrency:
       # Never cancel in progress: a killed run skips its teardown, orphaning
       # the agents and rooms it provisioned on the real platform.
@@ -88,16 +84,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
         run: .github/scripts/setup-parlant.sh start
-
-      # A short-lived Zen key from the job's OIDC token (no stored secret to expire).
-      # The console credential trusts only the branches it lists. A failed sign-in
-      # leaves the key unset, so only the OpenCode cells fail (their requirement
-      # names it) instead of the whole baseline.
-      - name: Sign in to OpenCode Zen
-        continue-on-error: true
-        env:
-          OPENCODE_ZEN_CLIENT_ID: sk_a176f5a2-922f-44b5-a746-71969e03aa1b
-        run: .github/scripts/opencode-zen-sign-in.sh
 
       - name: Wait for the Letta server
         run: .github/scripts/setup-letta.sh wait
