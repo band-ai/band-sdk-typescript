@@ -31,12 +31,16 @@ An adapter that runs its own tool loop stops after the round in which a
 decline landed, any tool whose effect is `decline`, without asking the model
 again. If another call in that round failed, the loop continues so the model
 sees the failure. `ToolCallingAdapter` (OpenAI, Anthropic, Gemini, Vercel AI
-SDK) and `GoogleADKAdapter` share this rule as `RoundOutcome`
-(`adapters/shared/toolRounds.ts`), which judges each call from its own output
-as `Turn` does, and leave the round before the model's next call;
-`tests/toolRoundContract.ts` holds the scenarios both owe. `LangGraphAdapter`'s built-in graph still asks
-the model again (INT-1987), and agents that run their own loop (Letta's
-server, Claude SDK, Codex, ACP, OpenCode) keep their own control flow.
+SDK), `GoogleADKAdapter` and `LangGraphAdapter`'s built-in graph share this
+rule as `RoundOutcome` (`adapters/shared/toolRounds.ts`), which judges each
+call from its own output as `Turn` does, and leave the round before the
+model's next call; `tests/toolRoundContract.ts` holds the scenarios they owe.
+LangGraph's built-in graph stops in its pre-model hook, after the round's
+tool messages are saved, so a checkpointed room's next turn continues from
+them; an `additionalTools` tool that threw counts as a failed call. Graphs
+passed as `graph` or `graphFactory`, and agents that run their own loop
+(Letta's server, Claude SDK, Codex, ACP, OpenCode), keep their own control
+flow.
 
 ## What counts
 

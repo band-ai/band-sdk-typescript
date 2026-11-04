@@ -10,6 +10,7 @@ import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
+import { RoundOutcome } from "../shared/toolRounds";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { withNativeActivity, type NativeActivity } from "../../runtime/workingState";
 
@@ -23,6 +24,17 @@ import {
 
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
+
+/** LangGraph steps one turn may run, as in the Python SDK; the built-in graph takes three per tool round. */
+const DEFAULT_RECURSION_LIMIT = 50;
+
+/** How the built-in graph stops before asking the model again after a round that declined. */
+class DeclinedRound extends Error {
+  public constructor() {
+    super("The turn was declined.");
+    this.name = "DeclinedRound";
+  }
+}
 
 export interface LangGraphGraph {
   invoke?(input: Record<string, unknown>, config?: Record<string, unknown>): Promise<unknown>;
@@ -45,6 +57,7 @@ interface LangGraphSdk {
     tools: unknown[];
     checkpointer?: unknown;
     prompt?: string;
+    preModelHook?: (state: { messages: unknown[] }) => Record<string, never>;
   }) => LangGraphGraph;
   tool: (
     fn: (input: Record<string, unknown>) => Promise<string>,
@@ -65,6 +78,7 @@ export interface LangGraphAdapterOptions {
   customTools?: CustomToolDef[];
   systemPrompt?: string;
   customSection?: string;
+  /** LangGraph steps one turn may run (default 50). The built-in graph takes three per tool round. */
   recursionLimit?: number;
   maxHistoryMessages?: number;
   emitExecutionEvents?: boolean;
@@ -110,7 +124,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
-    this.recursionLimit = options.recursionLimit ?? 50;
+    this.recursionLimit = options.recursionLimit ?? DEFAULT_RECURSION_LIMIT;
     this.maxHistoryMessages = options.maxHistoryMessages ?? 100;
     this.emitExecutionEvents = options.emitExecutionEvents ?? true;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
@@ -140,6 +154,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     let text: string | null = null;
+    // LangGraph's recursionLimit caps the rounds, so the round rule needs no cap of its own.
+    const round = new RoundOutcome(tools.turn, Number.POSITIVE_INFINITY);
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
@@ -149,6 +165,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         const built = buildLangGraphTools({
           sdk,
           tools,
+          round,
           includeMemoryTools: this.includeMemoryTools,
           logger: this.logger,
           customTools: this.customTools,
@@ -158,7 +175,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         observedNames = built.observedNames;
       }
 
-      const graph = await this.resolveGraph(sdk, langGraphTools);
+      const graph = await this.resolveGraph(sdk, langGraphTools, round);
 
       const usesCheckpointer = Boolean(this.checkpointer);
 
@@ -188,7 +205,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         configurable: {
           thread_id: context.roomId,
         },
-        recursion_limit: this.recursionLimit,
+        recursionLimit: this.recursionLimit,
       };
 
       if (this.emitExecutionEvents && graph.streamEvents) {
@@ -201,7 +218,9 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         return;
       }
     } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
+      if (!(error instanceof DeclinedRound)) {
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
+      }
     }
 
     await relayReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
@@ -228,6 +247,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private resolveGraph(
     sdk: LangGraphSdk | undefined,
     langGraphTools: unknown[],
+    round: RoundOutcome,
   ): Promise<LangGraphGraph> {
     if (this.graphFactory) {
       return Promise.resolve(this.graphFactory(langGraphTools));
@@ -249,6 +269,14 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       tools: langGraphTools,
       checkpointer: this.checkpointer,
       prompt: this.renderedSystemPrompt,
+      // The graph's only way on from a tools round is the model, so the round rule ends the run here.
+      preModelHook: ({ messages }) => {
+        if (round.declined && !lastRoundThrew(messages)) {
+          throw new DeclinedRound();
+        }
+        round.start();
+        return {};
+      },
     }));
   }
 
@@ -387,6 +415,7 @@ function streamToolArgs(input: unknown): Record<string, unknown> {
 function buildLangGraphTools(input: {
   sdk: LangGraphSdk;
   tools: TurnTools;
+  round: RoundOutcome;
   customTools: CustomToolDef[];
   additionalTools: unknown[];
   includeMemoryTools: boolean;
@@ -407,7 +436,7 @@ function buildLangGraphTools(input: {
     ]);
   }
   const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
-    input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
+    input.sdk.tool(async (args) => stringifyToolResult(await input.round.run(() => execute(args)), input.logger, spec.name), spec);
 
   return {
     tools: [
@@ -510,7 +539,7 @@ function asMessageText(value: unknown): string | null {
   return asMessageContent(record.content);
 }
 
-const LANGCHAIN_MESSAGE_TYPES = ["ai", "human"] as const;
+const LANGCHAIN_MESSAGE_TYPES = ["ai", "human", "tool"] as const;
 type LangChainMessageType = (typeof LANGCHAIN_MESSAGE_TYPES)[number];
 
 function isLangChainMessageType(value: unknown): value is LangChainMessageType {
@@ -523,6 +552,7 @@ const LANGCHAIN_MESSAGE_CLASSES: Readonly<Record<string, LangChainMessageType>> 
   AIMessageChunk: "ai",
   HumanMessage: "human",
   HumanMessageChunk: "human",
+  ToolMessage: "tool",
 };
 
 // A LangChain message's type in either shape:
@@ -552,6 +582,23 @@ function langChainMessageType(record: Record<string, unknown>): LangChainMessage
 
 function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
   return langChainMessageType(record) === "ai";
+}
+
+/**
+ * Whether a tool in the last round threw: ToolNode reports a throw as an error
+ * ToolMessage, the only sign of failure an opaque `additionalTools` tool gives.
+ */
+function lastRoundThrew(messages: readonly unknown[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = asOptionalRecord(messages[index]);
+    if (!message || langChainMessageType(message) !== "tool") {
+      return false;
+    }
+    if (message.status === "error") {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** The roles LangChain reads as a human message, in a tuple or a role record. */
