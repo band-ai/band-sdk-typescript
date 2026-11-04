@@ -67,7 +67,7 @@ async function runTurn(script: (request: number) => Answer, options: Omit<LangGr
   await adapter.onStarted("helper", "assistant");
   const room = recordingRoom();
   const turn = adapter.onEvent(turnInput(room.tools, makeMessage("Remember: my dog is named Pixel.")));
-  return { adapter, model, room, turn };
+  return { model, room, turn };
 }
 
 const contractRun = (options: Omit<LangGraphAdapterOptions, "llm">) =>
