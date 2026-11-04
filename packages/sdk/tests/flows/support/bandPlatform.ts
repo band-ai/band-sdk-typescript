@@ -135,7 +135,8 @@ export class RecordingRestApi extends FakeRestApi {
   /** Ids Band refuses to add to a room with 403, as for someone the agent has no approved contact with. */
   public readonly unreachable = new Set<string>();
   private readonly history: HistoryEntry[] = [];
-  private readonly backlog: HistoryEntry[] = [];
+  /** Every message posted to the agent, which Band serves until the runtime settles it. */
+  private readonly unsettled: HistoryEntry[] = [];
   private readonly rooms = new Map<string, RoomState>();
   private lastActivity = 0;
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
@@ -187,11 +188,15 @@ export class RecordingRestApi extends FakeRestApi {
     return { working };
   }
 
-  /** The oldest backlog message in the room not yet settled, as `/messages/next` serves it. */
+  /** The oldest message in the room not yet settled, as `/messages/next` serves it. */
   public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
-    const pending = this.backlog.find((entry) => entry.roomId === request.chatId && !this.isSettled(entry.item.id));
+    const pending = this.unsettledIn(request.chatId)[0];
     await this.nextMessageHolds.pass(request.chatId);
-    return pending?.item ?? null;
+    return pending ?? null;
+  }
+
+  private unsettledIn(roomId: string): PlatformChatMessage[] {
+    return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
@@ -268,10 +273,10 @@ export class RecordingRestApi extends FakeRestApi {
     this.rooms.delete(roomId);
   }
 
-  /** Adds a message to the backlog an agent that is not connected yet finds once it connects. */
-  public addBacklog(roomId: string, item: PlatformChatMessage): void {
+  /** Posts a message to the agent: remembered in the room, and served on `/messages/next` until settled. */
+  public addMessage(roomId: string, item: PlatformChatMessage): void {
     this.remember(roomId, item);
-    this.backlog.push({ roomId, item });
+    this.unsettled.push({ roomId, item });
   }
 
   /** A room of the agent's own, holding only the agent until it adds someone. */
@@ -397,8 +402,9 @@ export class RecordingRestApi extends FakeRestApi {
     return new Date(this.lastActivity).toISOString();
   }
 
+  // Like Band, only a processed mark takes a message off `/messages/next`; a failed one stays (live-probed 2026-11-04).
   private isSettled(messageId: string): boolean {
-    return this.settled.entries.some((settled) => settled.messageId === messageId);
+    return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
   private settle(messageId: string, outcome: Outcome) {
@@ -591,7 +597,7 @@ export class BandPlatform implements AsyncDisposable {
   /** Delivers a message live, once the agent is subscribed to the room. */
   public async post(roomId: string, senderId: string, content: string, options?: PostOptions): Promise<string> {
     const message = this.message(senderId, content, options);
-    this.rest.remember(roomId, message);
+    this.rest.addMessage(roomId, message);
     const topic = chatRoomTopic(roomId);
     await this.transport.bound.until(() => this.transport.hasTopic(topic));
     await this.transport.emit(topic, "message_created", message);
@@ -600,7 +606,7 @@ export class BandPlatform implements AsyncDisposable {
 
   public postBeforeConnect(roomId: string, senderId: string, content: string, options?: PostOptions): string {
     const message = this.message(senderId, content, options);
-    this.rest.addBacklog(roomId, message);
+    this.rest.addMessage(roomId, message);
     return message.id;
   }
 

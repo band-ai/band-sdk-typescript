@@ -185,7 +185,7 @@ describe("execution-owned working state", () => {
     expect(f.log.entries).toEqual(["processing", "true", "false"]);
   });
 
-  it("keeps overlapping bootstrap and backlog cycles working until both handlers finish", async () => {
+  it("runs a bootstrap message after the backlog turn in its room, and stays working until the backlog turn ends", async () => {
     const platform = BandPlatform.host([person("user")]);
     const joined = await platform.room(room);
     const backlog = joined.postBeforeConnect("user", "backlog");
@@ -202,12 +202,12 @@ describe("execution-owned working state", () => {
     try {
       await entered.next((id) => id === backlog);
       const bootstrapping = runtime.bootstrapRoomMessage(room, { ...message("bootstrap"), senderId: "user" });
-      await entered.next((id) => id === "bootstrap");
-      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true]);
-      releases.get("bootstrap")!.resolve(); await bootstrapping;
+      releases.get("bootstrap")!.resolve();
       expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true]);
       releases.get(backlog)!.resolve(); await joined.outcome(backlog);
-      expect(platform.rest.workingReports.entries.map((entry) => entry.working)).toEqual([true, false]);
+      await bootstrapping;
+      expect(entered.entries).toEqual([backlog, "bootstrap"]);
+      expect(platform.rest.workingReports.entries.at(-1)?.working).toBe(false);
     } finally { for (const release of releases.values()) release.resolve(); await runtime.stop(0); }
   });
 
@@ -395,7 +395,6 @@ describe("execution-owned working state", () => {
   });
 
   it("stops scanning the backlog once a forced stop has closed the queue, while reporting still closes", async () => {
-    const firstRead = createDeferred<unknown>();
     const rescanned = createDeferred();
     const closing = createDeferred();
     const closed = createDeferred();
@@ -405,7 +404,7 @@ describe("execution-owned working state", () => {
     const link = {
       getNextMessage: async () => {
         if (++reads > 1) rescanned.resolve();
-        return await firstRead.promise;
+        return message("held");
       },
       getStaleProcessingMessages: async () => [],
       markFailed: async () => {},
@@ -414,18 +413,16 @@ describe("execution-owned working state", () => {
     const report = async (working: boolean) => { if (!working) { closing.resolve(); await closed.promise; } };
     const execution = new Execution({ roomId: room, link: link as never, context, onExecute: async (handlerContext, event, admitted) => {
       // As PlatformRuntime does: an unadmitted backlog head is left unmarked, so `/messages/next` serves it again.
-      if (!admitted() || event.type !== "message_created" || event.payload.id !== "bootstrap") return;
+      if (!admitted() || event.type !== "message_created" || event.payload.id !== "held") return;
       handlerContext.openWorkingCycle(report);
       entered.resolve();
       await release.promise;
     } });
-    const bootstrapping = execution.bootstrapMessage(message("bootstrap") as never);
     await entered.promise;
 
     const stopping = execution.stop(0);
     await closing.promise;
-    firstRead.resolve(message("backlog"));
-    release.resolve(); await bootstrapping;
+    release.resolve();
     const outcome = await Promise.race([rescanned.promise.then(() => "rescanned"), execution.waitForIdle().then(() => "idle")]);
     closed.resolve(); await stopping;
     expect(outcome).toBe("idle");
