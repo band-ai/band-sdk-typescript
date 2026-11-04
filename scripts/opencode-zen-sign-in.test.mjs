@@ -13,7 +13,7 @@ const ZEN_KEY = "zen-short-lived-key";
 const SIGN_IN_FAILED = "OpenCode Zen sign-in failed: ";
 
 /** A local stand-in for both GitHub's OIDC endpoint and the Zen token exchange. */
-async function withEndpoints({ oidc, exchange }, run) {
+async function withEndpoints({ oidc, exchange, unset = [] }, run) {
   const oidcRequests = [];
   const exchanges = [];
   const server = createServer((request, response) => {
@@ -38,16 +38,7 @@ async function withEndpoints({ oidc, exchange }, run) {
       execFile(
         "bash",
         [SCRIPT],
-        {
-          env: {
-            PATH: process.env.PATH,
-            OPENCODE_ZEN_CLIENT_ID: "client-1",
-            ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc?v=1`,
-            ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
-            OPENCODE_ZEN_TOKEN_URL: `${base}/token`,
-            GITHUB_ENV: githubEnv,
-          },
-        },
+        { env: env(base, githubEnv, unset) },
         (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }),
       );
     });
@@ -56,6 +47,25 @@ async function withEndpoints({ oidc, exchange }, run) {
     server.close();
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** The runner environment the script expects, minus the `unset` names. */
+function env(base, githubEnv, unset) {
+  const vars = {
+    PATH: process.env.PATH,
+    OPENCODE_ZEN_CLIENT_ID: "client-1",
+    ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc?v=1`,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
+    OPENCODE_ZEN_TOKEN_URL: `${base}/token`,
+    GITHUB_ENV: githubEnv,
+  };
+  for (const name of unset) delete vars[name];
+  return vars;
+}
+
+/** Asserts `text` contains each part, showing the whole text on failure. */
+function assertIncludes(text, ...parts) {
+  for (const part of parts) assert.ok(text.includes(part), `missing ${JSON.stringify(part)} in:\n${text}`);
 }
 
 const OIDC_OK = { status: 200, body: { value: OIDC_TOKEN } };
@@ -87,7 +97,7 @@ test("a rejected exchange logs the server's reason and exports nothing", async (
   const rejection = { error: "invalid_grant", error_description: "branch not trusted" };
   await withEndpoints({ oidc: OIDC_OK, exchange: { status: 400, body: rejection } }, ({ code, stderr, githubEnv }) => {
     assert.equal(code, 1);
-    assert.ok(stderr.includes(`${SIGN_IN_FAILED}token exchange: `) && stderr.includes("branch not trusted"));
+    assertIncludes(stderr, `${SIGN_IN_FAILED}token exchange: `, "branch not trusted");
     assert.equal(githubEnv, "");
   });
 });
@@ -95,7 +105,7 @@ test("a rejected exchange logs the server's reason and exports nothing", async (
 test("an exchange that grants no key fails instead of exporting an empty one", async () => {
   await withEndpoints({ oidc: OIDC_OK, exchange: { status: 200, body: { expires_in: 3600 } } }, ({ code, stderr, githubEnv }) => {
     assert.equal(code, 1);
-    assert.ok(stderr.includes(`${SIGN_IN_FAILED}token exchange returned no access_token`));
+    assertIncludes(stderr, `${SIGN_IN_FAILED}token exchange returned no access_token (keys: ["expires_in"])`);
     assert.equal(githubEnv, "");
   });
 });
@@ -103,7 +113,7 @@ test("an exchange that grants no key fails instead of exporting an empty one", a
 test("an OIDC response without a token fails before the exchange is tried", async () => {
   await withEndpoints({ oidc: { status: 200, body: {} }, exchange: UNREACHED }, ({ code, stderr, githubEnv, exchanges }) => {
     assert.equal(code, 1);
-    assert.ok(stderr.includes(`${SIGN_IN_FAILED}GitHub OIDC response has no token`));
+    assertIncludes(stderr, `${SIGN_IN_FAILED}GitHub OIDC response has no token`);
     assert.deepEqual(exchanges, []);
     assert.equal(githubEnv, "");
   });
@@ -113,8 +123,21 @@ test("a refused OIDC request logs GitHub's reason and skips the exchange", async
   const refusal = { message: "Unable to get ACTIONS_ID_TOKEN_REQUEST_URL" };
   await withEndpoints({ oidc: { status: 403, body: refusal }, exchange: UNREACHED }, ({ code, stderr, githubEnv, exchanges }) => {
     assert.equal(code, 1);
-    assert.ok(stderr.includes(`${SIGN_IN_FAILED}GitHub OIDC request: `) && stderr.includes(refusal.message));
+    assertIncludes(stderr, `${SIGN_IN_FAILED}GitHub OIDC request: `, refusal.message);
     assert.deepEqual(exchanges, []);
     assert.equal(githubEnv, "");
   });
+});
+
+test("a job without id-token: write fails before any request", async () => {
+  await withEndpoints(
+    { oidc: OIDC_OK, exchange: UNREACHED, unset: ["ACTIONS_ID_TOKEN_REQUEST_URL"] },
+    ({ code, stderr, githubEnv, oidcRequests, exchanges }) => {
+      assert.equal(code, 1);
+      assertIncludes(stderr, "the job needs id-token: write");
+      assert.deepEqual(oidcRequests, []);
+      assert.deepEqual(exchanges, []);
+      assert.equal(githubEnv, "");
+    },
+  );
 });
