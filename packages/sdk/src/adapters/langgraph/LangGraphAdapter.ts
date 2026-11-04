@@ -52,6 +52,7 @@ interface LangGraphSdk {
     preModelHook?: (state: { messages: unknown[] }) => Record<string, never>;
   }) => LangGraphGraph;
   GraphInterrupt: new () => Error;
+  GraphRecursionError: abstract new (...args: never[]) => Error;
   tool: (
     fn: (input: Record<string, unknown>) => Promise<string>,
     fields: {
@@ -149,8 +150,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     let text: string | null = null;
     // LangGraph's recursionLimit caps the rounds.
     const round = new RoundOutcome(tools.turn);
+    let sdk: LangGraphSdk | undefined;
     try {
-      let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
       let observedNames = new Set<string>();
       if (this.usesBandTools) {
@@ -211,7 +212,11 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         return;
       }
     } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
+      // Ending a declined run takes one more step; a limit that refuses it leaves the turn declined, not failed.
+      const endedAtDecline = !this.usesCustomGraph && round.declined && sdk !== undefined && error instanceof sdk.GraphRecursionError;
+      if (!endedAtDecline) {
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
+      }
     }
 
     await relayReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
@@ -654,19 +659,19 @@ function asMessageContent(value: unknown): string | null {
 async function loadLangGraphSdk(): Promise<LangGraphSdk> {
   try {
     const [langGraphModule, prebuiltModule, coreToolsModule] = await Promise.all([
-      import("@langchain/langgraph").then((module) => module as { GraphInterrupt: LangGraphSdk["GraphInterrupt"] }),
+      import("@langchain/langgraph").then((module) => module as Pick<LangGraphSdk, "GraphInterrupt" | "GraphRecursionError">),
       import("@langchain/langgraph/prebuilt").then((module) => module as { createReactAgent: LangGraphSdk["createReactAgent"] }),
       import("@langchain/core/tools").then((module) => module as { tool: LangGraphSdk["tool"] }),
     ]);
-    const { GraphInterrupt } = langGraphModule;
+    const { GraphInterrupt, GraphRecursionError } = langGraphModule;
     const { createReactAgent } = prebuiltModule;
     const { tool } = coreToolsModule;
 
-    if (typeof GraphInterrupt !== "function" || typeof createReactAgent !== "function" || typeof tool !== "function") {
+    if ([GraphInterrupt, GraphRecursionError, createReactAgent, tool].some((value) => typeof value !== "function")) {
       throw new UnsupportedFeatureError("LangGraph SDK exports are unavailable.");
     }
 
-    return { GraphInterrupt, createReactAgent, tool };
+    return { GraphInterrupt, GraphRecursionError, createReactAgent, tool };
   } catch (error) {
     throw new UnsupportedFeatureError(
       `LangGraphAdapter requires @langchain/langgraph and @langchain/core. Install them with "pnpm add @langchain/langgraph @langchain/core". (${asErrorMessage(error)})`,

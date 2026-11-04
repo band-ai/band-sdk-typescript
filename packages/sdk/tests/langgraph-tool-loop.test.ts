@@ -175,6 +175,16 @@ describe("LangGraph built-in tool loop", () => {
     expect(failureMessages(room.events)).toEqual([expect.stringContaining(`Recursion limit of ${limit} reached`)]);
   });
 
+  // Three steps a round: the last round's tools step is the limit's last, so ending the run needs one more.
+  it.each([3, 6, 51])("ends a decline in the last round recursionLimit %i allows", async (recursionLimit) => {
+    const lastRound = recursionLimit / 3;
+    const { model, room, turn } = await runTurn((request) => request < lastRound ? calls(send) : calls(decline), { recursionLimit });
+    await turn;
+
+    expect(model.requests).toBe(lastRound);
+    expect(failureMessages(room.events)).toEqual([]);
+  });
+
   it("leaves a graphFactory graph's loop to the graph", async () => {
     const model = new ScriptedChatModel((request) => request === 1 ? calls(decline) : done);
     const adapter = new LangGraphAdapter({ graphFactory: (tools) => createReactAgent({ llm: model, tools: tools as never }) });
