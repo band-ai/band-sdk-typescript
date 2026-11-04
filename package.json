@@ -5,7 +5,6 @@
     "build:sdk": "pnpm --filter @band-ai/sdk build",
     "test": "pnpm build:sdk && pnpm -r test",
     "test:release-hardening": "node --test scripts/release-hardening.test.mjs",
-    "test:opencode-zen-sign-in": "node --test scripts/opencode-zen-sign-in.test.mjs",
     "test:typescript-core-coverage-workflow": "node --test scripts/typescript-core-coverage-workflow.test.mjs",
     "test:baseline-scorecard-comment": "pnpm --fail-if-no-match --filter @band-ai/sdk exec node --import tsx --test ../../scripts/baseline-scorecard-comment.test.mjs",
     "typecheck": "pnpm build:sdk && pnpm -r typecheck",
