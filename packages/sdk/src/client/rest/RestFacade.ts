@@ -304,18 +304,6 @@ export class RestFacade implements RestApi {
     );
   }
 
-  public async listActionableMessages(
-    request: { chatId: string; cursor?: string; limit: number },
-    options?: RestRequestOptions,
-  ): Promise<PaginatedResponse<PlatformChatMessage>> {
-    return this.callOptional(
-      "listActionableMessages",
-      OPTIONAL_UNSUPPORTED_MESSAGES.listActionableMessages,
-      (method) => method(request, options),
-      request,
-    );
-  }
-
   public async addContact(
     request: AddContactArgs,
     options?: RestRequestOptions,

@@ -4,7 +4,6 @@ export const OPTIONAL_UNSUPPORTED_MESSAGES = {
   getChatContext: "Context hydration is not available in current REST adapter",
   listMessages: "Message queue listing is not available in current REST adapter",
   getNextMessage: "Message queue next-item lookup is not available in current REST adapter",
-  listActionableMessages: "Outstanding message listing is not available in current REST adapter",
   addContact: "Contact creation is not available in current REST adapter",
   removeContact: "Contact removal is not available in current REST adapter",
   respondContactRequest: "Contact request responses are not available in current REST adapter",

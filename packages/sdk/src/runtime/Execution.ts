@@ -84,10 +84,8 @@ export class Execution {
   private readonly stopGate = new SingleFlight<boolean>();
   private readonly syncBoundaries = new SyncBoundaryTracker();
   private inFlight = 0;
-  /** While set, a turn that outlived its handler still runs: only controls and reconnects run. */
+  /** While set, a turn that outlived its handler still runs: only its decision replies run. */
   private hold: Promise<void> | null = null;
-  /** Messages left waiting on Band when a catch-up stopped at the hold; none can answer its later asks. */
-  private readonly waitingBeforeHold = new Set<string>();
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
    * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
@@ -326,7 +324,6 @@ export class Execution {
     const hold: Promise<void> = ended.then(() => {
       if (this.hold !== hold) return;
       this.hold = null;
-      this.waitingBeforeHold.clear();
       this.logger.debug("room released by its held turn", { roomId: this.roomId });
       this.wake();
       this.notifyIfIdle();
@@ -353,8 +350,9 @@ export class Execution {
   }
 
   /**
-   * A reconnect catches up on what the socket missed. During a hold only the
-   * missed controls run now; the rest of the catch-up waits for the hold.
+   * A reconnect catches up on what the socket missed. During a hold the whole
+   * catch-up waits for it; a decision reply the socket missed waits on Band
+   * until the held turn ends, by its ask's own expiry at the latest.
    */
   private async catchUp(queued: QueuedEvent): Promise<void> {
     if (!this.hold) {
@@ -368,7 +366,6 @@ export class Execution {
       }
       return;
     }
-    await this.runMissedControls();
     if (queued.syncBoundary) {
       this.syncBoundaries.completeBoundary(queued.syncBoundary);
     }
@@ -381,45 +378,6 @@ export class Execution {
     if (!this.eventQueue.some((entry) => entry.afterHold)) {
       this.eventQueue.unshift({ event: { type: "reconnected", roomId: null, payload: {} }, syncBoundary: null, afterHold: true });
     }
-  }
-
-  /** Runs the controls among the room's unprocessed messages, oldest first, in page order. */
-  private async runMissedControls(): Promise<void> {
-    await this.forEachUnprocessed("missed controls", async (message) => {
-      const event = toMessageEvent(message);
-      // A queued message keeps the classification it got on arrival, and runs from the queue.
-      const queued = this.eventQueue.some((entry) => messageIdOf(entry.event) === message.id);
-      if (queued || this.waitingBeforeHold.has(message.id) || this.syncBoundaries.isExecuted(message.id)) return;
-      if (this.isControlEvent(event)) {
-        await this.runOnce(event, message.id);
-      }
-    });
-  }
-
-  private async pinWaitingBeforeHold(): Promise<void> {
-    await this.forEachUnprocessed("messages waiting before the hold", (message) => {
-      this.waitingBeforeHold.add(message.id);
-    });
-  }
-
-  /** Visits the room's unprocessed messages, oldest first; a failed page read ends the walk. */
-  private async forEachUnprocessed(purpose: string, visit: (message: PlatformMessage) => Promise<void> | void): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      let page: Awaited<ReturnType<BandLink["listActionableMessages"]>>;
-      try {
-        page = await this.link.listActionableMessages(this.roomId, cursor);
-      } catch (error: unknown) {
-        // The catch-up after the hold still serves whatever this walk missed.
-        this.logger.warn("Failed to list unprocessed messages", { roomId: this.roomId, purpose, error });
-        return;
-      }
-      for (const message of page.messages) {
-        if (!this.isActive()) return;
-        await visit(message);
-      }
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor && this.isActive());
   }
 
   /** A bootstrap message runs as backlog does: once, unless catch-up already ran it. */
@@ -481,7 +439,6 @@ export class Execution {
     while (this.isActive()) {
       // A message this sweep ran handed its turn back: the rest waits like any other work.
       if (this.hold) {
-        await this.pinWaitingBeforeHold();
         this.deferCatchUp();
         break;
       }

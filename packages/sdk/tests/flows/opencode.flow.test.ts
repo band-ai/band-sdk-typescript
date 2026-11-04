@@ -1541,8 +1541,9 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect((await platform.rest.getNextMessage({ chatId: room.id }))?.id).toBe(waiting);
   });
 
-  it("applies an approval sent while the socket was down as soon as it reconnects, and still holds the waiting message", async () => {
-    await using session = await opencodeRoom();
+  it("leaves an approval the socket missed waiting until the ask expires, then tells its sender the ask is gone", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS });
     const { room, server, platform } = session;
     const permission = "per_offline";
     await session.start(approvedThenDone(permission));
@@ -1552,13 +1553,12 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     const waiting = await room.say(OWNER, "Is it done yet?");
     const approval = room.postBeforeConnect(OWNER, `approve ${permission}`);
     platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
-    expect(await room.outcome(approval)).toBe("processed");
     expect(await room.outcome(waiting)).toBe("processed");
-    expect(room.messages.map((posted) => posted.content)).toEqual([
-      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE, "It is done.",
-    ]);
-    expect(server.permissionReplies()).toEqual([[permission, "once"]]);
+    expect(await room.outcome(approval)).toBe("processed");
+    expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
+    expect(room.messages.map((posted) => posted.content)).toContain(SAYS.noLongerPending("permission", permission));
     expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(2);
   });
 
@@ -1644,7 +1644,8 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
   });
 
   it("keeps the room held when a waiting message's own turn is handed back, during the catch-up after a hold", async () => {
-    await using session = await opencodeRoom();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS });
     const { room, server, platform } = session;
     await session.start(approvedThenDone("per_a"));
     await room.nextMessage((posted) => posted.content === approvalPrompt("per_a"));
@@ -1655,14 +1656,17 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     const b2 = await room.say(OWNER, "B2 question");
     const approval = room.postBeforeConnect(OWNER, "approve per_a");
     platform.transport.triggerRejoin(chatRoomTopic(room.id));
-    expect(await room.outcome(approval)).toBe("processed");
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     await room.nextMessage((posted) => posted.content === approvalPrompt("per_b1"));
+    expect(room.outcomes(b2)).toEqual([]);
     expect(await room.exchange(OWNER, "approve per_b1")).toEqual([SAYS.approvalHandled("per_b1", "once")]);
 
-    expect(await room.outcome(b2)).toBe("processed");
+    expect(await room.outcome(approval)).toBe("processed");
     expect(room.outcomes(b1)).toEqual(["processed"]);
-    expect(room.messages.at(-1)?.content).toBe("B2 answer.");
-    expect(room.events("error")).toEqual([]);
+    expect(room.outcomes(b2)).toEqual(["processed"]);
+    expect(server.permissionReplies()).toEqual([["per_a", "reject"], ["per_b1", "once"]]);
+    expect(room.messages.map((posted) => posted.content)).toContain("B2 answer.");
+    expect(room.events("error").map((event) => event.content)).toEqual([SAYS.approvalTimedOut("per_a", "reject")]);
     expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(3);
   });
 
@@ -1685,7 +1689,7 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect(room.events("error")).toEqual([]);
   });
 
-  it("does not let a reconnect's scan take free text that waited from before a question as its answer", async () => {
+  it("does not let a reconnect take free text that waited from before a question as its answer", async () => {
     await using session = await opencodeRoom();
     const { room, server, platform } = session;
     const [permission, question] = ["per_before", "que_late"];
@@ -1712,7 +1716,7 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect(room.messages.at(-1)?.content).toBe("Noted.");
   });
 
-  it("does not let a reconnect's scan take free text the catch-up left waiting as a later question's answer", async () => {
+  it("does not let a reconnect take free text the catch-up left waiting as a later question's answer", async () => {
     await using server = await FakeOpencodeServer.start();
     const adapter = new OpencodeAdapter({ config: { baseUrl: server.url, approvalMode: "manual" } });
     const question = "que_x";

@@ -6,11 +6,9 @@ import { FernRestAdapter } from "../client/rest/RestFacade";
 import { ActivityCapability } from "../client/rest/activityCapability";
 import type { ReportActivityOptions, RestRequestOptions } from "../client/rest/requestOptions";
 import {
-  DEFAULT_PAGE_SIZE,
   fetchPaginated,
   type PaginationOptions,
 } from "../client/rest/pagination";
-import { OPTIONAL_UNSUPPORTED_MESSAGES } from "../client/rest/unsupportedMessages";
 import type {
   PaginatedResponse,
   PlatformChatMessage,
@@ -518,19 +516,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       }
       throw error;
     }
-  }
-
-  /** One page of the room's messages not yet processed, oldest first; null `nextCursor` on the last page. */
-  public async listActionableMessages(
-    roomId: string,
-    cursor?: string,
-  ): Promise<{ messages: PlatformMessage[]; nextCursor: string | null }> {
-    if (!this.rest.listActionableMessages) {
-      throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listActionableMessages);
-    }
-    const { data, metadata } = await this.rest.listActionableMessages({ chatId: roomId, cursor, limit: DEFAULT_PAGE_SIZE });
-    const nextCursor = metadata?.has_more === true && typeof metadata.next_cursor === "string" ? metadata.next_cursor : null;
-    return { messages: data.map((message) => toPlatformMessage(roomId, message)), nextCursor };
   }
 
   public async getStaleProcessingMessages(

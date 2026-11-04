@@ -108,9 +108,10 @@ An adapter that releases a turn's request while the turn waits on the room
 runtime holds the room until the turn really ends: an ordinary message that
 arrives meanwhile waits, unmarked, and runs as its own turn afterwards, in
 arrival order. Only a decision reply the adapter recognises
-(`isControlMessage`) and a reconnect's scan for missed decision replies run
-during the hold. At
-the turn's real end the adapter calls `reportUnsettledTurn(tools, logger, { roomId })`,
+(`isControlMessage`) runs during the hold. A decision reply sent while the
+socket was down waits on Band like any other message, so the held turn ends
+when its ask expires, and the late reply then runs with a no-longer-pending
+notice. At the turn's real end the adapter calls `reportUnsettledTurn(tools, logger, { roomId })`,
 which posts the missing-reply failure when the verdict is `missing_reply`.
 Only a turn `onEvent` would have judged is reported, so a detached synthetic
 turn or an exempt adapter's turn never is. A turn cancelled by room cleanup is

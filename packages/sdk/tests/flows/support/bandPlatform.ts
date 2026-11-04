@@ -195,15 +195,6 @@ export class RecordingRestApi extends FakeRestApi {
     return pending ?? null;
   }
 
-  /** One page of the room's messages not yet settled, oldest first; the cursor is the next index. */
-  public async listActionableMessages(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
-    const pending = this.unsettledIn(request.chatId);
-    const start = Number(request.cursor ?? 0);
-    const end = start + request.limit;
-    const hasMore = end < pending.length;
-    return { data: pending.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
-  }
-
   private unsettledIn(roomId: string): PlatformChatMessage[] {
     return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
   }
