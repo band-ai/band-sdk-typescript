@@ -355,15 +355,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       this.rehydrate(history)
     }
 
-    // `Execution.bootstrapMessage` runs outside its own room's serialized
-    // `processLoop`, alongside the sync loop its constructor starts — so two
-    // turns for one room really can reach here concurrently. Establishing a
-    // session tolerates that (`getOrCreateSession`'s `sessionsInFlight`
-    // guard), but `resetChunks → prompt → flushChunks` does not: two
-    // concurrent `prompt` calls on the same session share one chunk buffer,
-    // so one turn's `resetChunks` can wipe output the other is still
-    // collecting. Serializing the whole turn body per room, not just
-    // establishment, is what actually makes concurrent same-room turns safe.
+    // The runtime runs one turn per room, but this adapter does not rely on
+    // it. Establishing a session tolerates overlapping turns
+    // (`getOrCreateSession`'s `sessionsInFlight` guard), but
+    // `resetChunks → prompt → flushChunks` does not: two concurrent `prompt`
+    // calls on the same session share one chunk buffer, so one turn's
+    // `resetChunks` can wipe output the other is still collecting.
+    // Serializing the whole turn body per room, not just establishment, keeps
+    // same-room turns apart.
     // `history` is this turn's own snapshot, closed over here. A later
     // `onMessage` for the same room must not be able to replace it while
     // this turn is still establishing a session.

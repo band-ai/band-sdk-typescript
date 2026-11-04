@@ -14,6 +14,7 @@ import {
 } from "./lifecycle";
 import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
+import { createDeferred, type Deferred } from "../core/deferred";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -33,6 +34,8 @@ interface ExecutionOptions {
 interface QueuedEvent {
   event: PlatformEvent;
   syncBoundary: SyncBoundary | null;
+  /** A bootstrap message's caller, told once it ran, or why it never will. */
+  bootstrap?: Deferred<Error | null>;
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -71,8 +74,6 @@ export class Execution {
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
   private readonly syncBoundaries = new SyncBoundaryTracker();
-  /** Backlog messages whose last turn failed with retries left; the sweep runs them again. */
-  private readonly retryableMessages = new Set<string>();
   private inFlight = 0;
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
@@ -122,6 +123,24 @@ export class Execution {
   }
 
   public async enqueue(event: PlatformEvent): Promise<void> {
+    let syncBoundary: SyncBoundary | null = null;
+    if (event.type === "reconnected") {
+      syncBoundary = this.syncBoundaries.beginBoundary();
+    } else if (event.type === "message_created") {
+      this.syncBoundaries.anchor(event.payload.id);
+    }
+    this.push({ event, syncBoundary });
+  }
+
+  /** Runs `message` in its place in the room's queue, like any other turn, and resolves once it ran. */
+  public async bootstrapMessage(message: PlatformMessage): Promise<void> {
+    const bootstrap = createDeferred<Error | null>();
+    this.push({ event: toMessageEvent(message), syncBoundary: null, bootstrap });
+    const dropped = await bootstrap.promise;
+    if (dropped) throw dropped;
+  }
+
+  private push(queued: QueuedEvent): void {
     if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
       // `closed` can be true slightly ahead of `status` reaching "stopped" (see
       // runStop): the queue stops accepting before the final drain it is
@@ -132,14 +151,6 @@ export class Execution {
       );
     }
 
-    let syncBoundary: SyncBoundary | null = null;
-    if (event.type === "reconnected") {
-      syncBoundary = this.syncBoundaries.beginBoundary();
-    } else if (event.type === "message_created") {
-      this.syncBoundaries.anchor(event.payload.id);
-    }
-
-    const queued = { event, syncBoundary };
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter(queued);
@@ -148,17 +159,9 @@ export class Execution {
     }
     this.logger.debug("event queued for room", {
       roomId: this.roomId,
-      eventType: event.type,
-      messageId: messageIdOf(event),
+      eventType: queued.event.type,
+      messageId: messageIdOf(queued.event),
     });
-  }
-
-  public async bootstrapMessage(message: PlatformMessage): Promise<void> {
-    // Record the ID before executing so that the concurrent synchronizeWithNext()
-    // loop (started in the constructor) will skip this message if it encounters
-    // it in the REST queue, preventing duplicate processing.
-    this.syncBoundaries.recordExecuted(message.id);
-    await this.executeSyncMessage(toMessageEvent(message), message.id);
   }
 
   public isIdle(): boolean {
@@ -234,6 +237,7 @@ export class Execution {
     if (graceful || timeoutMs === undefined) {
       await this.processTask;
     }
+    this.dropQueued();
 
     // Only now — after the process loop has actually finished draining, or been
     // deliberately detached past a timeout — does external state (and
@@ -277,6 +281,12 @@ export class Execution {
       }
       const { event } = queued;
 
+      if (queued.bootstrap) {
+        await this.runBootstrap(event);
+        queued.bootstrap.resolve(null);
+        continue;
+      }
+
       if (event.type === "reconnected") {
         await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
         continue;
@@ -293,6 +303,23 @@ export class Execution {
 
       await this.executeEvent(event);
     }
+  }
+
+  /** A bootstrap message runs as backlog does: once, unless catch-up already ran it. */
+  private async runBootstrap(event: PlatformEvent): Promise<void> {
+    const messageId = messageIdOf(event);
+    if (!messageId || this.syncBoundaries.isExecuted(messageId)) return;
+    await this.runOnce(event, messageId);
+  }
+
+  /**
+   * Runs a message outside its live delivery, recorded whatever the outcome
+   * so the live delivery, which can land before or after a boundary is
+   * anchored, and later catch-ups skip it.
+   */
+  private async runOnce(event: PlatformEvent, messageId: string): Promise<void> {
+    await this.executeSyncMessage(event, messageId);
+    this.syncBoundaries.recordExecuted(messageId);
   }
 
   private async recoverStaleProcessingMessages(): Promise<void> {
@@ -328,8 +355,7 @@ export class Execution {
         continue;
       }
 
-      await this.executeSyncMessage(toMessageEvent(message), message.id);
-      this.syncBoundaries.recordExecuted(message.id);
+      await this.runOnce(toMessageEvent(message), message.id);
     }
   }
 
@@ -349,23 +375,22 @@ export class Execution {
       }
 
       // Band serves the oldest message not yet processed, a failed one
-      // included. A head handled here and still served has a mark that has
-      // not landed; Band's guidance is to stop draining there.
+      // included. A message runs once per process, so one run here and still
+      // served failed, or its processed mark did not land: settle it as
+      // processed, the only mark that moves /next past it.
       const messageId = nextMessage.id;
-      if (this.syncBoundaries.isExecuted(messageId) && !this.retryableMessages.has(messageId)) {
-        if (!this.syncBoundaries.isSyncPoint(boundary, messageId)) {
-          this.logger.warn("Handled message still heads /next; ending sync", { roomId: this.roomId, messageId });
+      if (this.syncBoundaries.isExecuted(messageId)) {
+        if (this.retryTracker.isPermanentlyFailed(messageId)) {
+          this.logger.warn("Message still heads /next after it was given up on; ending sync", { roomId: this.roomId, messageId });
+          break;
         }
-        break;
+        await this.giveUp(messageId);
+      } else {
+        await this.runOnce(toMessageEvent(nextMessage), messageId);
       }
 
-      await this.executeSyncMessage(toMessageEvent(nextMessage), messageId);
-      // Recorded whatever the outcome, so the live delivery of this message,
-      // which can land before or after the boundary is anchored, is skipped.
-      this.syncBoundaries.recordExecuted(messageId);
-
-      // Caught up to live traffic once the boundary's own message is handled.
-      if (!this.retryableMessages.has(messageId) && this.syncBoundaries.isSyncPoint(boundary, messageId)) {
+      // Caught up to live traffic once the boundary's own message is settled.
+      if (this.syncBoundaries.isSyncPoint(boundary, messageId)) {
         this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId });
         break;
       }
@@ -376,7 +401,6 @@ export class Execution {
   }
 
   private async executeSyncMessage(event: PlatformEvent, messageId: string): Promise<void> {
-    this.retryableMessages.delete(messageId);
     if (this.retryTracker.isPermanentlyFailed(messageId) || this.retryTracker.recordAttempt(messageId)[1]) {
       this.logger.error("Message exceeded max retries during sync, giving up on it", {
         roomId: this.roomId,
@@ -394,7 +418,6 @@ export class Execution {
       await this.onExecute(this.context, event, () => this.isActive());
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
-      this.retryableMessages.add(messageId);
       if (error instanceof RecoverableTurnError) {
         this.warnTurnFailed(error, { messageId });
         return;
@@ -453,7 +476,7 @@ export class Execution {
       this.closed = true;
       await this.context.closeWorkingState();
       this.markFailed(error, "execution-failed");
-      this.eventQueue.splice(0, this.eventQueue.length);
+      this.dropQueued();
       this.resolveEventWaiters(null);
       throw error;
     } finally {
@@ -506,6 +529,13 @@ export class Execution {
     }
   }
 
+  /** Discards what is still queued; a bootstrap caller learns its message will not run here. */
+  private dropQueued(): void {
+    for (const { bootstrap } of this.eventQueue.splice(0, this.eventQueue.length)) {
+      bootstrap?.resolve(new RuntimeStateError(`Execution for room ${this.roomId} stopped before its bootstrap message ran`));
+    }
+  }
+
   private resolveEventWaiters(event: QueuedEvent | null): void {
     const waiters = this.waiters.splice(0, this.waiters.length);
     for (const waiter of waiters) {
@@ -515,6 +545,7 @@ export class Execution {
 
   /** Band has no give-up state: a message leaves /next only once claimed and marked processed. */
   private async giveUp(messageId: string): Promise<void> {
+    this.retryTracker.markPermanentlyFailed(messageId);
     try {
       await this.link.markProcessing(this.roomId, messageId);
       await this.link.markProcessed(this.roomId, messageId);

@@ -56,9 +56,6 @@ function makeBacklogMessage(id: string, content = "backlog"): BacklogMessage {
   };
 }
 
-/** Far more /next reads than any test here needs. */
-const POLL_BUDGET = 50;
-
 /**
  * The platform's backlog as Band documents it: /next returns the oldest
  * message not yet processed — a failed one stays the head — and a terminal
@@ -69,8 +66,6 @@ const POLL_BUDGET = 50;
 class FakeBacklog {
   public readonly processed = new Set<string>();
   public polls = 0;
-  /** Set once the room polls /next past any real need; /next then reads empty so the test can end. */
-  public spun = false;
   private readonly attempts = new Set<string>();
 
   public constructor(private readonly messages: BacklogMessage[]) {}
@@ -81,14 +76,26 @@ class FakeBacklog {
     return makeEvent(id);
   }
 
+  /** A room on this backlog whose turns leave marking to `PlatformRuntime`, which these tests leave out. */
+  public room(options: { stale?: BacklogMessage[] } = {}) {
+    const processed: string[] = [];
+    const execution = new Execution({
+      roomId: "room-1",
+      link: { ...this.link(), getStaleProcessingMessages: async () => options.stale ?? [] } as never,
+      context: makeContext() as never,
+      onExecute: async (_context, event) => {
+        if (event.type === "message_created") {
+          processed.push(event.payload.id);
+        }
+      },
+    });
+    return { execution, processed };
+  }
+
   public link(overrides: { markProcessed?: () => Promise<void> } = {}) {
     return {
       getNextMessage: async () => {
         this.polls += 1;
-        if (this.polls > POLL_BUDGET) {
-          this.spun = true;
-          return null;
-        }
         return this.messages.find((message) => !this.processed.has(message.id)) ?? null;
       },
       getStaleProcessingMessages: async () => [],
@@ -98,19 +105,12 @@ class FakeBacklog {
       markProcessed:
         overrides.markProcessed
         ?? (async (_roomId: string, messageId: string) => {
-          this.closeAttempt(messageId);
+          if (!this.attempts.delete(messageId)) {
+            throw new Error("422: no active processing attempt");
+          }
           this.processed.add(messageId);
         }),
-      markFailed: async (_roomId: string, messageId: string) => {
-        this.closeAttempt(messageId);
-      },
     };
-  }
-
-  private closeAttempt(messageId: string): void {
-    if (!this.attempts.delete(messageId)) {
-      throw new Error("422: no active processing attempt");
-    }
   }
 }
 
@@ -402,19 +402,14 @@ describe("Execution crash recovery", () => {
     await execution.stop();
   });
 
-  it("does not rerun a stale-recovered message that /next still serves, and ends the sync there", async () => {
-    const sharedId = "msg-shared";
-    const getNextMessage = vi.fn<() => Promise<BacklogMessage | null>>()
-      .mockResolvedValue(makeBacklogMessage(sharedId, "its processed mark did not land"));
-
-    const { execution, processed } = createExecution({
-      getStaleProcessingMessages: async () => [makeBacklogMessage(sharedId, "from stale")],
-      getNextMessage,
-    });
+  it("gives up on a stale-recovered message /next still serves, instead of running it again", async () => {
+    const shared = makeBacklogMessage("msg-shared");
+    const backlog = new FakeBacklog([shared, makeBacklogMessage("next-only")]);
+    const { execution, processed } = backlog.room({ stale: [shared] });
 
     await execution.waitForIdle();
-    expect(processed).toEqual([sharedId]);
-    expect(getNextMessage).toHaveBeenCalledTimes(1);
+    expect(processed).toEqual(["msg-shared", "next-only"]);
+    expect(backlog.processed.has("msg-shared")).toBe(true);
     await execution.stop();
   });
 
@@ -693,122 +688,34 @@ describe("Execution reconnect handling", () => {
     expect(getNextMessage).toHaveBeenCalledTimes(3);
   });
 
-  it("does not re-execute a message if getNextMessage returns it again on the very next reconnect's scan", async () => {
-    const getNextMessage = vi
-      .fn<() => Promise<BacklogMessage | null>>()
-      .mockResolvedValueOnce(null) // startup sync
-      .mockResolvedValueOnce(makeBacklogMessage("m1", "first sighting")) // R1 scan, call 1
-      .mockResolvedValueOnce(null) // R1 scan, call 2: backlog drained cleanly
-      .mockResolvedValueOnce(makeBacklogMessage("m1", "its processed mark did not land")); // R2 scan ends here
-
-    const { execution, processed } = createExecution({ getNextMessage });
-
-    await execution.waitForIdle();
-
-    // R1 then R2, back-to-back — no live messages involved; "m1" still
-    // heads /next for R2, as it does when its processed mark did not land.
-    await execution.enqueue(makeReconnectedEvent());
-    await execution.enqueue(makeReconnectedEvent());
-    await execution.stop();
-
-    expect(processed).toEqual(["m1"]);
-    expect(getNextMessage).toHaveBeenCalledTimes(4);
-  });
-
-  it("does not re-execute a message re-sighted by a later reconnect scan after its own live delivery already arrived", async () => {
-    const getNextMessage = vi
-      .fn<() => Promise<BacklogMessage | null>>()
-      .mockResolvedValueOnce(null) // startup sync
-      .mockResolvedValueOnce(makeBacklogMessage("m1", "R1 backlog scan finds it")) // R1 scan, call 1
-      .mockResolvedValueOnce(null) // R1 scan, call 2: backlog drained cleanly
-      .mockResolvedValueOnce(makeBacklogMessage("m1", "its processed mark did not land")); // R2 scan ends here
-
-    const { execution, processed } = createExecution({ getNextMessage });
-
-    await execution.waitForIdle();
-
-    await execution.enqueue(makeReconnectedEvent()); // R1: scan executes "m1", exhausts
-    await execution.waitForIdle();
-
-    // "m1"'s live delivery arrives and is recognized as a duplicate. This
-    // must not evict "m1" from the dedup record — a later scan still sees
-    // it heading /next when its processed mark did not land.
-    await execution.enqueue(makeEvent("m1"));
-    await execution.waitForIdle();
-
-    await execution.enqueue(makeReconnectedEvent()); // R2: re-sights "m1" via REST
-    await execution.stop();
-
-    expect(processed).toEqual(["m1"]);
-    expect(getNextMessage).toHaveBeenCalledTimes(4);
-  });
-});
-
-describe("Execution when a failed message heads /messages/next", () => {
-  const MAX_RETRIES = 2;
-
-  /** A room whose turns claim and settle their message the way `PlatformRuntime` does. */
-  function roomOver(backlog: FakeBacklog, failing: (id: string, attempt: number) => boolean) {
-    const attempts = new Map<string, number>();
-    const link = backlog.link();
-    const execution = new Execution({
-      roomId: "room-1",
-      link: link as never,
-      context: makeContext(MAX_RETRIES) as never,
-      onExecute: async (_context, event) => {
-        if (event.type !== "message_created") return;
-        const id = event.payload.id;
-        const attempt = (attempts.get(id) ?? 0) + 1;
-        attempts.set(id, attempt);
-        await link.markProcessing("room-1", id);
-        if (failing(id, attempt)) {
-          await link.markFailed("room-1", id);
-          throw new RecoverableTurnError(`turn for ${id} failed`);
-        }
-        await link.markProcessed("room-1", id);
-      },
-    });
-    return { execution, attempts };
-  }
-
-  it("retries a failed backlog message and then reaches the messages behind it", async () => {
-    const backlog = new FakeBacklog([makeBacklogMessage("m1"), makeBacklogMessage("m2")]);
-    const { execution, attempts } = roomOver(backlog, (id, attempt) => id === "m1" && attempt === 1);
-
-    await execution.waitForIdle();
-
-    expect(backlog.spun).toBe(false);
-    expect(attempts.get("m1")).toBe(2);
-    expect(attempts.get("m2")).toBe(1);
-    expect([...backlog.processed]).toEqual(["m1", "m2"]);
-    await execution.stop();
-  });
-
-  it("gives up on a message that keeps failing by taking it off /next, so the room catches up", async () => {
-    const backlog = new FakeBacklog([makeBacklogMessage("poison"), makeBacklogMessage("m2")]);
-    const { execution, attempts } = roomOver(backlog, (id) => id === "poison");
-
-    await execution.waitForIdle();
-
-    expect(backlog.spun).toBe(false);
-    expect(attempts.get("poison")).toBe(MAX_RETRIES);
-    expect([...backlog.processed]).toEqual(["poison", "m2"]);
-    expect(attempts.get("m2")).toBe(1);
-    await execution.stop();
-  });
-
-  it("settles a reconnect's catch-up after a live turn failed, instead of re-polling its message", async () => {
+  it("gives up on a message a reconnect's scan ran but /next still serves, instead of running it again", async () => {
     const backlog = new FakeBacklog([]);
-    const { execution, attempts } = roomOver(backlog, (id, attempt) => id === "m1" && attempt === 1);
+    const { execution, processed } = backlog.room();
     await execution.waitForIdle();
 
-    await execution.enqueue(backlog.post("m1"));
+    backlog.post("m1");
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.stop();
+
+    expect(processed).toEqual(["m1"]);
+    expect(backlog.processed.has("m1")).toBe(true);
+    // Startup; the first scan's run, re-sighting and empty read; the second scan's empty read.
+    expect(backlog.polls).toBe(5);
+  });
+
+  it("skips the live delivery of a message a reconnect's scan already ran", async () => {
+    const backlog = new FakeBacklog([]);
+    const { execution, processed } = backlog.room();
+    await execution.waitForIdle();
+
+    const live = backlog.post("m1");
     await execution.enqueue(makeReconnectedEvent());
     await execution.waitForIdle();
-
-    expect(backlog.spun).toBe(false);
-    expect(attempts.get("m1")).toBe(2);
-    expect([...backlog.processed]).toEqual(["m1"]);
+    await execution.enqueue(live);
+    await execution.enqueue(makeReconnectedEvent());
     await execution.stop();
+
+    expect(processed).toEqual(["m1"]);
   });
 });
