@@ -143,6 +143,7 @@ export class RecordingRestApi extends FakeRestApi {
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
+  public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
   public readonly participantHolds = new CallHolds<[roomId: string]>();
@@ -371,6 +372,7 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async markMessageProcessed(_roomId: string, messageId: string) {
+    await this.processedHolds.pass(messageId);
     return this.settle(messageId, "processed");
   }
 
@@ -496,6 +498,11 @@ export class BandRoom {
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */
   public holdProcessing(messageId: string): HeldCall<[messageId: string]> {
     return this.platform.rest.processingHolds.hold((id) => id === messageId);
+  }
+
+  /** Keeps the runtime's next processed mark in flight; with `error`, Band then refuses it. */
+  public holdNextProcessed(options: { error?: Error } = {}): HeldCall<[messageId: string]> {
+    return this.platform.rest.processedHolds.hold(() => true, options);
   }
 
   public until(predicate: () => boolean): Promise<void> {

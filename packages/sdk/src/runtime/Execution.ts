@@ -312,10 +312,6 @@ export class Execution {
         continue;
       }
 
-      if (this.hold && event.type === "message_created") {
-        // A control run during a hold: a reconnect's scan must not run it again.
-        this.syncBoundaries.recordExecuted(event.payload.id);
-      }
       await this.executeEvent(event);
     }
   }
@@ -350,27 +346,19 @@ export class Execution {
   }
 
   /**
-   * A reconnect catches up on what the socket missed. During a hold the whole
-   * catch-up waits for it; a decision reply the socket missed waits on Band
-   * until the held turn ends, by its ask's own expiry at the latest.
+   * A reconnect catches up on what the socket missed. During a hold the sweep
+   * defers itself; a decision reply the socket missed waits on Band until the
+   * held turn ends, by its ask's own expiry at the latest.
    */
   private async catchUp(queued: QueuedEvent): Promise<void> {
-    if (!this.hold) {
-      // Busy for the whole sweep, so a stop does not count the room idle between its messages.
-      this.inFlight += 1;
-      try {
-        await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
-      } finally {
-        this.inFlight -= 1;
-        this.notifyIfIdle();
-      }
-      return;
+    // Busy for the whole sweep, so a stop does not count the room idle between its messages.
+    this.inFlight += 1;
+    try {
+      await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
+    } finally {
+      this.inFlight -= 1;
+      this.notifyIfIdle();
     }
-    if (queued.syncBoundary) {
-      this.syncBoundaries.completeBoundary(queued.syncBoundary);
-    }
-    this.deferCatchUp();
-    this.notifyIfIdle();
   }
 
   /** Leaves the rest of a catch-up for once the hold ends, ahead of the work waiting on it. */

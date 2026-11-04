@@ -1643,6 +1643,28 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
   });
 
+  it("does not run a decision reply again after the hold when Band refused its processed mark", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    const permission = "per_once";
+    expect(await room.outcome(await session.start(approvedThenDone(permission)))).toBe("processed");
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    const refusedMark = room.holdNextProcessed({ error: new Error("processed mark refused") });
+
+    const said = room.say(OWNER, `approve ${permission}`);
+    const [refusedId] = await refusedMark.sending;
+    refusedMark.release();
+    const approval = await said;
+    expect(refusedId).toBe(approval);
+
+    await room.nextMessage((posted) => posted.content === DONE);
+    expect(await room.outcome(approval)).toBe("processed");
+    expect(server.permissionReplies()).toEqual([[permission, "once"]]);
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE,
+    ]);
+  });
+
   it("keeps the room held when a waiting message's own turn is handed back, during the catch-up after a hold", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS });
