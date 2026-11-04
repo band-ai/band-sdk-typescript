@@ -4,6 +4,7 @@
  * OpenCode server on a local port. Each flow asserts what the room saw, what
  * OpenCode was sent, and how the platform settled each message.
  */
+import { chatRoomTopic } from "@band-ai/band-sdk-core";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 
@@ -17,7 +18,7 @@ import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
 import { CallHolds, expectMcpServerStopped, FakeTools, makeMessage, MISSING_REPLY, type ReportedFailure } from "../testUtils";
-import { BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
+import { AGENT_ID, BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
 import { activitySequence, recordRuntimeActivity } from "../support/activityReports";
 import { SlowFailureRest } from "../support/slowFailureRest";
@@ -85,15 +86,13 @@ async function opencodeRoom(config: OpencodeAdapterConfig = {}, { rest, server: 
       return room.say(OWNER, content);
     },
     /**
-     * Waits for the handed-back turn to really end, past its relay and its
-     * judgement: until then the room answers a new message as busy.
+     * Asks once more and waits for the answer. The room holds the question
+     * until the handed-back turn really ends, past its relay and judgement.
      */
     async afterTurn() {
       server.onPrompt((turn) => turn.answer(DONE));
-      await vi.waitFor(async () => {
-        await room.outcome(await room.say(OWNER, "Anything else?"));
-        expect(room.messages.at(-1)?.content).toBe(DONE);
-      });
+      await room.outcome(await room.say(OWNER, "Anything else?"));
+      expect(room.messages.at(-1)?.content).toBe(DONE);
     },
     async [Symbol.asyncDispose]() {
       await joined[Symbol.asyncDispose]();
@@ -994,7 +993,7 @@ describe("OpenCode in a Band room", () => {
     expect(room.events(FAILURE_EVENT_TYPE).map((event) => event.content)).toEqual(recovery ? [] : [expect.stringContaining("rate limited")]);
   });
 
-  it("tells a requester OpenCode is still busy while it waits on an approval", async () => {
+  it("holds a requester's message while OpenCode waits on an approval, and runs it as the next turn", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
     const permission = "per_busy";
@@ -1003,13 +1002,22 @@ describe("OpenCode in a Band room", () => {
       turn.answer("Done.");
     });
     await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    server.onPrompt((turn) => turn.answer("It is done."));
 
     const hurry = await room.say(OWNER, "Is it done yet?");
-    expect(await room.outcome(hurry)).toBe("processed");
-    expect(room.events("error").map((event) => event.content)).toEqual([SAYS.turnInProgress()]);
     expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
-    await room.nextMessage((posted) => posted.content === "Done.");
-    expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(1);
+    expect(await room.outcome(hurry)).toBe("processed");
+
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission),
+      SAYS.approvalHandled(permission, "once"),
+      "Done.",
+      "It is done.",
+    ]);
+    const prompts = server.requestsTo("POST", /\/prompt_async$/);
+    expect(prompts).toHaveLength(2);
+    expect(JSON.stringify(prompts[1]?.body)).toContain("Is it done yet?");
+    expect(room.events("error")).toEqual([]);
   });
 
   it("lets expiries that are already replying own their asks against late room replies and a redelivery", async () => {
@@ -1030,14 +1038,22 @@ describe("OpenCode in a Band room", () => {
     // The expiries own both asks now: the room's replies neither answer them nor say they did.
     expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([]);
     expect(await room.exchange(OWNER, `reject ${question}`)).toEqual([]);
-    expect(await room.exchange(OWNER, "yes please")).toEqual([]);
+    // With no live ask to answer, this is an ordinary message: held until the turn ends.
+    const later = await room.say(OWNER, "yes please");
     // OpenCode redelivers the ask being expired; the marker behind it shows it was handled, and not prompted again.
     const turn = await server.turn();
     turn.askPermission({ id: permission });
     turn.askPermission({ id: "per_marker" });
     await room.nextMessage((posted) => posted.content === approvalPrompt("per_marker"));
+    server.onPrompt((next) => next.answer(DONE));
     expiryReplies.forEach((reply) => reply.release());
-    await room.until(() => room.events("error").length === 2);
+    expect(await room.outcome(later)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe(DONE);
+    expect(room.events("error").map((event) => event.content).sort()).toEqual([
+      MISSING_REPLY.content,
+      SAYS.approvalTimedOut(permission, "reject"),
+      SAYS.questionTimedOut(question),
+    ].sort());
 
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
     expect(server.questionReplies()).toEqual([[question, DECLINED]]);
@@ -1402,9 +1418,9 @@ describe("OpenCode in a Band room", () => {
       expect(room.outcomes(message), "the request was already handed back").toEqual(["processed"]);
     });
 
-    it("settles busy and control messages during a handed-back turn, and keeps that turn's own reply on it", async () => {
+    it("passes a control past a held message during a handed-back turn, and keeps that turn's own reply on it", async () => {
       await using session = await opencodeRoom();
-      const { room } = session;
+      const { room, server } = session;
       const permission = "per_busy_reply";
       const ended = createDeferred<void>();
       const message = await session.start(async (turn) => {
@@ -1413,17 +1429,217 @@ describe("OpenCode in a Band room", () => {
         ended.resolve();
       });
       await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+      server.onPrompt((turn) => turn.answer(DONE));
 
-      for (const content of ["Is it done yet?", `approve ${permission}`]) {
-        expect(await room.outcome(await room.say(OWNER, content)), content).toBe("processed");
-      }
+      const hurry = await room.say(OWNER, "Is it done yet?");
+      expect(await room.outcome(await room.say(OWNER, `approve ${permission}`))).toBe("processed");
       await ended.promise;
-      await session.afterTurn();
+      expect(await room.outcome(hurry)).toBe("processed");
+      expect(room.messages.at(-1)?.content).toBe(DONE);
 
       // OpenCode's tool reply counted on its own turn: the closing text is not relayed, and nothing is reported.
       expect(room.messages.map((entry) => entry.content)).not.toContain(CLOSING_TEXT);
       expect(room.failures).toEqual([]);
       expect(room.outcomes(message)).toEqual(["processed"]);
     });
+  });
+});
+
+/** Waits on OWNER's approval of `permission`, then answers "Done.". */
+const approvedThenDone = (permission: string) => async (turn: OpencodeTurn) => {
+  await turn.askPermission({ id: permission }).reply;
+  turn.answer(DONE);
+};
+
+describe("OpenCode holds the room's other work until a handed-back turn ends", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers a follow-up sent after the closing reply but before OpenCode goes idle, as its own turn", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const permission = "per_closing";
+    const idle = createDeferred();
+    await session.start(async (turn) => {
+      await turn.askPermission({ id: permission }).reply;
+      await turn.callTool(SEND_MESSAGE_TOOL_NAME, { ...ROOM, content: TOOL_REPLY, mentions: ["@owner"] });
+      await idle.promise;
+      turn.idle();
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+    await room.nextMessage((posted) => posted.content === TOOL_REPLY);
+    server.onPrompt((turn) => turn.answer("Marker 42."));
+
+    const followUp = await room.say(OWNER, "Which marker?");
+    idle.resolve();
+
+    expect(await room.outcome(followUp)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Marker 42.");
+    expect(JSON.stringify(server.requestsTo("POST", /\/prompt_async$/)[1]?.body)).toContain("Which marker?");
+    expect(room.events("error")).toEqual([]);
+  });
+
+  it("runs the messages that waited, in arrival order and each as its own turn, after the decision it waited on", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    const permission = "per_order";
+    const asked = await session.start(approvedThenDone(permission));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    server.onPrompt((turn) => turn.answer("First answer."));
+    server.onPrompt((turn) => turn.answer("Second answer."));
+
+    const first = await room.say(OWNER, "First question");
+    const second = await room.say(OWNER, "Second question");
+    const approval = await room.say(OWNER, `approve ${permission}`);
+    expect(await room.outcome(second)).toBe("processed");
+
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE, "First answer.", "Second answer.",
+    ]);
+    const processed = platform.rest.settled.entries.filter((entry) => entry.outcome === "processed").map((entry) => entry.messageId);
+    expect(processed).toEqual([asked, approval, first, second]);
+    const prompts = server.requestsTo("POST", /\/prompt_async$/).map((request) => JSON.stringify(request.body));
+    expect(prompts[1]).toContain("First question");
+    expect(prompts[2]).toContain("Second question");
+  });
+
+  it("lets a waiting message run once the handed-back turn times out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ turnTimeoutMs: TURN_TIMEOUT_MS, approvalWaitTimeoutMs: TURN_TIMEOUT_MS * 2 });
+    const { room, server } = session;
+    const stuck = await session.start((turn) => void turn.askPermission({ id: "per_stuck" }));
+    expect(await room.outcome(stuck)).toBe("processed");
+    server.onPrompt((turn) => turn.answer("Back to work."));
+
+    const waiting = await room.say(OWNER, "Still there?");
+    await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+
+    expect(await room.outcome(waiting)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Back to work.");
+  });
+
+  it("stops during a handed-back turn without marking the message that waited, so Band serves it again", async () => {
+    await using session = await opencodeRoom();
+    const { room, platform } = session;
+    const [first, second] = ["per_stop_1", "per_stop_2"];
+    await session.start(async (turn) => {
+      await turn.askPermission({ id: first }).reply;
+      await turn.askPermission({ id: second }).reply;
+      turn.answer(DONE);
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt(first));
+
+    const waiting = await room.say(OWNER, "Is it done yet?");
+    // A control queued behind the waiting message: once it settles, the room has seen both.
+    expect(await room.exchange(OWNER, `approve ${first}`)).toEqual([SAYS.approvalHandled(first, "once")]);
+    await room.nextMessage((posted) => posted.content === approvalPrompt(second));
+    await platform[Symbol.asyncDispose]();
+
+    expect(room.outcomes(waiting)).toEqual([]);
+    expect((await platform.rest.getNextMessage({ chatId: room.id }))?.id).toBe(waiting);
+  });
+
+  it("applies an approval sent while the socket was down as soon as it reconnects, and still holds the waiting message", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    const permission = "per_offline";
+    await session.start(approvedThenDone(permission));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    server.onPrompt((turn) => turn.answer("It is done."));
+
+    const waiting = await room.say(OWNER, "Is it done yet?");
+    const approval = room.postBeforeConnect(OWNER, `approve ${permission}`);
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+
+    expect(await room.outcome(approval)).toBe("processed");
+    expect(await room.outcome(waiting)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE, "It is done.",
+    ]);
+    expect(server.permissionReplies()).toEqual([[permission, "once"]]);
+    expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(2);
+  });
+
+  it("runs a bootstrap message aimed at a held room as the next turn, not beside the one handed back", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const permission = "per_bootstrap";
+    await session.start(approvedThenDone(permission));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    server.onPrompt((turn) => turn.answer("Bootstrapped answer."));
+
+    const bootstrapped = room.bootstrap(OWNER, "Picked up from Linear");
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+    await bootstrapped.ran;
+
+    expect(await room.outcome(bootstrapped.id)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE, "Bootstrapped answer.",
+    ]);
+    expect(room.events("error")).toEqual([]);
+  });
+
+  it("does not take free text sent before a question was asked as its answer", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const [permission, question] = ["per_before", "que_late"];
+    const proceed = createDeferred();
+    await session.start(async (turn) => {
+      await turn.askPermission({ id: permission }).reply;
+      await proceed.promise;
+      await turn.askQuestion([{ question: "Which file?" }], question).reply;
+      turn.answer(DONE);
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+    server.onPrompt((turn) => turn.answer("Noted."));
+
+    const early = await room.say(OWNER, "src/a.ts");
+    // A control behind the free text: once it settles, the room has classified both.
+    await room.outcome(await room.say(OWNER, `approve ${permission}`));
+    proceed.resolve();
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Which file?" }], question));
+    await room.outcome(await room.say(OWNER, "src/b.ts"));
+
+    expect(await room.outcome(early)).toBe("processed");
+    expect(server.questionReplies()).toEqual([[question, [["src/b.ts"]]]]);
+    expect(room.messages.at(-1)?.content).toBe("Noted.");
+    expect(JSON.stringify(server.requestsTo("POST", /\/prompt_async$/)[1]?.body)).toContain("src/a.ts");
+  });
+
+  it("holds the room for a turn that asks before OpenCode has accepted its prompt", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const permission = "per_early";
+    const accepted = server.holdPromptAcceptance();
+    await session.start(approvedThenDone(permission));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    server.onPrompt((turn) => turn.answer("It is done."));
+
+    const waiting = await room.say(OWNER, "Is it done yet?");
+    accepted.release();
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+
+    expect(await room.outcome(waiting)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual([
+      approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), DONE, "It is done.",
+    ]);
+  });
+
+  it("never treats the agent's own ask prompt, served again after a reconnect, as a decision", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    const permission = "per_echo";
+    await session.start(approvedThenDone(permission));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+
+    room.postBeforeConnect(AGENT_ID, `approve ${permission}`, { senderType: "Agent" });
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    expect(await room.exchange(OWNER, `reject ${permission}`)).toEqual([SAYS.approvalHandled(permission, "reject")]);
+    await room.nextMessage((posted) => posted.content === DONE);
+
+    expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
   });
 });

@@ -321,6 +321,11 @@ export interface FrameworkAdapterInput {
   contactsMessage: string | null;
   isSessionBootstrap: boolean;
   roomId: string;
+  /**
+   * Holds the room's other work until `ended` settles, for a turn that
+   * returned from `onEvent` while it still runs; only controls pass meanwhile.
+   */
+  holdRoomUntil?(ended: Promise<void>): void;
 }
 
 export interface PreprocessorContext {
@@ -341,6 +346,12 @@ export interface PreprocessorContext {
 /** Contract that every adapter must satisfy. Implement via {@link SimpleAdapter} for convenience. */
 export interface FrameworkAdapter {
   onEvent(input: FrameworkAdapterInput): Promise<void>;
+  /**
+   * Whether `message` answers something the room's held turn waits on, such
+   * as an approval, so it runs while the room's other work waits. Recognizes
+   * only: it claims and changes nothing.
+   */
+  isControlMessage?(message: PlatformMessageLike, roomId: string): boolean;
   onCleanup(roomId: string): Promise<void>;
   onStarted(agentName: string, agentDescription: string): Promise<void>;
   onRuntimeStop?(): Promise<void>;

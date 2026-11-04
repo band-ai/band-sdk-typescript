@@ -4,7 +4,8 @@ import type { PlatformEvent } from "../../platform/events";
 import { isSelfEcho } from "@band-ai/band-sdk-core";
 import { resolveMentions } from "../formatters";
 
-function toPlatformMessage(roomId: string, payload: {
+/** The message the agent sees for a `message_created` payload. */
+export function toPlatformMessage(roomId: string, payload: {
   id: string;
   content: string;
   sender_id: string;

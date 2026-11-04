@@ -163,7 +163,6 @@ class OpencodeTurn {
 
   /** Releases the turn's request while it waits on the room; it is judged when it really ends. */
   public background(): void {
-    this.tools.turn.detach();
     this.backgrounded.resolve();
   }
 
@@ -403,7 +402,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     // can't happen there, before this call was known to succeed.
     roomState.forceFreshSession = false;
 
-    await runUntilReleased(retainWorkingCycleUntil(turn.tools, this.watchTurnCompletion(roomState, turn)), turn.released, (error) => {
+    await runUntilReleased(turn.tools.turn, retainWorkingCycleUntil(turn.tools, this.watchTurnCompletion(roomState, turn)), turn.released, (error) => {
       this.logger.error("OpenCode turn failed after the request returned", { error, roomId });
     });
   }
@@ -843,6 +842,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     if (roomState.turn === turn && registry.has(entry.token)) {
       turn?.background();
     }
+  }
+
+  /** Whether `message` answers or names one of the room's asks; routing claims nothing. */
+  public isControlMessage(message: PlatformMessage, roomId: string): boolean {
+    const roomState = this.rooms.get(roomId);
+    return roomState !== undefined && routeReply(message.content, roomState.decisions).kind !== REPLY_ACTION.pass;
   }
 
   // Replies through the control message's own `tools`, never the turn it decides.

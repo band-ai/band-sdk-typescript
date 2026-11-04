@@ -104,7 +104,12 @@ without that line, models more often send their closing narration as a second
 
 An adapter that releases a turn's request while the turn waits on the room
 (OpenCode and Cursor, waiting on a decision) calls `tools.turn.detach()`.
-`onEvent` then skips the judgement and the delivery is marked PROCESSED. At
+`onEvent` then skips the judgement and the delivery is marked PROCESSED. The
+runtime holds the room until the turn really ends: an ordinary message that
+arrives meanwhile waits, unmarked, and runs as its own turn afterwards, in
+arrival order. Only a decision reply the adapter recognises
+(`isControlMessage`) and a reconnect's scan for missed decision replies run
+during the hold. At
 the turn's real end the adapter calls `reportUnsettledTurn(tools, logger, { roomId })`,
 which posts the missing-reply failure when the verdict is `missing_reply`.
 Only a turn `onEvent` would have judged is reported, so a detached synthetic

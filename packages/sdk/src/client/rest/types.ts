@@ -244,6 +244,11 @@ export interface MessageQueueRestApi {
     _request: { chatId: string },
     _options?: RestRequestOptions,
   ): Promise<PlatformChatMessage | null>;
+  /** One cursor page of the room's messages not yet processed, oldest first. */
+  listActionableMessages?(
+    _request: { chatId: string; cursor?: string; limit: number },
+    _options?: RestRequestOptions,
+  ): Promise<PaginatedResponse<PlatformChatMessage>>;
 }
 
 export interface ActivityRestApi {
@@ -447,7 +452,7 @@ export interface FernBandClientLike {
   agentApiMessages?: {
     listAgentMessages?(
       chatId: string,
-      request?: { page?: number; page_size?: number; status?: string },
+      request?: { page?: number; page_size?: number; status?: string; cursor?: string; limit?: number; sort_order?: "asc" | "desc" },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     createAgentChatMessage?(

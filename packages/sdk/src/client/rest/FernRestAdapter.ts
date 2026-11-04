@@ -925,6 +925,22 @@ export class FernRestAdapter implements RestApi {
     );
   }
 
+  public async listActionableMessages(
+    request: { chatId: string; cursor?: string; limit: number },
+    options?: RestRequestOptions,
+  ): Promise<PaginatedResponse<PlatformChatMessage>> {
+    const listAgentMessagesApi = this.client.agentApiMessages?.listAgentMessages?.bind(this.client.agentApiMessages);
+    if (!listAgentMessagesApi) {
+      throw new UnsupportedFeatureError("Fern client missing agent message list endpoint");
+    }
+    // With no status the endpoint lists every message not yet processed.
+    const listRequest = { cursor: request.cursor, limit: request.limit, sort_order: "asc" as const };
+    return normalizeFernPaginatedResponse<PlatformChatMessage>(
+      await listAgentMessagesApi(request.chatId, listRequest, mergeOptions(options)),
+      normalizePlatformMessageRecord,
+    );
+  }
+
   public async listMessages(
     request: { chatId: string; page: number; pageSize: number; status?: string },
     options?: RestRequestOptions,

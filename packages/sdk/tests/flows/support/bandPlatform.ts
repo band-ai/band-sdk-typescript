@@ -195,6 +195,15 @@ export class RecordingRestApi extends FakeRestApi {
     return pending ?? null;
   }
 
+  /** One page of the room's messages not yet settled, oldest first; the cursor is the next index. */
+  public async listActionableMessages(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
+    const pending = this.unsettledIn(request.chatId);
+    const start = Number(request.cursor ?? 0);
+    const end = start + request.limit;
+    const hasMore = end < pending.length;
+    return { data: pending.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
+  }
+
   private unsettledIn(roomId: string): PlatformChatMessage[] {
     return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
   }
@@ -433,6 +442,11 @@ export class BandRoom {
     return this.platform.post(this.id, senderId, content, options);
   }
 
+  /** Posts `content` from `senderId` and bootstraps the agent's turn on it, as the Linear bridge does. */
+  public bootstrap(senderId: string, content: string): { id: string; ran: Promise<void> } {
+    return this.platform.bootstrap(this.id, senderId, content);
+  }
+
   /** Posts `content` from `senderId` for the agent to find once it connects; returns its message id. */
   public postBeforeConnect(senderId: string, content: string, options?: PostOptions): string {
     return this.platform.postBeforeConnect(this.id, senderId, content, options);
@@ -602,6 +616,18 @@ export class BandPlatform implements AsyncDisposable {
     await this.transport.bound.until(() => this.transport.hasTopic(topic));
     await this.transport.emit(topic, "message_created", message);
     return message.id;
+  }
+
+  /** Posts `content` and hands it to the agent through `bootstrapRoomMessage`, as the Linear bridge does; `ran` settles once it ran. */
+  public bootstrap(roomId: string, senderId: string, content: string): { id: string; ran: Promise<void> } {
+    if (!this.runtime) throw new Error("bootstrap needs an agent started on this platform");
+    const message = this.message(senderId, content);
+    this.rest.addMessage(roomId, message);
+    const ran = this.runtime.bootstrapRoomMessage(roomId, {
+      id: message.id, roomId, content, senderId, senderType: message.sender_type, senderName: message.sender_name,
+      messageType: message.message_type, metadata: message.metadata, createdAt: new Date(message.inserted_at),
+    });
+    return { id: message.id, ran };
   }
 
   public postBeforeConnect(roomId: string, senderId: string, content: string, options?: PostOptions): string {

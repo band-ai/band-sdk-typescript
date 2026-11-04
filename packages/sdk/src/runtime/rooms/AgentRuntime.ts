@@ -22,6 +22,8 @@ interface AgentRuntimeOptions {
   link: BandLink;
   agentId: string;
   onExecute: ExecutionHandler;
+  /** Whether a message answers what a room's held turn waits on; see `ExecutionOptions.isControlEvent`. */
+  isControlEvent?: (event: PlatformEvent) => boolean;
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
@@ -41,6 +43,7 @@ export class AgentRuntime {
   private readonly link: BandLink;
   private readonly agentId: string;
   private readonly onExecute: AgentRuntimeOptions["onExecute"];
+  private readonly isControlEvent: AgentRuntimeOptions["isControlEvent"];
   private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
   private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
   private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
@@ -67,6 +70,7 @@ export class AgentRuntime {
     this.link = options.link;
     this.agentId = options.agentId;
     this.onExecute = options.onExecute;
+    this.isControlEvent = options.isControlEvent;
     this.onSessionCleanup = options.onSessionCleanup ?? (async () => undefined);
     this.onRoomJoined = options.onRoomJoined;
     this.onRoomLeft = options.onRoomLeft;
@@ -407,6 +411,7 @@ export class AgentRuntime {
       link: this.link,
       context: this.getOrCreateContext(roomId),
       onExecute: this.onExecute,
+      isControlEvent: this.isControlEvent,
       onFailure: async (error, event) => {
         await this.failRuntime(error, event);
       },
