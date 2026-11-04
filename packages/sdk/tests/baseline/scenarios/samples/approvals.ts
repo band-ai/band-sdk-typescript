@@ -16,7 +16,7 @@ import { assertReplied } from "../../toolkit/assertMessages";
 import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
 import type { ScenarioCell } from "../../toolkit/perAdapter";
 import type { BuildOptions } from "../../toolkit/registry";
-import { Rooms } from "../../toolkit/rooms";
+import { Rooms, type SentMessage } from "../../toolkit/rooms";
 import { readText } from "./files";
 
 export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
@@ -91,9 +91,9 @@ export interface ApprovalRequest {
   requestId: string;
 }
 
-/** Asks the agent for a shell command whose only effect is writing `marker` to `target`. */
-export async function requestGatedWrite({ agent, room }: InRoom, marker: string, target: string): Promise<void> {
-  await Rooms.sendMention(
+/** Asks the agent for a shell command whose only effect is writing `marker` to `target`; returns the request. */
+export async function requestGatedWrite({ agent, room }: InRoom, marker: string, target: string): Promise<SentMessage> {
+  return Rooms.sendMention(
     room,
     agent,
     `Use your shell tool to run exactly \`printf %s ${marker} > ${target}\`. You must execute it with the tool, not answer from memory.`,
