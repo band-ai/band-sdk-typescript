@@ -11,7 +11,9 @@ import { expect } from "vitest";
 import type { TOOL_MODELS } from "../../../../src/contracts/toolSchemas";
 import { ADAPTER } from "../../toolkit/adapters";
 import type { AgentIdentity } from "../../toolkit/agents";
+import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
+import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
 import { observeRoom, toolCalls } from "../../toolkit/observeMessages";
 import { withAdapters } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
@@ -54,8 +56,11 @@ interface GatedWrite extends InRoom {
 }
 
 async function runsGatedWrite(write: GatedWrite): Promise<void> {
-  await requestGatedWrite(write, write.marker, write.target);
+  const request = await requestGatedWrite(write, write.marker, write.target);
   await decide(write, dialect, write.decision, await untilRequested(write, dialect));
+  // The closing reply can come before the turn ends; the next question waits for the
+  // request to be processed, or OpenCode answers that the room is still busy.
+  assertDeliveryStatus(await observeAgent(write.agent, write.room).untilProcessed(request), DELIVERY_STATUS.processed);
 }
 
 async function recallsItsOwnCommand({ agent, room, marker }: GatedWrite, other: GatedWrite): Promise<void> {
