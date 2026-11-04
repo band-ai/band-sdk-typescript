@@ -1642,4 +1642,73 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
 
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
   });
+
+  it("keeps the room held when a waiting message's own turn is handed back, during the catch-up after a hold", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    await session.start(approvedThenDone("per_a"));
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_a"));
+    server.onPrompt(approvedThenDone("per_b1"));
+    server.onPrompt((turn) => turn.answer("B2 answer."));
+
+    const b1 = await room.say(OWNER, "B1 question");
+    const b2 = await room.say(OWNER, "B2 question");
+    const approval = room.postBeforeConnect(OWNER, "approve per_a");
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    expect(await room.outcome(approval)).toBe("processed");
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_b1"));
+    expect(await room.exchange(OWNER, "approve per_b1")).toEqual([SAYS.approvalHandled("per_b1", "once")]);
+
+    expect(await room.outcome(b2)).toBe("processed");
+    expect(room.outcomes(b1)).toEqual(["processed"]);
+    expect(room.messages.at(-1)?.content).toBe("B2 answer.");
+    expect(room.events("error")).toEqual([]);
+    expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(3);
+  });
+
+  it("holds the rest of a startup backlog behind a backlog turn that is handed back", async () => {
+    await using server = await FakeOpencodeServer.start();
+    const adapter = new OpencodeAdapter({ config: { baseUrl: server.url, approvalMode: "manual" } });
+    server.onPrompt(approvedThenDone("per_x"));
+    server.onPrompt((turn) => turn.answer("Y answer."));
+    await using platform = await BandPlatform.start(adapter, PEOPLE);
+    platform.rest.addRoom("room-1");
+    platform.postBeforeConnect("room-1", OWNER, "X question");
+    const y = platform.postBeforeConnect("room-1", OWNER, "Y question");
+    const room = await platform.room("room-1");
+
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_x"));
+    expect(await room.exchange(OWNER, "approve per_x")).toEqual([SAYS.approvalHandled("per_x", "once")]);
+
+    expect(await room.outcome(y)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Y answer.");
+    expect(room.events("error")).toEqual([]);
+  });
+
+  it("does not let a reconnect's scan take free text that waited from before a question as its answer", async () => {
+    await using session = await opencodeRoom();
+    const { room, server, platform } = session;
+    const [permission, question] = ["per_before", "que_late"];
+    const proceed = createDeferred();
+    await session.start(async (turn) => {
+      await turn.askPermission({ id: permission }).reply;
+      await proceed.promise;
+      await turn.askQuestion([{ question: "Which file?" }], question).reply;
+      turn.answer(DONE);
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+    server.onPrompt((turn) => turn.answer("Noted."));
+    const early = await room.say(OWNER, "src/a.ts");
+    proceed.resolve();
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Which file?" }], question));
+
+    platform.transport.triggerRejoin(chatRoomTopic(room.id));
+    // Queued behind the reconnect, so the scan has finished once this is answered.
+    expect(await room.outcome(await room.say(OWNER, "src/b.ts"))).toBe("processed");
+
+    expect(server.questionReplies()).toEqual([[question, [["src/b.ts"]]]]);
+    expect(await room.outcome(early)).toBe("processed");
+    expect(room.messages.at(-1)?.content).toBe("Noted.");
+  });
 });

@@ -362,10 +362,15 @@ export class Execution {
     if (queued.syncBoundary) {
       this.syncBoundaries.completeBoundary(queued.syncBoundary);
     }
-    if (!this.eventQueue.some((entry) => entry.afterHold)) {
-      this.eventQueue.unshift({ event: queued.event, syncBoundary: null, afterHold: true });
-    }
+    this.deferCatchUp();
     this.notifyIfIdle();
+  }
+
+  /** Leaves the rest of a catch-up for once the hold ends, ahead of the work waiting on it. */
+  private deferCatchUp(): void {
+    if (!this.eventQueue.some((entry) => entry.afterHold)) {
+      this.eventQueue.unshift({ event: { type: "reconnected", roomId: null, payload: {} }, syncBoundary: null, afterHold: true });
+    }
   }
 
   /** Runs the controls among the room's unprocessed messages, oldest first, in page order. */
@@ -380,10 +385,12 @@ export class Execution {
         this.logger.warn("Failed to list unprocessed messages for missed controls", { roomId: this.roomId, error });
         return;
       }
+      // A queued message keeps the classification it got on arrival, and runs from the queue.
+      const queued = new Set(this.eventQueue.map((entry) => messageIdOf(entry.event)));
       for (const message of page.messages) {
         if (!this.isActive()) return;
         const event = toMessageEvent(message);
-        if (this.syncBoundaries.isExecuted(message.id) || !this.isControlEvent(event)) continue;
+        if (queued.has(message.id) || this.syncBoundaries.isExecuted(message.id) || !this.isControlEvent(event)) continue;
         await this.runOnce(event, message.id);
       }
       cursor = page.nextCursor ?? undefined;
@@ -446,6 +453,11 @@ export class Execution {
 
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
+      // A message this sweep ran handed its turn back: the rest waits like any other work.
+      if (this.hold) {
+        this.deferCatchUp();
+        break;
+      }
       const nextMessage = await this.link.getNextMessage(this.roomId);
       // A forced stop can close the execution while the backlog read is in flight.
       if (!this.isActive()) {
