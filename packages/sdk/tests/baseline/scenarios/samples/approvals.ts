@@ -16,7 +16,7 @@ import { assertReplied } from "../../toolkit/assertMessages";
 import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
 import type { ScenarioCell } from "../../toolkit/perAdapter";
 import type { BuildOptions } from "../../toolkit/registry";
-import { Rooms, type SentMessage } from "../../toolkit/rooms";
+import { Rooms } from "../../toolkit/rooms";
 import { readText } from "./files";
 
 export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
@@ -91,9 +91,9 @@ export interface ApprovalRequest {
   requestId: string;
 }
 
-/** Asks the agent for a shell command whose only effect is writing `marker` to `target`; returns the request. */
-export async function requestGatedWrite({ agent, room }: InRoom, marker: string, target: string): Promise<SentMessage> {
-  return Rooms.sendMention(
+/** Asks the agent for a shell command whose only effect is writing `marker` to `target`. */
+export async function requestGatedWrite({ agent, room }: InRoom, marker: string, target: string): Promise<void> {
+  await Rooms.sendMention(
     room,
     agent,
     `Use your shell tool to run exactly \`printf %s ${marker} > ${target}\`. You must execute it with the tool, not answer from memory.`,
@@ -115,27 +115,44 @@ export async function untilRequested({ agent, room }: InRoom, dialect: ApprovalD
   return { request: request.message, requestId: dialect.requestId(request.message.content)! };
 }
 
-/** The agent's reply closing the turn: after its prompt, and neither the prompt nor a notice. */
-export async function untilClosed({ agent, room }: InRoom, { request, requestId }: ApprovalRequest, notice: string): Promise<void> {
-  const closing = await observeRoom(room).untilReplyMatching(
-    agent,
-    (message) => !message.content.includes(requestId) && !message.content.includes(notice),
-    { after: request },
-  );
-  assertReplied(closing);
+/** The agent's first message after `asked` other than `notice`: another approval prompt, or the reply closing the turn. */
+async function untilAnswered({ agent, room }: InRoom, { request }: ApprovalRequest, notice: string): Promise<CapturedMessage> {
+  const answered = await observeRoom(room).untilReplyMatching(agent, (message) => !message.content.includes(notice), { after: request });
+  assertReplied(answered);
+  return answered.message;
+}
+
+/** The agent's reply closing the turn after `asked`; another approval prompt is not one. */
+export async function untilClosed(inRoom: InRoom, dialect: ApprovalDialect, asked: ApprovalRequest, notice: string): Promise<void> {
+  const answered = await untilAnswered(inRoom, asked, notice);
+  expect(dialect.requestId(answered.content), `the agent asked again instead of closing: ${answered.content}`).toBeNull();
 }
 
 export async function untilShown({ agent, room }: InRoom, text: string): Promise<void> {
   assertReplied(await observeRoom(room).untilReplyMatching(agent, (message) => message.content.includes(text)));
 }
 
+/** Follow-up asks `decide` answers before it gives up on the turn closing. */
+const MAX_DECIDED_ASKS = 4;
+
 /**
- * Answers `asked` in the room, then waits for the adapter's notice and the
- * agent's closing reply: the barrier after which the command has settled.
+ * Answers `asked` in the room, and any further ask the turn makes (a model may
+ * verify its command with another one), the same way, then waits for the
+ * agent's closing reply. The turn may still be finishing; the room holds the
+ * next message until it ends.
  */
 export async function decide(inRoom: InRoom, dialect: ApprovalDialect, decision: Decision, asked: ApprovalRequest): Promise<void> {
-  const notice = dialect.notice(decision, asked.requestId);
-  await Rooms.sendMention(inRoom.room, inRoom.agent, dialect.reply(decision, asked.requestId));
-  await untilShown(inRoom, notice);
-  await untilClosed(inRoom, asked, notice);
+  let current = asked;
+  for (let decided = 1; decided <= MAX_DECIDED_ASKS; decided++) {
+    const notice = dialect.notice(decision, current.requestId);
+    await Rooms.sendMention(inRoom.room, inRoom.agent, dialect.reply(decision, current.requestId));
+    await untilShown(inRoom, notice);
+    const answered = await untilAnswered(inRoom, current, notice);
+    const requestId = dialect.requestId(answered.content);
+    if (requestId === null) {
+      return;
+    }
+    current = { request: answered, requestId };
+  }
+  throw new Error(`the agent kept asking for approval after ${MAX_DECIDED_ASKS} decisions`);
 }
