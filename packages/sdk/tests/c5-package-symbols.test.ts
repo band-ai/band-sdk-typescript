@@ -25,7 +25,7 @@ import { COMPILE_PROOF_OPTS, COMPILE_PROOF_TIMEOUT_MS, compileConsumer, linkBuil
 
 const SDK_ROOT = resolve(__dirname, "..");
 const REPO_ROOT = resolve(SDK_ROOT, "../..");
-const MIG_DIR = join(REPO_ROOT, "docs/migrations");
+const MIG_DIR = join(__dirname, "fixtures/migrations");
 const pkg = JSON.parse(readFileSync(join(SDK_ROOT, "package.json"), "utf-8")) as {
   name: string;
   version: string;
@@ -83,7 +83,7 @@ interface MigrationMap {
   symbols: Array<{ old: string; new: string; subpath: string; kind: "value" | "type"; c3: boolean }>;
   members: MemberRow[];
 }
-// Single authoritative source, shared with the doc generator and live fixture.
+// Single authoritative source, shared with the live fixture.
 const migMap = JSON.parse(readFileSync(join(MIG_DIR, "c5-migration-map.json"), "utf8")) as MigrationMap;
 const MIGRATION: Row[] = migMap.symbols.map((s) => ({ old: s.old, new: s.new, sub: s.subpath, kind: s.kind, c3: s.c3 }));
 const MEMBERS: MemberRow[] = migMap.members;
@@ -465,7 +465,7 @@ describe("P-C5-3: release workflow has no package mutation", () => {
   });
 });
 
-describe("P-C5-2: committed inventory + migration doc cannot drift from the live surface", () => {
+describe("P-C5-2: committed inventory + migration map cannot drift from the live surface", () => {
   it("the committed after-surface equals the live dumped surface", () => {
     const dumped = spawnSync(process.execPath, ["scripts/dump-sdk-surface.mjs", "packages/sdk"], {
       cwd: REPO_ROOT, encoding: "utf8",
@@ -477,17 +477,12 @@ describe("P-C5-2: committed inventory + migration doc cannot drift from the live
     expect(committed).toEqual(live);
   });
 
-  it("regenerating the map and migration doc from live surfaces produces no change (byte-identical)", () => {
+  it("regenerating the migration map produces byte-identical fixture data", () => {
+    const mapPath = join(MIG_DIR, "c5-migration-map.json");
+    const committed = readFileSync(mapPath, "utf8");
     const genMap = spawnSync(process.execPath, ["scripts/generate-c5-migration-map.mjs"], { cwd: REPO_ROOT, encoding: "utf8" });
     expect(genMap.status, genMap.stderr).toBe(0);
-    const genDoc = spawnSync(process.execPath, ["scripts/generate-c5-migration-doc.mjs"], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(genDoc.status, genDoc.stderr).toBe(0);
-    const diff = spawnSync("git", [
-      "diff", "--quiet", "HEAD", "--",
-      "docs/migrations/c5-migration-map.json",
-      "docs/migrations/1.0-public-symbol-migration.md",
-      "docs/migrations/c5-surface-after.json",
-    ], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(diff.status, "regenerated map/doc or hand-edited after-surface differ from HEAD").toBe(0);
+    expect(readFileSync(mapPath, "utf8")).toBe(committed);
+    expect(existsSync(join(REPO_ROOT, "docs")), "migration tooling must not recreate docs/").toBe(false);
   });
 });

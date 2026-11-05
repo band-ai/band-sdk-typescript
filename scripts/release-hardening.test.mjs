@@ -986,7 +986,7 @@ test("release workflow packs, uploads, downloads and publishes from one artifact
     "download step must extract into the exact directory the publish step reads from",
   );
 
-  // 1-day retention is a deliberate choice (docs/ci-cd-workflows.md), but it
+  // 1-day retention is a deliberate choice (CONTRIBUTING.md), but it
   // must stay a conscious one — nobody should silently extend how long
   // publishable bytes sit in artifact storage.
   assert.match(upload.body, /^\s+retention-days: 1$/m);

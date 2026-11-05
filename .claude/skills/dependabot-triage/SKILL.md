@@ -6,7 +6,7 @@ description: "Triage the existing Dependabot npm and GitHub Actions PR queue, va
 # Dependabot Triage
 
 Read [workflow-runtime.md](../workflow-runtime.md), `.github/dependabot.yml`,
-`docs/ci-cd-workflows.md`, and the relevant package manifests. A triage-only
+`CONTRIBUTING.md` (CI/CD workflows), and the relevant package manifests. A triage-only
 request is read-only. Apply fixes, publish reviews/issues or replacement PRs
 only within the user's request; merging requires explicit authorization.
 

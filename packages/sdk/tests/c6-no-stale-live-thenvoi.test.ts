@@ -10,7 +10,7 @@
  * Out of scope by design: C7 tool/MCP names (`thenvoi_*`, the MCP server name),
  * retained physical identifiers (`LINEAR_THENVOI_*` env, `.linear-thenvoi-*`
  * files, `thenvoi_room_id`/`thenvoiRoomId`, `thenvoiRestUrl` metadata), the
- * CHANGELOG, `.agents/`, and the migration notes under `docs/migrations/`.
+ * CHANGELOG, `.agents/`, and the migration fixtures under `tests/fixtures/migrations/`.
  */
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
@@ -20,7 +20,7 @@ import { resolve, join, basename } from "node:path";
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
 
 // The guard's own assertion literals reference the forbidden strings; exclude it.
-const EXCLUDE_PATH = /(^|\/)(CHANGELOG|\.agents\/|docs\/migrations\/|c6-no-stale-live-thenvoi\.test\.ts)/;
+const EXCLUDE_PATH = /(^|\/)(CHANGELOG|\.agents\/|packages\/sdk\/tests\/fixtures\/migrations\/|c6-no-stale-live-thenvoi\.test\.ts)/;
 const ALLOW_MARKER = /legacy|escape hatch|back-compat|deprecat|fallback/i;
 const HOST = /thenvoi\.com/;
 const DOC_ENV = /THENVOI_[A-Z]/;

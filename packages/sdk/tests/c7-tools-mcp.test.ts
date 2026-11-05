@@ -314,9 +314,9 @@ describe("P-TOOL-08: completeness — no legacy tool/prefix/server/identifier in
   const REPO_ROOT = resolve(__dirname, "..", "..", "..");
   // Migration-proof and legacy-env files legitimately reference the old name.
   const ALLOW_FILE = new RegExp([
-    "(^|/)CHANGELOG", "(^|/)\\.agents/", "(^|/)docs/migrations/", "(^|/)\\.release-hold$",
+    "(^|/)CHANGELOG", "(^|/)\\.agents/", "(^|/)packages/sdk/tests/fixtures/migrations/", "(^|/)\\.release-hold$",
     "c5-package-symbols\\.test\\.ts", "c5-migration-fixture\\.mjs",
-    "generate-c5-migration-(map|doc)\\.mjs", "dump-sdk-surface\\.mjs",
+    "generate-c5-migration-map\\.mjs", "dump-sdk-surface\\.mjs",
     "c6-no-stale-live-thenvoi\\.test\\.ts", "c6-urls\\.test\\.ts",
     "linear-c3-compatibility\\.test\\.ts", "config-loader\\.test\\.ts",
     "tests/unit/config\\.test\\.ts", "e2e-config\\.test\\.ts",
