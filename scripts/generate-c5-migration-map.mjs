@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Generate the single authoritative Thenvoi -> Band migration map consumed by
- * the C5 proof test, the migration-doc generator, and the live migration
+ * the C5 proof test and the live migration
  * fixture. The C5-owned symbol rows are DERIVED from the before surface
  * (C4 tip `70a2822`): every public `Thenvoi`-named export becomes its `Band`
  * counterpart, with kind inferred from whether it appears at runtime. The two
@@ -18,7 +18,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const migDir = resolve(repoRoot, "docs/migrations");
+const migDir = resolve(repoRoot, "packages/sdk/tests/fixtures/migrations");
 const before = JSON.parse(readFileSync(resolve(migDir, "c5-surface-before-70a2822.json"), "utf-8"));
 
 const symbols = [];

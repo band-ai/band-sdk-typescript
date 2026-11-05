@@ -1,11 +1,10 @@
-import { retainWorkingCycleUntil } from "../../runtime/workingState";
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
 import { isAuthorizedSender } from "@band-ai/band-sdk-core";
 
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { resolveLogger, type Logger } from "../../core/logger";
-import { reportUnsettledTurn, type TurnTools } from "../../core/turn";
+import type { TurnTools } from "../../core/turn";
 import type { PlatformMessage } from "../../runtime/types";
 import type { ACPClientSessionState } from "../../converters/acp-client";
 import type {
@@ -251,11 +250,14 @@ export class CursorRoomAgent extends ACPRoomAgent {
     const releaseRoom = () => released.resolve();
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom };
     this.turn = turn;
-    const run = retainWorkingCycleUntil(tools,
-      super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
-        .finally(() => this.forgetTurn(turn)),
-    );
-    await runUntilReleased(tools.turn, run, released.promise, (error) => {
+    await runUntilReleased(tools, async (complete) => {
+      try {
+        await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+        await complete();
+      } finally {
+        this.forgetTurn(turn);
+      }
+    }, released.promise, this.decisionLogger, { roomId: context.roomId }, (error) => {
       this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
     });
   }
@@ -280,18 +282,14 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   protected override async onAcpTurnFinished(
     message: PlatformMessage,
-    tools: TurnTools,
+    _tools: TurnTools,
     context: { isSessionBootstrap: boolean; roomId: string },
-    completed: boolean,
+    _completed: boolean,
   ): Promise<void> {
     // Forgotten now, so a late Cursor ask finds no turn to attach to.
     if (this.turn?.messageId === message.id) {
       this.turn = null;
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
-    }
-    // A failed turn is about its failure, even one whose report didn't post.
-    if (completed) {
-      await reportUnsettledTurn(tools, this.decisionLogger, { roomId: context.roomId });
     }
   }
 

@@ -6,7 +6,7 @@ description: Investigate failing GitHub Actions checks for a PR or commit in the
 # CI Triage
 
 Read [the shared runtime guidance](../workflow-runtime.md) and
-`docs/ci-cd-workflows.md`. A diagnosis request is read-only; an explicit fix
+`CONTRIBUTING.md` (CI/CD workflows). A diagnosis request is read-only; an explicit fix
 request authorizes in-scope implementation without a second plan-approval
 pause. Reuse existing authorization for pushes, reruns, and publication.
 

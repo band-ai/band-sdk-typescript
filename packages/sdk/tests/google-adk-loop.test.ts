@@ -13,6 +13,8 @@ import {
   isFinalResponse,
   stringifyContent,
 } from "@google/adk";
+import { z } from "zod";
+import { createDeferred } from "../src/core/deferred";
 import { describe, expect, it } from "vitest";
 
 import { GoogleADKAdapter, type GoogleADKAdapterOptions } from "../src/adapters/google-adk";
@@ -87,6 +89,69 @@ describe("Google ADK tool loop", () => {
 
     expect(model.requests).toBe(1);
     expect(room.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_call", "tool_result", "tool_result"]);
+  });
+
+  it("waits for a slow sibling after a successful decline before finishing the real runner", async () => {
+    const started = createDeferred<void>();
+    const finish = createDeferred<void>();
+    const { model, turn } = await runTurn(() => [decline, call("slow")], {
+      additionalTools: [{ name: "slow", schema: z.object({}), handler: async () => {
+        started.resolve();
+        await finish.promise;
+        return "finished";
+      } }],
+    });
+    let ended = false;
+    void turn.then(() => { ended = true; });
+    try {
+      await started.promise;
+      expect(model.requests).toBe(1);
+      expect(ended).toBe(false);
+    } finally {
+      finish.resolve();
+    }
+    await turn;
+    expect(ended).toBe(true);
+    expect(model.requests).toBe(1);
+  });
+
+  it("observes split results from the real runner without counting duplicates as a completed roster", async () => {
+    const firstResult = createDeferred<void>();
+    const releaseSibling = createDeferred<void>();
+    const model = new ScriptedModel(() => [decline, send("sibling")]);
+    const factory = realAdk(model);
+    const adapter = new GoogleADKAdapter({ sdkFactory: async () => {
+      const sdk = await factory();
+      return { ...sdk, createRunner: (params) => {
+        const runner = sdk.createRunner(params);
+        return { sessionService: runner.sessionService, runAsync: async function* (request) {
+          for await (const event of runner.runAsync(request)) {
+            const responses = getFunctionResponses(event);
+            if (responses.length < 2) { yield event; continue; }
+            const responseEvent = (parts: unknown[]) => ({ ...event as Record<string, unknown>, content: { role: "user", parts } });
+            yield responseEvent([{ functionResponse: responses[0] }]);
+            yield responseEvent([{ functionResponse: responses[0] }, { functionResponse: { id: "foreign", name: "foreign", response: {} } }]);
+            firstResult.resolve();
+            await releaseSibling.promise;
+            yield responseEvent([{ functionResponse: responses[1] }]);
+          }
+        } };
+      } };
+    } });
+    const room = recordingRoom();
+    const turn = adapter.onEvent(turnInput(room.tools));
+    let ended = false;
+    void turn.then(() => { ended = true; });
+    try {
+      await firstResult.promise;
+      expect(ended).toBe(false);
+      expect(model.requests).toBe(1);
+    } finally {
+      releaseSibling.resolve();
+    }
+    await turn;
+    expect(model.requests).toBe(1);
+    expect(room.messages.map((message) => message.content)).toEqual(["sibling"]);
   });
 
   it("stops a model that never stops calling tools, without running or reporting the round past the cap", async () => {

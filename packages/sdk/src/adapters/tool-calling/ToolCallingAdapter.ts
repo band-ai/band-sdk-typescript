@@ -1,6 +1,7 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
   isSyntheticTurn,
+  isFailedToolOutput,
   type MessagingTools,
   type ToolExecutor,
   type ToolSchemaProvider,
@@ -174,42 +175,45 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             );
           }
 
-          let output: unknown;
-          if (call.inputParseError) {
-            output = {
-              ok: false,
-              errorType: "ToolCallArgumentsParseError",
-              message: call.inputParseError,
-              toolName: call.name,
-              toolCallId: call.id,
-            };
-          } else {
-            const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
-            if (customTool) {
-              try {
-                output = await executeCustomTool(customTool, call.input, tools.turn, tools);
-              } catch (error) {
-                if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
-                  output = {
-                    ok: false,
-                    errorType: error.name,
-                    message: error.message,
-                    toolName: error.toolName,
-                  };
-                } else {
-                  output = {
-                    ok: false,
-                    errorType: "CustomToolUnknownError",
-                    message: asErrorMessage(error),
-                    toolName: call.name,
-                  };
-                }
-              }
+          const output = await round.run(async () => {
+            let output: unknown;
+            if (call.inputParseError) {
+              output = {
+                ok: false,
+                errorType: "ToolCallArgumentsParseError",
+                message: call.inputParseError,
+                toolName: call.name,
+                toolCallId: call.id,
+              };
             } else {
-              output = await tools.executeToolCall(call.name, call.input);
+              const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
+              if (customTool) {
+                try {
+                  output = await executeCustomTool(customTool, call.input, tools.turn, tools);
+                } catch (error) {
+                  if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
+                    output = {
+                      ok: false,
+                      errorType: error.name,
+                      message: error.message,
+                      toolName: error.toolName,
+                    };
+                  } else {
+                    output = {
+                      ok: false,
+                      errorType: "CustomToolUnknownError",
+                      message: asErrorMessage(error),
+                      toolName: call.name,
+                    };
+                  }
+                }
+              } else {
+                output = await tools.executeToolCall(call.name, call.input);
+              }
             }
-          }
-          const isError = round.record(output);
+            return output;
+          });
+          const isError = isFailedToolOutput(output);
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,
@@ -235,7 +239,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
           toolResults: roundToolResults,
           providerData: response.providerData,
         });
-        if (round.declined) {
+        if (round.shouldStop(true)) {
           break;
         }
 

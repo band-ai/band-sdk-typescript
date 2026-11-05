@@ -1,5 +1,12 @@
 # Band TypeScript SDK
 
+## Documentation policy
+
+Never create a `docs/` directory or files beneath one at any depth in this
+repository. Keep necessary guidance in existing README.md, AGENTS.md,
+CONTRIBUTING.md, or code docstrings. Keep temporary plans outside the repository;
+store migration test data under the existing test-fixture tree.
+
 This is a TypeScript SDK that connects AI agents to the Band collaborative platform.
 
 ## Engineering Standard
@@ -104,7 +111,7 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 ### Chat Tools
 - `band_send_message`: send a message to the chat room (requires at least one `@mention`)
 - `band_send_event`: send a non-message event (`thought`, `error`, `task`, etc.)
-- `band_no_reply`: end the turn deliberately without posting (optional `reason`, logged locally); see [docs/turn-outcome.md](docs/turn-outcome.md)
+- `band_no_reply`: end the turn deliberately without posting (optional `reason`, logged locally); see [turn outcome](README.md#turn-outcome)
 - `band_add_participant`: add agent/user to room by name (use `band_lookup_peers` first)
 - `band_remove_participant`: remove participant from room
 - `band_get_participants`: list room participants
@@ -132,7 +139,7 @@ Tool schemas live in `packages/sdk/src/contracts/toolSchemas.ts` (`TOOL_MODELS`)
 `SimpleAdapter.onEvent` applies the central turn-outcome rule from SDK Core;
 adapters must not duplicate judgment. Post adapter-authored text with
 `sendNotice` and relay model final text through `relayReply`. Read
-[docs/turn-outcome.md](docs/turn-outcome.md) before changing turn settlement or
+[turn outcome](README.md#turn-outcome) before changing turn settlement or
 reply behavior. `packages/sdk/tests/turnOutcomeContract.ts` registers adapter
 coverage and explicit exemptions.
 
@@ -582,7 +589,7 @@ precedence; report unrun checks instead of implying they passed.
 | Executable skill helpers, examples, or scripts | Run relevant behavioral checks in their actual Node/package environment; executable helpers are code, even inside a skill. |
 | Localized TypeScript source or tests | Run affected lint, type checks and behavioral tests; build SDK output first when consumer proofs need it. Broaden for affected callers. |
 | Shared runtime/protocol behavior, dependencies, packaging, or broad refactors | Run the full workspace gate below plus relevant ESM/CJS, declaration, optional-peer/import isolation, downstream plugin and boundary/live checks. |
-| CI or release workflows | Run applicable workflow guards and actionlint; see `docs/ci-cd-workflows.md`. Run release-hardening checks for changes to `.github/`, `scripts/`, or release configuration. Avoid publishing during probes. |
+| CI or release workflows | Run applicable workflow guards and actionlint; see [CI/CD workflows](CONTRIBUTING.md#ci-cd-workflows). Run release-hardening checks for changes to `.github/`, `scripts/`, or release configuration. Avoid publishing during probes. |
 
 Mixed changes use the union of applicable checks. Do not repeat a passing gate
 without new relevant changes or evidence. Required remote checks and approvals

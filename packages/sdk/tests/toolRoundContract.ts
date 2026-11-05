@@ -45,7 +45,7 @@ const explode = customTool("explode", "act", () => {
 const explodeCall: ScriptedCall = { name: "explode", args: {} };
 
 /**
- * docs/turn-outcome.md's round rule, owed by every tool loop the SDK drives:
+ * README.md's turn-outcome round rule, owed by every tool loop the SDK drives:
  * a round ends the turn once a decline landed in it and no call beside it
  * failed; otherwise the model is asked again and sees what happened.
  */

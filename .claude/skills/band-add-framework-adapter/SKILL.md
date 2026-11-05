@@ -49,7 +49,7 @@ turn serialization. Use named `<Framework>AdapterOptions` and
    custom-tool precedence, history attribution and own-agent filtering.
    Forward the turn's abort signal to providers and verify cancellation
    releases their work. Use structured `Logger` context.
-5. Read `docs/turn-outcome.md`. `SimpleAdapter.onEvent` owns central judgment;
+5. Read `README.md#turn-outcome`. `SimpleAdapter.onEvent` owns central judgment;
    use `sendNotice` for adapter-authored text and `relayReply` for model final
    text. Register in `packages/sdk/tests/turnOutcomeContract.ts` under
    `TURN_OUTCOME_ADAPTERS` or a justified `TURN_OUTCOME_EXEMPT` entry.

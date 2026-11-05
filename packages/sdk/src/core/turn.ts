@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import {
   missingReplyMessage,
   TurnLedger,
@@ -12,9 +14,16 @@ import { isBlankEventContent } from "../contracts/chatEvents";
 import { isFailedToolOutput, type AdapterToolMethodName, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
 import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS, type ToolName } from "../contracts/toolSchemas";
 import { deliverReply } from "./deliveryFailedError";
-import type { Logger } from "./logger";
+import { resolveLogger, type Logger } from "./logger";
 import { overrideTools } from "./overrideTools";
-import { agentFailure, safeSendFailure } from "./providerFailure";
+import { agentFailure, reportTurnFailure, safeSendFailure } from "./providerFailure";
+
+const effectObserver = new AsyncLocalStorage<{ turn: Turn; record: (effect: TurnEffect) => void }>();
+
+/** Observes landed effects in this call's async scope, including nested Band calls. */
+export function observeTurnEffects<T>(turn: Turn, record: (effect: TurnEffect) => void, execute: () => Promise<T>): Promise<T> {
+  return effectObserver.run({ turn, record }, execute);
+}
 
 /** `AgentFailure.provider` of a missing-reply report: the runtime's verdict, not any provider's. */
 export const TURN_FAILURE_PROVIDER = "band-runtime";
@@ -35,6 +44,8 @@ export class Turn {
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
+    const observer = effectObserver.getStore();
+    if (observer?.turn === this) observer.record(effect);
     if (effect === "decline") {
       this.declineCount += 1;
     }
@@ -204,7 +215,20 @@ export async function reportUnsettledTurn(
   logger: Logger,
   logContext: Record<string, unknown>,
 ): Promise<void> {
-  if (tools.turn.detached && tools.turn.unanswered) {
-    await safeSendFailure(tools, missingReplyFailure(), logger, logContext);
+  await finishTurn(tools, "detached", logger, logContext);
+}
+
+/** Judges normal completion in its owner's reporting scope; failure paths never call this. */
+export async function finishTurn(
+  tools: TurnTools<MessagingTools>,
+  mode: "attached" | "detached",
+  logger?: Logger,
+  logContext: Record<string, unknown> = {},
+): Promise<void> {
+  if (tools.turn.detached !== (mode === "detached") || !tools.turn.unanswered) return;
+  if (mode === "attached") {
+    await reportTurnFailure(tools, missingReplyFailure(), logger, logContext);
+  } else {
+    await safeSendFailure(tools, missingReplyFailure(), resolveLogger(logger), logContext);
   }
 }
