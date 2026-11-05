@@ -13,10 +13,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { LangGraphAdapter, type LangGraphAdapterOptions } from "../src/adapters/langgraph";
-import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
-import { failureMessages, recordingRoom, SENDER } from "./helpers/recordingRoom";
-import { describeToolRoundContract, type ScriptedCall, type ScriptedStep } from "./toolRoundContract";
+import { failureMessages, recordingRoom } from "./helpers/recordingRoom";
+import { calls, decline, describeToolRoundContract, done, send, type ScriptedCall, type ScriptedStep } from "./toolRoundContract";
 import { expectTurnFailed, makeMessage } from "./testUtils";
 import { turnInput } from "./turnOutcomeContract";
 
@@ -55,11 +54,6 @@ class ScriptedChatModel extends BaseChatModel {
     return { generations: [{ text: answer.text ?? "", message }] };
   }
 }
-
-const decline: ScriptedCall = { name: NO_REPLY_TOOL_NAME, args: { reason: "FYI" } };
-const send: ScriptedCall = { name: SEND_MESSAGE_TOOL_NAME, args: { content: "Noted.", mentions: [SENDER.handle] } };
-const calls = (...scripted: ScriptedCall[]): Answer => ({ calls: scripted });
-const done: Answer = { text: "done" };
 
 async function runTurn(script: (request: number) => Answer, options: Omit<LangGraphAdapterOptions, "llm"> = {}, room = recordingRoom()) {
   const model = new ScriptedChatModel(script);
@@ -110,9 +104,12 @@ describe("LangGraph built-in tool loop", () => {
     expect(failureMessages(room.events)).toEqual([]);
   });
 
-  it("asks the model again when an additional tool beside the decline reported an error through a Command", async () => {
+  it.each([
+    ["record", (messages: ToolMessage[]) => ({ messages })],
+    ["tuple", (messages: ToolMessage[]): [string, unknown][] => [["messages", messages]]],
+  ])("asks the model again when an additional tool beside the decline reported an error through a %s-form Command", async (_form, update) => {
     const failingCommand = tool(async (_args: Record<string, never>, config: { toolCall?: { id?: string } }) => new Command({
-      update: { messages: [new ToolMessage({ status: "error", content: "lookup failed", tool_call_id: config.toolCall?.id ?? "" })] },
+      update: update([new ToolMessage({ status: "error", content: "lookup failed", tool_call_id: config.toolCall?.id ?? "" })]),
     }), { name: "lookup", description: "Look something up.", schema: z.object({}) });
     const { model, turn } = await runTurn((request) => request === 1 ? calls(lookup, decline) : done, { additionalTools: [failingCommand] });
     await turn;

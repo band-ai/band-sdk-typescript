@@ -602,10 +602,21 @@ function isErrorToolMessage(value: unknown): boolean {
   return asOptionalRecord(value)?.status === "error";
 }
 
-/** A tools-step output carrying an error ToolMessage, returned directly or in a Command's `update.messages`. */
+function isMessagesWrite(write: unknown): write is ["messages", unknown] {
+  return Array.isArray(write) && write[0] === "messages";
+}
+
+/** The messages a Command's update writes, in either form LangGraph applies: a record or `[channel, value]` tuples. */
+function commandUpdateMessages(update: unknown): unknown[] {
+  if (Array.isArray(update)) {
+    return update.filter(isMessagesWrite).flatMap(([, messages]) => messages);
+  }
+  return [asOptionalRecord(update)?.messages].flat();
+}
+
+/** A tools-step output carrying an error ToolMessage, returned directly or in a Command's update. */
 function hasErrorToolMessage(output: unknown): boolean {
-  const commandMessages = asOptionalRecord(asOptionalRecord(output)?.update)?.messages;
-  return isErrorToolMessage(output) || [commandMessages].flat().some(isErrorToolMessage);
+  return isErrorToolMessage(output) || commandUpdateMessages(asOptionalRecord(output)?.update).some(isErrorToolMessage);
 }
 
 /**
