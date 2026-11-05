@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/band-ai/band-sdk-typescript/compare/claude-code-plugin-v0.2.0...claude-code-plugin-v1.0.0) (2026-11-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **websocket:** PhoenixChannelsTransport drops heartbeatIntervalMs and reconnectAfterMs; connect() now retries a refused boot instead of rejecting at once. A takeover cooldown (429) is waited out.
+
+### Bug Fixes
+
+* **websocket:** let band-sdk-core Session own reconnect decisions ([#383](https://github.com/band-ai/band-sdk-typescript/issues/383)) ([e6e5790](https://github.com/band-ai/band-sdk-typescript/commit/e6e5790be3d85bf1b72db105806eeaef6dd6b8ab))
+
 ## [0.2.0](https://github.com/band-ai/band-sdk-typescript/compare/claude-code-plugin-v0.1.0...claude-code-plugin-v0.2.0) (2026-10-30)
 
 
