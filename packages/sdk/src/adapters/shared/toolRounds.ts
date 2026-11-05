@@ -13,15 +13,16 @@ function toolLoopLimitError(maxToolRounds: number): Error {
  * The round rule of docs/turn-outcome.md for a loop the SDK drives: a round
  * ends the turn when a decline landed in it and no call beside it failed, so
  * the model still sees a failure. Each call is judged from its own output,
- * as `Turn` judged it, never from a framework's re-encoding of it. It also
- * caps the rounds a turn may run.
+ * as `Turn` judged it, never from a framework's re-encoding of it. It can
+ * also cap the rounds a turn may run.
  */
 export class RoundOutcome {
   private rounds = 0;
   private declinesBefore = 0;
   private failed = false;
 
-  public constructor(private readonly turn: Turn, private readonly maxToolRounds: number) {}
+  /** Without `maxToolRounds`, the rounds are left to the framework's own cap. */
+  public constructor(private readonly turn: Turn, private readonly maxToolRounds = Number.POSITIVE_INFINITY) {}
 
   /** Opens a round, before any of its calls run; throws once the model asks for one past the cap. */
   public start(): void {
@@ -39,6 +40,11 @@ export class RoundOutcome {
     return failed;
   }
 
+  /** Records a call that failed without an output to judge, such as one that threw. */
+  public fail(): void {
+    this.failed = true;
+  }
+
   /** Runs one call, counting a throw as a failed call before rethrowing it to the framework. */
   public async run<T>(execute: () => Promise<T>): Promise<T> {
     try {
@@ -46,7 +52,7 @@ export class RoundOutcome {
       this.record(output);
       return output;
     } catch (error) {
-      this.failed = true;
+      this.fail();
       throw error;
     }
   }

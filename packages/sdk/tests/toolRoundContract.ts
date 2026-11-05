@@ -27,12 +27,12 @@ export interface RoundRun {
  */
 export type RunRounds = (script: (request: number) => ScriptedStep, customTools: CustomToolDef[]) => Promise<RoundRun>;
 
-const decline: ScriptedCall = { name: NO_REPLY_TOOL_NAME, args: { reason: "FYI" } };
-const send: ScriptedCall = { name: SEND_MESSAGE_TOOL_NAME, args: { content: "Noted.", mentions: [SENDER.handle] } };
+export const decline: ScriptedCall = { name: NO_REPLY_TOOL_NAME, args: { reason: "FYI" } };
+export const send: ScriptedCall = { name: SEND_MESSAGE_TOOL_NAME, args: { content: "Noted.", mentions: [SENDER.handle] } };
 /** A send the platform rejects: nobody in the room has this handle. */
 const failedSend: ScriptedCall = { name: SEND_MESSAGE_TOOL_NAME, args: { content: "Noted.", mentions: ["@nobody"] } };
-const calls = (...scripted: ScriptedCall[]): ScriptedStep => ({ calls: scripted });
-const done: ScriptedStep = { text: "done" };
+export const calls = (...scripted: ScriptedCall[]): ScriptedStep => ({ calls: scripted });
+export const done: ScriptedStep = { text: "done" };
 
 const customTool = (name: string, effect: CustomToolDef["effect"], handler: CustomToolDef["handler"]): CustomToolDef => ({
   name, schema: z.object({}), effect, handler,
