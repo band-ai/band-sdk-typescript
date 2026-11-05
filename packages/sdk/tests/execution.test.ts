@@ -163,6 +163,51 @@ function createExecution(options?: {
 }
 
 describe("Execution", () => {
+  it("does not let a retired execution's held completion release its replacement room", async () => {
+    const oldEnd = createDeferred<void>();
+    const newEnd = createDeferred<void>();
+    const control = createDeferred<void>();
+    const processed: string[] = [];
+    const held = (end: Promise<void>, record: boolean) => new Execution({
+      roomId: "room-1",
+      link: { getNextMessage: async () => null, getStaleProcessingMessages: async () => [] } as never,
+      context: makeContext() as never,
+      isControlEvent: (event) => event.type === "message_created" && event.payload.id === "control",
+      onExecute: async (_context, event, _admitted, hold) => {
+        if (event.type !== "message_created") return;
+        if (event.payload.id === "first") hold(end);
+        if (record) processed.push(event.payload.id);
+        if (event.payload.id === "control") control.resolve();
+      },
+    });
+    const old = held(oldEnd.promise, false);
+    let replacement: Execution | undefined;
+    try {
+      await old.enqueue(makeEvent("first"));
+      await old.waitForIdle();
+      await old.stop(0);
+      replacement = held(newEnd.promise, true);
+      await replacement.enqueue(makeEvent("first"));
+      await replacement.waitForIdle();
+      await replacement.enqueue(makeEvent("second"));
+      oldEnd.resolve();
+      await oldEnd.promise;
+      await replacement.enqueue(makeEvent("control"));
+      await control.promise;
+      expect(processed).toEqual(["first", "control"]);
+      expect(old.state.status).toBe("stopped");
+      newEnd.resolve();
+      await newEnd.promise;
+      await replacement.waitForIdle();
+      expect(processed).toEqual(["first", "control", "second"]);
+    } finally {
+      oldEnd.resolve();
+      newEnd.resolve();
+      await old.stop(0);
+      await replacement?.stop(0);
+    }
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();

@@ -1,23 +1,37 @@
-import type { Turn } from "../../core/turn";
+import { createDeferred } from "../../core/deferred";
+import type { Logger } from "../../core/logger";
+import { finishTurn, type TurnTools } from "../../core/turn";
+import { retainWorkingCycleUntil } from "../../runtime/workingState";
 
 const DETACHED: unique symbol = Symbol("detached");
 
-/**
- * Awaits `run` until `released` resolves, then leaves it running detached.
- * A room hands an adapter one message at a time, so a turn that waits on the
- * room's next message must return first. The turn detaches with `run` as its
- * end, so the room's other work waits for it; a later failure goes to
- * `onDetachedError`.
- */
+/** Hands back a decision wait; the provider calls `complete` only at its normal completion seam. */
 export async function runUntilReleased(
-  turn: Turn,
-  run: Promise<void>,
+  tools: TurnTools,
+  operation: (complete: () => Promise<void>) => Promise<void>,
   released: Promise<unknown>,
+  logger: Logger,
+  logContext: Record<string, unknown>,
   onDetachedError: (error: unknown) => void,
 ): Promise<void> {
-  // A run that fails before release throws to the caller, so only one that outlives this call is handed off.
-  if ((await Promise.race([run, released.then(() => DETACHED)])) === DETACHED) {
-    turn.detach(run);
-    void run.catch(onDetachedError);
+  const completed = createDeferred<void>();
+  const handedOff = createDeferred<void>();
+  const complete = async (): Promise<void> => {
+    completed.resolve();
+    await handedOff.promise;
+    await finishTurn(tools, "detached", logger, logContext);
+  };
+  const run = retainWorkingCycleUntil(tools, Promise.resolve().then(() => operation(complete)));
+  try {
+    // Decide ownership before judgment, without leaving the provider's reporting/cleanup scope.
+    if ((await Promise.race([run, completed.promise, released.then(() => DETACHED)])) === DETACHED) {
+      tools.turn.detach(run);
+      void run.catch(onDetachedError);
+    } else {
+      handedOff.resolve();
+      await run;
+    }
+  } finally {
+    handedOff.resolve();
   }
 }

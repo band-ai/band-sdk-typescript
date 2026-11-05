@@ -6,8 +6,7 @@ import {
   type HistoryLike,
   type PlatformMessageLike,
 } from "../contracts/protocols";
-import { reportTurnFailure } from "./providerFailure";
-import { missingReplyFailure, trackTurn, type TurnTools } from "./turn";
+import { finishTurn, trackTurn, type TurnTools } from "./turn";
 
 /**
  * Base class for framework adapters that process one message at a time.
@@ -78,9 +77,7 @@ export abstract class SimpleAdapter<H, TTools = TurnTools>
     if (ended) {
       input.holdRoomUntil?.(ended);
     }
-    if (!tools.turn.detached && tools.turn.unanswered) {
-      await reportTurnFailure(tools, missingReplyFailure());
-    }
+    await finishTurn(tools, "attached");
   }
 
   private convertHistory(provider: HistoryLike): H {

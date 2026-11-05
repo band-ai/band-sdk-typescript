@@ -17,6 +17,8 @@ import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import { failureMessages, recordingRoom } from "./helpers/recordingRoom";
 import { calls, decline, describeToolRoundContract, done, send, type ScriptedCall, type ScriptedStep } from "./toolRoundContract";
 import { expectTurnFailed, makeMessage } from "./testUtils";
+import { NO_REPLY_TOOL_NAME } from "../src/contracts/toolSchemas";
+import type { TurnTools } from "../src/core/turn";
 import { turnInput } from "./turnOutcomeContract";
 
 /** One model answer: tool calls, possibly with side text, or text alone. */
@@ -80,6 +82,28 @@ const flakyLookup = tool(async () => {
 }, { name: "lookup", description: "Look something up.", schema: z.object({}) });
 
 describe("LangGraph built-in tool loop", () => {
+  it.each([false, true])("observes a nested Band decline in an opaque tool (failed sibling: %s)", async (failedSibling) => {
+    let activeTools: TurnTools;
+    class CapturingAdapter extends LangGraphAdapter {
+      public override async onMessage(...args: Parameters<LangGraphAdapter["onMessage"]>): Promise<void> {
+        activeTools = args[1];
+        return super.onMessage(...args);
+      }
+    }
+    const nested = tool(async () => {
+      await activeTools.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "nested" });
+      return "handled";
+    }, { name: "nested", description: "Decline through Band", schema: z.object({}) });
+    const model = new ScriptedChatModel((request) => request === 1
+      ? calls({ name: "nested", args: {} }, ...(failedSibling ? [lookup] : []))
+      : calls(decline));
+    const adapter = new CapturingAdapter({ llm: model, additionalTools: [nested, flakyLookup] });
+    const room = recordingRoom();
+    await adapter.onEvent(turnInput(room.tools));
+    expect(model.requests).toBe(failedSibling ? 2 : 1);
+    expect(failureMessages(room.events)).toEqual([]);
+  });
+
   it("reports every call of the round that declines before it ends, even over a slow network", async () => {
     const { model, room, turn } = await runTurn(() => calls(send, decline), {}, recordingRoom({ latencyMs: 20 }));
     await turn;

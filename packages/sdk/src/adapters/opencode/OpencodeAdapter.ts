@@ -1,4 +1,4 @@
-import { retainWorkingCycleUntil, suppressToolActivity, trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
+import { suppressToolActivity, trackNativeActivity, type NativeActivity } from "../../runtime/workingState";
 import { opencodeMessageId } from "./messageId";
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
@@ -25,7 +25,7 @@ import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import { DeliveryFailedError } from "../../core/deliveryFailedError";
-import { relayReply, reportUnsettledTurn, type TurnTools } from "../../core/turn";
+import { relayReply, type TurnTools } from "../../core/turn";
 import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
@@ -404,7 +404,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     // can't happen there, before this call was known to succeed.
     roomState.forceFreshSession = false;
 
-    await runUntilReleased(turn.tools.turn, retainWorkingCycleUntil(turn.tools, this.watchTurnCompletion(roomState, turn)), turn.released, (error) => {
+    await runUntilReleased(turn.tools, (complete) => this.watchTurnCompletion(roomState, turn, complete), turn.released, this.logger, { roomId: roomState.roomId }, (error) => {
       this.logger.error("OpenCode turn failed after the request returned", { error, roomId });
     });
   }
@@ -1027,7 +1027,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     return { sessionId, created, needsHistoryReplay };
   }
 
-  private async watchTurnCompletion(roomState: RoomState, turn: OpencodeTurn): Promise<void> {
+  private async watchTurnCompletion(roomState: RoomState, turn: OpencodeTurn, complete: () => Promise<void>): Promise<void> {
     try {
       using watchdog = new Deadline(this.config.turnTimeoutMs);
       const outcome = await Promise.race([turn.ended, watchdog.expired.then(() => "timed_out" as const)]);
@@ -1051,7 +1051,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
         return;
       }
       await this.flushTurnText(roomState, turn);
-      await reportUnsettledTurn(turn.tools, this.logger, { roomId: roomState.roomId });
+      await complete();
     } finally {
       this.clearTurnState(roomState, turn);
     }

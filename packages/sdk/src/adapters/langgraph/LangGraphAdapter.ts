@@ -224,7 +224,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       }
     } catch (error) {
       // Ending a declined run takes one more step; a limit that refuses it leaves the turn declined, not failed.
-      if (!this.usesCustomGraph && round.declined && sdk !== undefined && error instanceof sdk.GraphRecursionError) {
+      if (!this.usesCustomGraph && round.shouldStop(true) && sdk !== undefined && error instanceof sdk.GraphRecursionError) {
         this.logger.debug("LangGraph decline ended at the recursion limit", { roomId: context.roomId, recursionLimit: this.recursionLimit });
       } else {
         await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
@@ -281,7 +281,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       // The graph's only way on from a tools round is the model, so the round rule ends the run here.
       // An empty interrupt, like a static interruptAfter, ends it cleanly: streams complete and nothing is reported as failed.
       preModelHook: () => {
-        if (round.declined) {
+        if (round.shouldStop(true)) {
           throw new GraphInterrupt();
         }
         round.start();
@@ -447,8 +447,7 @@ function buildLangGraphTools(input: {
   }
   const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
     input.sdk.tool(async (args) => {
-      const output = await execute(args);
-      input.round.record(output);
+      const output = await input.round.run(() => execute(args));
       return stringifyToolResult(output, input.logger, spec.name);
     }, spec);
 
@@ -627,9 +626,10 @@ function hasErrorToolMessage(output: unknown): boolean {
 function roundToolNode(sdk: LangGraphSdk, tools: unknown[], round: RoundOutcome): LangGraphToolNode {
   class RoundToolNode extends sdk.ToolNode {
     public override async runTool(call: unknown, config: unknown): Promise<unknown> {
-      const output = await super.runTool(call, config);
+      const origin = round.capture();
+      const output = await origin.run(() => super.runTool(call, config));
       if (hasErrorToolMessage(output)) {
-        round.fail();
+        origin.fail();
       }
       return output;
     }

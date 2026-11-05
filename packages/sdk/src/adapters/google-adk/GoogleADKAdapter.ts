@@ -23,7 +23,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome } from "../shared/toolRounds";
+import { DEFAULT_MAX_TOOL_ROUNDS, RoundOutcome, ToolCallRoster } from "../shared/toolRounds";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -332,6 +332,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         sessionId,
       });
 
+      const seenCallIds = new Set<string>();
+      let roster = new ToolCallRoster([]);
       await withNativeActivity(tools, built.observedNames, async (native) => {
         for await (const event of runner.runAsync({
           userId: context.roomId,
@@ -342,8 +344,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
           },
         })) {
           // ADK yields a round's calls before running them, so leaving here stops them unrun and unreported.
-          if (sdk.getFunctionCalls(event).length > 0) {
+          const calls = sdk.getFunctionCalls(event);
+          if (calls.length > 0) {
             round.start();
+            roster = new ToolCallRoster(calls.map((call) => call.id), seenCallIds);
           }
           throwIfModelError(event);
           this.trackNativeEvent(sdk, event, native);
@@ -354,7 +358,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
             finalResponseText = sdk.stringifyContent(event);
           }
           // ADK would hand the results back to the model; a decline ends the turn unless a sibling failed.
-          if (sdk.getFunctionResponses(event).length > 0 && round.declined) {
+          const responses = sdk.getFunctionResponses(event);
+          if (responses.length > 0 && round.shouldStop(roster.observe(responses.map((response) => response.id)))) {
             break;
           }
         }

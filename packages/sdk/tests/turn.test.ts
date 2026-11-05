@@ -8,6 +8,9 @@ import { z } from "zod";
 import * as adapters from "../src/adapters";
 import { acpToolCallName, recordBandToolCalls } from "../src/adapters/acp/toolCalls";
 import type { CollectedChunk } from "../src/adapters/acp/types";
+import { runUntilReleased } from "../src/adapters/shared/runUntilReleased";
+import { RoundOutcome, ToolCallRoster } from "../src/adapters/shared/toolRounds";
+import { createDeferred } from "../src/core/deferred";
 import { replyToSender } from "../src/adapters/shared/replyToSender";
 import type { AgentToolsRestApi } from "../src/client/rest/types";
 import { createToolExecutorError, type AdapterToolsProtocol } from "../src/contracts/protocols";
@@ -26,7 +29,7 @@ import { relayReply, reportUnsettledTurn, trackTurn, Turn, type TurnTools } from
 import { buildSingleContextRegistrations, resolveSingleRoomTools } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { buildCustomToolIndex, CustomToolDefinitionError, executeCustomTool, type CustomToolDef } from "../src/runtime/tools/customTools";
-import { FakeRestApi, FakeTools, makeLoggerSpy, makeMessage, makeRoster, MISSING_REPLY, reportedFailures } from "./testUtils";
+import { FakeRestApi, FakeTools, expectTurnFailed, makeLoggerSpy, makeMessage, makeRoster, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { TURN_OUTCOME_ADAPTERS, TURN_OUTCOME_EXEMPT, turnInput } from "./turnOutcomeContract";
 
 const JANE = [{ id: "u1" }];
@@ -176,6 +179,98 @@ describe("detached turns", () => {
   it("never reports a synthetic turn, which onEvent would not have judged", async () => {
     const synthetic = { ...makeMessage("contact event"), senderType: SYNTHETIC_SENDER_TYPE, senderId: SYNTHETIC_CONTACT_EVENTS_SENDER_ID };
     expect(reportedFailures((await reportAtRealEnd(synthetic)).events)).toEqual([]);
+  });
+});
+
+describe("shared completion boundary", () => {
+  it("keeps a completed operation attached when its release arrives later", async () => {
+    const tools = trackTurn(new FakeTools());
+    const released = createDeferred<void>();
+    await runUntilReleased(tools, (complete) => complete(), released.promise, makeLoggerSpy(), {}, () => {});
+    released.resolve();
+    expect(tools.turn.detached).toBe(false);
+    expect(tools.turn.ended).toBeUndefined();
+    expect(tools.turn.unanswered).toBe(true);
+  });
+
+  it("reports exactly once when completion and release are both immediately available", async () => {
+    const tools = new FakeTools();
+    const adapter = new adapters.GenericAdapter(({ tools: turnTools }) =>
+      runUntilReleased(turnTools, (complete) => complete(), Promise.resolve(), makeLoggerSpy(), {}, () => {}));
+    await expectTurnFailed(adapter.onEvent(turnInput(tools)));
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
+  });
+
+  it.each(["success", "failure", "cancelled"] as const)("holds a handed-back %s through its actual completion", async (outcome) => {
+    const tools = trackTurn(new FakeTools());
+    const operation = createDeferred<void>();
+    const failed = vi.fn();
+    await runUntilReleased(tools, async (complete) => {
+      await operation.promise;
+      if (outcome === "failure") throw new Error("provider failed");
+      if (outcome === "success") await complete();
+    }, Promise.resolve(), makeLoggerSpy(), {}, failed);
+    expect(tools.turn.detached).toBe(true);
+    let ended = false;
+    void tools.turn.ended!.then(() => { ended = true; });
+    expect(ended).toBe(false);
+    expect(reportedFailures(tools.events)).toEqual([]);
+    operation.resolve();
+    await tools.turn.ended;
+    expect(ended).toBe(true);
+    expect(reportedFailures(tools.events)).toEqual(outcome === "success" ? [MISSING_REPLY] : []);
+    expect(failed).toHaveBeenCalledTimes(outcome === "failure" ? 1 : 0);
+  });
+});
+
+describe("native round observation", () => {
+  it("keeps a late failed call bound to its originating round", async () => {
+    const turn = new Turn();
+    const rounds = new RoundOutcome(turn);
+    rounds.start();
+    const oldRound = rounds.capture();
+    const pending = createDeferred<unknown>();
+    const oldCall = rounds.run(async () => {
+      const output = await pending.promise;
+      turn.record("decline");
+      return output;
+    });
+    rounds.start();
+    await rounds.run(async () => { turn.record("decline"); return {}; });
+    pending.resolve({ ok: false });
+    await oldCall;
+    expect(oldRound.shouldStop(true)).toBe(false);
+    expect(rounds.shouldStop(false)).toBe(false);
+    expect(rounds.shouldStop(true)).toBe(true);
+  });
+
+  it("never attributes an old call's landed decline to a concurrently waiting successor", async () => {
+    const turn = new Turn();
+    const rounds = new RoundOutcome(turn);
+    const oldGate = createDeferred<void>();
+    const newGate = createDeferred<void>();
+    rounds.start();
+    const oldRound = rounds.capture();
+    const oldCall = rounds.run(async () => { await oldGate.promise; turn.record("decline"); return {}; });
+    rounds.start();
+    const newCall = rounds.run(async () => { await newGate.promise; return {}; });
+    oldGate.resolve();
+    await oldCall;
+    newGate.resolve();
+    await newCall;
+    expect(oldRound.shouldStop(true)).toBe(true);
+    expect(rounds.shouldStop(true)).toBe(false);
+  });
+
+  it("does not complete a roster with duplicate, foreign, or missing results", () => {
+    const roster = new ToolCallRoster(["decline", "sibling"]);
+    expect(roster.observe(["decline", "decline", "foreign", undefined])).toBe(false);
+    expect(roster.observe(["sibling"])).toBe(true);
+    expect(new ToolCallRoster(["same", "same"]).observe(["same"])).toBe(false);
+    expect(new ToolCallRoster([undefined]).observe([undefined])).toBe(false);
+    const seen = new Set<string>();
+    expect(new ToolCallRoster(["reused"], seen).observe(["reused"])).toBe(true);
+    expect(new ToolCallRoster(["reused"], seen).observe(["reused"])).toBe(false);
   });
 });
 

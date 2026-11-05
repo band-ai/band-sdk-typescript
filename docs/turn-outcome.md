@@ -32,9 +32,14 @@ decline landed, any tool whose effect is `decline`, without asking the model
 again. If another call in that round failed, the loop continues so the model
 sees the failure. `ToolCallingAdapter` (OpenAI, Anthropic, Gemini, Vercel AI
 SDK), `GoogleADKAdapter` and `LangGraphAdapter`'s built-in graph share this
-rule as `RoundOutcome` (`adapters/shared/toolRounds.ts`), which judges each
-call from its own output as `Turn` does, and leave the round before the
+rule through Core's `RoundOutcome`. Native bookkeeping in
+`adapters/shared/toolRounds.ts` records landed effects and actual
+failures on each call's originating round, including nested Band calls. Only a complete round can stop before the
 model's next call; `tests/toolRoundContract.ts` holds the scenarios they owe.
+ADK tracks announced call IDs and observes each result once before declaring
+its round complete. Missing, repeated or ambiguous call IDs cannot authorize
+early stop. Injected runners only receive this guarantee when they follow the
+same call/response protocol.
 LangGraph's built-in graph stops in its pre-model hook with an empty
 interrupt, as a static `interruptAfter` would. The run ends cleanly after the
 round's tool messages are saved, so a checkpointed room's next turn continues
@@ -108,19 +113,28 @@ without that line, models more often send their closing narration as a second
 ## Turns that outlive `onMessage`
 
 An adapter that releases a turn's request while the turn waits on the room
-(OpenCode and Cursor, waiting on a decision) calls `tools.turn.detach()`.
-`onEvent` then skips the judgement and the delivery is marked PROCESSED. The
-runtime holds the room until the turn really ends: an ordinary message that
+(OpenCode and Cursor, waiting on a decision) uses `runUntilReleased`.
+The shared helper retains the operation and supplies a normal-completion
+callback which runs before provider cleanup. It detaches with the complete
+operation promise, including judgment and reply delivery. `onEvent` then skips
+attached judgment and the delivery is marked PROCESSED. The runtime holds the
+room until the turn really ends: an ordinary message that
 arrives meanwhile waits, unmarked, and runs as its own turn afterwards, in
 arrival order. Only a decision reply the adapter recognises
 (`isControlMessage`) runs during the hold. A decision reply sent while the
 socket was down waits on Band like any other message, so the held turn ends
 when its ask expires, and the late reply then runs with a no-longer-pending
-notice. At the turn's real end the adapter calls `reportUnsettledTurn(tools, logger, { roomId })`,
-which posts the missing-reply failure when the verdict is `missing_reply`.
-Only a turn `onEvent` would have judged is reported, so a detached synthetic
-turn or an exempt adapter's turn never is. A turn cancelled by room cleanup is
-not reported.
+notice. The shared completion boundary applies the same verdict as attached
+turns, reporting a missing reply only on normal completion. Provider failures
+and room-cleanup cancellation keep their own outcome. Synthetic turns and
+exempt adapters are never judged.
+
+Custom adapters may still use `turn.detach(untilEnded?)` and
+`reportUnsettledTurn(tools, logger, { roomId })`. Bare `detach()` retains its
+legacy behavior: no runtime hold is installed without a completion promise.
+Completion is separate from backend readiness. Existing provider isolation
+and replacement policies remain unchanged; this helper does not turn a
+best-effort stop into proof that a backend is safe to reuse.
 
 OpenCode ends a turn on a bare approval or question reject, before the model
 can answer. So the adapter sends every decided reject (a room's reject, an
@@ -197,3 +211,20 @@ Opaque Claude `additionalMcpTools` and LangGraph `additionalTools` gain no
 automatic custom-effect credit. Their calls may still count if they use the
 active turn's Band tools. Resolved failure values retain existing result
 serialization; effect credit is separate from an MCP transport error flag.
+
+
+## Lifecycle conformance
+
+The [Core lifecycle traces](https://github.com/band-ai/band-sdk-core/blob/main/crates/core/docs/turn-lifecycle.md)
+define observable ordering across SDKs. TypeScript's native proofs are:
+
+| Trace | TypeScript boundary and coverage |
+| --- | --- |
+| TL1 | `turn.test.ts` shared completion tests; Cursor/OpenCode flow tests send follow-up input after reply delivery but before provider completion. |
+| TL2 | Cursor/OpenCode flow tests pass decision controls past ordinary held messages and preserve queued arrival order. |
+| TL3, TL4, TL6 | Python refusal notifications; TypeScript holds admission on the actual completion promise and adds no refusal/recovery notification or write-backoff change. Settled completion/handoff races are exercised in `turn.test.ts`. |
+| TL5 | `execution.test.ts` settles a retired execution's hold while its replacement remains held, passes a control, then releases only the replacement's promise. Cursor flow tests also remove/rejoin held rooms and reject retired-process asks. |
+| TL7, TL8 | No backend recovery path changes here. Existing ACP/Cursor connection retirement, Codex client replacement, and OpenCode session abandonment retain their current policies and regression suites. These tests do not prove termination of remote/native side effects. Claude attached admission is not loosened. |
+| TL9, TL10 | `toolRoundContract.ts` runs on ToolCallingAdapter, the real ADK runner and real LangGraph graph; `google-adk-loop.test.ts` gates a slow sibling and splits response batches. |
+| TL11 | `turn.test.ts` completes an old callback after a new round starts, rejects ambiguous/reused IDs, and ignores duplicate/foreign results; ADK split-response tests exercise the runner bridge. |
+| TL12 | `turn.test.ts` retains bare `detach()`; graph/graphFactory and opaque provider loops keep their own scheduling. The existing turn-outcome registry preserves synthetic and bridge exemptions. |

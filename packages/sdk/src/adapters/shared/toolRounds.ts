@@ -1,64 +1,88 @@
-import { isFailedToolOutput } from "../../contracts/protocols";
-import type { Turn } from "../../core/turn";
+import { RoundOutcome as CoreRoundOutcome, type TurnEffect } from "@band-ai/band-sdk-core";
 
-/** Tool rounds a model may run in one turn before its loop is stopped as runaway. */
+import { isFailedToolOutput } from "../../contracts/protocols";
+import { observeTurnEffects, type Turn } from "../../core/turn";
+
 export const DEFAULT_MAX_TOOL_ROUNDS = 8;
 
-/** What a tool loop throws when the model asks for a round past `maxToolRounds`. */
-function toolLoopLimitError(maxToolRounds: number): Error {
-  return new Error(`Stopped tool loop after ${maxToolRounds} rounds to prevent infinite recursion.`);
-}
+/** Facts bound to one round, including calls that settle after its owner moves on. */
+export class ToolRoundOutcome {
+  private readonly outcome = new CoreRoundOutcome();
 
-/**
- * The round rule of docs/turn-outcome.md for a loop the SDK drives: a round
- * ends the turn when a decline landed in it and no call beside it failed, so
- * the model still sees a failure. Each call is judged from its own output,
- * as `Turn` judged it, never from a framework's re-encoding of it. It can
- * also cap the rounds a turn may run.
- */
-export class RoundOutcome {
-  private rounds = 0;
-  private declinesBefore = 0;
-  private failed = false;
+  public constructor(private readonly turn: Turn) {}
 
-  /** Without `maxToolRounds`, the rounds are left to the framework's own cap. */
-  public constructor(private readonly turn: Turn, private readonly maxToolRounds = Number.POSITIVE_INFINITY) {}
-
-  /** Opens a round, before any of its calls run; throws once the model asks for one past the cap. */
-  public start(): void {
-    if (++this.rounds > this.maxToolRounds) {
-      throw toolLoopLimitError(this.maxToolRounds);
-    }
-    this.declinesBefore = this.turn.declines;
-    this.failed = false;
-  }
-
-  /** Records one call's output; returns whether the call failed. */
-  public record(output: unknown): boolean {
+  public record(output: unknown, effect: TurnEffect = "observe"): boolean {
     const failed = isFailedToolOutput(output);
-    this.failed ||= failed;
+    this.outcome.record(effect, !failed);
     return failed;
   }
 
-  /** Records a call that failed without an output to judge, such as one that threw. */
   public fail(): void {
-    this.failed = true;
+    this.outcome.record("observe", false);
   }
 
-  /** Runs one call, counting a throw as a failed call before rethrowing it to the framework. */
-  public async run<T>(execute: () => Promise<T>): Promise<T> {
-    try {
-      const output = await execute();
-      this.record(output);
-      return output;
-    } catch (error) {
-      this.fail();
-      throw error;
+  public run<T>(execute: () => Promise<T>): Promise<T> {
+    return observeTurnEffects(this.turn, (effect) => this.outcome.record(effect, true), async () => {
+      try {
+        const output = await execute();
+        this.record(output);
+        return output;
+      } catch (error) {
+        this.fail();
+        throw error;
+      }
+    });
+  }
+
+  public shouldStop(complete: boolean): boolean {
+    return this.outcome.shouldStop(complete);
+  }
+}
+
+/** Native loop bookkeeping; Core alone decides whether an observed round stops. */
+export class RoundOutcome {
+  private rounds = 0;
+  private current: ToolRoundOutcome;
+
+  public constructor(private readonly turn: Turn, private readonly maxToolRounds = Number.POSITIVE_INFINITY) {
+    this.current = new ToolRoundOutcome(turn);
+  }
+
+  public start(): void {
+    if (++this.rounds > this.maxToolRounds) {
+      throw new Error(`Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`);
     }
+    this.current = new ToolRoundOutcome(this.turn);
   }
 
-  /** A decline landed this round and nothing beside it failed: the turn is over. */
-  public get declined(): boolean {
-    return this.turn.declines > this.declinesBefore && !this.failed;
+  public capture(): ToolRoundOutcome {
+    return this.current;
+  }
+
+  public run<T>(execute: () => Promise<T>): Promise<T> {
+    return this.current.run(execute);
+  }
+
+  public shouldStop(complete: boolean): boolean {
+    return this.current.shouldStop(complete);
+  }
+}
+
+/** A response may close only the nonempty, unambiguous roster announced for this round. */
+export class ToolCallRoster {
+  private readonly pending: Set<string>;
+  private readonly valid: boolean;
+
+  public constructor(ids: readonly (string | undefined)[], seen: Set<string> = new Set()) {
+    this.pending = new Set(ids.filter((id): id is string => Boolean(id)));
+    this.valid = ids.length > 0 && this.pending.size === ids.length && !ids.some((id) => id && seen.has(id));
+    for (const id of this.pending) seen.add(id);
+  }
+
+  public observe(ids: readonly (string | undefined)[]): boolean {
+    for (const id of ids) {
+      if (id) this.pending.delete(id);
+    }
+    return this.valid && this.pending.size === 0;
   }
 }
