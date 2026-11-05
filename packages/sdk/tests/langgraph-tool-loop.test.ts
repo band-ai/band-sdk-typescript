@@ -110,6 +110,16 @@ describe("LangGraph built-in tool loop", () => {
     expect(failureMessages(room.events)).toEqual([]);
   });
 
+  it("asks the model again when an additional tool beside the decline reported an error through a Command", async () => {
+    const failingCommand = tool(async (_args: Record<string, never>, config: { toolCall?: { id?: string } }) => new Command({
+      update: { messages: [new ToolMessage({ status: "error", content: "lookup failed", tool_call_id: config.toolCall?.id ?? "" })] },
+    }), { name: "lookup", description: "Look something up.", schema: z.object({}) });
+    const { model, turn } = await runTurn((request) => request === 1 ? calls(lookup, decline) : done, { additionalTools: [failingCommand] });
+    await turn;
+
+    expect(model.requests).toBe(2);
+  });
+
   it("ends at a later round that only declines, once an additional tool's throw is behind it", async () => {
     const { model, room, turn } = await runTurn((request) => request === 1 ? calls(lookup) : calls(decline), { additionalTools: [flakyLookup] });
     await turn;
@@ -208,6 +218,16 @@ describe("LangGraph built-in tool loop", () => {
     await expectTurnFailed(adapter.onEvent(turnInput(room.tools)));
 
     expect(failureMessages(room.events)).toEqual([expect.stringContaining(`Recursion limit of ${limit} reached`)]);
+  });
+
+  it("fails a graphFactory graph's turn that hits its recursion limit, even after a decline", async () => {
+    const model = new ScriptedChatModel(() => calls(decline));
+    const adapter = new LangGraphAdapter({ recursionLimit: 3, graphFactory: (tools) => createReactAgent({ llm: model, tools: tools as never }) });
+    await adapter.onStarted("helper", "assistant");
+    const room = recordingRoom();
+    await expectTurnFailed(adapter.onEvent(turnInput(room.tools)));
+
+    expect(failureMessages(room.events)).toEqual([expect.stringContaining("Recursion limit of 3 reached")]);
   });
 
   it("leaves a graphFactory graph's loop to the graph", async () => {

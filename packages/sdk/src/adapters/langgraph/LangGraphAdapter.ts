@@ -80,7 +80,7 @@ export interface LangGraphAdapterOptions {
   customSection?: string;
   /**
    * LangGraph steps one turn may run; the built-in graph takes three per tool
-   * round and defaults to 50. A `graph` or `graphFactory` graph gets it only
+   * round and has a default. A `graph` or `graphFactory` graph gets it only
    * when set, so its own `withConfig({ recursionLimit })` otherwise holds.
    */
   recursionLimit?: number;
@@ -602,6 +602,12 @@ function isErrorToolMessage(value: unknown): boolean {
   return asOptionalRecord(value)?.status === "error";
 }
 
+/** A tools-step output carrying an error ToolMessage, returned directly or in a Command's `update.messages`. */
+function hasErrorToolMessage(output: unknown): boolean {
+  const commandMessages = asOptionalRecord(asOptionalRecord(output)?.update)?.messages;
+  return isErrorToolMessage(output) || [commandMessages].flat().some(isErrorToolMessage);
+}
+
 /**
  * The built-in graph's tools step, counting each call ToolNode reports as
  * failed toward the round; a Band or custom tool's failed output is recorded
@@ -611,7 +617,7 @@ function roundToolNode(sdk: LangGraphSdk, tools: unknown[], round: RoundOutcome)
   class RoundToolNode extends sdk.ToolNode {
     public override async runTool(call: unknown, config: unknown): Promise<unknown> {
       const output = await super.runTool(call, config);
-      if (isErrorToolMessage(output)) {
+      if (hasErrorToolMessage(output)) {
         round.fail();
       }
       return output;
