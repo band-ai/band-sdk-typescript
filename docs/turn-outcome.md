@@ -38,10 +38,10 @@ model's next call; `tests/toolRoundContract.ts` holds the scenarios they owe.
 LangGraph's built-in graph stops in its pre-model hook with an empty
 interrupt, as a static `interruptAfter` would. The run ends cleanly after the
 round's tool messages are saved, so a checkpointed room's next turn continues
-from them. An `additionalTools` tool that threw counts as a failed call. Graphs
-passed as `graph` or `graphFactory`, and agents that run their own loop
-(Letta's server, Claude SDK, Codex, ACP, OpenCode), keep their own control
-flow.
+from them. A call that threw, named no tool or had invalid arguments counts as
+failed, as ToolNode reports it. Graphs passed as `graph` or `graphFactory`,
+and agents that run their own loop (Letta's server, Claude SDK, Codex, ACP,
+OpenCode), keep their own control flow.
 
 ## What counts
 

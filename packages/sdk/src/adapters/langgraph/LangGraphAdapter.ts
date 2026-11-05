@@ -43,16 +43,22 @@ interface LangGraphToolLike {
   schema: Record<string, unknown>;
 }
 
+/** The part of LangGraph's prebuilt ToolNode the adapter overrides. */
+interface LangGraphToolNode {
+  runTool(call: unknown, config: unknown): Promise<unknown>;
+}
+
 interface LangGraphSdk {
   createReactAgent: (params: {
     llm: unknown;
-    tools: unknown[];
+    tools: LangGraphToolNode;
     checkpointer?: unknown;
     prompt?: string;
-    preModelHook?: (state: { messages: unknown[] }) => Record<string, never>;
+    preModelHook?: () => Record<string, never>;
   }) => LangGraphGraph;
   GraphInterrupt: new () => Error;
   GraphRecursionError: abstract new (...args: never[]) => Error;
+  ToolNode: new (tools: unknown[]) => LangGraphToolNode;
   tool: (
     fn: (input: Record<string, unknown>) => Promise<string>,
     fields: {
@@ -72,7 +78,11 @@ export interface LangGraphAdapterOptions {
   customTools?: CustomToolDef[];
   systemPrompt?: string;
   customSection?: string;
-  /** LangGraph steps one turn may run (default 50); the built-in graph takes three per tool round. */
+  /**
+   * LangGraph steps one turn may run; the built-in graph takes three per tool
+   * round and defaults to 50. A `graph` or `graphFactory` graph gets it only
+   * when set, so its own `withConfig({ recursionLimit })` otherwise holds.
+   */
   recursionLimit?: number;
   maxHistoryMessages?: number;
   emitExecutionEvents?: boolean;
@@ -91,7 +101,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly customTools: CustomToolDef[];
   private readonly systemPromptOverride?: string;
   private readonly customSection: string;
-  private readonly recursionLimit: number;
+  private readonly recursionLimit: number | undefined;
   private readonly maxHistoryMessages: number;
   private readonly emitExecutionEvents: boolean;
   private readonly includeMemoryTools: boolean;
@@ -118,7 +128,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
-    this.recursionLimit = options.recursionLimit ?? DEFAULT_RECURSION_LIMIT;
+    this.recursionLimit = options.recursionLimit ?? (this.usesCustomGraph ? undefined : DEFAULT_RECURSION_LIMIT);
     this.maxHistoryMessages = options.maxHistoryMessages ?? 100;
     this.emitExecutionEvents = options.emitExecutionEvents ?? true;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
@@ -199,7 +209,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         configurable: {
           thread_id: context.roomId,
         },
-        recursionLimit: this.recursionLimit,
+        // Omitted, not undefined: LangGraph's streamEvents lets an undefined key replace a graph's own limit.
+        ...(this.recursionLimit === undefined ? {} : { recursionLimit: this.recursionLimit }),
       };
 
       if (this.emitExecutionEvents && graph.streamEvents) {
@@ -213,8 +224,9 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       }
     } catch (error) {
       // Ending a declined run takes one more step; a limit that refuses it leaves the turn declined, not failed.
-      const endedAtDecline = !this.usesCustomGraph && round.declined && sdk !== undefined && error instanceof sdk.GraphRecursionError;
-      if (!endedAtDecline) {
+      if (!this.usesCustomGraph && round.declined && sdk !== undefined && error instanceof sdk.GraphRecursionError) {
+        this.logger.debug("LangGraph decline ended at the recursion limit", { roomId: context.roomId, recursionLimit: this.recursionLimit });
+      } else {
         await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
       }
     }
@@ -263,13 +275,13 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
     return Promise.resolve(sdk.createReactAgent({
       llm: this.llm,
-      tools: langGraphTools,
+      tools: roundToolNode(sdk, langGraphTools, round),
       checkpointer: this.checkpointer,
       prompt: this.renderedSystemPrompt,
       // The graph's only way on from a tools round is the model, so the round rule ends the run here.
       // An empty interrupt, like a static interruptAfter, ends it cleanly: streams complete and nothing is reported as failed.
-      preModelHook: ({ messages }) => {
-        if (round.declined && !lastRoundThrew(messages)) {
+      preModelHook: () => {
+        if (round.declined) {
           throw new GraphInterrupt();
         }
         round.start();
@@ -365,7 +377,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
             ...data,
             tool_call_id: data.run_id,
             output,
-            is_error: (message !== undefined && isErrorToolMessage(message)) || isFailedToolOutput(parsedOutput),
+            is_error: isErrorToolMessage(message) || isFailedToolOutput(parsedOutput),
           }, this.logger, {
             label: "LangGraph event",
             eventType,
@@ -434,7 +446,11 @@ function buildLangGraphTools(input: {
     ]);
   }
   const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
-    input.sdk.tool(async (args) => stringifyToolResult(await input.round.run(() => execute(args)), input.logger, spec.name), spec);
+    input.sdk.tool(async (args) => {
+      const output = await execute(args);
+      input.round.record(output);
+      return stringifyToolResult(output, input.logger, spec.name);
+    }, spec);
 
   return {
     tools: [
@@ -537,7 +553,7 @@ function asMessageText(value: unknown): string | null {
   return asMessageContent(record.content);
 }
 
-const LANGCHAIN_MESSAGE_TYPES = ["ai", "human", "tool"] as const;
+const LANGCHAIN_MESSAGE_TYPES = ["ai", "human"] as const;
 type LangChainMessageType = (typeof LANGCHAIN_MESSAGE_TYPES)[number];
 
 function isLangChainMessageType(value: unknown): value is LangChainMessageType {
@@ -550,7 +566,6 @@ const LANGCHAIN_MESSAGE_CLASSES: Readonly<Record<string, LangChainMessageType>> 
   AIMessageChunk: "ai",
   HumanMessage: "human",
   HumanMessageChunk: "human",
-  ToolMessage: "tool",
 };
 
 // A LangChain message's type in either shape:
@@ -582,28 +597,27 @@ function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
   return langChainMessageType(record) === "ai";
 }
 
-/** ToolNode's report of a tool that threw. */
-function isErrorToolMessage(record: Record<string, unknown>): boolean {
-  return record.status === "error";
+/** ToolNode's report of a call that failed: it threw, named no tool, or had invalid arguments. */
+function isErrorToolMessage(value: unknown): boolean {
+  return asOptionalRecord(value)?.status === "error";
 }
 
 /**
- * Whether a tool in the last round threw, the only sign of failure an opaque
- * `additionalTools` tool gives. The round runs back to the AI message that
- * asked for it; a tool's `Command` may add other messages inside it.
+ * The built-in graph's tools step, counting each call ToolNode reports as
+ * failed toward the round; a Band or custom tool's failed output is recorded
+ * by its own wrapper, since ToolNode reports it as a success.
  */
-function lastRoundThrew(messages: readonly unknown[]): boolean {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = asOptionalRecord(messages[index]) ?? {};
-    const type = langChainMessageType(message);
-    if (type === "tool" && isErrorToolMessage(message)) {
-      return true;
-    }
-    if (type === "human" || (type === "ai" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0)) {
-      return false;
+function roundToolNode(sdk: LangGraphSdk, tools: unknown[], round: RoundOutcome): LangGraphToolNode {
+  class RoundToolNode extends sdk.ToolNode {
+    public override async runTool(call: unknown, config: unknown): Promise<unknown> {
+      const output = await super.runTool(call, config);
+      if (isErrorToolMessage(output)) {
+        round.fail();
+      }
+      return output;
     }
   }
-  return false;
+  return new RoundToolNode(tools);
 }
 
 /** The roles LangChain reads as a human message, in a tuple or a role record. */
@@ -660,18 +674,18 @@ async function loadLangGraphSdk(): Promise<LangGraphSdk> {
   try {
     const [langGraphModule, prebuiltModule, coreToolsModule] = await Promise.all([
       import("@langchain/langgraph").then((module) => module as Pick<LangGraphSdk, "GraphInterrupt" | "GraphRecursionError">),
-      import("@langchain/langgraph/prebuilt").then((module) => module as { createReactAgent: LangGraphSdk["createReactAgent"] }),
+      import("@langchain/langgraph/prebuilt").then((module) => module as Pick<LangGraphSdk, "createReactAgent" | "ToolNode">),
       import("@langchain/core/tools").then((module) => module as { tool: LangGraphSdk["tool"] }),
     ]);
     const { GraphInterrupt, GraphRecursionError } = langGraphModule;
-    const { createReactAgent } = prebuiltModule;
+    const { createReactAgent, ToolNode } = prebuiltModule;
     const { tool } = coreToolsModule;
 
-    if ([GraphInterrupt, GraphRecursionError, createReactAgent, tool].some((value) => typeof value !== "function")) {
+    if ([GraphInterrupt, GraphRecursionError, createReactAgent, ToolNode, tool].some((value) => typeof value !== "function")) {
       throw new UnsupportedFeatureError("LangGraph SDK exports are unavailable.");
     }
 
-    return { GraphInterrupt, GraphRecursionError, createReactAgent, tool };
+    return { GraphInterrupt, GraphRecursionError, ToolNode, createReactAgent, tool };
   } catch (error) {
     throw new UnsupportedFeatureError(
       `LangGraphAdapter requires @langchain/langgraph and @langchain/core. Install them with "pnpm add @langchain/langgraph @langchain/core". (${asErrorMessage(error)})`,

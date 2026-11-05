@@ -17,6 +17,9 @@ const langGraphMocks = vi.hoisted(() => ({
 
 vi.mock("@langchain/langgraph/prebuilt", () => ({
   createReactAgent: langGraphMocks.createReactAgent,
+  ToolNode: class {
+    public constructor(public readonly tools: unknown[]) {}
+  },
 }));
 
 vi.mock("@langchain/core/tools", () => ({
@@ -78,10 +81,10 @@ function scriptReactAgent(script: TurnScript): void {
   langGraphMocks.createReactAgent.mockReset();
   langGraphMocks.tool.mockReset();
   langGraphMocks.tool.mockImplementation((run, fields) => ({ name: fields.name, run }));
-  langGraphMocks.createReactAgent.mockImplementation(({ tools }: { tools: Array<{ name: string; run: (args: Record<string, unknown>) => Promise<unknown> }> }) => ({
+  langGraphMocks.createReactAgent.mockImplementation(({ tools }: { tools: { tools: Array<{ name: string; run: (args: Record<string, unknown>) => Promise<unknown> }> } }) => ({
     async invoke() {
       const call: BandToolCall = async (name, args) => {
-        const tool = tools.find((candidate) => candidate.name === name);
+        const tool = tools.tools.find((candidate) => candidate.name === name);
         if (!tool) {
           throw new Error(`${name} was not given to the graph`);
         }
@@ -182,11 +185,11 @@ describe("LangGraphAdapter", () => {
     expect(langGraphMocks.createReactAgent).toHaveBeenCalledTimes(1);
     const args = langGraphMocks.createReactAgent.mock.calls[0]?.[0] as {
       llm: unknown;
-      tools: unknown[];
+      tools: { tools: unknown[] };
       prompt?: string;
     };
     expect(args.llm).toBe(llm);
-    expect(args.tools).toHaveLength(1);
+    expect(args.tools.tools).toHaveLength(1);
     expect(typeof args.prompt).toBe("string");
     expect(args.prompt).toContain("LangGraph Agent");
     expect(tools.messages).toEqual(["SDK graph reply"]);
@@ -651,7 +654,7 @@ for (const mode of ["built-in", "factory"] as const) {
         return { messages: [] };
       },
     });
-    langGraphMocks.createReactAgent.mockImplementation(({ tools }) => build(tools));
+    langGraphMocks.createReactAgent.mockImplementation(({ tools }) => build(tools.tools));
     const adapter = new LangGraphAdapter({ customTools: [def], ...(mode === "factory" ? { graphFactory: build, graph: SILENT_GRAPH } : { llm: {} }) });
     await adapter.onEvent(turnInput(tools));
   });

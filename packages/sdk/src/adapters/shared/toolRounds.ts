@@ -40,6 +40,11 @@ export class RoundOutcome {
     return failed;
   }
 
+  /** Records a call that failed without an output to judge, such as one that threw. */
+  public fail(): void {
+    this.failed = true;
+  }
+
   /** Runs one call, counting a throw as a failed call before rethrowing it to the framework. */
   public async run<T>(execute: () => Promise<T>): Promise<T> {
     try {
@@ -47,7 +52,7 @@ export class RoundOutcome {
       this.record(output);
       return output;
     } catch (error) {
-      this.failed = true;
+      this.fail();
       throw error;
     }
   }
