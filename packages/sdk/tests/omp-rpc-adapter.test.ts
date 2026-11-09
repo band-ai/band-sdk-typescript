@@ -58,9 +58,27 @@ const assistant = (...content: Array<Record<string, unknown>>) => ({ type: "mess
 const text = (value: string) => ({ type: "text", text: value });
 const toolText = (frame: Record<string, unknown>) => ((frame.result as { content: Array<{ text: string }> }).content[0]!).text;
 
-/** Calls a host tool mid-turn: what the adapter answers says whether the turn is still running. */
+/** How long a probe waits; a live turn answers at once, a closed one never does. */
+const PROBE_WAIT_MS = 1_000;
+
+/**
+ * Calls a host tool mid-turn: what the adapter answers says whether the turn
+ * is still running. A turn that already ended may leave the call unanswered,
+ * so the wait is bounded and named rather than left to the test timeout.
+ */
 async function probeTurn(peer: FakeOmp, id: string): Promise<string> {
-  return toolText(await peer.callHostTool(id, "band_send_message", { content: "probe", mentions: ["owner"] }));
+  // A real timer, cleared on the answer: it only bounds the failure path, where
+  // a closed turn never answers. A live turn answers on the next stream tick.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unanswered = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve(`no answer within ${PROBE_WAIT_MS}ms`), PROBE_WAIT_MS);
+  });
+  const answered = peer.callHostTool(id, "band_send_message", { content: "probe", mentions: ["owner"] }).then(toolText);
+  try {
+    return await Promise.race([answered, unanswered]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 describe("OmpRpcAdapter", () => {
