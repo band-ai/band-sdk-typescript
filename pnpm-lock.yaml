@@ -51,7 +51,7 @@ importers:
         version: 0.0.165
       '@google/adk':
         specifier: '>=0.5.0'
-        version: 0.5.0(a667b48bb0e27e6ebb80ea6a6319c8e6)
+        version: 0.5.0(36a6caaeb1c6ff43951be1df495aab5c)
       '@google/genai':
         specifier: '>=1.44.0'
         version: 1.46.0(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7))
@@ -111,8 +111,8 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
       '@types/node':
-        specifier: ^26.5.1
-        version: 26.6.1
+        specifier: ^26.6.6
+        version: 26.6.6
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.70.0
         version: 8.70.0(@typescript-eslint/parser@8.70.0(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3))(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
@@ -142,7 +142,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^5.0.5
-        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
   plugins/claude-code:
     devDependencies:
@@ -153,8 +153,8 @@ importers:
         specifier: ^1.32.2
         version: 1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.7)
       '@types/node':
-        specifier: ^26.5.1
-        version: 26.6.1
+        specifier: ^26.6.6
+        version: 26.6.6
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.70.0
         version: 8.70.0(@typescript-eslint/parser@8.72.1(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3))(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
@@ -175,7 +175,7 @@ importers:
         version: 8.72.1(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
       vitest:
         specifier: ^5.0.5
-        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
   plugins/openclaw:
     devDependencies:
@@ -183,8 +183,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sdk
       '@types/node':
-        specifier: ^26.5.1
-        version: 26.6.1
+        specifier: ^26.6.6
+        version: 26.6.6
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.70.0
         version: 8.70.0(@typescript-eslint/parser@8.72.1(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3))(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
@@ -208,7 +208,7 @@ importers:
         version: 8.72.1(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
       vitest:
         specifier: ^5.0.5
-        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
 packages:
 
@@ -2057,8 +2057,8 @@ packages:
   '@types/node@24.12.0':
     resolution: {integrity: sha512-GYDxsZi3ChgmckRT9HPU0WEhKLP08ev/Yfcq2AstjrDASOYCSXeyjDsHg4v5t4jOj7cyDX3vmprafKlWIG9MXQ==}
 
-  '@types/node@26.6.1':
-    resolution: {integrity: sha512-VqGJBMCtdhqkBUCcBLvywI0NJ+KLuVzgNnlBUNFOQjqVxzo2lxLUNg1DSey8+u2u6ktswSAxg+s68QLzWHNOuA==}
+  '@types/node@26.6.6':
+    resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
 
   '@types/qs@6.15.0':
     resolution: {integrity: sha512-JawvT8iBVWpzTrz3EGw9BTQFg3BQNmwERdKE22vlTxawwtbyUSlMppvZYKLZzB5zgACXdXxbD3m1bXaMqP/9ow==}
@@ -5615,7 +5615,7 @@ snapshots:
       - encoding
       - supports-color
 
-  '@google/adk@0.5.0(a667b48bb0e27e6ebb80ea6a6319c8e6)':
+  '@google/adk@0.5.0(36a6caaeb1c6ff43951be1df495aab5c)':
     dependencies:
       '@a2a-js/sdk': 0.3.13(@grpc/grpc-js@1.14.3)(express@5.2.1)
       '@google-cloud/opentelemetry-cloud-monitoring-exporter': 0.21.0(@opentelemetry/api@1.9.0)(@opentelemetry/core@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(encoding@0.1.13)
@@ -5625,7 +5625,7 @@ snapshots:
       '@mikro-orm/core': 6.6.14
       '@mikro-orm/mariadb': 6.6.9(@mikro-orm/core@6.6.14)(pg@8.19.0)
       '@mikro-orm/mssql': 6.6.9(@azure/core-client@1.10.1)(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(pg@8.19.0)
-      '@mikro-orm/mysql': 6.6.9(@mikro-orm/core@6.6.14)(@types/node@26.6.1)(mariadb@3.4.5)(pg@8.19.0)
+      '@mikro-orm/mysql': 6.6.9(@mikro-orm/core@6.6.14)(@types/node@26.6.6)(mariadb@3.4.5)(pg@8.19.0)
       '@mikro-orm/postgresql': 6.6.9(@mikro-orm/core@6.6.14)(mariadb@3.4.5)
       '@mikro-orm/reflection': 6.6.9(@mikro-orm/core@6.6.14)
       '@mikro-orm/sqlite': 6.6.9(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(pg@8.19.0)
@@ -5914,11 +5914,11 @@ snapshots:
       mikro-orm: 6.6.14
       reflect-metadata: 0.2.2
 
-  '@mikro-orm/knex@6.6.14(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(mysql2@3.19.0(@types/node@26.6.1))(pg@8.19.0)':
+  '@mikro-orm/knex@6.6.14(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(mysql2@3.19.0(@types/node@26.6.6))(pg@8.19.0)':
     dependencies:
       '@mikro-orm/core': 6.6.14
       fs-extra: 11.3.3
-      knex: 3.2.10(mysql2@3.19.0(@types/node@26.6.1))(pg@8.19.0)
+      knex: 3.2.10(mysql2@3.19.0(@types/node@26.6.6))(pg@8.19.0)
       sqlstring: 2.3.3
     optionalDependencies:
       mariadb: 3.4.5
@@ -6022,11 +6022,11 @@ snapshots:
       - sqlite3
       - supports-color
 
-  '@mikro-orm/mysql@6.6.9(@mikro-orm/core@6.6.14)(@types/node@26.6.1)(mariadb@3.4.5)(pg@8.19.0)':
+  '@mikro-orm/mysql@6.6.9(@mikro-orm/core@6.6.14)(@types/node@26.6.6)(mariadb@3.4.5)(pg@8.19.0)':
     dependencies:
       '@mikro-orm/core': 6.6.14
-      '@mikro-orm/knex': 6.6.14(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(mysql2@3.19.0(@types/node@26.6.1))(pg@8.19.0)
-      mysql2: 3.19.0(@types/node@26.6.1)
+      '@mikro-orm/knex': 6.6.14(@mikro-orm/core@6.6.14)(mariadb@3.4.5)(mysql2@3.19.0(@types/node@26.6.6))(pg@8.19.0)
+      mysql2: 3.19.0(@types/node@26.6.6)
     transitivePeerDependencies:
       - '@types/node'
       - better-sqlite3
@@ -6627,7 +6627,7 @@ snapshots:
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
 
   '@types/caseless@0.12.5': {}
 
@@ -6638,7 +6638,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
 
   '@types/deep-eql@4.0.2': {}
 
@@ -6652,7 +6652,7 @@ snapshots:
 
   '@types/express-serve-static-core@5.1.1':
     dependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       '@types/qs': 6.15.0
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.1
@@ -6675,7 +6675,7 @@ snapshots:
     dependencies:
       undici-types: 7.16.0
 
-  '@types/node@26.6.1':
+  '@types/node@26.6.6':
     dependencies:
       undici-types: 8.9.0
 
@@ -6685,12 +6685,12 @@ snapshots:
 
   '@types/readable-stream@4.0.23':
     dependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
 
   '@types/request@2.48.13':
     dependencies:
       '@types/caseless': 0.12.5
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       '@types/tough-cookie': 4.0.5
       form-data: 2.5.5
 
@@ -6698,12 +6698,12 @@ snapshots:
 
   '@types/send@1.2.1':
     dependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
 
   '@types/serve-static@2.2.0':
     dependencies:
       '@types/http-errors': 2.0.5
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
 
   '@types/tough-cookie@4.0.5': {}
 
@@ -6964,7 +6964,7 @@ snapshots:
       obug: 3.0.0
       std-env: 4.3.0
       tinyrainbow: 3.2.0
-      vitest: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
+      vitest: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
   '@vitest/istanbul-lib-coverage@1.0.2': {}
 
@@ -6972,14 +6972,14 @@ snapshots:
     dependencies:
       '@vitest/istanbul-lib-coverage': 1.0.2
 
-  '@vitest/mocker@5.0.5(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))':
+  '@vitest/mocker@5.0.5(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@vitest/spy': 5.0.5
       estree-walker: 3.0.3
       magic-string: 1.4.3
     optionalDependencies:
-      vite: 7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
+      vite: 7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
 
   '@vitest/spy@5.0.5': {}
 
@@ -8278,7 +8278,7 @@ snapshots:
     dependencies:
       '@keyv/serialize': 1.1.1
 
-  knex@3.2.10(mysql2@3.19.0(@types/node@26.6.1))(pg@8.19.0):
+  knex@3.2.10(mysql2@3.19.0(@types/node@26.6.6))(pg@8.19.0):
     dependencies:
       colorette: 2.0.19
       commander: 10.0.1
@@ -8295,7 +8295,7 @@ snapshots:
       tarn: 3.0.2
       tildify: 2.0.0
     optionalDependencies:
-      mysql2: 3.19.0(@types/node@26.6.1)
+      mysql2: 3.19.0(@types/node@26.6.6)
       pg: 8.19.0
     transitivePeerDependencies:
       - supports-color
@@ -8552,9 +8552,9 @@ snapshots:
 
   mustache@4.2.0: {}
 
-  mysql2@3.19.0(@types/node@26.6.1):
+  mysql2@3.19.0(@types/node@26.6.6):
     dependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       aws-ssl-profiles: 1.1.2
       denque: 2.1.0
       generate-function: 2.3.1
@@ -8998,7 +8998,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.0
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       long: 5.3.2
 
   proxy-addr@2.0.7:
@@ -9443,7 +9443,7 @@ snapshots:
       '@azure/identity': 4.13.1
       '@azure/keyvault-keys': 4.10.0(@azure/core-client@1.10.1)
       '@js-joda/core': 5.7.0
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       bl: 6.1.6
       iconv-lite: 0.7.3
       js-md4: 0.3.2
@@ -9645,7 +9645,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0):
+  vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0):
     dependencies:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.7)
@@ -9654,16 +9654,16 @@ snapshots:
       rollup: 4.67.5
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       fsevents: 2.3.3
       jiti: 2.7.0
       tsx: 4.23.15
       yaml: 2.9.0
 
-  vitest@5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)):
+  vitest@5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)):
     dependencies:
       '@types/chai': 5.2.3
-      '@vitest/mocker': 5.0.5(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
+      '@vitest/mocker': 5.0.5(vite@7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
       chai: 6.3.0
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
@@ -9674,11 +9674,11 @@ snapshots:
       tinybench: 6.2.2
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
-      vite: 7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
+      vite: 7.3.2(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
       why-is-node-running: 3.2.1
     optionalDependencies:
       '@opentelemetry/api': 1.9.0
-      '@types/node': 26.6.1
+      '@types/node': 26.6.6
       '@vitest/coverage-v8': 5.0.5(vitest@5.0.5)
     transitivePeerDependencies:
       - msw
