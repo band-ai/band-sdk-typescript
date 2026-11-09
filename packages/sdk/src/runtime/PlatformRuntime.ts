@@ -23,6 +23,8 @@ import { resolveLogger, type Logger } from "../core/logger";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
 import type { AgentEventListener } from "../contracts/events";
 import { AgentEventHub } from "./agentEvents";
+import { journalingTools } from "./journal/journalTools";
+import { TurnJournal, type RoomJournal } from "./journal/TurnJournal";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -56,6 +58,8 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _restUrl?: string;
   private readonly preprocessor: Preprocessor<PlatformEvent>;
   private readonly sessionConfig: ResolvedSessionConfig;
+  /** Set with `sessionConfig.journalDir`: what each room's turns answered, kept across restarts. */
+  private readonly journal?: TurnJournal;
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -111,6 +115,7 @@ export class PlatformRuntime implements AsyncDisposable {
     };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = parseSessionConfig(options.sessionConfig);
+    this.journal = this.sessionConfig.journalDir === undefined ? undefined : new TurnJournal(this.sessionConfig.journalDir);
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
@@ -422,6 +427,7 @@ export class PlatformRuntime implements AsyncDisposable {
     }
 
     await isolateTeardown(errors, () => Promise.resolve(adapter?.onRuntimeStop?.()));
+    await isolateTeardown(errors, () => this.journal?.close() ?? Promise.resolve());
 
     if (errors.length > 0) {
       throw this.recordStopFailure(
@@ -501,6 +507,10 @@ export class PlatformRuntime implements AsyncDisposable {
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
     const messageMarkOptions = { bestEffort: true } as const;
+    const journal = messageId && !isSynthetic ? await this.journal?.room(roomId) : undefined;
+    if (journal && (await this.settleJournaledInbound(journal, roomId, messageId, messageMarkOptions))) {
+      return;
+    }
 
     if (messageId && !isSynthetic) {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
@@ -527,7 +537,10 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!admitted()) return;
       this.events.emit({ type: "turn.started", roomId, messageId });
       started = true;
-      await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
+      const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
+      // Outermost, so every reply path, the scoped tool executor's included, is journaled.
+      const tools = journal ? journalingTools(cycled, journal, messageId) : cycled;
+      await adapter.onEvent({ ...input, tools, holdRoomUntil });
     } catch (error) {
       succeeded = false;
       caughtError = error;
@@ -545,6 +558,8 @@ export class PlatformRuntime implements AsyncDisposable {
     if (messageId && !isSynthetic) {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
+        // Recorded first, so a restart before the mark below does not answer it again.
+        await journal?.turnDone(messageId);
         await this.link.markProcessed(roomId, messageId, messageMarkOptions);
       } else {
         const label = caughtError instanceof Error ? caughtError.message : String(caughtError);
@@ -555,6 +570,44 @@ export class PlatformRuntime implements AsyncDisposable {
     if (!succeeded) {
       throw caughtError;
     }
+  }
+
+  /**
+   * Before a turn starts: an inbound the journal shows answered, by a posted
+   * reply or a decline, was answered before a restart, so it is marked
+   * processed and not answered again. A reply whose post began but was never
+   * recorded may or may not have reached Band: it is recorded as
+   * `delivery.unrecorded` and reported, and the inbound is answered again.
+   * Resolves true when the inbound needs no turn.
+   */
+  private async settleJournaledInbound(
+    journal: RoomJournal,
+    roomId: string,
+    messageId: string,
+    markOptions: { bestEffort: true },
+  ): Promise<boolean> {
+    const state = journal.inbound(messageId);
+    if (state.answered || state.done) {
+      if (!state.done) await journal.turnDone(messageId);
+      this.logger.info("inbound already answered before a restart; not answering it again", { roomId, messageId });
+      await this.link.markProcessed(roomId, messageId, markOptions);
+      return true;
+    }
+    for (const pending of state.unrecorded) {
+      await journal.deliveryUnrecorded(pending);
+      this.logger.warn("a reply's delivery is uncertain: it may have posted before a restart", {
+        roomId,
+        messageId,
+        operationId: pending.operationId,
+      });
+      this.events.emit({
+        type: "delivery.unrecorded",
+        roomId,
+        messageId,
+        ...(pending.operationId === undefined ? {} : { operationId: pending.operationId }),
+      });
+    }
+    return false;
   }
 
   private async handleContactEvent(event: ContactEvent): Promise<void> {

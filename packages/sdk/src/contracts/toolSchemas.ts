@@ -27,6 +27,16 @@ export const NO_REPLY_TOOL_NAME = "band_no_reply";
 /** `band_no_reply`'s result: it posts nothing, so there is nothing else to report. */
 export const NO_REPLY_RESULT: Readonly<ToolOperationResult> = Object.freeze({ status: "ok" });
 
+/** The optional argument that makes a retried reply land once; recorded by the turn journal. */
+export const OPERATION_ID_ARG = "operation_id";
+
+const OPERATION_ID_PROPERTY = {
+  type: "string",
+  description:
+    "Optional. Your own id for this reply. Retrying with the same id and the same arguments " +
+    "does not post it again; the same id with different arguments is refused.",
+} as const;
+
 /** A core `ToolSpec` as a JSON-schema tool model; every core parameter is a string. */
 function toolModelFromSpec(spec: ToolSpec) {
   return {
@@ -36,6 +46,10 @@ function toolModelFromSpec(spec: ToolSpec) {
     ),
     required: spec.parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name),
   };
+}
+
+function withOperationId(model: ReturnType<typeof toolModelFromSpec>) {
+  return { ...model, properties: { ...model.properties, [OPERATION_ID_ARG]: OPERATION_ID_PROPERTY } };
 }
 
 export const TOOL_MODELS = {
@@ -60,6 +74,7 @@ export const TOOL_MODELS = {
           "For agents: @<username>/<agent-name> (e.g., '@john/weather-agent'). " +
           "Use the handle of someone already in the room.",
       },
+      [OPERATION_ID_ARG]: OPERATION_ID_PROPERTY,
     },
     required: ["content", "mentions"],
   },
@@ -87,7 +102,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "message_type"],
   },
-  [NO_REPLY_TOOL_NAME]: toolModelFromSpec(noReplyTool()),
+  [NO_REPLY_TOOL_NAME]: withOperationId(toolModelFromSpec(noReplyTool())),
   band_add_participant: {
     description:
       "Add a participant (agent or user) to the chat room by name. " +

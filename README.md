@@ -793,6 +793,19 @@ pnpm typecheck   # tsc --noEmit
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
 
+## Turn journal
+
+With `sessionConfig.journalDir` set, each room keeps an append-only journal (`<journalDir>/<room id>.jsonl`) of what its turns answered. Each record is flushed to disk before the runtime acts on it.
+
+- **Every reply path records the same way.** A `band_send_message` call, a plain `sendMessage` (the path an adapter's relayed closing text takes), and a `band_no_reply` all record the reply. A post records its intent first and its outcome after.
+- **A turn ends in the journal before it is marked processed.** A turn's end is recorded at its real end, not at its first reply, and only then is the message marked processed.
+- **After a restart, an answered message is not answered again.** A message Band still serves that the journal shows answered, by a posted reply or a decline, is marked processed without a new turn. This holds even when the turn did not finish: **a turn killed midway loses its unsent tail** rather than posting its first replies twice. Ask the agent to continue if the tail matters.
+- **One window remains.** If the process dies after Band accepts a post but before its outcome is recorded, the reply's delivery is uncertain. After the restart, the runtime records `delivery.unrecorded`, reports a `delivery.unrecorded` event, and answers the message again, so a second copy is possible. `delivery.unrecorded` means the post may or may not have reached Band; never read it as accepted. Band has no idempotency key that could close this window.
+
+With the journal, `band_send_message` and `band_no_reply` take an optional `operation_id`. A retry with the same id and the same arguments, in this turn or a later one in the room, returns the first call's result without posting again. The same id with different arguments is refused. This dedupes a retry the journal has recorded, and nothing more: it does not close the window above. Without `journalDir`, `operation_id` has no effect.
+
+The journal grows with every reply; nothing compacts it.
+
 ## Automatic working state
 
 The runtime reports a working indicator for accepted messages in ordinary

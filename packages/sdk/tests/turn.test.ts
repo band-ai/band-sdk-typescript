@@ -17,6 +17,7 @@ import { createToolExecutorError, type AdapterToolsProtocol } from "../src/contr
 import {
   ALL_TOOL_NAMES,
   NO_REPLY_TOOL_NAME,
+  OPERATION_ID_ARG,
   SEND_MESSAGE_TOOL_NAME,
   TOOL_MODELS,
   resolveBandToolName,
@@ -52,14 +53,17 @@ describe("band_no_reply and the tool table", () => {
     expect([...ALL_TOOL_NAMES].filter((name) => !Object.hasOwn(effects, name))).toEqual([]);
   });
 
-  it("builds band_no_reply from core's definition", () => {
+  it("builds band_no_reply from core's definition, plus the journal's operation_id", () => {
     const spec = noReplyTool();
     const [reason] = spec.parameters;
     const model = TOOL_MODELS[NO_REPLY_TOOL_NAME];
 
     expect(spec.name).toBe(NO_REPLY_TOOL_NAME);
     expect(model.description).toBe(spec.description);
-    expect(model.properties).toEqual({ [reason!.name]: { type: "string", description: reason!.description } });
+    expect(model.properties).toEqual({
+      [reason!.name]: { type: "string", description: reason!.description },
+      [OPERATION_ID_ARG]: { type: "string", description: expect.stringContaining("Optional") },
+    });
     expect(reason!.required).toBe(false);
     expect(model.required).toEqual([]);
   });

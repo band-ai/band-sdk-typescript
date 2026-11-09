@@ -51,6 +51,13 @@ export const sessionConfigSchema = z.object({
     .max(MAX_MESSAGE_RETRIES)
     .default(DEFAULT_MAX_MESSAGE_RETRIES),
   enableContextHydration: z.boolean().default(true),
+  /**
+   * Directory for the durable turn journal. Set, each room keeps a record of
+   * the replies its turns posted, so an inbound whose reply was recorded is
+   * not answered again after a restart, and `operation_id` makes a retried
+   * `band_send_message` or `band_no_reply` land once.
+   */
+  journalDir: z.string().min(1).optional(),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
   const cadence = config.workingKeepAliveSeconds;

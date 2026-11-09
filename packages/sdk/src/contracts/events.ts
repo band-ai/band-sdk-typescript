@@ -41,6 +41,12 @@ export type AgentEvent =
   | { type: "room.failed"; roomId: string; error: string }
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */
   | { type: "room.stopped"; roomId: string }
+  /**
+   * After a restart, the turn journal holds a reply to `messageId` whose post
+   * began but whose outcome was never recorded: Band may or may not have it.
+   * The inbound is answered again, so a second copy is possible.
+   */
+  | { type: "delivery.unrecorded"; roomId: string; messageId: string; operationId?: string }
   /** The connection to Band is up; `reconnected` when it came back after a drop. */
   | { type: "link.connected"; reconnected: boolean }
   /**
