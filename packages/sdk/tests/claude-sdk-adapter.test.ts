@@ -1379,7 +1379,7 @@ describe("ClaudeSDKAdapter", () => {
     });
 
     it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
-      const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "native result" }] }));
+      const execute = vi.fn(async (_args: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: "native result" }] }));
       const tools = new FakeTools();
       let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({
@@ -1396,7 +1396,33 @@ describe("ClaudeSDKAdapter", () => {
       await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
       expect(result?.content).toEqual([{ type: "text", text: "native result" }]);
       expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
-      expect(execute).toHaveBeenCalledExactlyOnceWith({});
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]?.[0]).toEqual({});
+    });
+
+    it("hands a host tool that names its room the turn's tools for that room", async () => {
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
+      const adapter = new ClaudeSDKAdapter({
+        additionalMcpTools: [{
+          name: "mark_room",
+          description: "Leave a marker event in this room.",
+          inputSchema: { type: "object", properties: { room_id: { type: "string" } }, required: ["room_id"] },
+          execute: async (_args, roomTools) => {
+            await roomTools!.sendEvent("marker: claude", "thought");
+            return { content: [{ type: "text", text: "marked" }] };
+          },
+        }],
+        queryFn: async function* ({ options }) {
+          result = await callMcpTool(options, "mark_room", { room_id: ROOM_ID });
+          await callBandTool(options, NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Agent", "desc");
+      await adapter.onEvent(turnInput(tools, SENDER));
+      expect(result?.isError).toBeUndefined();
+      expect(tools.events.map((event) => event.content)).toContain("marker: claude");
     });
 
     it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {

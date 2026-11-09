@@ -26,6 +26,7 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
 import {
   buildRoomScopedRegistrations,
+  scopeHostTools,
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
@@ -245,7 +246,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private buildRegistrations(resolve: (roomId: string) => TurnTools | undefined) {
     const room = buildRoomScopedRegistrations(resolve, { enableMemoryTools: this.enableMemoryTools, enableContactTools: true });
     const custom = buildCustomMcpRegistrations(this.customTools, resolve);
-    const registrations = [...room, ...this.additionalMcpTools];
+    const registrations = [...room, ...scopeHostTools(this.additionalMcpTools, resolve)];
     assertCustomToolNamesAvailable(custom.map(({ name }) => name), registrations.map(({ name }) => name));
     return { registrations, custom, localNames: new Set([...room, ...custom].map(({ name }) => name)) };
   }

@@ -79,14 +79,16 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 
 `tools.readRoomHistory({ cursor?, limit? })` returns one page of the room's messages of every type, newest first, and a `nextCursor` for the next older page (`null` at the room's first message). Pages hold 20 messages by default and at most 100. During a turn the runtime pins the turn's own inbound message first on every page, so the agent always sees what it is answering, and never repeats it within the page that holds it. The read calls Band's agent message list with `status=all&sort_order=desc`. A REST client without that endpoint throws `UnsupportedFeatureError`; it never returns an empty page instead.
 
-It is not a Band tool, so the model does not see it unless a host serves it. On a single-room MCP server, such as each ACP room's own, a host's own MCP tool in `additionalMcpTools` gets that room's tools as the second argument of `execute`, so it can call `readRoomHistory` for that room and turn:
+It is not a Band tool, so the model does not see it unless a host serves it. A host's own MCP tool (`additionalMcpTools`, or `additionalTools` on the MCP servers) gets the tools of the room its call belongs to as the second argument of `execute`, so it can call `readRoomHistory` for that room and turn. A single-room server, such as each ACP room's own, always passes its room's tools. A room-scoped server, such as the Claude Agent SDK bridge, passes the tools of the room the call names in `room_id`, so a tool that needs them declares `room_id`; a call naming no known room is refused without running the tool, and a tool that declares no `room_id` gets tools that throw a clear error on use:
 
 ```ts
 const readRoom: McpToolRegistration = {
   name: "read_room",
   description: "Read this room's history, newest first.",
-  inputSchema: { type: "object", properties: { cursor: { type: "string" }, limit: { type: "integer" } }, required: [] },
-  execute: async (args, tools) => ({ content: [{ type: "text", text: JSON.stringify(await tools!.readRoomHistory!(args)) }] }),
+  inputSchema: { type: "object", properties: { room_id: { type: "string" }, cursor: { type: "string" }, limit: { type: "integer" } }, required: ["room_id"] },
+  execute: async ({ cursor, limit }, tools) => ({
+    content: [{ type: "text", text: JSON.stringify(await tools!.readRoomHistory!({ cursor: cursor as string | undefined, limit: limit as number | undefined })) }],
+  }),
 };
 ```
 ### Generic

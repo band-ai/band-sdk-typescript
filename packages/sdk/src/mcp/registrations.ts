@@ -24,9 +24,12 @@ export interface McpToolRegistration {
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
   /**
-   * `tools` is the room's tools when the server serves a single room (an ACP
-   * or Codex room's own server, or a single-room SDK server), so a host's own
-   * tool can act on that room's turn; undefined on a multi-room server.
+   * `tools` is the tools of the room a call belongs to, so a host's own tool
+   * can act on that room's turn. A single-room server (each ACP room's own,
+   * or a single-room SDK server) always passes its room's. A room-scoped
+   * server passes the room the call names in `room_id`, which the tool must
+   * declare to receive them; there, a tool that declares no `room_id` gets
+   * tools that throw on use, since the call cannot say which room it means.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -137,10 +140,54 @@ export function buildRoomScopedRegistrations(
       : scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools);
+    registrations.push(...scopeHostTools(options.additionalTools, resolver));
   }
 
   return wrapExecution(registrations, options.execute);
+}
+
+/**
+ * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
+ * runs with the tools of the room its call names, and a call naming no known
+ * room is refused without running it. One that declares none still runs, with
+ * tools that throw a clear error on use rather than reading as undefined.
+ */
+export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolResolver): McpToolRegistration[] {
+  return hostTools.map((tool) => {
+    if (!Object.hasOwn(tool.inputSchema.properties, ROOM_ID_ARG)) {
+      const unscoped = roomlessHostTools(tool.name);
+      return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, unscoped) };
+    }
+    return {
+      ...tool,
+      execute: async (args: Record<string, unknown>) => {
+        const roomId = asNonEmptyString(args[ROOM_ID_ARG]);
+        if (!roomId) {
+          return errorResult(`Missing required ${ROOM_ID_ARG}`);
+        }
+        const tools = resolver(roomId);
+        if (!tools) {
+          return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
+        }
+        return tool.execute(args, tools);
+      },
+    };
+  });
+}
+
+// Symbol keys and `then` read as absent, so awaiting or inspecting the value
+// does not throw; any other use names the fix.
+function roomlessHostTools(toolName: string): AdapterToolsProtocol {
+  return new Proxy({} as AdapterToolsProtocol, {
+    get(_target, key) {
+      if (typeof key === "symbol" || key === "then") {
+        return undefined;
+      }
+      throw new Error(
+        `Host tool '${toolName}' runs on a room-scoped MCP server: declare ${ROOM_ID_ARG} in its inputSchema to receive the room's tools`,
+      );
+    },
+  });
 }
 
 /**
