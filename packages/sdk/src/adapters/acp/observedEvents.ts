@@ -1,31 +1,98 @@
-import type { AgentEvent } from "../../contracts/events"
+import type { SessionUpdate } from "@agentclientprotocol/sdk"
+
+import type { AgentEventSink } from "../../contracts/events"
+import { asOptionalRecord } from "../shared/coercion"
 import type { CollectedChunk } from "./types"
 
-/** The local event a session update stands for, or null when it has none. */
-export function observedEvent(roomId: string, chunk: CollectedChunk): AgentEvent | null {
-  const { tool_call_id: toolCallId, kind, raw_input: input, status } = chunk.metadata
-  switch (chunk.chunkType) {
-    case "thought":
-      return chunk.content ? { type: "thought", roomId, text: chunk.content } : null
-    case "text":
-      return chunk.content ? { type: "message", roomId, text: chunk.content } : null
-    case "tool_call":
-      return typeof toolCallId === "string"
-        ? {
-            type: "tool.call",
-            roomId,
-            toolCallId,
-            name: chunk.content,
-            ...(typeof kind === "string" ? { kind } : {}),
-            ...(input !== undefined ? { input } : {}),
-          }
-        : null
-    case "tool_result":
-      // Only the update that ends the call; progress updates have no result yet.
-      return typeof toolCallId === "string" && (status === "completed" || status === "failed")
-        ? { type: "tool.result", roomId, toolCallId, status, output: chunk.content }
-        : null
-    default:
-      return null
+// `_meta` entries in which an ACP bridge names its agent's own tool, by bridge.
+// `title` is display copy (a command line, a sentence) and never the name.
+const BRIDGE_TOOL_NAME_KEYS = ["claudeCode"] as const
+
+interface ToolCallState {
+  name?: string
+  kind?: string
+  reported: boolean
+}
+
+/**
+ * Turns one room's ACP session updates into local events. A bridge may send a
+ * call's `tool_call` more than once, first without its input (Claude Code
+ * does), so each call is reported once: when a frame brings its input, or,
+ * for a call that never gets any, just before its result.
+ */
+export class SessionUpdateEvents {
+  private readonly calls = new Map<string, ToolCallState>()
+
+  public constructor(
+    private readonly roomId: string,
+    private readonly emit: AgentEventSink,
+  ) {}
+
+  /** `chunk` is the update as the client collected it, for its extracted text. */
+  public observe(update: SessionUpdate, chunk: CollectedChunk): void {
+    switch (update.sessionUpdate) {
+      case "agent_thought_chunk":
+        if (chunk.content) this.emit({ type: "thought", roomId: this.roomId, text: chunk.content })
+        return
+      case "agent_message_chunk":
+        if (chunk.content) this.emit({ type: "message", roomId: this.roomId, text: chunk.content })
+        return
+      case "tool_call":
+        this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind, update.rawInput)
+        return
+      case "tool_call_update": {
+        const call = this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind ?? undefined, update.rawInput)
+        if (update.status === "completed" || update.status === "failed") {
+          if (!call.reported) this.report(update.toolCallId, call, undefined)
+          this.calls.delete(update.toolCallId)
+          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: chunk.content })
+        }
+        return
+      }
+      default:
+        return
+    }
   }
+
+  /** Forgets calls in flight, for a room or session that is going away. */
+  public reset(): void {
+    this.calls.clear()
+  }
+
+  private refine(toolCallId: string, name: string | undefined, kind: string | undefined, input: unknown): ToolCallState {
+    const call = this.calls.get(toolCallId) ?? { reported: false }
+    call.name = name ?? call.name
+    call.kind = kind ?? call.kind
+    this.calls.set(toolCallId, call)
+    if (!call.reported && hasInput(input)) this.report(toolCallId, call, input)
+    return call
+  }
+
+  private report(toolCallId: string, call: ToolCallState, input: unknown): void {
+    call.reported = true
+    const name = call.name ?? call.kind
+    this.emit({
+      type: "tool.call",
+      roomId: this.roomId,
+      toolCallId,
+      ...(name !== undefined ? { name } : {}),
+      ...(call.kind !== undefined ? { kind: call.kind } : {}),
+      ...(input !== undefined ? { input } : {}),
+    })
+  }
+}
+
+function bridgeToolName(meta: unknown): string | undefined {
+  const record = asOptionalRecord(meta)
+  for (const key of BRIDGE_TOOL_NAME_KEYS) {
+    const toolName = asOptionalRecord(record?.[key])?.toolName
+    if (typeof toolName === "string" && toolName.length > 0) return toolName
+  }
+  return undefined
+}
+
+function hasInput(input: unknown): boolean {
+  if (input === undefined || input === null) return false
+  const record = asOptionalRecord(input)
+  return record === undefined || Object.keys(record).length > 0
 }

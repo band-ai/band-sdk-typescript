@@ -81,11 +81,11 @@ A process that hosts an agent can follow it locally with `agent.observe(listener
 
 ```ts
 const stop = agent.observe((event) => {
-  if (event.type === "tool.call") console.log(`${event.roomId}: ${event.name}`);
+  if (event.type === "tool.call") console.log(`${event.roomId}: ${event.name ?? "tool"} (${event.toolCallId})`);
 });
 ```
 
-Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined`, `room.left` and `room.stopped`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, `approval.requested` and `approval.resolved`, and `room.failed` when the room's agent process cannot start or exits on its own. Listeners run synchronously in event order, so keep them quick; one that throws or rejects is logged and skipped without failing the turn or the other listeners.
+Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined`, `room.left` and `room.stopped`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, `approval.requested` and `approval.resolved`, and `room.failed` when the room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named by the agent's own tool name when its ACP bridge reports one, else by its ACP `kind` — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. Listeners run synchronously in event order, so keep them quick; one that throws or rejects is logged and skipped without failing the turn or the other listeners.
 
 ### Generic
 

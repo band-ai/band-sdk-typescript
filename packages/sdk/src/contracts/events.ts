@@ -13,8 +13,14 @@ export type AgentEvent =
   | { type: "thought"; roomId: string; text: string }
   /** Reply text as the agent streams it, before any of it is posted. */
   | { type: "message"; roomId: string; text: string }
-  /** The agent started a tool call. `input` is the agent's own argument record, when it sends one. */
-  | { type: "tool.call"; roomId: string; toolCallId: string; name: string; kind?: string; input?: unknown }
+  /**
+   * The agent started a tool call, reported once per `toolCallId`. `name` is
+   * the agent's own tool name when its bridge reports one, else its ACP
+   * `kind`; absent when neither is known. A display title is never used: it
+   * can hold a whole command line. `input` is the agent's own argument
+   * record, as it sent it, when it sends one.
+   */
+  | { type: "tool.call"; roomId: string; toolCallId: string; name?: string; kind?: string; input?: unknown }
   /** A tool call ended. `output` is its result text. */
   | { type: "tool.result"; roomId: string; toolCallId: string; status: "completed" | "failed"; output: string }
   /** The agent asked for permission to run a tool. */
