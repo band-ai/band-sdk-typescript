@@ -105,8 +105,8 @@ importers:
         specifier: ^0.155.0
         version: 0.155.0
       '@opencode-ai/sdk':
-        specifier: ^1.18.30
-        version: 1.18.31
+        specifier: ^1.19.5
+        version: 1.19.5
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
@@ -1496,8 +1496,8 @@ packages:
     peerDependencies:
       undici: '>=8.5.0 <9'
 
-  '@opencode-ai/sdk@1.18.31':
-    resolution: {integrity: sha512-Raouthf8Lhe9edjvYeeSK7SgvdoU6bBjH9qV3f70dHoa6h+z0X2TMz/e22/wKp/StlFUZ4kIRpYYxFnY8/k01w==}
+  '@opencode-ai/sdk@1.19.5':
+    resolution: {integrity: sha512-+bqu8gHiwmq96T9q5G34uLNHWCInIMsrE3hytCNHj1cVaxjY0AGJyNCT1rkeeZwgPU7A5TMTNwN+0XxCO2vqDg==}
 
   '@opentelemetry/api-logs@0.205.0':
     resolution: {integrity: sha512-wBlPk1nFB37Hsm+3Qy73yQSobVn28F4isnWIBvKpd5IUH/eat8bwcL02H9yzmHyyPmukeccSl2mbN5sDQZYnPg==}
@@ -6207,7 +6207,7 @@ snapshots:
     dependencies:
       undici: 8.10.2
 
-  '@opencode-ai/sdk@1.18.31':
+  '@opencode-ai/sdk@1.19.5':
     dependencies:
       cross-spawn: 7.0.6
 
