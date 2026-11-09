@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [2.0.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.0...sdk-v2.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* end the WebSocket session when an upgrade is refused with 401 ([#403](https://github.com/band-ai/band-sdk-typescript/issues/403)) ([4e8931c](https://github.com/band-ai/band-sdk-typescript/commit/4e8931c2a5e6fa6d40a8c5a8dc33999073342522))
+
 ## [2.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v1.0.0...sdk-v2.0.0) (2026-11-09)
 
 
