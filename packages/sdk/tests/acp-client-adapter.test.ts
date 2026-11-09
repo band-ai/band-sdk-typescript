@@ -364,6 +364,57 @@ describe("ACPClientAdapter", () => {
     })).toThrow("either cwd or workspaceForRoom")
   })
 
+  it.each([
+    ["session/load", { loadSession: true }, "room-restore"],
+    ["session/resume", { sessionCapabilities: { resume: {} } }, "room-restore"],
+    ["session/new", { loadSession: true }, "room-fresh"],
+  ] as const)("sends sessionMeta as _meta on %s", async (_method, agentCapabilities, roomId) => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+    const record = (method: string) => vi.fn(async (params?: Record<string, unknown>) => {
+      calls.push({ method, params: params ?? {} })
+      return method === "session/new" ? { sessionId: "session-fresh" } : {}
+    })
+    const sessionMeta = { claudeCode: { options: { model: "opus", extraArgs: { verbose: null } } } }
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      cwd: tmpRoot(),
+      sessionMeta,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities,
+        loadSession: record("session/load"),
+        newSession: record("session/new"),
+        prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+        extraRpcSpies: { resumeSession: record("session/resume") },
+      }),
+    })
+
+    await send(adapter, roomId, { "room-restore": "session-restore" })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.params._meta).toEqual(sessionMeta)
+    await adapter.stop()
+  })
+
+  it("sends no _meta when sessionMeta is unset", async () => {
+    const newSession = vi.fn(async (_params?: Record<string, unknown>) => ({ sessionId: "session-fresh" }))
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      cwd: tmpRoot(),
+      connectionFactory: async () => buildMockConnection({
+        loadSession: vi.fn(),
+        newSession,
+        prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+      }),
+    })
+
+    await send(adapter, "room-fresh")
+
+    expect(newSession.mock.calls[0]?.[0]).not.toHaveProperty("_meta")
+    await adapter.stop()
+  })
+
   it("seeds a replacement session's first prompt with replayed room history after a resume miss, excluding the trigger message", async () => {
     const loadSession = vi.fn(async () => {
       throw new Error("agent forgot this session")
@@ -3148,6 +3199,7 @@ describe("ACPClientAdapter", () => {
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
       const resumeSession = vi.fn()
+      const closeSession = vi.fn(async (_params: { sessionId: string }) => ({}))
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -3182,6 +3234,7 @@ describe("ACPClientAdapter", () => {
               resumeSession,
               newSession,
               setSessionMode,
+              closeSession,
               prompt,
             } as never,
             stop: async () => {
@@ -3192,7 +3245,7 @@ describe("ACPClientAdapter", () => {
         ...input.adapterOptions,
       } as never)
 
-      return { adapter, setSessionMode, loadSession, newSession, getPermissionResult: () => permissionResult }
+      return { adapter, setSessionMode, loadSession, newSession, closeSession, prompt, getPermissionResult: () => permissionResult }
     }
 
     async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
@@ -3297,6 +3350,155 @@ describe("ACPClientAdapter", () => {
       })
       await send(adapter)
       expect(setSessionMode).not.toHaveBeenCalled()
+    })
+
+    describe("with requireSessionMode", () => {
+      const MODES = { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] }
+
+      async function failedTurn(adapter: ACPClientAdapter, roomToSession: Record<string, string> = {}) {
+        const tools = new FakeTools()
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(adapter.onMessage(
+          makeMessage("hi", "room-1"),
+          tools,
+          { roomToSession },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-1" },
+        ))
+        return findFailureEvent(tools)?.metadata?.failure as { code?: string; detail?: Record<string, unknown> } | undefined
+      }
+
+      it("closes each session a required mode failed on, agent-side, so retries leave none behind", async () => {
+        const { adapter, newSession, closeSession, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "plan", requireSessionMode: true },
+          agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } },
+          newSessionModes: MODES,
+        })
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          expect(await failedTurn(adapter)).toMatchObject({ code: FAILURE_CODE_SESSION_CONFIG })
+        }
+
+        expect(newSession).toHaveBeenCalledTimes(3)
+        expect(closeSession).toHaveBeenCalledTimes(3)
+        expect(closeSession.mock.calls.map(([params]) => params)).toEqual(
+          Array.from({ length: 3 }, () => ({ sessionId: "session-1" })),
+        )
+        expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("closes a restored session a required mode failed on", async () => {
+        const { adapter, newSession, closeSession, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "plan", requireSessionMode: true },
+          agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } },
+          loadSessionModes: MODES,
+        })
+
+        await failedTurn(adapter, { "room-1": "session-restored" })
+
+        expect(newSession).not.toHaveBeenCalled()
+        expect(closeSession).toHaveBeenCalledWith({ sessionId: "session-restored" })
+        expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("does not ask an agent that cannot close sessions to close one", async () => {
+        const { adapter, closeSession } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "plan", requireSessionMode: true },
+          newSessionModes: MODES,
+        })
+
+        expect(await failedTurn(adapter)).toMatchObject({ code: FAILURE_CODE_SESSION_CONFIG })
+        expect(closeSession).not.toHaveBeenCalled()
+      })
+
+      it("reports the mode failure, not the close failure, when closing the session also fails", async () => {
+        const logger = makeLoggerSpy()
+        const { adapter, closeSession, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "plan", requireSessionMode: true, logger },
+          agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } },
+          newSessionModes: MODES,
+        })
+        closeSession.mockRejectedValueOnce(new Error("close refused"))
+
+        const failure = await failedTurn(adapter)
+
+        expect(failure).toMatchObject({ code: FAILURE_CODE_SESSION_CONFIG })
+        expect(failure?.detail).toMatchObject({ optionId: "mode", selectedValue: "plan" })
+        expect(closeSession).toHaveBeenCalledTimes(1)
+        expect(JSON.stringify(logger.warn.mock.calls)).toContain("close refused")
+        expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("applies the mode before the session's first prompt, and prompts only once the switch is done", async () => {
+        let releaseSwitch!: () => void
+        const { adapter, newSession, setSessionMode, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "default", requireSessionMode: true },
+          newSessionModes: MODES,
+        })
+        setSessionMode.mockImplementationOnce(() => new Promise((resolve) => {
+          releaseSwitch = () => resolve({})
+        }))
+
+        const sent = send(adapter)
+        await vi.waitFor(() => expect(setSessionMode).toHaveBeenCalledTimes(1))
+        expect(prompt).not.toHaveBeenCalled()
+        releaseSwitch()
+        await sent
+
+        expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "default" })
+        expect(newSession.mock.invocationCallOrder[0]).toBeLessThan(setSessionMode.mock.invocationCallOrder[0]!)
+        expect(setSessionMode.mock.invocationCallOrder[0]).toBeLessThan(prompt.mock.invocationCallOrder[0]!)
+      })
+
+      const failures: Array<[
+        string,
+        { currentModeId: string; availableModes: Array<{ id: string; name: string }> } | undefined,
+        () => Promise<string | undefined>,
+      ]> = [
+        ["the agent offers no modes", undefined, async () => "default"],
+        ["the agent offers an empty list", { currentModeId: "auto", availableModes: [] }, async () => "default"],
+        ["the selected mode is not offered", MODES, async () => "plan"],
+        ["no mode is selected", MODES, async () => undefined],
+      ]
+      it.each(failures)("fails the turn, and never prompts, when %s", async (_case, newSessionModes, resolveSessionMode) => {
+        const { adapter, setSessionMode, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode, requireSessionMode: true },
+          ...(newSessionModes === undefined ? {} : { newSessionModes }),
+        })
+
+        const failure = await failedTurn(adapter)
+
+        expect(failure).toMatchObject({ code: FAILURE_CODE_SESSION_CONFIG })
+        expect(failure?.detail).toMatchObject({ sessionId: "session-1", optionId: "mode" })
+        expect(setSessionMode).not.toHaveBeenCalled()
+        expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("fails the turn, and never prompts, when the agent refuses the switch", async () => {
+        const { adapter, setSessionMode, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "default", requireSessionMode: true },
+          newSessionModes: MODES,
+        })
+        setSessionMode.mockImplementationOnce(async () => {
+          throw new Error("mode switch refused")
+        })
+
+        const failure = await failedTurn(adapter)
+
+        expect(failure?.detail).toMatchObject({ optionId: "mode", selectedValue: "default" })
+        expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("is satisfied by a session already in the selected mode", async () => {
+        const { adapter, setSessionMode, prompt } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "auto", requireSessionMode: true },
+          newSessionModes: MODES,
+        })
+        await send(adapter)
+        expect(setSessionMode).not.toHaveBeenCalled()
+        expect(prompt).toHaveBeenCalledTimes(1)
+      })
     })
 
     it("logs a warning and leaves the session usable when setSessionMode itself rejects", async () => {
