@@ -180,7 +180,7 @@
     "@langchain/openai": "~1.2.13",
     "@linear/sdk": "^95.1.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@openai/codex-sdk": "^0.155.0",
+    "@openai/codex-sdk": "^0.167.0",
     "@opencode-ai/sdk": "^1.19.5",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
