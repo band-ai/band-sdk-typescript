@@ -86,13 +86,14 @@ describe("createBandSdkMcpServer", () => {
   }
 
   it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
-    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, enableTaskTools: true, getToolsForRoom: () => undefined });
     const client = await connectClient(bridge);
 
     try {
       // One schema the SDK's converter can't render fails the whole listing, so the agent sees no Band tools.
       const { tools } = await client.listTools();
       expect(tools.map((listed) => listed.name).sort()).toEqual(bridge.toolDefinitions.map((entry) => entry.name).sort());
+      expect(bridge.allowedTools).toEqual(expect.arrayContaining(["mcp__band__band_get_board", "mcp__band__band_set_board"]));
     } finally {
       await client.close();
     }

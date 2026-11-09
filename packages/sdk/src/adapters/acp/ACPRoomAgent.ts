@@ -154,6 +154,8 @@ export interface ACPClientAdapterBaseOptions {
   mcpServers?: McpServer[];
   authMethod?: string | null;
   enableMemoryTools?: boolean;
+  /** Exposes the room's board and task tools; Band serves them only with the `tasks` capability. */
+  enableTaskTools?: boolean;
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
   clientCapabilities?: ClientCapabilities;
@@ -240,6 +242,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly mcpServers: McpServer[]
   private readonly authMethod?: string | null
   private readonly enableMemoryTools: boolean
+  private readonly enableTaskTools: boolean
   private readonly enableMcpTools: boolean
   private readonly additionalMcpTools: McpToolRegistration[]
   private readonly clientCapabilities?: ClientCapabilities
@@ -309,6 +312,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.mcpServers = [...(options.mcpServers ?? [])]
     this.authMethod = options.authMethod
     this.enableMemoryTools = options.enableMemoryTools ?? false
+    this.enableTaskTools = options.enableTaskTools ?? false
     this.enableMcpTools = options.enableMcpTools ?? true
     this.additionalMcpTools = [...(options.additionalMcpTools ?? [])]
     this.clientCapabilities = options.clientCapabilities
@@ -1300,6 +1304,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     return createBandMcpBackend({
       kind: mcpTransport(initializeResult),
       enableMemoryTools: this.enableMemoryTools,
+      enableTaskTools: this.enableTaskTools,
       getToolsForRoom: () => this.roomTools.get(this.roomId),
       additionalTools: this.additionalMcpTools,
       multiRoom: false,

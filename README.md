@@ -354,6 +354,19 @@ All adapters automatically receive these tools. The LLM calls them as function c
 | `band_supersede_memory` | Soft-delete outdated memory (keeps audit trail) |
 | `band_archive_memory` | Archive memory for later restoration |
 
+### Board and tasks
+
+| Tool | Description |
+|------|-------------|
+| `band_get_board` | Read the room's goal |
+| `band_set_board` | Set or update the room's goal |
+| `band_list_tasks` | List the room's shared tasks |
+| `band_create_task` | Create a shared task |
+| `band_get_task` | Read one task, optionally with its history |
+| `band_update_task` | Report your status on a task, comment on it, or edit it |
+
+These need the agent's `tasks` capability: the host asks for it with `linkOptions: { capabilities: { tasks: true } }`, and Band grants it only where room tasks are enabled. Adapters that serve Band tools over MCP (`ACPClientAdapter` and its subclasses, `ClaudeSDKAdapter`, `createBandMcpBackend`, `createBandSdkMcpServer`) also leave them out unless `enableTaskTools: true`.
+
 ## Subpath Exports
 
 The root `@band-ai/sdk` import covers the common runtime, adapters, and config. Specialized modules are available under subpaths:

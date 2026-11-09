@@ -16,6 +16,7 @@ export interface BandMcpSseServerOptions {
   name?: string;
   port?: number;
   enableMemoryTools?: boolean;
+  enableTaskTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
@@ -51,6 +52,7 @@ export class BandMcpSseServer {
 
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     }
