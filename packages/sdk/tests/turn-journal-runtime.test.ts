@@ -156,6 +156,51 @@ describe("the turn journal across a restart", () => {
     await runtime.stop();
   });
 
+  it("records the intent before posting, so a kill after Band accepts the post is reported, not silently reposted", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
+    // Band accepts the post, then the process dies before the response reaches it.
+    const createChatMessage = platform.rest.createChatMessage.bind(platform.rest);
+    let accepted: () => void = () => undefined;
+    const postAccepted = new Promise<void>((resolve) => {
+      accepted = resolve;
+    });
+    platform.rest.createChatMessage = async (...args) => {
+      await createChatMessage(...args);
+      accepted();
+      return await new Promise<never>(() => undefined);
+    };
+    const answer: Handler = async ({ tools }) => {
+      await tools.executeToolCall("band_send_message", { content: "answered", mentions: ["@owner"], operation_id: "op-1" });
+    };
+    const first = await startProcess(platform, journalDir, answer);
+    await postAccepted;
+    await first.runtime.stop(50);
+
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
+    expect(await journalLines(journalDir)).toEqual(["reply.intent"]);
+
+    platform.rest.createChatMessage = createChatMessage;
+    const second = await startProcess(platform, journalDir, answer);
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(second.events.filter((event) => event.type === "delivery.unrecorded")).toEqual([
+      { type: "delivery.unrecorded", roomId: ROOM, messageId: inbound, operationId: "op-1" },
+    ]);
+    // The documented bound: the inbound is answered again, and the possible duplicate is reported.
+    expect(second.handled).toEqual([inbound]);
+    expect(await journalLines(journalDir)).toEqual([
+      "reply.intent",
+      "delivery.unrecorded",
+      "reply.intent",
+      "reply.posted",
+      "turn.done",
+    ]);
+    await second.runtime.stop();
+  });
+
   it("reports a reply whose post began but was never recorded, and answers the inbound again", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
