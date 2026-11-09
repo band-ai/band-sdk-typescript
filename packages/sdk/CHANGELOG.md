@@ -1,6 +1,33 @@
 # Changelog
 
 
+## [2.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v1.0.0...sdk-v2.0.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **websocket:** PhoenixChannelsTransport drops heartbeatIntervalMs and reconnectAfterMs; connect() now retries a refused boot instead of rejecting at once. A takeover cooldown (429) is waited out.
+
+### Features
+
+* **runtime:** share Core round policy and turn completion ([#392](https://github.com/band-ai/band-sdk-typescript/issues/392)) ([0697565](https://github.com/band-ai/band-sdk-typescript/commit/06975650bae12897189d4bdce20fa89c7fad0e27))
+
+
+### Bug Fixes
+
+* **adapters:** end LangGraph's built-in tool loop on a landed decline ([#391](https://github.com/band-ai/band-sdk-typescript/issues/391)) ([944c68b](https://github.com/band-ai/band-sdk-typescript/commit/944c68b06b3e4b2cb5d21e48cc0af856578fd817))
+* **adapters:** end the google-adk tool loop on decline and cap its rounds ([#382](https://github.com/band-ai/band-sdk-typescript/issues/382)) ([8ab1d12](https://github.com/band-ai/band-sdk-typescript/commit/8ab1d12694978d08a146da9624ddeaf21dd194e6))
+* **adapters:** hold a room's other work until a handed-back turn really ends ([#389](https://github.com/band-ai/band-sdk-typescript/issues/389)) ([6ca3a0e](https://github.com/band-ai/band-sdk-typescript/commit/6ca3a0e79ca60190e7733e86dfd57b10d654d94c))
+* **adapters:** replay Gemini thought signatures and end tool loop on no-reply ([#379](https://github.com/band-ai/band-sdk-typescript/issues/379)) ([e16e2ab](https://github.com/band-ai/band-sdk-typescript/commit/e16e2abd21701784ae96572ebea0637664907982))
+* **adapters:** tell a reply that lost an OpenCode ask it is no longer pending ([#390](https://github.com/band-ai/band-sdk-typescript/issues/390)) ([fa5c2a6](https://github.com/band-ai/band-sdk-typescript/commit/fa5c2a66b8a11e79a7a56e693516872d738b3ffb))
+* **runtime:** give up on a failed /messages/next head so catch-up moves past it ([#388](https://github.com/band-ai/band-sdk-typescript/issues/388)) ([34530ba](https://github.com/band-ai/band-sdk-typescript/commit/34530ba788be3e71984a714e98211f2ab12cdc2c))
+* **websocket:** let band-sdk-core Session own reconnect decisions ([#383](https://github.com/band-ai/band-sdk-typescript/issues/383)) ([e6e5790](https://github.com/band-ai/band-sdk-typescript/commit/e6e5790be3d85bf1b72db105806eeaef6dd6b8ab))
+
+
+### Reverts
+
+* run the OpenCode baseline on Anthropic again ([#387](https://github.com/band-ai/band-sdk-typescript/issues/387)) ([9e8133f](https://github.com/band-ai/band-sdk-typescript/commit/9e8133f9ed4e1f81f2d75c2b2396e075641ab07d))
+
 ## [1.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.6.0...sdk-v1.0.0) (2026-10-30)
 
 
