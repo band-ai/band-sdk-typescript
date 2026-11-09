@@ -10,7 +10,6 @@ import type {
   InitializeResponse,
   McpServer,
   PermissionOption,
-  PromptResponse,
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionConfigOption,
@@ -24,6 +23,7 @@ import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
+import { createDeferred, type Deferred } from "../../core/deferred";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { systemUpdateParts } from "../shared/conversationPrompt";
@@ -235,6 +235,8 @@ export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "comman
 /** The turn holding a room; `prompt` is set while its ACP prompt is in flight. */
 interface ActiveTurn {
   cancelled: boolean
+  // Settles when the host cancels, so a wait the turn is stuck in ends early.
+  readonly cancellation: Deferred<void>
   prompt?: { connection: ClientSideConnection; sessionId: string; sessionKey: string }
 }
 
@@ -379,7 +381,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // they must stay this turn's until it ends.
     await this.roomTurns.run(context.roomId, async () => {
       this.roomTools.set(context.roomId, tools)
-      const turn: ActiveTurn = { cancelled: false }
+      const turn: ActiveTurn = { cancelled: false, cancellation: createDeferred() }
       this.activeTurns.set(context.roomId, turn)
       try {
         await this.runTurn(message, tools, participantsMessage, contactsMessage, context, history, turn)
@@ -410,12 +412,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     let releasePrompt: (() => void) | undefined
     let completed = false
     try {
-      const live = await this.ensureConnection()
+      const live = await this.untilCancelled(turn, this.ensureConnection())
       connection = live.connection
       generation = live.generation
       client = live.client
 
-      sessionId = await this.getOrCreateSession(context.roomId, live)
+      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live))
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
@@ -443,36 +445,34 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         promptText = [this.buildSystemContext(context.roomId, message), ...liveSections].join("\n\n")
       }
 
-      const activeConnection = connection
-      const activeSessionId = sessionId
-      let response: PromptResponse
       if (turn.cancelled) {
         // Cancelled before its prompt was sent: there is nothing to tell the agent.
-        response = { stopReason: "cancelled" }
-      } else {
-        const promptSession = client.enterPromptSession(activeSessionId, this.promptActivity(tools))
-        releasePrompt = promptSession.release
-        response = await withTimeout(
-          this.raceAgainstConnectionClose(activeConnection, promptSession.run(async () => {
-            // Set in the same synchronous step as the send, so no cancel can
-            // land between the check above and the prompt.
-            turn.prompt = { connection: activeConnection, sessionId: activeSessionId, sessionKey }
-            try {
-              return await activeConnection.prompt({
-                sessionId: activeSessionId,
-                prompt: [{
-                  type: "text",
-                  text: promptText,
-                }],
-              })
-            } finally {
-              turn.prompt = undefined
-            }
-          })),
-          this.turnTimeoutMs,
-          () => new AcpTurnTimeoutError(),
-        )
+        throw new AcpTurnCancelledError()
       }
+      const activeConnection = connection
+      const activeSessionId = sessionId
+      const promptSession = client.enterPromptSession(activeSessionId, this.promptActivity(tools))
+      releasePrompt = promptSession.release
+      const response = await withTimeout(
+        this.raceAgainstConnectionClose(activeConnection, promptSession.run(async () => {
+          // Set in the same synchronous step as the send, so no cancel can
+          // land between the check above and the prompt.
+          turn.prompt = { connection: activeConnection, sessionId: activeSessionId, sessionKey }
+          try {
+            return await activeConnection.prompt({
+              sessionId: activeSessionId,
+              prompt: [{
+                type: "text",
+                text: promptText,
+              }],
+            })
+          } finally {
+            turn.prompt = undefined
+          }
+        })),
+        this.turnTimeoutMs,
+        () => new AcpTurnTimeoutError(),
+      )
       // Only a prompt the agent accepted counts. A rejection leaves the
       // session unbootstrapped and the room still owed its replay, so the
       // next prompt on this session — or on the session that replaces a
@@ -500,12 +500,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       }
 
       if (turn.cancelled && response.stopReason === "cancelled") {
-        // A host's cancel ends the turn quietly, as an interrupt does: what the
-        // agent produced is dropped, and the session stays for the next turn.
-        client.takeCollectedChunks(sessionId)
-        tools.turn.settle()
-        completed = true
-        return
+        throw new AcpTurnCancelledError()
       }
 
       await this.flushChunks({
@@ -533,6 +528,18 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
       releasePrompt?.()
+
+      if (error instanceof AcpTurnCancelledError) {
+        // A host's cancel ends the turn quietly, as an interrupt does: what the
+        // agent produced is dropped, and the connection and session stay for
+        // the room's next turn.
+        if (client && sessionId) {
+          client.takeCollectedChunks(sessionId)
+        }
+        tools.turn.settle()
+        completed = true
+        return
+      }
 
       const isTimeout = error instanceof AcpTurnTimeoutError
 
@@ -595,10 +602,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
   /**
    * Cancels the room's running turn without ending its session. A prompt in
-   * flight gets ACP `session/cancel`, and its pending permission requests are
-   * answered `cancelled`; a prompt not yet sent is never sent. A turn the
-   * agent ends as cancelled posts nothing. Resolves false when no turn holds
-   * the room.
+   * flight gets ACP `session/cancel`, and its permission requests, pending or
+   * later, are answered `cancelled`. A turn still connecting or establishing
+   * its session stops waiting and never sends its prompt; that work runs on
+   * for the room's next turn. A turn the agent ends as cancelled posts
+   * nothing. Resolves false when no turn holds the room.
    */
   public async cancelTurn(roomId: string): Promise<boolean> {
     const turn = this.activeTurns.get(roomId)
@@ -606,12 +614,29 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return false
     }
     turn.cancelled = true
+    turn.cancellation.resolve()
     const prompt = turn.prompt
     if (prompt) {
       this.cancelPendingPermissions(prompt.sessionKey, "turn-cancelled")
       await prompt.connection.cancel({ sessionId: prompt.sessionId })
     }
     return true
+  }
+
+  // A cancel ends the turn's wait, not `operation`: it runs on, so a
+  // connection or session it establishes stays for the room's next turn.
+  // `Promise.race` keeps observing `operation`; a late failure is only logged,
+  // since the turn it belonged to has already settled.
+  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>): Promise<T> {
+    const cancelled = turn.cancellation.promise.then((): typeof TURN_CANCELLED => TURN_CANCELLED)
+    const winner = await Promise.race([operation, cancelled])
+    if (winner === TURN_CANCELLED) {
+      void operation.catch((error: unknown) => {
+        this.safeWarn("acp_client.cancelled_turn_wait_failed", { roomId: this.roomId, error: asErrorMessage(error) })
+      })
+      throw new AcpTurnCancelledError()
+    }
+    return winner
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -1413,8 +1438,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return { outcome: { outcome: "cancelled" } }
     }
 
+    const turn = this.activeTurns.get(roomId)
+    if (turn?.cancelled) {
+      // A cancelled turn approves nothing more; the room's next turn can.
+      return { outcome: { outcome: "cancelled" } }
+    }
+
     try {
-      return await this.handlePermissionRequest(tools, roomId, params, connectionGeneration)
+      return await this.handlePermissionRequest(tools, roomId, params, connectionGeneration, turn)
     } catch (error) {
       this.safeWarn("permission handling failed; cancelling the request", {
         sessionId: params.sessionId,
@@ -1445,6 +1476,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     roomId: string,
     params: RequestPermissionRequest,
     connectionGeneration: number,
+    turn: ActiveTurn | undefined,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
@@ -1501,7 +1533,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         : Promise.resolve(autoSelection?.optionId),
     ])
 
-    const chosenId = requestEventFailed ? undefined : resolvedChosenId
+    // Checked again here: an answer that raced the turn's cancel must not approve.
+    const chosenId = requestEventFailed || turn?.cancelled ? undefined : resolvedChosenId
     const response = this.toResponse(chosenId, params.options, { roomId, sessionId: params.sessionId })
 
     // Derived from the same response just computed, not from a separate
@@ -1715,6 +1748,10 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 }
 
 class AcpTurnTimeoutError extends Error {}
+
+class AcpTurnCancelledError extends Error {}
+
+const TURN_CANCELLED = Symbol("turn-cancelled")
 
 // Captured together at install, so a turn keeps the connection, client,
 // generation, and Band backend it started on even if the connection is

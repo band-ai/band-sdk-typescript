@@ -142,6 +142,7 @@ export class RecordingRestApi extends FakeRestApi {
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  public readonly eventHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
@@ -302,6 +303,7 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
+    await this.eventHolds.pass(roomId, event.content);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -499,6 +501,11 @@ export class BandRoom {
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
   public holdMessage(matches: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[roomId: string, content: string]> {
     return this.platform.rest.messageHolds.hold((roomId, content) => roomId === this.id && matches(content), options);
+  }
+
+  /** Keeps the agent's next matching event in flight until released. */
+  public holdEvent(matches: (content: string) => boolean): HeldCall<[roomId: string, content: string]> {
+    return this.platform.rest.eventHolds.hold((roomId, content) => roomId === this.id && matches(content));
   }
 
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */
