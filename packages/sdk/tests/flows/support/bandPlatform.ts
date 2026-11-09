@@ -120,6 +120,7 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly peerCalls = new RecordLog<number>();
   public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
+  public readonly historyRequests = new RecordLog<{ chatId: string; cursor?: string; limit: number }>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -355,6 +356,16 @@ export class RecordingRestApi extends FakeRestApi {
     const end = start + limit;
     const hasMore = end < conversation.length;
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
+  }
+
+  /** The room's messages newest first, as Band's agent message list serves `status=all&sort_order=desc`: keyset pages. */
+  public async listRoomHistory(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
+    this.historyRequests.record(request);
+    const newestFirst = this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item).reverse();
+    const start = request.cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === request.cursor) + 1;
+    const data = newestFirst.slice(start, start + request.limit);
+    const hasMore = start + request.limit < newestFirst.length;
+    return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
   }
 
   public remember(roomId: string, item: PlatformChatMessage): void {

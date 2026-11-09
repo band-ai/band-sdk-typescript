@@ -2,7 +2,7 @@ import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { ChatMessageType } from "../../contracts/chatEvents";
 import type { RestRequestOptions } from "./requestOptions";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
-import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
+import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage, RoomHistoryRestApi } from "./types";
 import type { PeerRecord } from "../../contracts/dtos";
 
 interface FetchPageRequest {
@@ -233,6 +233,34 @@ export async function listAllPeers(
   return fetchPaginated({
     fetchPage: ({ page, pageSize }) => listPeers({ page, pageSize, notInChat }, options),
   });
+}
+
+/** History messages per room-history page by default, and at most: Band serves up to 100. */
+export const DEFAULT_ROOM_HISTORY_PAGE = 20;
+export const MAX_ROOM_HISTORY_PAGE = 100;
+
+/**
+ * One page of a room's messages of every type and status, newest first, and
+ * the cursor of the next older page: null once the page reaches the room's
+ * first message. Unlike `getRecentMessages`, this is the room's history, not
+ * the agent's context, and it pages without a cap.
+ */
+export async function readRoomHistoryPage(
+  rest: RoomHistoryRestApi,
+  chatId: string,
+  { cursor, limit = DEFAULT_ROOM_HISTORY_PAGE }: { cursor?: string; limit?: number },
+  options?: RestRequestOptions,
+): Promise<{ messages: PlatformChatMessage[]; nextCursor: string | null }> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ROOM_HISTORY_PAGE) {
+    throw new ValidationError(`limit must be an integer from 1 to ${MAX_ROOM_HISTORY_PAGE}`);
+  }
+  const listRoomHistory = rest.listRoomHistory?.bind(rest);
+  if (!listRoomHistory) {
+    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
+  }
+  const { data, metadata } = await listRoomHistory({ chatId, ...(cursor === undefined ? {} : { cursor }), limit }, options);
+  const next = metadata?.next_cursor;
+  return { messages: data, nextCursor: typeof next === "string" && next !== "" && metadata?.has_more !== false ? next : null };
 }
 
 const TEXT_MESSAGE: ChatMessageType = "text";

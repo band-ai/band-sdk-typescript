@@ -95,6 +95,9 @@ export type {
   ContactTools,
   MemoryTools,
   TaskTools,
+  RoomHistoryTools,
+  ReadRoomHistoryArgs,
+  RoomHistoryPage,
   ToolExecutor,
 } from "./core";
 

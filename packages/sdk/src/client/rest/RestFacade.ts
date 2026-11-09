@@ -292,6 +292,18 @@ export class RestFacade implements RestApi {
     );
   }
 
+  public async listRoomHistory(
+    request: { chatId: string; cursor?: string; limit: number },
+    options?: RestRequestOptions,
+  ): Promise<PaginatedResponse<PlatformChatMessage>> {
+    return this.callOptional(
+      "listRoomHistory",
+      OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory,
+      (method) => method(request, options),
+      request,
+    );
+  }
+
   public async getNextMessage(
     request: { chatId: string },
     options?: RestRequestOptions,

@@ -10,12 +10,16 @@ export type {
   PlatformChatMessage,
   RestApi,
   ChatTaskRestApi,
+  RoomHistoryRestApi,
 } from "../client/rest/types";
 export {
   fetchCursorTail,
   fetchPaginated,
   getRecentMessages,
   listAllPeers,
+  readRoomHistoryPage,
+  DEFAULT_ROOM_HISTORY_PAGE,
+  MAX_ROOM_HISTORY_PAGE,
   normalizePaginationMetadata,
 } from "../client/rest/pagination";
 export type { CursorPageRequest, CursorTail, CursorTailOptions } from "../client/rest/pagination";

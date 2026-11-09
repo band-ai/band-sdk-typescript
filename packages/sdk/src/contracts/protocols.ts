@@ -163,6 +163,31 @@ export interface ContactTools {
   respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult>;
 }
 
+export interface ReadRoomHistoryArgs {
+  /** `nextCursor` from the previous page; omit for the newest page. */
+  cursor?: string;
+  /** History messages per page, 1 to 100; 20 by default. */
+  limit?: number;
+  /**
+   * Put first on every page, and only there. During a turn the runtime pins
+   * the turn's own inbound message, so the agent always sees what it is
+   * answering, whichever page it reads.
+   */
+  pinned?: PlatformMessageLike;
+}
+
+export interface RoomHistoryPage {
+  /** Newest first, after the pinned message when there is one. */
+  messages: PlatformMessageLike[];
+  /** Pass back as `cursor` for the next older page; null at the room's first message. */
+  nextCursor: string | null;
+}
+
+export interface RoomHistoryTools {
+  /** One page of the room's history, newest first. */
+  readRoomHistory(args?: ReadRoomHistoryArgs): Promise<RoomHistoryPage>;
+}
+
 export interface TaskTools {
   getBoard(args?: GetBoardArgs): Promise<WireBoard>;
   setBoard(args: SetBoardArgs): Promise<WireBoard>;
@@ -290,7 +315,8 @@ export interface AdapterToolsProtocol
     Partial<PeerLookupTools>,
     Partial<ContactTools>,
     Partial<MemoryTools>,
-    Partial<TaskTools> {
+    Partial<TaskTools>,
+    Partial<RoomHistoryTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
 }

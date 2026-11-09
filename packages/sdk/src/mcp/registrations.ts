@@ -23,7 +23,12 @@ export interface McpToolRegistration {
   inputSchema: McpToolInputSchema;
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
-  execute: (args: Record<string, unknown>) => Promise<McpToolResult>;
+  /**
+   * `tools` is the room's tools when the server serves a single room (an ACP
+   * or Codex room's own server, or a single-room SDK server), so a host's own
+   * tool can act on that room's turn; undefined on a multi-room server.
+   */
+  execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
 
 export interface McpToolInputSchema {
@@ -148,7 +153,7 @@ export function buildSingleContextRegistrations(
   const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools);
+    registrations.push(...options.additionalTools.map((tool) => ({ ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) })));
   }
 
   return wrapExecution(registrations, options.execute);
