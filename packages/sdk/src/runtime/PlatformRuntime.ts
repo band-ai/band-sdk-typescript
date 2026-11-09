@@ -476,6 +476,13 @@ export class PlatformRuntime implements AsyncDisposable {
     if (!runtime || !adapter || !this.lifecycle.is("running")) {
       return false;
     }
+    // Already handled: admitting it again would report a second join.
+    if (runtime.presence.roster.roomMembership(roomId) === "admitted") {
+      if (options.warm) {
+        await this.warmRoom(adapter, roomId);
+      }
+      return true;
+    }
     const payload = await runtime.presence.memberRoom(roomId);
     if (payload === undefined) {
       return false;

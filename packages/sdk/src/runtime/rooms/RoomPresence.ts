@@ -328,19 +328,6 @@ export class RoomPresence implements AsyncDisposable {
     return true;
   }
 
-  /**
-   * Admits `roomId` if Band lists the agent in it, as hydration would at
-   * start. Resolves true once the room is admitted, already admitted
-   * included; false when the agent is not in the room or its subscribe fails.
-   */
-  public async admitMemberRoom(roomId: string): Promise<boolean> {
-    if (this.roster.roomMembership(roomId) === "admitted") {
-      return true;
-    }
-    const payload = await this.memberRoom(roomId);
-    return payload !== undefined && (await this.admitRoom(roomId, payload));
-  }
-
   /** The room as Band lists it among the agent's rooms, or undefined when the agent is not in it. */
   public async memberRoom(roomId: string): Promise<MetadataMap | undefined> {
     const rooms = await listExistingRooms({

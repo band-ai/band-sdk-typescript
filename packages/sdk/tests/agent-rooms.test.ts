@@ -65,6 +65,15 @@ describe("agent.rooms", () => {
     expect(turns).toEqual([ROOM_B]);
   });
 
+  it("leaves an admitted room as it is on allow", async () => {
+    const { adapter } = turnRecorder();
+    const { agent, roomEvents } = await startAgent(adapter);
+
+    await expect(agent.rooms.allow(ROOM_B)).resolves.toBe(true);
+
+    expect(roomEvents(ROOM_B)).toEqual(["room.joined"]);
+  });
+
   it("leaves a room on deny: no more turns, and its topic is dropped", async () => {
     const { adapter, turns } = turnRecorder();
     const { agent, platform, roomA, subscribed, roomEvents } = await startAgent(adapter);
