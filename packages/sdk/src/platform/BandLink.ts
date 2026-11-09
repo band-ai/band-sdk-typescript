@@ -101,6 +101,11 @@ function validationErrorDetails(error: unknown): Record<string, unknown> {
   return details;
 }
 
+/** A change in whether this link can reach Band; see `BandLink.onConnectionChange`. */
+export type LinkConnectionChange =
+  | { connected: true; reconnected: boolean }
+  | { connected: false; reason: "dropped" | "closed" | "terminal" };
+
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
   private readonly apiKey: string;
@@ -120,11 +125,40 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private connectAbort: AbortController | null = null;
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
+  private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
+  /** What listeners were last told, so each transition is reported once. */
+  private reportedUp = false;
 
   public get capabilities(): AgentToolsCapabilities { return this._capabilities; }
 
   public dropUnsupported(featureFlags?: Readonly<Record<string, boolean>>): void {
     this._capabilities = pruneUnsupported(this._capabilities, featureFlags);
+  }
+
+  /**
+   * Reports each transition between reaching Band and not: up after a
+   * connect or a reconnect, down on a drop the transport retries, a local
+   * disconnect, or a session that ended for good. Returns an unsubscribe function.
+   */
+  public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => {
+      this.connectionListeners.delete(listener);
+    };
+  }
+
+  private reportConnection(change: LinkConnectionChange): void {
+    if (change.connected === this.reportedUp) {
+      return;
+    }
+    this.reportedUp = change.connected;
+    for (const listener of [...this.connectionListeners]) {
+      try {
+        listener(change);
+      } catch (error) {
+        this.logger.warn("Connection change listener failed", { error });
+      }
+    }
   }
 
   public constructor(options: BandLinkOptions) {
@@ -204,11 +238,18 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+      this.reportConnection({ connected: true, reconnected: true });
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
+    const stopDropped = this.transport.onDropped?.(() => {
+      if (!this.session.isStale(epoch)) {
+        this.reportConnection({ connected: false, reason: "dropped" });
+      }
+    });
     this.session.reconnectObserverTeardown = () => {
       stopReconnected?.();
       stopRejoined?.();
+      stopDropped?.();
     };
 
     try {
@@ -226,6 +267,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       throw error;
     }
     this.connected = true;
+    this.reportConnection({ connected: true, reconnected: false });
   }
 
   /**
@@ -264,6 +306,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       await this.transport.disconnect();
     } finally {
       this.connected = false;
+      this.reportConnection({ connected: false, reason: "closed" });
       this.session.clearReconnectObserver();
       this.subscriptionManager.endSession();
     }
@@ -285,6 +328,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   /** The transport's session ended for good: nothing more will arrive. */
   private handleTerminal(error: WebSocketDisconnectError): void {
     this.connected = false;
+    this.reportConnection({ connected: false, reason: "terminal" });
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
       waiter?.reject(error);

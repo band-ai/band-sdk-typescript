@@ -1,4 +1,5 @@
 import type { HistoryConverter, MessagingTools, PlatformMessageLike } from "../../contracts/protocols";
+import type { AgentEventSink } from "../../contracts/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { SimpleAdapter } from "../../core/simpleAdapter";
@@ -37,6 +38,8 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   // A room that rejoins while its old engine is still closing waits on this.
   private readonly closing = new Map<string, Promise<void>>();
   private stopped = false;
+  /** Where engines report local events; a no-op until the runtime attaches one. */
+  protected observer: AgentEventSink = () => {};
 
   protected constructor(options: RoomScopedAdapterOptions<H>) {
     super({ historyConverter: options.historyConverter });
@@ -46,6 +49,10 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
 
   /** Builds the engine for one room; `workspace` is its claimed real path. */
   protected abstract createRoom(roomId: string, workspace: string): E;
+
+  public attachObserver(sink: AgentEventSink): void {
+    this.observer = sink;
+  }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
@@ -137,7 +144,8 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
     const entry: RoomEntry<E> = { engine, ready: this.startRoom(roomId, engine) };
     this.rooms.set(roomId, entry);
     // A room that failed to start is dropped, so its next message tries again.
-    entry.ready.catch(() => {
+    entry.ready.catch((error: unknown) => {
+      this.observer({ type: "room.failed", roomId, error: asErrorMessage(error) });
       if (this.rooms.get(roomId) === entry) {
         void this.onCleanup(roomId);
       }

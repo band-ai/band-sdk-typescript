@@ -75,6 +75,18 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 - **Factories.** `connectionFactory` (ACP) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
+### Observing an agent
+
+A process that hosts an agent can follow it locally with `agent.observe(listener)`, which returns a function that removes the listener. Nothing a listener receives is posted to a room, and observing does not change what the room sees.
+
+```ts
+const stop = agent.observe((event) => {
+  if (event.type === "tool.call") console.log(`${event.roomId}: ${event.name}`);
+});
+```
+
+Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined`, `room.left` and `room.stopped`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, `approval.requested` and `approval.resolved`, and `room.failed` when the room's agent process cannot start or exits on its own. Listeners run synchronously in event order, so keep them quick; one that throws or rejects is logged and skipped without failing the turn or the other listeners.
+
 ### Generic
 
 Bring your own logic with a single async callback:

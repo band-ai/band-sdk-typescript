@@ -21,6 +21,8 @@ import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
+import type { AgentEventListener } from "../contracts/events";
+import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -67,6 +69,8 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
+  private readonly events: AgentEventHub;
+  private observingLink = false;
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
@@ -110,6 +114,7 @@ export class PlatformRuntime implements AsyncDisposable {
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
+    this.events = new AgentEventHub(this.logger);
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
     this._onParticipantRemoved = options.onParticipantRemoved;
@@ -121,6 +126,11 @@ export class PlatformRuntime implements AsyncDisposable {
       logger: this.logger,
       isLegalTransition: isLegalRuntimeTransition,
     });
+  }
+
+  /** Adds a listener for this agent's local events; the returned function removes it. */
+  public observe(listener: AgentEventListener): () => void {
+    return this.events.observe(listener);
   }
 
   /** Current lifecycle state of this runtime. */
@@ -188,6 +198,15 @@ export class PlatformRuntime implements AsyncDisposable {
         restUrl: this._restUrl,
       });
     }
+    if (!this.observingLink) {
+      // For the runtime's lifetime: the link is this runtime's, and reconnects reuse it.
+      this.observingLink = true;
+      this.link.onConnectionChange((change) => {
+        this.events.emit(change.connected
+          ? { type: "link.connected", reconnected: change.reconnected }
+          : { type: "link.disconnected", reason: change.reason });
+      });
+    }
 
     const me = !this.configuredIdentity || this.link.capabilities.tasks
       ? await this.link.rest.getAgentMe()
@@ -251,6 +270,7 @@ export class PlatformRuntime implements AsyncDisposable {
     // adapter its `onRuntimeStop` — several adapters only abort a hung startup
     // when that hook runs.
     this.activeAdapter = adapter;
+    adapter.attachObserver?.(this.events.emit);
 
     try {
       await adapter.onStarted(this._agentName, this._agentDescription);
@@ -301,6 +321,9 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
+        onRoomJoined: (roomId) => this.events.emit({ type: "room.joined", roomId }),
+        onRoomLeft: (roomId) => this.events.emit({ type: "room.left", roomId }),
+        onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
         onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
@@ -498,15 +521,23 @@ export class PlatformRuntime implements AsyncDisposable {
     const startedAt = Date.now();
     let succeeded = true;
     let caughtError: unknown;
+    let started = false;
     try {
       await lease?.ready;
       if (!admitted()) return;
+      this.events.emit({ type: "turn.started", roomId, messageId });
+      started = true;
       await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
       await lease?.end();
+    }
+    if (started) {
+      this.events.emit(succeeded
+        ? { type: "turn.completed", roomId, messageId }
+        : { type: "turn.failed", roomId, messageId, error: caughtError instanceof Error ? caughtError.message : String(caughtError) });
     }
     if (!admitted()) return;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });

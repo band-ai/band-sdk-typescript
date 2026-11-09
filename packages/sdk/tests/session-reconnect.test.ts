@@ -4,7 +4,7 @@ import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
-import { BandLink } from "../src/platform/BandLink";
+import { BandLink, type LinkConnectionChange } from "../src/platform/BandLink";
 import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
@@ -225,6 +225,27 @@ describe("core Session owns reconnects (real wire)", () => {
       await reconnected(peer, 2);
 
       expect(agent.terminals).toEqual([]);
+    });
+
+    it("tells connection listeners the link dropped, came back, and closed, once each", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+
+      peer.severAllConnections();
+      await reconnected(peer, 2);
+      await wireUntil(() => changes.length >= 3);
+      await onWireClock(link.disconnect());
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: true, reconnected: true },
+        { connected: false, reason: "closed" },
+      ]);
     });
 
     it("drops a reconnected socket whose agent_control rejoin fails, and reconnects again", async () => {

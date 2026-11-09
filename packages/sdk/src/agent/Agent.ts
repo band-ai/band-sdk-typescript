@@ -1,4 +1,5 @@
 import type { FrameworkAdapter } from "../contracts/protocols";
+import type { AgentEventListener } from "../contracts/events";
 import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
 import { resolveLogger } from "../core/logger";
@@ -208,6 +209,16 @@ export class Agent {
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
     return await this.platformRuntime.resetRoomSession(roomId, timeoutMs);
+  }
+
+  /**
+   * Adds a listener for this agent's local events — turns, tool calls,
+   * thoughts, approvals, rooms, and the link to Band — and returns a function
+   * that removes it. Observing never posts anything to a room. Listeners run
+   * synchronously; one that throws is logged and skipped.
+   */
+  public observe(listener: AgentEventListener): () => void {
+    return this.platformRuntime.observe(listener);
   }
 
   /** Start the agent, listen for messages, and block until shutdown. Registers SIGINT/SIGTERM handlers by default. */
