@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@band-ai/sdk": "workspace:*",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.6",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@vitest/coverage-v8": "^5.0.5",
     "eslint": "^10.10.0",

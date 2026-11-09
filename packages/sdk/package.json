@@ -183,7 +183,7 @@
     "@openai/codex-sdk": "^0.155.0",
     "@opencode-ai/sdk": "^1.18.30",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.6",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.70.0",
     "@vitest/coverage-v8": "5.0.5",
