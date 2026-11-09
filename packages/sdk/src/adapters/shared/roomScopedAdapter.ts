@@ -77,6 +77,11 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
     return this.rooms.get(roomId)?.engine.isControlMessage?.(message, roomId) ?? false;
   }
 
+  /** The room's engine, or undefined while the room has none. */
+  protected roomEngine(roomId: string): E | undefined {
+    return this.rooms.get(roomId)?.engine;
+  }
+
   /** Stops the room's engine without waiting for its process to exit. */
   public override async onCleanup(roomId: string): Promise<void> {
     this.retireRoom(roomId, async (engine) => {
