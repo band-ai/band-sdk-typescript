@@ -369,6 +369,7 @@ describe("core Session owns reconnects (real wire)", () => {
     });
 
     it.each([
+      [401, { status: 401 }, "upgrade_rejected"],
       [403, { status: 403 }, "upgrade_rejected"],
       [400, platformRefusal(400, "invalid_on_conflict"), "invalid_on_conflict"],
       [409, platformRefusal(409, "connection_conflict"), "connection_conflict"],

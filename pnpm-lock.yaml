@@ -44,8 +44,8 @@ importers:
         specifier: '>=0.91.1 <1.0.0'
         version: 0.120.0(zod@4.6.7)
       '@band-ai/band-sdk-core':
-        specifier: 6.2.0
-        version: 6.2.0
+        specifier: 7.0.0
+        version: 7.0.0
       '@band-ai/rest-client':
         specifier: 0.0.165
         version: 0.0.165
@@ -397,8 +397,8 @@ packages:
     resolution: {integrity: sha512-WCsemW40Cpc6gouC1SrY6PBaZ+oLRlEVY9XBvZBI7il/HyUrb2nJ505wE1MHEFyDZNnrWDEuy4jL50WVHfTTSQ==}
     engines: {node: '>=6.9.0'}
 
-  '@band-ai/band-sdk-core@6.2.0':
-    resolution: {integrity: sha512-vxbObHHWsRdbGsNeoa1KXVuD2rZJsUBxUkCz0N1YP9ojnQQs0IIlezuv9PG/YMR7QCrJ03I9rlGCh7cINRvq7w==}
+  '@band-ai/band-sdk-core@7.0.0':
+    resolution: {integrity: sha512-dfEdvmaGbJbDsXezUNhvqEjKGy7HGV7B2mIEo2y/YiBLhSsmFqfzjNbZYXEcItiMWPmJEiWSGF63lshFTOwg8g==}
 
   '@band-ai/rest-client@0.0.165':
     resolution: {integrity: sha512-mcZozZzsLx7GT3BJNKqsCXZI3IkBGXM/aOA23FwDPsnZVvjVzeugsHOFsiQexekbV7YMnQHbWcsmZnKBllQ+Mg==}
@@ -5184,7 +5184,7 @@ snapshots:
       '@babel/helper-string-parser': 7.29.11
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@band-ai/band-sdk-core@6.2.0': {}
+  '@band-ai/band-sdk-core@7.0.0': {}
 
   '@band-ai/rest-client@0.0.165': {}
 
