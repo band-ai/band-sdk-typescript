@@ -67,6 +67,9 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   private readonly _onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
+  /** The host's `allowRoom`/`denyRoom` per room, each with the order it was made in; kept across restarts. */
+  private readonly roomDecisions = new Map<string, { allowed: boolean; seq: number }>();
+  private roomDecisionSeq = 0;
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
   private readonly events: AgentEventHub;
@@ -330,7 +333,7 @@ export class PlatformRuntime implements AsyncDisposable {
         onContactEvent: (event) => this.handleContactEvent(event),
         onParticipantAdded: this._onParticipantAdded,
         onParticipantRemoved: this._onParticipantRemoved,
-        roomFilter: this._roomFilter,
+        roomFilter: (room) => this.admitsRoom(room),
         contextFactory: this._contextFactory,
       });
 
@@ -441,6 +444,87 @@ export class PlatformRuntime implements AsyncDisposable {
     const failure = toLifecycleError(error);
     this.lifecycle.fail(failure, "stop-failed");
     return failure;
+  }
+
+  /**
+   * Whether the agent handles `room`: the host's latest `allowRoom`/`denyRoom`
+   * for it, else the `roomFilter` it was built with, else every room.
+   */
+  private admitsRoom(room: MetadataMap): boolean {
+    const decision = typeof room.id === "string" ? this.roomDecisions.get(room.id) : undefined;
+    return decision ? decision.allowed : (this._roomFilter?.(room) ?? true);
+  }
+
+  private decideRoom(roomId: string, allowed: boolean): number {
+    this.roomDecisionSeq += 1;
+    this.roomDecisions.set(roomId, { allowed, seq: this.roomDecisionSeq });
+    return this.roomDecisionSeq;
+  }
+
+  /**
+   * Handles `roomId` from now on, overriding `roomFilter` for it. While
+   * running, a room Band lists the agent in is admitted at once; otherwise
+   * it is admitted when Band adds the agent to it, or at the next start.
+   * With `warm`, the room's agent starts first, and `room.ready` or
+   * `room.failed` is reported before the room's messages are handled.
+   * Resolves true when the room is admitted on return.
+   */
+  public async allowRoom(roomId: string, options: { warm?: boolean } = {}): Promise<boolean> {
+    const seq = this.decideRoom(roomId, true);
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    if (!runtime || !adapter || !this.lifecycle.is("running")) {
+      return false;
+    }
+    const payload = await runtime.presence.memberRoom(roomId);
+    if (payload === undefined) {
+      return false;
+    }
+    if (options.warm) {
+      await this.warmRoom(adapter, roomId);
+    }
+    // A later allow or deny for this room, or a stop, supersedes this one.
+    if (this.roomDecisions.get(roomId)?.seq !== seq || this.runtime !== runtime) {
+      return false;
+    }
+    return await runtime.presence.admitRoom(roomId, payload);
+  }
+
+  /**
+   * Stops handling `roomId`, overriding `roomFilter` for it, while the agent
+   * stays a member: an admitted room's topic is unsubscribed and its
+   * execution torn down, and Band adding the agent to it again does not
+   * admit it. Resolves true when an admitted room was left.
+   */
+  public async denyRoom(roomId: string): Promise<boolean> {
+    this.decideRoom(roomId, false);
+    const runtime = this.runtime;
+    if (!runtime) {
+      return false;
+    }
+    return await runtime.presence.leaveRoom(roomId);
+  }
+
+  /** Starts the room's agent; reports `room.ready`, or `room.failed` once whether or not the adapter did. */
+  private async warmRoom(adapter: FrameworkAdapter, roomId: string): Promise<void> {
+    if (!adapter.warmRoom) {
+      this.events.emit({ type: "room.ready", roomId });
+      return;
+    }
+    let reported = false;
+    const unobserve = this.events.observe((event) => {
+      if (event.type === "room.failed" && event.roomId === roomId) reported = true;
+    });
+    try {
+      await adapter.warmRoom(roomId);
+      this.events.emit({ type: "room.ready", roomId });
+    } catch (error) {
+      if (!reported) {
+        this.events.emit({ type: "room.failed", roomId, error: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      unobserve();
+    }
   }
 
   public async runForever(): Promise<void> {

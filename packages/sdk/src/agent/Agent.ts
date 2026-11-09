@@ -19,6 +19,17 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   shutdownTimeoutMs?: number | null;
 }
 
+export interface AllowRoomOptions {
+  /** Start the room's agent process now, reporting `room.ready` or `room.failed`, rather than on its first message. */
+  warm?: boolean;
+}
+
+/** {@link Agent.rooms}: the rooms an agent handles, changed while it runs. */
+export interface AgentRooms {
+  allow(roomId: string, options?: AllowRoomOptions): Promise<boolean>;
+  deny(roomId: string): Promise<boolean>;
+}
+
 /**
  * Top-level handle for a Band agent.
  *
@@ -34,6 +45,20 @@ export class Agent {
   private readonly stopGate = new SingleFlight<boolean>();
   private shutdownTimeoutMs: number | null = 30_000;
 
+  /**
+   * Which rooms the agent handles, changed while it runs. A decision for a
+   * room overrides the `roomFilter` the agent was created with, for that room.
+   * - `allow(roomId, { warm })` admits a room Band lists the agent in, at
+   *   once; any other room when Band adds the agent to it. With `warm`, the
+   *   room's agent process starts first, and `room.ready` or `room.failed` is
+   *   reported before the room's messages are handled. Resolves true when the
+   *   room is admitted on return.
+   * - `deny(roomId)` leaves an admitted room: its topic is unsubscribed and its
+   *   handling torn down, and it is not admitted again until allowed.
+   *   Resolves true when an admitted room was left.
+   */
+  public readonly rooms: AgentRooms;
+
   public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter, logger?: Logger) {
     this.platformRuntime = runtime;
     this.adapter = adapter;
@@ -44,6 +69,10 @@ export class Agent {
       logger: this.logger,
       isLegalTransition: isLegalRuntimeTransition,
     });
+    this.rooms = {
+      allow: (roomId, options) => runtime.allowRoom(roomId, options),
+      deny: (roomId) => runtime.denyRoom(roomId),
+    };
   }
 
   /** Build an Agent from credentials and a framework adapter. */

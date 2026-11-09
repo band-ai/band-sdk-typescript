@@ -308,12 +308,47 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
 
+    if (!(await this.leaveRoom(roomId))) {
+      this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
+    }
+  }
+
+  /**
+   * Stops handling `roomId` while the agent stays a member: unsubscribes its
+   * topic, drops it from the roster (an admission still in flight goes stale
+   * and releases its own subscription), and tears its execution down.
+   * Resolves false when the room was not tracked.
+   */
+  public async leaveRoom(roomId: string): Promise<boolean> {
     await this.leaveRoomTracking(roomId);
     if (!this.roster.recordRoomRemoved(roomId)) {
-      this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
-      return;
+      return false;
     }
     await this.onRoomLeft?.(roomId);
+    return true;
+  }
+
+  /**
+   * Admits `roomId` if Band lists the agent in it, as hydration would at
+   * start. Resolves true once the room is admitted, already admitted
+   * included; false when the agent is not in the room or its subscribe fails.
+   */
+  public async admitMemberRoom(roomId: string): Promise<boolean> {
+    if (this.roster.roomMembership(roomId) === "admitted") {
+      return true;
+    }
+    const payload = await this.memberRoom(roomId);
+    return payload !== undefined && (await this.admitRoom(roomId, payload));
+  }
+
+  /** The room as Band lists it among the agent's rooms, or undefined when the agent is not in it. */
+  public async memberRoom(roomId: string): Promise<MetadataMap | undefined> {
+    const rooms = await listExistingRooms({
+      link: this.link,
+      roomFilter: (room) => room.id === roomId,
+      requestOptions: DEFAULT_REQUEST_OPTIONS,
+    });
+    return rooms.get(roomId);
   }
 
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */

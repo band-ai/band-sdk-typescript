@@ -37,6 +37,11 @@ export type AgentEvent =
   | { type: "room.joined"; roomId: string }
   /** The agent left a room, or was removed from it. */
   | { type: "room.left"; roomId: string }
+  /**
+   * A room allowed with `warm` has its agent process started, ahead of the
+   * room's first message; reported before the room's messages are handled.
+   */
+  | { type: "room.ready"; roomId: string }
   /** The room's agent process could not start; its messages fail until a later start succeeds. */
   | { type: "room.failed"; roomId: string; error: string }
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */
