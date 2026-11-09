@@ -76,6 +76,18 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 - **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
+### Observing an agent
+
+A process that hosts an agent can follow it locally with `agent.observe(listener)`, which returns a function that removes the listener. Nothing a listener receives is posted to a room, and observing does not change what the room sees.
+
+```ts
+const stop = agent.observe((event) => {
+  if (event.type === "tool.call") console.log(`${event.roomId}: ${event.name}`);
+});
+```
+
+Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined`, `room.left` and `room.stopped`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, `approval.requested` and `approval.resolved`, and `room.failed` when the room's agent process cannot start or exits on its own. Listeners run synchronously in event order, so keep them quick; one that throws or rejects is logged and skipped without failing the turn or the other listeners.
+
 ### Generic
 
 Bring your own logic with a single async callback:

@@ -50,6 +50,8 @@ export type TopicRejoinObserver = (topic: string) => void;
 
 export type TerminalObserver = (error: WebSocketDisconnectError) => void;
 
+export type DropObserver = (reason: WebSocketDisconnectReason) => void;
+
 export interface StreamingTransport {
   /**
    * Connects, rejecting if `signal` aborts first. `disconnect()` may run while
@@ -87,4 +89,10 @@ export interface StreamingTransport {
    * it queues stays in order with them. Returns an unsubscribe function.
    */
   onTopicRejoined?(observer: TopicRejoinObserver): () => void;
+  /**
+   * Optional: called when a live connection drops and the transport will
+   * reconnect on its own. A session that ends for good reports through
+   * `onTerminal` instead. Returns an unsubscribe function.
+   */
+  onDropped?(observer: DropObserver): () => void;
 }

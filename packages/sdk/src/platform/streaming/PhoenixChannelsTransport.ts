@@ -23,6 +23,7 @@ import { ENDED_VERDICT, SessionRun } from "./sessionRun";
 import {
   isOptionalTopic,
   type JoinOptions,
+  type DropObserver,
   type ReconnectObserver,
   type ReconnectSnapshot,
   type StreamingTransport,
@@ -58,6 +59,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
   private readonly topicRejoinObservers = new Set<TopicRejoinObserver>();
+  private readonly dropObservers = new Set<DropObserver>();
   private readonly generationTracker = new ReconnectGenerationTracker(
     (snapshot) => this.notifyReconnectObservers(snapshot),
     (generation, pendingTopics) =>
@@ -332,6 +334,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     };
   }
 
+  public onDropped(observer: DropObserver): () => void {
+    this.dropObservers.add(observer);
+    return () => {
+      this.dropObservers.delete(observer);
+    };
+  }
+
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
     this.topicRejoinObservers.add(observer);
     return () => {
@@ -484,6 +493,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private handleSocketClose(event?: CloseEventLike): void {
     const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
+    if (verdict.kind === "retry") {
+      for (const observer of [...this.dropObservers]) {
+        try {
+          observer(verdict.reason);
+        } catch (error) {
+          this.logger.error("Drop observer failed", { error });
+        }
+      }
+    }
   }
 
   private nextAttemptDelayMs(): number {

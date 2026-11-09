@@ -27,6 +27,8 @@ interface AgentRuntimeOptions {
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
+  /** A room's execution stopped: the room was left or reset, or the runtime stopped. */
+  onRoomStopped?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
   onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
@@ -47,6 +49,7 @@ export class AgentRuntime {
   private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
   private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
   private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
+  private readonly onRoomStopped?: AgentRuntimeOptions["onRoomStopped"];
   private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
   private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
   private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
@@ -74,6 +77,7 @@ export class AgentRuntime {
     this.onSessionCleanup = options.onSessionCleanup ?? (async () => undefined);
     this.onRoomJoined = options.onRoomJoined;
     this.onRoomLeft = options.onRoomLeft;
+    this.onRoomStopped = options.onRoomStopped;
     this.onError = options.onError;
     this.logger = resolveLogger(options.logger);
     this.onContactEvent = options.onContactEvent;
@@ -285,6 +289,7 @@ export class AgentRuntime {
           graceful = (await execution.stop(timeoutMs)) && graceful;
         });
         this.executions.delete(roomId);
+        this.onRoomStopped?.(roomId);
       }),
     );
 
@@ -372,6 +377,9 @@ export class AgentRuntime {
     }
 
     this.executions.delete(roomId);
+    if (execution) {
+      this.onRoomStopped?.(roomId);
+    }
     this.contexts.delete(roomId);
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
 

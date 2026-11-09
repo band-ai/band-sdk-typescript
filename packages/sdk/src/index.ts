@@ -96,6 +96,10 @@ export type {
   MemoryTools,
   TaskTools,
   ToolExecutor,
+  AgentEvent,
+  AgentEventListener,
+  AgentEventSink,
+  AgentEventType,
 } from "./core";
 
 export type {
