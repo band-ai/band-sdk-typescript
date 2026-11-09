@@ -22,12 +22,14 @@ import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_KIRO_ACP_COMMAND,
   DEFAULT_OMP_ACP_COMMAND,
+  DEFAULT_OMP_RPC_COMMAND,
   GeminiAdapter,
   GoogleADKAdapter,
   KiroACPAdapter,
   LangGraphAdapter,
   LettaAdapter,
   OmpACPAdapter,
+  OmpRpcAdapter,
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
@@ -87,6 +89,16 @@ export function buildOmp({ prompt, workDir }: BuildOptions, options: OmpACPAdapt
     // OMP reads only GEMINI_API_KEY.
     env: { PI_CODING_AGENT_DIR: stateDir(workDir, OMP_STATE_DIR), [ENV.geminiKey]: googleApiKey() ?? "" },
     ...options,
+  });
+}
+
+/** OMP's native RPC mode on the pinned Google model with an isolated state directory. */
+function buildOmpRpc({ prompt, workDir }: BuildOptions): OmpRpcAdapter {
+  return new OmpRpcAdapter({
+    command: [...DEFAULT_OMP_RPC_COMMAND, "--model", `google/${DEFAULT_GEMINI_MODEL}`],
+    cwd: workDir,
+    customSection: prompt,
+    env: { PI_CODING_AGENT_DIR: stateDir(workDir, OMP_STATE_DIR), [ENV.geminiKey]: googleApiKey() ?? "" },
   });
 }
 
@@ -273,6 +285,12 @@ const SPECS = {
     requires: [ACP_SDK, requires.cli(DEFAULT_OMP_ACP_COMMAND[0]), GOOGLE_KEY],
     supports: [CAPABILITY.roomWorkspaces],
     build: (options) => buildOmp(options),
+  },
+  ompRpc: {
+    id: "omp-rpc",
+    requires: [requires.cli(DEFAULT_OMP_RPC_COMMAND[0]), GOOGLE_KEY],
+    supports: [CAPABILITY.roomWorkspaces],
+    build: (options) => buildOmpRpc(options),
   },
   openai: {
     id: "openai",
