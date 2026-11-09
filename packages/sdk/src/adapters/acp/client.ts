@@ -61,7 +61,7 @@ export class BandACPClient implements Client {
     extensionHandler?: ACPClientExtensionHandler,
     private readonly humanDecision?: (method: string, params: Record<string, unknown>) => boolean,
     // Sees each session update as it arrives, for local observation; never posts.
-    private readonly observeUpdate?: (chunk: CollectedChunk) => void,
+    private readonly observeUpdate?: (update: SessionUpdate, chunk: CollectedChunk) => void,
   ) {
     this.roomId = roomId
     this.permissionHandler = permissionHandler
@@ -129,7 +129,7 @@ export class BandACPClient implements Client {
     const chunk = toCollectedChunk(params.update)
     if (chunk) {
       this.collect(params.sessionId, chunk, this.promptToken(params.sessionId))
-      this.observeUpdate?.(chunk)
+      this.observeUpdate?.(params.update, chunk)
     }
   }
 

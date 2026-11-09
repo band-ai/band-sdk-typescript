@@ -27,7 +27,7 @@ import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/err
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { observedEvent } from "./observedEvents";
+import { SessionUpdateEvents } from "./observedEvents";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
@@ -307,6 +307,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
   private readonly observer: AgentEventSink
+  private readonly sessionEvents: SessionUpdateEvents
   private readonly customSection?: string
 
   private live: LiveConnection | null = null
@@ -342,6 +343,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
     this.observer = options.observer ?? (() => {})
+    this.sessionEvents = new SessionUpdateEvents(options.roomId, this.observer)
     this.customSection = options.customSection
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
@@ -677,6 +679,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
+    this.sessionEvents.reset()
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
@@ -712,6 +715,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.activeTurns.clear()
+    this.sessionEvents.reset()
     this.sessionsInFlight.clear()
     this.roomTurns.clear()
     // Same reasoning as `onCleanup`, for every room at once: a still-pending
@@ -885,10 +889,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         (params) => this.routePermissionRequest(params, owner.generation),
         this.extensionHandler,
         (method, params) => this.isHumanDecision(method, params),
-        (chunk) => {
-          const event = observedEvent(this.roomId, chunk)
-          if (event) this.observer(event)
-        },
+        (update, chunk) => this.sessionEvents.observe(update, chunk),
       )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {

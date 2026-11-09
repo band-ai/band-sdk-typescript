@@ -1,4 +1,4 @@
-import type { AgentSideConnection, Agent as AcpAgent, PromptRequest } from "@agentclientprotocol/sdk";
+import type { AgentSideConnection, Agent as AcpAgent, PromptRequest, SessionUpdate } from "@agentclientprotocol/sdk";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
@@ -11,6 +11,39 @@ import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
+
+/** Claude Code's ACP bridge on one Bash call, as recorded: the call arrives twice, first with no input, and its title is display copy. */
+const CLAUDE_BASH_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } }, rawInput: {}, status: "pending", title: "Terminal", kind: "execute", content: [] },
+  {
+    sessionUpdate: "tool_call", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } },
+    rawInput: { command: "echo hi", description: "Print \"hi\" to stdout" }, status: "pending", title: "`echo hi`", kind: "execute",
+    content: [{ type: "content", content: { type: "text", text: "Print \"hi\" to stdout" } }],
+  },
+  {
+    sessionUpdate: "tool_call_update", toolCallId: "toolu_01",
+    _meta: { claudeCode: { toolName: "Bash", toolResponse: { stdout: "hi", stderr: "", interrupted: false, isImage: false, noOutputExpected: false } } },
+  },
+  {
+    sessionUpdate: "tool_call_update", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } },
+    status: "completed", rawOutput: "hi", content: [{ type: "content", content: { type: "text", text: "hi" } }],
+  },
+];
+
+/** The Copilot CLI's shape, as recorded: no bridge tool name, a sentence for a title, and a denied call. */
+const COPILOT_DENIED_CALL: SessionUpdate[] = [
+  {
+    sessionUpdate: "tool_call", toolCallId: "call_01", title: "Run the requested shell command and capture its output", kind: "execute", status: "pending",
+    rawInput: { command: "echo hi", description: "Run the requested shell command and capture its output", mode: "sync", initial_wait: 10 },
+  },
+  { sessionUpdate: "tool_call_update", toolCallId: "call_01", status: "failed", rawOutput: { message: "Denied by a preToolUse hook", code: "denied" } },
+];
+
+/** A call that genuinely takes no input: its only call frame is empty. */
+const EMPTY_INPUT_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "call_02", title: "Listing the workspace", kind: "read", status: "pending", rawInput: {} },
+  { sessionUpdate: "tool_call_update", toolCallId: "call_02", status: "completed", rawOutput: "notes.md" },
+];
 
 /** A real ACP agent behind the adapter; each prompt runs `onPrompt`. */
 function acpAdapter(onPrompt: (peer: AgentSideConnection, request: PromptRequest) => Promise<{ stopReason: "end_turn" }>, options: Partial<ACPClientAdapterOptions> = {}) {
@@ -74,7 +107,7 @@ describe("Agent.observe", () => {
     await observed.promise;
     expect(ofTypes(events, "thought", "tool.call", "tool.result")).toEqual([
       { type: "thought", roomId: ROOM, text: "weighing the options" },
-      { type: "tool.call", roomId: ROOM, toolCallId: "call-1", name: "Read notes.md", kind: "read", input: { path: "notes.md" } },
+      { type: "tool.call", roomId: ROOM, toolCallId: "call-1", name: "read", kind: "read", input: { path: "notes.md" } },
       { type: "tool.result", roomId: ROOM, toolCallId: "call-1", status: "completed", output: "three notes" },
     ]);
     expect(room.posted, "observing posted nothing").toEqual([]);
@@ -192,6 +225,44 @@ describe("Agent.observe", () => {
       { type: "room.stopped", roomId: ROOM },
       { type: "room.left", roomId: ROOM },
       { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it.each([
+    {
+      bridge: "Claude Code's",
+      frames: CLAUDE_BASH_CALL,
+      call: { toolCallId: "toolu_01", name: "Bash", kind: "execute", input: { command: "echo hi", description: "Print \"hi\" to stdout" } },
+      result: { toolCallId: "toolu_01", status: "completed", output: "hi" },
+    },
+    {
+      bridge: "Copilot's",
+      frames: COPILOT_DENIED_CALL,
+      call: {
+        toolCallId: "call_01",
+        name: "execute",
+        kind: "execute",
+        input: { command: "echo hi", description: "Run the requested shell command and capture its output", mode: "sync", initial_wait: 10 },
+      },
+      result: { toolCallId: "call_01", status: "failed", output: JSON.stringify({ message: "Denied by a preToolUse hook", code: "denied" }) },
+    },
+    {
+      bridge: "an input-less",
+      frames: EMPTY_INPUT_CALL,
+      call: { toolCallId: "call_02", name: "read", kind: "read" },
+      result: { toolCallId: "call_02", status: "completed", output: "notes.md" },
+    },
+  ])("reports $bridge recorded tool call once, by its tool name or kind and never its title", async ({ frames, call, result }) => {
+    const { events, room } = await startAgent(acpAdapter(async (peer, { sessionId }) => {
+      for (const update of frames) await peer.sessionUpdate({ sessionId, update });
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }));
+
+    expect(await room.outcome(await room.say("owner", "run it"))).toBe("processed");
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
+      { type: "tool.call", roomId: ROOM, ...call },
+      { type: "tool.result", roomId: ROOM, ...result },
     ]);
   });
 });
