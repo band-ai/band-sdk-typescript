@@ -60,6 +60,8 @@ export interface AgentIdentityOptions {
 interface Settled {
   readonly messageId: string;
   readonly outcome: Outcome;
+  /** The label a failed mark carried. */
+  readonly error?: string;
 }
 
 type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
@@ -378,8 +380,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settle(messageId, "processed");
   }
 
-  public override async markMessageFailed(_roomId: string, messageId: string) {
-    return this.settle(messageId, "failed");
+  public override async markMessageFailed(_roomId: string, messageId: string, error: string) {
+    return this.settle(messageId, "failed", error);
   }
 
   /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
@@ -411,8 +413,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome) {
-    this.settled.record({ messageId, outcome });
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
     return {};
   }
 
@@ -486,6 +488,11 @@ export class BandRoom {
   /** Resolves with how the runtime settled `messageId`. */
   public async outcome(messageId: string): Promise<Outcome> {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
+  }
+
+  /** The labels the runtime marked `messageId` failed with so far. */
+  public failureLabels(messageId: string): string[] {
+    return this.platform.rest.settled.entries.flatMap((settled) => settled.messageId === messageId && settled.error !== undefined ? [settled.error] : []);
   }
 
   /** Every outcome the runtime has settled `messageId` with so far. */

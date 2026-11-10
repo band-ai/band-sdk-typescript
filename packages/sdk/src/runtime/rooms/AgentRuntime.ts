@@ -27,6 +27,10 @@ interface AgentRuntimeOptions {
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
+  /** An admission started handling a room; repeated admissions of a handled room are not reported. */
+  onRoomAdmitted?: (roomId: string) => void;
+  /** The agent lost a room's membership; not called for rooms dropped by `stop()`. */
+  onRoomRemoved?: (roomId: string) => void;
   /** A room's execution stopped: the room was left or reset, or the runtime stopped. */
   onRoomStopped?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
@@ -49,6 +53,8 @@ export class AgentRuntime {
   private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
   private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
   private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
+  private readonly onRoomAdmitted?: AgentRuntimeOptions["onRoomAdmitted"];
+  private readonly onRoomRemoved?: AgentRuntimeOptions["onRoomRemoved"];
   private readonly onRoomStopped?: AgentRuntimeOptions["onRoomStopped"];
   private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
   private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
@@ -77,6 +83,8 @@ export class AgentRuntime {
     this.onSessionCleanup = options.onSessionCleanup ?? (async () => undefined);
     this.onRoomJoined = options.onRoomJoined;
     this.onRoomLeft = options.onRoomLeft;
+    this.onRoomAdmitted = options.onRoomAdmitted;
+    this.onRoomRemoved = options.onRoomRemoved;
     this.onRoomStopped = options.onRoomStopped;
     this.onError = options.onError;
     this.logger = resolveLogger(options.logger);
@@ -106,12 +114,20 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {
+      // Presence notifies every admitting caller, so a room already handled is not news.
+      const admitted = !this.executions.has(roomId);
       this.getOrCreateExecution(roomId);
+      if (admitted) {
+        this.onRoomAdmitted?.(roomId);
+      }
       await this.onRoomJoined?.(roomId, payload);
     };
-    this.presence.onRoomLeft = async (roomId) => {
+    this.presence.onRoomLeft = async (roomId, reason) => {
       // Membership loss revokes admission even when the current handler cannot finish.
       await this.teardownExecution(roomId, 0);
+      if (reason === "removed") {
+        this.onRoomRemoved?.(roomId);
+      }
       await this.onRoomLeft?.(roomId);
     };
     this.presence.onRoomEvent = async (roomId, event) => {
@@ -288,8 +304,7 @@ export class AgentRuntime {
         await isolateTeardown(errors, async () => {
           graceful = (await execution.stop(timeoutMs)) && graceful;
         });
-        this.executions.delete(roomId);
-        this.onRoomStopped?.(roomId);
+        this.evictExecution(roomId, execution);
       }),
     );
 
@@ -376,10 +391,7 @@ export class AgentRuntime {
       });
     }
 
-    this.executions.delete(roomId);
-    if (execution) {
-      this.onRoomStopped?.(roomId);
-    }
+    this.evictExecution(roomId, execution);
     this.contexts.delete(roomId);
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
 
@@ -388,6 +400,17 @@ export class AgentRuntime {
     }
 
     return graceful;
+  }
+
+  /**
+   * Drops `roomId`'s execution after `execution` stopped. Overlapping teardowns
+   * share one execution's stop, so only the one that still finds it reports it.
+   */
+  private evictExecution(roomId: string, execution: Execution | undefined): void {
+    if (execution && this.executions.get(roomId) === execution) {
+      this.onRoomStopped?.(roomId);
+    }
+    this.executions.delete(roomId);
   }
 
   private async enqueueUnlessStopping(roomId: string, event: PlatformEvent): Promise<void> {

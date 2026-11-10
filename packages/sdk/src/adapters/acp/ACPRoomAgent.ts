@@ -20,7 +20,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/acp-client";
-import type { AgentEventSink } from "../../contracts/events";
+import type { AgentEventListener } from "../../contracts/events";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -125,6 +125,7 @@ const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 // config bound because authenticating makes a network round trip.
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+const PROCESS_EXITED_ERROR = "The ACP agent process exited";
 // How much of a dying agent's stderr its exit warning carries.
 const STDERR_TAIL_LINES = 20;
 
@@ -236,7 +237,7 @@ export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "comman
   roomId: string;
   provider: string;
   /** Where the room reports local events; nothing sent here is posted. */
-  observer?: AgentEventSink;
+  observer?: AgentEventListener;
 }
 
 /** The turn holding a room; `prompt` is set while its ACP prompt is in flight. */
@@ -306,7 +307,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly permissionTimeoutMs: number
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
-  private readonly observer: AgentEventSink
+  private readonly observer: AgentEventListener
   private readonly sessionEvents: SessionUpdateEvents
   private readonly customSection?: string
 
@@ -945,7 +946,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       void connection.closed.finally(() => {
         // Still live means nothing here retired it: the process ended on its own.
         if (this.live === live) {
-          this.observer({ type: "room.failed", roomId: this.roomId, error: "The ACP agent process exited" })
+          this.observer({ type: "room.failed", roomId: this.roomId, error: PROCESS_EXITED_ERROR })
         }
         this.retireConnection(connection, live.generation)
       })
@@ -958,9 +959,10 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       } catch (stopError) {
         this.safeWarn("acp_client.handle_stop_after_handshake_failure", { error: asErrorMessage(stopError) })
       }
-      const message = asErrorMessage(error)
-      if (message !== CONNECTION_ATTEMPT_SUPERSEDED_ERROR) {
-        this.observer({ type: "room.failed", roomId: this.roomId, error: message })
+      // A stop or cleanup ended this attempt on purpose, whatever error that surfaced as.
+      const superseded = attempt.signal.aborted || generation !== this.connectionGeneration
+      if (!superseded) {
+        this.observer({ type: "room.failed", roomId: this.roomId, error: asErrorMessage(error) })
       }
       throw error
     } finally {
@@ -1503,11 +1505,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
 
     const toolCallId = params.toolCall.toolCallId
+    const toolName = observedToolName(params.toolCall)
     this.observer({
       type: "approval.requested",
       roomId,
       toolCallId,
-      toolName: observedToolName(params.toolCall) ?? "unknown",
+      ...(toolName !== undefined ? { toolName } : {}),
       options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
     })
     let response: RequestPermissionResponse

@@ -98,7 +98,6 @@ export type {
   ToolExecutor,
   AgentEvent,
   AgentEventListener,
-  AgentEventSink,
   AgentEventType,
   LinkDisconnectReason,
 } from "./core";

@@ -16,6 +16,7 @@ import type {
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
+import { notifyEach } from "../core/listeners";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { LinkDisconnectReason } from "../contracts/events";
@@ -165,13 +166,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       return;
     }
     this.reported = change.connected ? { connected: true } : { connected: false, reason: change.reason };
-    for (const listener of [...this.connectionListeners]) {
-      try {
-        listener(change);
-      } catch (error) {
-        this.logger.warn("Connection change listener failed", { error });
-      }
-    }
+    notifyEach(this.connectionListeners, change, (error) => {
+      this.logger.warn("Connection change listener failed", { error });
+    });
   }
 
   public constructor(options: BandLinkOptions) {
@@ -242,14 +239,14 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number, signal: AbortSignal): Promise<void> {
-    // Counts drops for this connect epoch so a reconnect that finishes after a
-    // newer drop does not report a stale up.
-    let dropGeneration = 0;
+    // Counts downs (drops and terminal) for this connect epoch, so a reconnect
+    // that finishes after a newer down does not report a stale up.
+    let downs = 0;
     // Per connectSession, not link lifetime: a prior closed/terminal leaves
     // `reported` non-null, but this session still has not told observers it is up.
     let reportedUp = false;
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
-      const dropsSeen = dropGeneration;
+      const downsSeen = downs;
       await this.subscriptionManager.reconcileReconnect(snapshot);
       if (this.session.isStale(epoch)) {
         this.logger.debug(
@@ -259,27 +256,29 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
       // Observers hear an up only after this session's first up, and not for
-      // a reconcile that a newer drop already made stale.
-      if (reportedUp && dropGeneration === dropsSeen) {
+      // a reconcile that a newer down already made stale.
+      if (reportedUp && downs === downsSeen) {
         this.reportConnection({ connected: true, reconnected: true });
       }
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
-    const stopDropped = this.transport.onDropped?.(() => {
+    const reportDown = (reason: Exclude<LinkDisconnectReason, "closed">): void => {
       if (this.session.isStale(epoch)) {
         return;
       }
-      dropGeneration += 1;
+      downs += 1;
       // Observers only learn about downs after this session's first up.
-      if (!reportedUp) {
-        return;
+      if (reportedUp) {
+        this.reportConnection({ connected: false, reason });
       }
-      this.reportConnection({ connected: false, reason: "dropped" });
-    });
+    };
+    const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));
+    const stopTerminal = this.transport.onTerminal(() => reportDown("terminal"));
     this.session.reconnectObserverTeardown = () => {
       stopReconnected?.();
       stopRejoined?.();
       stopDropped?.();
+      stopTerminal();
     };
 
     try {
@@ -359,7 +358,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   /** The transport's session ended for good: nothing more will arrive. */
   private handleTerminal(error: WebSocketDisconnectError): void {
     this.connected = false;
-    this.reportConnection({ connected: false, reason: "terminal" });
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
       waiter?.reject(error);

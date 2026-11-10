@@ -1,5 +1,6 @@
 import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { RuntimeStateError, TransportError } from "../../core/errors";
+import { notifyEach } from "../../core/listeners";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
@@ -220,13 +221,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.logger.warn("Phoenix session ended", { reason: error.reason });
     this.terminal.abort(error);
-    for (const observer of [...this.terminalObservers]) {
-      try {
-        observer(error);
-      } catch (observerError) {
-        this.logger.error("Terminal disconnect observer failed", { error: observerError });
-      }
-    }
+    notifyEach(this.terminalObservers, error, (observerError) => {
+      this.logger.error("Terminal disconnect observer failed", { error: observerError });
+    });
     this.registry.failPendingJoins(error);
     void this.closeSocketLogged();
   }
@@ -370,13 +367,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   // Synchronous, unlike `notifyReconnectObservers`: an observer's queued catch-up
   // must land before any event the rejoined channel delivers next.
   private notifyTopicRejoined(topic: string): void {
-    for (const observer of [...this.topicRejoinObservers]) {
-      try {
-        observer(topic);
-      } catch (error) {
-        this.logger.error("Topic rejoin observer failed", { topic, error });
-      }
-    }
+    notifyEach(this.topicRejoinObservers, topic, (error) => {
+      this.logger.error("Topic rejoin observer failed", { topic, error });
+    });
   }
 
   private async handleOpen(): Promise<void> {
@@ -494,17 +487,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
     if (verdict.kind === "retry") {
-      this.notifyDropObservers(verdict.reason);
-    }
-  }
-
-  private notifyDropObservers(reason: WebSocketDisconnectReason): void {
-    for (const observer of [...this.dropObservers]) {
-      try {
-        observer(reason);
-      } catch (error) {
+      notifyEach(this.dropObservers, verdict.reason, (error) => {
         this.logger.error("Drop observer failed", { error });
-      }
+      });
     }
   }
 

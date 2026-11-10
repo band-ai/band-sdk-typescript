@@ -1,5 +1,5 @@
 import type { HistoryConverter, MessagingTools, PlatformMessageLike } from "../../contracts/protocols";
-import type { AgentEventSink } from "../../contracts/events";
+import type { AgentEventListener } from "../../contracts/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { SimpleAdapter } from "../../core/simpleAdapter";
@@ -39,7 +39,7 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   private readonly closing = new Map<string, Promise<void>>();
   private stopped = false;
   /** Where engines report local events; a no-op until the runtime attaches one. */
-  protected observer: AgentEventSink = () => {};
+  protected observer: AgentEventListener = () => {};
 
   protected constructor(options: RoomScopedAdapterOptions<H>) {
     super({ historyConverter: options.historyConverter });
@@ -50,7 +50,7 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   /** Builds the engine for one room; `workspace` is its claimed real path. */
   protected abstract createRoom(roomId: string, workspace: string): E;
 
-  public attachObserver(sink: AgentEventSink): void {
+  public attachObserver(sink: AgentEventListener): void {
     this.observer = sink;
   }
 

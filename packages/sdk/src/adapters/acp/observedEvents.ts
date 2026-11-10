@@ -1,7 +1,8 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 
-import type { AgentEventSink } from "../../contracts/events"
+import type { AgentEventListener } from "../../contracts/events"
 import { asOptionalRecord } from "../shared/coercion"
+import { extractToolOutput } from "./client"
 import { acpToolCallName } from "./toolCalls"
 import type { CollectedChunk } from "./types"
 
@@ -47,7 +48,7 @@ export class SessionUpdateEvents {
 
   public constructor(
     private readonly roomId: string,
-    private readonly emit: AgentEventSink,
+    private readonly emit: AgentEventListener,
   ) {}
 
   /** `chunk` is the update as the client collected it, for its extracted text. */
@@ -63,10 +64,8 @@ export class SessionUpdateEvents {
           })
         }
         return
+      // ACP lets either frame carry a terminal status, so both can end a call.
       case "tool_call":
-        if (this.completed.has(update.toolCallId)) return
-        this.refine(update)
-        return
       case "tool_call_update": {
         if (this.completed.has(update.toolCallId)) return
         const call = this.refine(update)
@@ -74,7 +73,7 @@ export class SessionUpdateEvents {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           this.calls.delete(update.toolCallId)
           this.completed.add(update.toolCallId)
-          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: chunk.content })
+          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: extractToolOutput(update) })
         }
         return
       }

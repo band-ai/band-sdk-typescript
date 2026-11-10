@@ -410,8 +410,9 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
   }
 }
 
-function extractToolOutput(
-  update: Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>,
+/** A tool call frame's result text: its raw output, else its text content. */
+export function extractToolOutput(
+  update: Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>,
 ): string {
   if (typeof update.rawOutput === "string") {
     return update.rawOutput

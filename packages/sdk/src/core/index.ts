@@ -33,7 +33,6 @@ export type {
 export type {
   AgentEvent,
   AgentEventListener,
-  AgentEventSink,
   AgentEventType,
   LinkDisconnectReason,
 } from "../contracts/events";

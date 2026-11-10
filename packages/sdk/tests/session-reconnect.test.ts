@@ -30,6 +30,15 @@ const CONTROL_TOPIC = agentControlTopic(AGENT_ID);
 const ROOM = "chat_room:room-1";
 /** Longer than any delay the fast policy picks, plus phoenix's own teardown. */
 const PAST_ANY_DELAY_MS = 5_000;
+const SUPERSEDED_REASON = {
+  source: "agent_control",
+  code: "session.already_connected",
+  message: "superseded",
+  retryable: false,
+  retryAfter: null,
+  targetSocketId: null,
+  correlationId: null,
+} satisfies WebSocketDisconnectReason;
 
 type PolicyOverrides = Parameters<typeof fastSessionPolicy>[0];
 
@@ -318,6 +327,48 @@ describe("core Session owns reconnects (real wire)", () => {
       ]);
     });
 
+    it("does not report a reconnect up that settled after the session ended for good", async () => {
+      const transport = new FakeTransport();
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+      await link.subscribeRoom("room-1");
+
+      transport.triggerDrop();
+      const chat = chatRoomTopic("room-1");
+      const releaseLeave = transport.gateLeave(chat);
+      const reconnecting = transport.triggerReconnect({
+        generation: 1,
+        joinedTopics: new Set(),
+        attemptedTopics: new Set([chat, roomParticipantsTopic("room-1")]),
+      });
+      await transport.left.until(() => transport.left.entries.includes(chat));
+      transport.terminate(new WebSocketDisconnectError(SUPERSEDED_REASON));
+      releaseLeave();
+      await reconnecting;
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: false, reason: "terminal" },
+      ]);
+    });
+
+    it("does not report a boot the platform refuses for good as a link going down", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+
+      peer.refuseUpgrades({ status: 403 });
+      await expect(onWireClock(link.connect())).rejects.toBeInstanceOf(WebSocketDisconnectError);
+
+      expect(agent.terminals).toEqual([expect.objectContaining({ status: 403, retryable: false })]);
+      expect(changes).toEqual([]);
+    });
+
     it("does not report dropped before the first up", async () => {
       const transport = new FakeTransport();
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
@@ -368,15 +419,7 @@ describe("core Session owns reconnects (real wire)", () => {
       link.onConnectionChange((change) => changes.push(change));
       await link.connect();
 
-      transport.terminate(new WebSocketDisconnectError({
-        source: "agent_control",
-        code: "session.already_connected",
-        message: "superseded",
-        retryable: false,
-        retryAfter: null,
-        targetSocketId: null,
-        correlationId: null,
-      }));
+      transport.terminate(new WebSocketDisconnectError(SUPERSEDED_REASON));
       await link.disconnect();
 
       expect(changes).toEqual([

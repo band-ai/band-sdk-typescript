@@ -6,11 +6,19 @@ import {
   type PromptRequest,
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import { CursorACPAdapter } from "../src/adapters/cursor-acp";
+import { CURSOR_PROJECT_CONFIG } from "../src/adapters/cursor-acp/permissions";
+import { GenericAdapter } from "../src/adapters/GenericAdapter";
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
 import { Agent } from "../src/agent/Agent";
 import type { AgentEvent } from "../src/contracts/events";
+import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
 import { createDeferred } from "../src/core/deferred";
 import { BandLink } from "../src/platform/BandLink";
@@ -65,6 +73,11 @@ const EMPTY_INPUT_CALL: SessionUpdate[] = [
   { sessionUpdate: "tool_call_update", toolCallId: "call_02", status: "completed", rawOutput: "notes.md" },
 ];
 
+/** ACP lets a call arrive already finished: one `tool_call` frame with its status and output. */
+const ONE_FRAME_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "call_03", title: "Read notes.md", kind: "read", status: "completed", rawInput: { path: "notes.md" }, rawOutput: "three notes" },
+];
+
 /** A real ACP agent behind the adapter; each prompt runs `onPrompt`. */
 function acpAdapter(
   onPrompt: (peer: AgentSideConnection, request: PromptRequest) => Promise<{ stopReason: "end_turn" | "cancelled" }>,
@@ -97,8 +110,8 @@ async function workThenAnswer(peer: AgentSideConnection, sessionId: string, befo
   return { stopReason: "end_turn" as const };
 }
 
-async function startAgent(adapter: ACPClientAdapter, { observe = true }: { observe?: boolean } = {}) {
-  const platform = BandPlatform.host([person("owner")]);
+/** An agent on `platform`, not yet started; `events` is everything it reports, when `observe`. */
+function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, { observe = true }: { observe?: boolean } = {}) {
   const agent = Agent.create({
     adapter,
     agentId: AGENT_ID,
@@ -109,10 +122,37 @@ async function startAgent(adapter: ACPClientAdapter, { observe = true }: { obser
   if (observe) {
     agent.observe((event) => { events.push(event); });
   }
-  await agent.start();
   onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
+  return { agent, events };
+}
+
+async function startAgent(adapter: FrameworkAdapter, options: { observe?: boolean } = {}) {
+  const platform = BandPlatform.host([person("owner")]);
+  const { agent, events } = createAgent(adapter, platform, options);
+  await agent.start();
   return { agent, platform, events, room: await platform.room(ROOM) };
 }
+
+/** Resolves with the first event `agent` reports of `type`. */
+function nextEvent<T extends AgentEvent["type"]>(agent: Agent, type: T): Promise<Extract<AgentEvent, { type: T }>> {
+  const seen = createDeferred<Extract<AgentEvent, { type: T }>>();
+  const stop = agent.observe((event) => {
+    if (event.type === type) {
+      stop();
+      seen.resolve(event as Extract<AgentEvent, { type: T }>);
+    }
+  });
+  return seen.promise;
+}
+
+/** What the room sees of one `workThenAnswer` turn, as on a build without `observe`. */
+const POSTED_FOR_WORK_THEN_ANSWER = [
+  ["thought", "weighing the options"],
+  ["tool_call", "Read notes.md"],
+  ["tool_result", "three notes"],
+  ["text", "Found three notes."],
+  ["task", "ACP client session"],
+];
 
 const posted = (room: BandRoom) => room.posted.map(({ messageType, content }) => [messageType, content]);
 const ofTypes = (events: AgentEvent[], ...types: AgentEvent["type"][]) => events.filter((event) => types.includes(event.type));
@@ -150,13 +190,10 @@ describe("Agent.observe", () => {
     ]);
   });
 
-  it("leaves what the room sees unchanged", async () => {
-    const turn = async (observe: boolean) => {
-      const { room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), { observe });
-      expect(await room.outcome(await room.say("owner", "what is in my notes?"))).toBe("processed");
-      return posted(room);
-    };
-    expect(await turn(true)).toEqual(await turn(false));
+  it.each([true, false])("posts the turn to the room as it always has, observed: %s", async (observe) => {
+    const { room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), { observe });
+    expect(await room.outcome(await room.say("owner", "what is in my notes?"))).toBe("processed");
+    expect(posted(room)).toEqual(POSTED_FOR_WORK_THEN_ANSWER);
   });
 
   it("keeps a turn and the other listeners going when one listener throws or rejects", async () => {
@@ -258,6 +295,23 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("marks a failed turn with its error's own message, and reports that same label", async () => {
+    const { events, room } = await startAgent(new GenericAdapter(async ({ tools }) => {
+      await tools.sendMessage("On it.", ["owner"]);
+    }));
+    const refused = room.holdMessage((content) => content === "On it.", { error: new Error("platform unavailable") });
+
+    const message = await room.say("owner", "hello");
+    await refused.sending;
+    refused.release();
+    expect(await room.outcome(message)).toBe("failed");
+    // The reply's delivery failure carries its cause; the label is still only the message, as before observe.
+    expect(room.failureLabels(message)).toEqual(["platform unavailable"]);
+    expect(ofTypes(events, "turn.failed")).toEqual([
+      { type: "turn.failed", roomId: ROOM, messageId: message, error: "platform unavailable" },
+    ]);
+  });
+
   it("reports a room whose agent process cannot start", async () => {
     const adapter = new ACPClientAdapter({
       command: ["acp-fixture"],
@@ -269,6 +323,57 @@ describe("Agent.observe", () => {
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
     expect(ofTypes(events, "room.failed")).toEqual([
       { type: "room.failed", roomId: ROOM, error: expect.stringContaining("command not found") },
+    ]);
+  });
+
+  it("reports a room whose engine cannot start in its workspace", async () => {
+    const root = tmpRoot();
+    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
+    await mkdir(dirname(config), { recursive: true });
+    await writeFile(config, "{ allow: ");
+    const adapter = new CursorACPAdapter({
+      cwd: root,
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((): AcpAgent => ({
+        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: async () => ({ stopReason: "end_turn" }),
+      })),
+    });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: expect.stringContaining("is not valid JSON") },
+    ]);
+  });
+
+  it("does not report room.failed for a room removed while its agent process is still handshaking", async () => {
+    const initializing = createDeferred();
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((): AcpAgent => ({
+        initialize: () => { initializing.resolve(); return new Promise(() => {}); },
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: async () => ({ stopReason: "end_turn" }),
+      })),
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    await room.say("owner", "hello");
+    await initializing.promise;
+    await room.remove();
+    await room.left();
+    await agent.stop();
+    expect(ofTypes(events, "room.failed", "room.stopped", "room.left")).toEqual([
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
     ]);
   });
 
@@ -329,15 +434,15 @@ describe("Agent.observe", () => {
         };
       },
     });
-    const { events, room } = await startAgent(adapter);
+    const { agent, events, room } = await startAgent(adapter);
+    const failed = nextEvent(agent, "room.failed");
 
     const first = await room.say("owner", "run it");
-    await vi.waitFor(() => {
-      expect(ofTypes(events, "room.failed")).toEqual([
-        { type: "room.failed", roomId: ROOM, error: "The ACP agent process exited" },
-      ]);
-    });
+    await failed;
     expect(await room.outcome(first)).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: "The ACP agent process exited" },
+    ]);
     expect(ofTypes(events, "tool.call")).toEqual([
       { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
     ]);
@@ -356,11 +461,87 @@ describe("Agent.observe", () => {
     await room.remove();
     await room.left();
     await agent.stop();
-    expect(ofTypes(events, "room.joined", "room.stopped", "room.left", "link.connected", "link.disconnected")).toEqual([
+    // No room.failed: retiring a live process is not the process exiting on its own.
+    expect(ofTypes(events, "room.joined", "room.stopped", "room.left", "room.failed", "link.connected", "link.disconnected")).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "room.joined", roomId: ROOM },
       { type: "room.stopped", roomId: ROOM },
       { type: "room.left", roomId: ROOM },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports a room it still belongs to as stopped, not left, when the agent stops", async () => {
+    const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    await agent.stop();
+    expect(ofTypes(events, "room.joined", "room.stopped", "room.left", "room.failed", "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "room.joined", roomId: ROOM },
+      { type: "room.stopped", roomId: ROOM },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports a room stopped once when a session reset and a removal overlap", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const { agent, events, room } = await startAgent(new GenericAdapter(async ({ tools }) => {
+      entered.resolve();
+      await release.promise;
+      tools.turn.settle();
+    }));
+
+    await room.say("owner", "hello");
+    await entered.promise;
+    const reset = agent.resetRoomSession(ROOM);
+    await room.remove();
+    release.resolve();
+    await reset;
+    await room.left();
+    await agent.stop();
+    expect(ofTypes(events, "room.stopped", "room.left")).toEqual([
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
+    ]);
+  });
+
+  it("reports a room joined once when Band announces it again", async () => {
+    const { events, platform, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    await platform.room(ROOM);
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: ROOM }]);
+  });
+
+  it("reports a room joined once when Band announces it while startup is already joining it", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    platform.rest.addRoom(ROOM);
+    const releaseJoin = platform.transport.gateJoin(chatRoomTopic(ROOM));
+    const { agent, events } = createAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), platform);
+
+    const starting = agent.start();
+    await platform.transport.bound.until(() => platform.transport.hasTopic(agentRoomsTopic(AGENT_ID)));
+    const room = await platform.room(ROOM);
+    releaseJoin();
+    await starting;
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: ROOM }]);
+  });
+
+  it("reports each start's link once when the agent restarts", async () => {
+    const { agent, events } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    await agent.stop();
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+      { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "closed" },
     ]);
   });
@@ -420,6 +601,12 @@ describe("Agent.observe", () => {
       frames: EMPTY_INPUT_CALL,
       call: { toolCallId: "call_02", name: "read", kind: "read" },
       result: { toolCallId: "call_02", status: "completed", output: "notes.md" },
+    },
+    {
+      bridge: "a one-frame",
+      frames: ONE_FRAME_CALL,
+      call: { toolCallId: "call_03", name: "read", kind: "read", input: { path: "notes.md" } },
+      result: { toolCallId: "call_03", status: "completed", output: "three notes" },
     },
     {
       bridge: "Cursor's",

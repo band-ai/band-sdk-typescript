@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentEventListener } from "../contracts/events";
+import { notifyEach } from "../core/listeners";
 import type { Logger } from "../core/logger";
 
 /** Fans each event out to every listener, isolating listener failures from the emitter and each other. */
@@ -16,20 +17,9 @@ export class AgentEventHub {
   }
 
   public readonly emit = (event: AgentEvent): void => {
-    for (const listener of [...this.listeners]) {
-      try {
-        // Typed `void`, but an async listener still returns its promise.
-        const result: unknown = listener(event);
-        if (result instanceof Promise) {
-          result.catch((error: unknown) => this.reportListenerFailure(event, error));
-        }
-      } catch (error) {
-        this.reportListenerFailure(event, error);
-      }
-    }
+    // Typed `void`, but an async listener still returns its promise; `notifyEach` catches it.
+    notifyEach(this.listeners, event, (error) => {
+      this.logger.warn("agent_events.listener_failed", { eventType: event.type, error });
+    });
   };
-
-  private reportListenerFailure(event: AgentEvent, error: unknown): void {
-    this.logger.warn("agent_events.listener_failed", { eventType: event.type, error });
-  }
 }

@@ -1,6 +1,6 @@
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 import { isBlankEventContent, type ChatEventType } from "./chatEvents";
-import type { AgentEventSink } from "./events";
+import type { AgentEventListener } from "./events";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
@@ -365,7 +365,7 @@ export interface FrameworkAdapter {
    * thoughts, tool calls, approvals, and room process failures — before
    * `onStarted`. The sink is local: nothing reported through it is posted.
    */
-  attachObserver?(sink: AgentEventSink): void;
+  attachObserver?(sink: AgentEventListener): void;
   onStarted(agentName: string, agentDescription: string): Promise<void>;
   onRuntimeStop?(): Promise<void>;
 }

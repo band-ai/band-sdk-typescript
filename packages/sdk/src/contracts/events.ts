@@ -22,7 +22,8 @@ export type AgentEvent =
   /**
    * The agent started a tool call, reported once per `toolCallId`. `name` is
    * ACP's programmatic tool `name` when non-empty, else a bridge `_meta`
-   * name, else ACP `kind`; absent when none is known. A display title is
+   * name, else an MCP server and tool named in its arguments, else ACP
+   * `kind`; absent when none is known. A display title is
    * never used: it can hold a whole command line. `input` is the agent's
    * own argument record, as it sent it, when it sends one.
    */
@@ -34,16 +35,20 @@ export type AgentEvent =
       type: "approval.requested";
       roomId: string;
       toolCallId: string;
-      toolName: string;
+      /** Resolved like `tool.call`'s `name`; absent when none is known. */
+      toolName?: string;
       options: ReadonlyArray<{ optionId: string; name: string; kind: string }>;
     }
   /** That request was answered: `selected` with the option chosen, or `cancelled`. */
   | { type: "approval.resolved"; roomId: string; toolCallId: string; outcome: "selected" | "cancelled"; optionId?: string }
   /** The agent joined a room and handles its messages. */
   | { type: "room.joined"; roomId: string }
-  /** The agent left a room, or was removed from it. */
+  /** The agent is no longer a member of a room. Stopping the agent reports `room.stopped`, not this. */
   | { type: "room.left"; roomId: string }
-  /** The room's agent process could not start; its messages fail until a later start succeeds. */
+  /**
+   * The room's agent process could not start, or exited on its own; the
+   * room's messages fail until a later start succeeds.
+   */
   | { type: "room.failed"; roomId: string; error: string }
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */
   | { type: "room.stopped"; roomId: string }
@@ -60,6 +65,3 @@ export type AgentEventType = AgentEvent["type"];
  * and skipped; it cannot fail the turn or starve the other listeners.
  */
 export type AgentEventListener = (event: AgentEvent) => void;
-
-/** Where a component reports events; the runtime fans them out to listeners. */
-export type AgentEventSink = AgentEventListener;
