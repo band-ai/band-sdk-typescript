@@ -12,6 +12,7 @@ import {
 } from "./types";
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
+import { asErrorMessage } from "../core/coercion";
 import { RuntimeStateError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor, toPlatformMessage } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
@@ -541,9 +542,7 @@ export class PlatformRuntime implements AsyncDisposable {
     } finally {
       await lease?.end();
     }
-    const failureLabel = succeeded
-      ? undefined
-      : caughtError instanceof Error ? caughtError.message : String(caughtError);
+    const failureLabel = succeeded ? undefined : asErrorMessage(caughtError);
     if (started) {
       this.events.emit(succeeded
         ? { type: "turn.completed", roomId, messageId }

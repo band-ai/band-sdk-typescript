@@ -243,11 +243,21 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number, signal: AbortSignal): Promise<void> {
+    // Counts drops for this connect epoch so a reconnect that finishes after a
+    // newer drop does not report a stale up.
+    let dropGeneration = 0;
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
+      const dropsSeen = dropGeneration;
       await this.subscriptionManager.reconcileReconnect(snapshot);
       if (this.session.isStale(epoch)) {
         this.logger.debug(
           "Reconnect reconciliation settled after session ended, discarding reconnected event",
+        );
+        return;
+      }
+      if (dropGeneration !== dropsSeen) {
+        this.logger.debug(
+          "Reconnect reconciliation settled after a newer drop, discarding reconnected event",
         );
         return;
       }
@@ -256,9 +266,15 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
     const stopDropped = this.transport.onDropped?.(() => {
-      if (!this.session.isStale(epoch)) {
-        this.reportConnection({ connected: false, reason: "dropped" });
+      if (this.session.isStale(epoch)) {
+        return;
       }
+      dropGeneration += 1;
+      // Observers only learn about downs after the first up for this session.
+      if (this.reported === null) {
+        return;
+      }
+      this.reportConnection({ connected: false, reason: "dropped" });
     });
     this.session.reconnectObserverTeardown = () => {
       stopReconnected?.();
@@ -343,6 +359,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private handleTerminal(error: WebSocketDisconnectError): void {
     this.connected = false;
     this.reportConnection({ connected: false, reason: "terminal" });
+    // Terminal is the final down: deactivate so a later local disconnect does
+    // not emit `closed` after observers already saw the session end for good.
+    if (this.session.isActive) {
+      this.session.deactivate();
+      this.session.clearReconnectObserver();
+      this.subscriptionManager.endSession();
+    }
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
       waiter?.reject(error);
