@@ -1,5 +1,6 @@
 import {
   AgentSideConnection,
+  RequestError,
   type Agent as AcpAgent,
   type PromptRequest,
   type RequestPermissionResponse,
@@ -81,28 +82,59 @@ const EDIT_CALL = { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", 
 const ALLOW_OPTION = { kind: "allow_once", optionId: "allow", name: "Allow" } as const;
 const DENY_OPTION = { kind: "reject_once", optionId: "deny", name: "Deny" } as const;
 
+/** The `approval.requested` a request for {@link EDIT_CALL} offering `options` reports. */
+function editApprovalRequested(...options: Array<typeof ALLOW_OPTION | typeof DENY_OPTION>) {
+  return {
+    type: "approval.requested",
+    roomId: ROOM,
+    toolCallId: EDIT_CALL.toolCallId,
+    toolName: EDIT_CALL.name,
+    options: options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+  };
+}
+
 const RUN_ECHO_CALL: SessionUpdate = {
   sessionUpdate: "tool_call", toolCallId: "reuse-1", title: "Run echo", kind: "execute", status: "pending", rawInput: { command: "echo hi" },
 };
 
-/** A real ACP agent behind the adapter; each prompt runs `onPrompt`. */
-function acpAdapter(
-  onPrompt: (peer: AgentSideConnection, request: PromptRequest) => Promise<{ stopReason: "end_turn" | "cancelled" }>,
-  options: Partial<ACPClientAdapterOptions> = {},
-) {
+/** Runs one prompt; `exit` closes the agent's side, as its process exiting on its own would. */
+type OnPrompt = (peer: AgentSideConnection, request: PromptRequest, exit: () => void) => Promise<{ stopReason: "end_turn" | "cancelled" }>;
+
+const endTurn: OnPrompt = async () => ({ stopReason: "end_turn" });
+
+interface FixtureAgentOptions {
+  /** Replaces the agent's handshake methods, which otherwise accept with session `session-1`. */
+  overrides?: Omit<Partial<AcpAgent>, "prompt">;
+  /** Runs when the adapter stops the agent's process. */
+  onStop?: () => void;
+}
+
+/** A real in-memory ACP agent; each prompt runs `onPrompt`. */
+function fixtureAgent(onPrompt: OnPrompt, { overrides, onStop }: FixtureAgentOptions = {}) {
+  return inMemoryAgent((peer, exit): AcpAgent => ({
+    initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+    authenticate: async () => ({}),
+    newSession: async () => ({ sessionId: "session-1" }),
+    cancel: async () => {},
+    ...overrides,
+    prompt: (request) => onPrompt(peer, request, exit),
+  }), onStop);
+}
+
+/** An `ACPClientAdapter` over {@link fixtureAgent}. */
+function acpAdapter(onPrompt: OnPrompt, options: Partial<ACPClientAdapterOptions> = {}, agent: FixtureAgentOptions = {}) {
   return new ACPClientAdapter({
     command: ["acp-fixture"],
     cwd: tmpRoot(),
     enableMcpTools: false,
-    connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-      authenticate: async () => ({}),
-      newSession: async () => ({ sessionId: "session-1" }),
-      cancel: async () => {},
-      prompt: (request) => onPrompt(peer, request),
-    })),
+    connectionFactory: fixtureAgent(onPrompt, agent),
     ...options,
   });
+}
+
+/** A `CursorACPAdapter` over {@link fixtureAgent}, working in `cwd`. */
+function cursorAdapter(cwd: string, onPrompt: OnPrompt = endTurn) {
+  return new CursorACPAdapter({ cwd, enableMcpTools: false, connectionFactory: fixtureAgent(onPrompt) });
 }
 
 /** One turn's worth of agent output: a thought, a tool call and its result, then the reply. */
@@ -197,6 +229,21 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("delivers the reply's message event while the reply is still unposted", async () => {
+    const { agent, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    const reply = room.holdMessage((content) => content === "Found three notes.");
+    const streamed = nextEvent(agent, "message");
+
+    const message = await room.say("owner", "what is in my notes?");
+    // Awaited while the post is held, so a message event that waited for the post would never arrive.
+    expect(await streamed).toEqual({ type: "message", roomId: ROOM, text: "Found three notes." });
+    expect(room.messages).toEqual([]);
+
+    reply.release();
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.map(({ content }) => content)).toEqual(["Found three notes."]);
+  });
+
   it.each([true, false])("posts the turn to the room as it always has, observed: %s", async (observe) => {
     const { room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), { observe });
     expect(await room.outcome(await room.say("owner", "what is in my notes?"))).toBe("processed");
@@ -234,24 +281,14 @@ describe("Agent.observe", () => {
 
   it("reports a permission request and its answer", async () => {
     const adapter = acpAdapter(async (peer, { sessionId }) => {
-      await peer.requestPermission({
-        sessionId,
-        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
-        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
-      });
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION, DENY_OPTION] });
       return workThenAnswer(peer, sessionId);
     }, { resolvePermission: async () => "allow" });
     const { events, room } = await startAgent(adapter);
 
     expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
-      {
-        type: "approval.requested",
-        roomId: ROOM,
-        toolCallId: "edit-1",
-        toolName: "Edit",
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
-      },
+      editApprovalRequested(ALLOW_OPTION, DENY_OPTION),
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
     ]);
   });
@@ -259,11 +296,7 @@ describe("Agent.observe", () => {
   it("reports approval.resolved cancelled when cancelTurn runs while permission is pending", async () => {
     const asked = createDeferred();
     const adapter = acpAdapter(async (peer, { sessionId }) => {
-      await peer.requestPermission({
-        sessionId,
-        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
-        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
-      });
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION, DENY_OPTION] });
       return { stopReason: "cancelled" as const };
     }, {
       resolvePermission: (_request, signal) => {
@@ -280,13 +313,7 @@ describe("Agent.observe", () => {
     expect(await agent.cancelTurn(ROOM)).toBe(true);
     expect(await room.outcome(message)).toBe("processed");
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
-      {
-        type: "approval.requested",
-        roomId: ROOM,
-        toolCallId: "edit-1",
-        toolName: "Edit",
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
-      },
+      editApprovalRequested(ALLOW_OPTION, DENY_OPTION),
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
     ]);
   });
@@ -294,11 +321,7 @@ describe("Agent.observe", () => {
   it("answers a permission request cancelled when a listener cancels the turn on approval.requested", async () => {
     const answered = createDeferred<string>();
     const adapter = acpAdapter(async (peer, { sessionId }) => {
-      const { outcome } = await peer.requestPermission({
-        sessionId,
-        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
-        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
-      });
+      const { outcome } = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
       answered.resolve(outcome.outcome);
       return { stopReason: "cancelled" as const };
     }, { resolvePermission: () => new Promise<never>(() => {}) });
@@ -322,11 +345,7 @@ describe("Agent.observe", () => {
   it("reports a permission request cancelled when resolvePermission rejects", async () => {
     const answered = createDeferred<RequestPermissionResponse["outcome"]>();
     const adapter = acpAdapter(async (peer, { sessionId }) => {
-      const answer = await peer.requestPermission({
-        sessionId,
-        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
-        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
-      });
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
       answered.resolve(answer.outcome);
       return workThenAnswer(peer, sessionId);
     }, { resolvePermission: async () => { throw new Error("approval UI unavailable"); } });
@@ -335,13 +354,7 @@ describe("Agent.observe", () => {
     expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
     expect(await answered.promise).toEqual({ outcome: "cancelled" });
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
-      {
-        type: "approval.requested",
-        roomId: ROOM,
-        toolCallId: "edit-1",
-        toolName: "Edit",
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
-      },
+      editApprovalRequested(ALLOW_OPTION),
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
     ]);
   });
@@ -366,13 +379,7 @@ describe("Agent.observe", () => {
     }]);
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual(observe
       ? [
-        {
-          type: "approval.requested",
-          roomId: ROOM,
-          toolCallId: "edit-1",
-          toolName: "Edit",
-          options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }, { optionId: "allow", name: "Allow", kind: "allow_once" }],
-        },
+        editApprovalRequested(DENY_OPTION, ALLOW_OPTION),
         { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
       ]
       : []);
@@ -421,22 +428,32 @@ describe("Agent.observe", () => {
     expect(await answered.promise).toEqual({ outcome: "selected", optionId: "allow" });
   });
 
+  it("sends a running room's events to the sink attached last", async () => {
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId));
+    const { room } = await startAgent(adapter, { observe: false });
+    const first: AgentEvent[] = [];
+    const second: AgentEvent[] = [];
+    adapter.attachObserver((event) => { first.push(event); });
+    expect(await room.outcome(await room.say("owner", "first"))).toBe("processed");
+
+    // The room's engine is running now, so this exercises the sink it reads per event.
+    adapter.attachObserver((event) => { second.push(event); });
+    expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+
+    const turn = [
+      { type: "thought", roomId: ROOM, text: "weighing the options" },
+      { type: "message", roomId: ROOM, text: "Found three notes." },
+    ];
+    expect(ofTypes(first, "thought", "message")).toEqual(turn);
+    expect(ofTypes(second, "thought", "message")).toEqual(turn);
+  });
+
   it("drops a room whose engine failed to start when a directly attached sink throws, so its next message starts it again", async () => {
     const root = tmpRoot();
     const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
     await mkdir(dirname(config), { recursive: true });
     await writeFile(config, "{ allow: ");
-    const adapter = new CursorACPAdapter({
-      cwd: root,
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: ({ sessionId }) => workThenAnswer(peer, sessionId),
-      })),
-    });
+    const adapter = cursorAdapter(root, (peer, { sessionId }) => workThenAnswer(peer, sessionId));
     const { room } = await startAgent(adapter, { observe: false });
     adapter.attachObserver(() => { throw new Error("sink bug"); });
 
@@ -462,26 +479,16 @@ describe("Agent.observe", () => {
     const answered = createDeferred();
     const ended = createDeferred<unknown>();
     const processStopped = createDeferred();
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async ({ sessionId }) => {
-          await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
-          return { stopReason: "end_turn" as const };
-        },
-      }), () => processStopped.resolve()),
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+      return { stopReason: "end_turn" };
+    }, {
       resolvePermission: async (_request, signal) => {
         signal.addEventListener("abort", () => ended.resolve(signal.reason));
         answered.resolve();
         return "allow";
       },
-    });
+    }, { onStop: () => processStopped.resolve() });
     const { room } = await startAgent(adapter);
     const requestPosting = room.holdEvent((content) => content.startsWith("Permission requested"));
 
@@ -501,23 +508,11 @@ describe("Agent.observe", () => {
   ] as const)("reports one cancelled approval.resolved when %s while a manual approval is pending", async (ending, reason) => {
     const asked = createDeferred<AbortSignal>();
     let exitProcess = (): void => {};
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((peer, exit): AcpAgent => {
-        exitProcess = exit;
-        return {
-          initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-          authenticate: async () => ({}),
-          newSession: async () => ({ sessionId: "session-1" }),
-          cancel: async () => {},
-          prompt: async ({ sessionId }) => {
-            await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
-            return { stopReason: "end_turn" as const };
-          },
-        };
-      }),
+    const adapter = acpAdapter(async (peer, { sessionId }, exit) => {
+      exitProcess = exit;
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+      return { stopReason: "end_turn" };
+    }, {
       resolvePermission: (_request, signal) => {
         asked.resolve(signal);
         return new Promise<never>(() => {});
@@ -574,12 +569,7 @@ describe("Agent.observe", () => {
   });
 
   it("reports a room whose agent process cannot start", async () => {
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: async () => { throw new Error("acp-fixture: command not found"); },
-    });
+    const adapter = acpAdapter(endTurn, { connectionFactory: async () => { throw new Error("acp-fixture: command not found"); } });
     const { events, room } = await startAgent(adapter);
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
     expect(ofTypes(events, "room.failed")).toEqual([
@@ -592,17 +582,7 @@ describe("Agent.observe", () => {
     const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
     await mkdir(dirname(config), { recursive: true });
     await writeFile(config, "{ allow: ");
-    const adapter = new CursorACPAdapter({
-      cwd: root,
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async () => ({ stopReason: "end_turn" }),
-      })),
-    });
+    const adapter = cursorAdapter(root);
     const { events, room } = await startAgent(adapter);
 
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
@@ -626,17 +606,8 @@ describe("Agent.observe", () => {
 
   it("does not report room.failed for a room removed while its agent process is still handshaking", async () => {
     const initializing = createDeferred();
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((): AcpAgent => ({
-        initialize: () => { initializing.resolve(); return new Promise(() => {}); },
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async () => ({ stopReason: "end_turn" }),
-      })),
+    const adapter = acpAdapter(endTurn, {}, {
+      overrides: { initialize: () => { initializing.resolve(); return new Promise(() => {}); } },
     });
     const { agent, events, room } = await startAgent(adapter);
 
@@ -651,36 +622,41 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("does not report room.failed for a room whose agent process is still handshaking when the agent stops without waiting", async () => {
+    const initializing = createDeferred();
+    const adapter = acpAdapter(endTurn, {}, {
+      overrides: { initialize: () => { initializing.resolve(); return new Promise(() => {}); } },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    await room.say("owner", "hello");
+    await initializing.promise;
+    const linkClosed = nextEvent(agent, "link.disconnected");
+    // A zero budget abandons the turn, so the stop, not a handshake timeout, ends it.
+    expect(await agent.stop(0)).toBe(false);
+    await linkClosed;
+    expect(ofTypes(events, "room.failed", "room.stopped")).toEqual([{ type: "room.stopped", roomId: ROOM }]);
+  });
+
   it("reports process exit as room.failed, and a reused toolCallId still as tool.call", async () => {
     let prompts = 0;
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((served, exit): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: `session-${prompts + 1}` }),
-        cancel: async () => {},
-        prompt: async ({ sessionId }) => {
-          prompts += 1;
-          await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
-          if (prompts === 1) {
-            exit();
-            await new Promise(() => {});
-          }
-          await served.sessionUpdate({
-            sessionId,
-            update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: "hi" },
-          });
-          await served.sessionUpdate({
-            sessionId,
-            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } },
-          });
-          return { stopReason: "end_turn" };
-        },
-      })),
-    });
+    const adapter = acpAdapter(async (served, { sessionId }, exit) => {
+      prompts += 1;
+      await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
+      if (prompts === 1) {
+        exit();
+        await new Promise(() => {});
+      }
+      await served.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: "hi" },
+      });
+      await served.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } },
+      });
+      return { stopReason: "end_turn" };
+    }, {}, { overrides: { newSession: async () => ({ sessionId: `session-${prompts + 1}` }) } });
     const { agent, events, room } = await startAgent(adapter);
     const failed = nextEvent(agent, "room.failed");
 
@@ -706,30 +682,21 @@ describe("Agent.observe", () => {
     const otherReleased = createDeferred();
     onTestFinished(() => otherReleased.resolve());
     let exited = false;
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((served, exit): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        // Each room's process runs in that room's own workspace.
-        newSession: async ({ cwd }) => ({ sessionId: basename(cwd) }),
-        cancel: async () => {},
-        prompt: async ({ sessionId }) => {
-          // Both rooms use the same toolCallId, so a reset leaking across rooms would show.
-          await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
-          if (sessionId === ROOM && !exited) {
-            exited = true;
-            exit();
-            await new Promise(() => {});
-          }
-          if (sessionId === OTHER) await otherReleased.promise;
-          await served.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: sessionId } });
-          await served.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
-          return { stopReason: "end_turn" };
-        },
-      })),
+    const adapter = acpAdapter(async (served, { sessionId }, exit) => {
+      // Both rooms use the same toolCallId, so a reset leaking across rooms would show.
+      await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
+      if (sessionId === ROOM && !exited) {
+        exited = true;
+        exit();
+        await new Promise(() => {});
+      }
+      if (sessionId === OTHER) await otherReleased.promise;
+      await served.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: sessionId } });
+      await served.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }, {}, {
+      // Each room's process runs in that room's own workspace.
+      overrides: { newSession: async ({ cwd }) => ({ sessionId: basename(cwd) }) },
     });
     const { agent, events, platform, room } = await startAgent(adapter);
     const other = await platform.room(OTHER);
@@ -1050,6 +1017,21 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports a drop and then a local stop as two disconnects", async () => {
+    const { agent, events, platform } = await startAgent(new GenericAdapter(async () => {}));
+    const dropped = nextEvent(agent, "link.disconnected");
+    platform.transport.triggerDrop();
+    await dropped;
+    const closed = nextEvent(agent, "link.disconnected");
+    await agent.stop();
+    await closed;
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "dropped" },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
   it.each([
     {
       bridge: "Claude Code's",
@@ -1113,6 +1095,25 @@ describe("Agent.observe", () => {
       { type: "tool.call", roomId: ROOM, ...call },
       { type: "tool.result", roomId: ROOM, ...result },
     ]);
+  });
+
+  it("reports a toolCallId again in a new session on the same agent process", async () => {
+    let sessions = 0;
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.sessionUpdate({ sessionId, update: ONE_FRAME_CALL[0] });
+      // An error answer keeps the process but drops the session, so the next turn opens another.
+      if (sessionId === "session-1") throw RequestError.internalError(undefined, "model overloaded");
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }, {}, { overrides: { newSession: async () => ({ sessionId: `session-${++sessions}` }) } });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "first"))).toBe("failed");
+    expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+    expect(sessions).toBe(2);
+    const call = { type: "tool.call", roomId: ROOM, toolCallId: "call_03", name: "read", kind: "read", input: { path: "notes.md" } };
+    const result = { type: "tool.result", roomId: ROOM, toolCallId: "call_03", status: "completed", output: "three notes" };
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([call, result, call, result]);
   });
 
   it("ignores a duplicate terminal tool_call_update after tool.result", async () => {

@@ -200,13 +200,15 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   private async doInitialize(): Promise<void> {
-    this.linkInstance ??= new BandLink({
-      ...this.linkOptions,
-      agentId: this._agentId,
-      apiKey: this._apiKey,
-      wsUrl: this._wsUrl,
-      restUrl: this._restUrl,
-    });
+    if (!this.linkInstance) {
+      this.linkInstance = new BandLink({
+        ...this.linkOptions,
+        agentId: this._agentId,
+        apiKey: this._apiKey,
+        wsUrl: this._wsUrl,
+        restUrl: this._restUrl,
+      });
+    }
 
     const me = !this.configuredIdentity || this.link.capabilities.tasks
       ? await this.link.rest.getAgentMe()

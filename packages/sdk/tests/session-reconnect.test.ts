@@ -4,7 +4,7 @@ import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
-import { BandLink, type LinkConnectionChange } from "../src/platform/BandLink";
+import { BandLink } from "../src/platform/BandLink";
 import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
@@ -17,7 +17,7 @@ import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSoc
 import type { ReconnectSnapshot } from "../src/platform/streaming/transport";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
-import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy, recordConnectionChanges } from "./testUtils";
 
 /**
  * Core `Session` as the transport's only reconnect policy, over the real
@@ -140,12 +140,6 @@ async function refused(peer: FakePhoenixPeer, count = 1): Promise<void> {
 }
 
 /** Records every connection change `link` reports, to await one without polling. */
-function recordConnectionChanges(link: BandLink): RecordLog<LinkConnectionChange> {
-  const changes = new RecordLog<LinkConnectionChange>();
-  link.onConnectionChange((change) => changes.record(change));
-  return changes;
-}
-
 /** Advances the clock until the peer has accepted `count` connections in total. */
 async function reconnected(peer: FakePhoenixPeer, count: number): Promise<void> {
   await onWireClock(connectionNumber(peer, count));
@@ -342,14 +336,13 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
+      const changes = recordConnectionChanges(link);
 
       peer.refuseUpgrades({ status: 403 });
       await expect(onWireClock(link.connect())).rejects.toBeInstanceOf(WebSocketDisconnectError);
 
       expect(agent.terminals).toEqual([expect.objectContaining({ status: 403, retryable: false })]);
-      expect(changes).toEqual([]);
+      expect(changes.entries).toEqual([]);
     });
 
     it("drops a reconnected socket whose agent_control rejoin fails, and reconnects again", async () => {

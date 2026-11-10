@@ -29,11 +29,19 @@ export interface PromptActivity {
   end(): void
 }
 
+/** Optional hooks a {@link BandACPClient} calls into. */
+export interface BandACPClientHooks {
+  extensionHandler?: ACPClientExtensionHandler
+  /** Whether a request waits on a human; its prompt then holds a manual wait until it is answered. */
+  humanDecision?: (method: string, params: Record<string, unknown>) => boolean
+  /** Sees each session update as it arrives, for local observation; never posts. */
+  observeUpdate?: (sessionId: string, update: SessionUpdate, chunk: CollectedChunk) => void
+}
+
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly roomId: string
   private readonly permissionHandler: ACPPermissionHandler
-  private readonly extensionHandler: ACPClientExtensionHandler | undefined
   // Token, not session id: a timed-out prompt's `finally` must not delete
   // a later prompt that reused the same id.
   private nextPromptToken = 0
@@ -58,14 +66,10 @@ export class BandACPClient implements Client {
   public constructor(
     roomId: string,
     permissionHandler: ACPPermissionHandler,
-    extensionHandler?: ACPClientExtensionHandler,
-    private readonly humanDecision?: (method: string, params: Record<string, unknown>) => boolean,
-    // Sees each session update as it arrives, for local observation; never posts.
-    private readonly observeUpdate?: (update: SessionUpdate, chunk: CollectedChunk) => void,
+    private readonly hooks: BandACPClientHooks = {},
   ) {
     this.roomId = roomId
     this.permissionHandler = permissionHandler
-    this.extensionHandler = extensionHandler
   }
 
   public retire(): void {
@@ -129,7 +133,7 @@ export class BandACPClient implements Client {
     const chunk = toCollectedChunk(params.update)
     if (chunk) {
       this.collect(params.sessionId, chunk, this.promptToken(params.sessionId))
-      this.observeUpdate?.(params.update, chunk)
+      this.hooks.observeUpdate?.(params.sessionId, params.update, chunk)
     }
   }
 
@@ -151,7 +155,7 @@ export class BandACPClient implements Client {
   /** The prompt a human decision holds a wait for: one that is in flight and reports activity. */
   private waitingPrompt(method: string, params: Record<string, unknown>, sessionId: string | null): number | undefined {
     const token = sessionId ? this.promptToken(sessionId) : undefined
-    return token !== undefined && this.humanDecision?.(method, params) && this.activities.has(token) ? token : undefined
+    return token !== undefined && this.hooks.humanDecision?.(method, params) && this.activities.has(token) ? token : undefined
   }
 
   private beginWait(request: JsonRpcId | object, token: number): void {
@@ -243,7 +247,7 @@ export class BandACPClient implements Client {
       return {}
     }
     const sessionId = this.attributableSession(sessionIdFrom(params))
-    const result = await this.observeDecision(method, params, sessionId, async () => await this.extensionHandler?.extMethod?.(
+    const result = await this.observeDecision(method, params, sessionId, async () => await this.hooks.extensionHandler?.extMethod?.(
       method, params, { roomId: this.roomId, sessionId },
     ))
     return result ?? {}
@@ -260,7 +264,7 @@ export class BandACPClient implements Client {
     // still the one in flight.
     const sessionId = this.attributableSession(sessionIdFrom(params))
     const prompt = sessionId ? this.promptToken(sessionId) : undefined
-    const chunks = await this.extensionHandler?.extNotification?.(
+    const chunks = await this.hooks.extensionHandler?.extNotification?.(
       method,
       params,
       { roomId: this.roomId, sessionId },

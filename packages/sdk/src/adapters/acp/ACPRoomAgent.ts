@@ -823,6 +823,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     owner.client?.forgetSession(owner.sessionId)
   }
 
+  /** The room's agent process could not start, or exited on its own. */
+  private reportRoomFailed(error: string): void {
+    this.observer({ type: "room.failed", roomId: this.roomId, error })
+  }
+
   private sessionKey(generation: number, sessionId: string): string {
     return `${generation}:${sessionId}`
   }
@@ -888,9 +893,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       const client = new BandACPClient(
         this.roomId,
         (params) => this.routePermissionRequest(params, owner.generation),
-        this.extensionHandler,
-        (method, params) => this.isHumanDecision(method, params),
-        (update, chunk) => this.sessionEvents.observe(update, chunk),
+        {
+          extensionHandler: this.extensionHandler,
+          humanDecision: (method, params) => this.isHumanDecision(method, params),
+          observeUpdate: (sessionId, update, chunk) => this.sessionEvents.observe(sessionId, update, chunk),
+        },
       )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {
@@ -950,7 +957,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         this.retireConnection(connection, live.generation)
         if (exitedOnItsOwn) {
           this.safeWarn("acp_client.process_exited_on_its_own", { roomId: this.roomId })
-          this.observer({ type: "room.failed", roomId: this.roomId, error: PROCESS_EXITED_ERROR })
+          this.reportRoomFailed(PROCESS_EXITED_ERROR)
         }
       })
       return live
@@ -965,7 +972,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // A stop or cleanup ended this attempt on purpose, whatever error that surfaced as.
       const superseded = attempt.signal.aborted || generation !== this.connectionGeneration
       if (!superseded) {
-        this.observer({ type: "room.failed", roomId: this.roomId, error: asErrorMessage(error) })
+        this.reportRoomFailed(asErrorMessage(error))
       }
       throw error
     } finally {

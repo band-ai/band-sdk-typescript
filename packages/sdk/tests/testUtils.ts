@@ -34,6 +34,7 @@ import type {
   TopicHandlers,
   TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
+import type { BandLink, LinkConnectionChange } from "../src/platform/BandLink";
 import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
 
 type SessionOutcome = Pick<StreamingTransport, "getDisconnectReason" | "getTerminalError" | "onTerminal">;
@@ -94,6 +95,13 @@ export class RecordLog<T> {
     await this.until(() => found() !== undefined);
     return found()!;
   }
+}
+
+/** Records every connection change `link` reports, in order. */
+export function recordConnectionChanges(link: BandLink): RecordLog<LinkConnectionChange> {
+  const changes = new RecordLog<LinkConnectionChange>();
+  link.onConnectionChange((change) => changes.record(change));
+  return changes;
 }
 
 /** The platform refuses a chat message that mentions nobody, so it never reaches the room. */
@@ -558,6 +566,7 @@ export class FakeTransport implements StreamingTransport {
   }): void {
     this.connected = false;
     this.disconnectReason = reason;
+    // Unisolated, unlike the real transport: a throwing drop observer is an SDK bug the test should fail on.
     for (const observer of [...this.dropObservers]) {
       observer(reason);
     }

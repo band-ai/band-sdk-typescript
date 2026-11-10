@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { agentRoomsTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
-import { BandLink, type LinkConnectionChange } from "../src/platform/BandLink";
+import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
 } from "../src/platform/streaming/disconnectReason";
 import { RuntimeStateError, TransportError, UnsupportedFeatureError } from "../src/core/errors";
-import { FakeRestApi, FakeTransport } from "./testUtils";
+import { FakeRestApi, FakeTransport, recordConnectionChanges } from "./testUtils";
 
 const supersededReason = {
   source: "agent_control",
@@ -648,11 +648,14 @@ describe("BandLink rejoin catch-up", () => {
 });
 
 describe("BandLink connection changes", () => {
-  it("does not report a reconnect up that settled after a newer drop", async () => {
+  function recordedLink() {
     const transport = new FakeTransport();
     const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
-    const changes: LinkConnectionChange[] = [];
-    link.onConnectionChange((change) => changes.push(change));
+    return { transport, link, changes: recordConnectionChanges(link) };
+  }
+
+  it("does not report a reconnect up that settled after a newer drop", async () => {
+    const { transport, link, changes } = recordedLink();
     await link.connect();
     await link.subscribeRoom("room-1");
 
@@ -670,17 +673,14 @@ describe("BandLink connection changes", () => {
     releaseLeave();
     await reconnecting;
 
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "dropped" },
     ]);
   });
 
   it("does not report a reconnect up that settled after the session ended for good", async () => {
-    const transport = new FakeTransport();
-    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
-    const changes: LinkConnectionChange[] = [];
-    link.onConnectionChange((change) => changes.push(change));
+    const { transport, link, changes } = recordedLink();
     await link.connect();
     await link.subscribeRoom("room-1");
 
@@ -697,7 +697,7 @@ describe("BandLink connection changes", () => {
     releaseLeave();
     await reconnecting;
 
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "dropped" },
       { type: "link.disconnected", reason: "terminal" },
@@ -705,27 +705,21 @@ describe("BandLink connection changes", () => {
   });
 
   it("does not report dropped before the first up", async () => {
-    const transport = new FakeTransport();
-    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
-    const changes: LinkConnectionChange[] = [];
-    link.onConnectionChange((change) => changes.push(change));
+    const { transport, link, changes } = recordedLink();
     transport.gateConnect();
     const connecting = link.connect();
     transport.triggerDrop();
-    expect(changes).toEqual([]);
+    expect(changes.entries).toEqual([]);
     transport.releaseConnection();
     await connecting;
-    expect(changes).toEqual([{ type: "link.connected", reconnected: false }]);
+    expect(changes.entries).toEqual([{ type: "link.connected", reconnected: false }]);
   });
 
   it("does not report a mid-connect drop or reconnect after a prior closed", async () => {
-    const transport = new FakeTransport();
-    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
-    const changes: LinkConnectionChange[] = [];
-    link.onConnectionChange((change) => changes.push(change));
+    const { transport, link, changes } = recordedLink();
     await link.connect();
     await link.disconnect();
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "closed" },
     ]);
@@ -734,13 +728,13 @@ describe("BandLink connection changes", () => {
     const connecting = link.connect();
     transport.triggerDrop();
     await transport.triggerReconnect({ generation: 1, joinedTopics: new Set() });
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "closed" },
     ]);
     transport.releaseConnection();
     await connecting;
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "closed" },
       { type: "link.connected", reconnected: false },
@@ -748,16 +742,13 @@ describe("BandLink connection changes", () => {
   });
 
   it("does not report closed after terminal", async () => {
-    const transport = new FakeTransport();
-    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
-    const changes: LinkConnectionChange[] = [];
-    link.onConnectionChange((change) => changes.push(change));
+    const { transport, link, changes } = recordedLink();
     await link.connect();
 
     transport.terminate(new WebSocketDisconnectError(supersededReason));
     await link.disconnect();
 
-    expect(changes).toEqual([
+    expect(changes.entries).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.disconnected", reason: "terminal" },
     ]);

@@ -33,6 +33,13 @@ function carriedToolName({ name, _meta, rawInput }: ToolCallNaming): string | un
   return asNonEmptyString(name) ?? bridgeToolName(_meta) ?? mcpInvocationName(rawInput)
 }
 
+/** One ACP session's tool calls; ACP ids are unique only within a session. */
+interface SessionCalls {
+  inFlight: Map<string, ToolCallState>
+  /** Ids that already emitted `tool.result`; further terminals are ignored. */
+  completed: Set<string>
+}
+
 /**
  * Turns one room's ACP session updates into local events. A bridge may send a
  * call's `tool_call` more than once, first without its input (Claude Code
@@ -40,9 +47,7 @@ function carriedToolName({ name, _meta, rawInput }: ToolCallNaming): string | un
  * for a call that never gets any, just before its result.
  */
 export class SessionUpdateEvents {
-  private readonly calls = new Map<string, ToolCallState>()
-  /** Tool call ids that already emitted `tool.result`; further terminals are ignored. */
-  private readonly completed = new Set<string>()
+  private readonly sessions = new Map<string, SessionCalls>()
 
   public constructor(
     private readonly roomId: string,
@@ -50,7 +55,7 @@ export class SessionUpdateEvents {
   ) {}
 
   /** `chunk` is the update as the client collected it, for its extracted text. */
-  public observe(update: SessionUpdate, chunk: CollectedChunk): void {
+  public observe(sessionId: string, update: SessionUpdate, chunk: CollectedChunk): void {
     switch (update.sessionUpdate) {
       case "agent_thought_chunk":
       case "agent_message_chunk":
@@ -65,13 +70,16 @@ export class SessionUpdateEvents {
       // ACP lets either frame carry a terminal status, so both can end a call.
       case "tool_call":
       case "tool_call_update": {
-        if (this.completed.has(update.toolCallId)) return
-        const call = this.refine(update)
+        const session = this.session(sessionId)
+        if (session.completed.has(update.toolCallId)) return
+        const call = this.refine(session, update)
         if (isTerminalToolStatus(update.status)) {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
-          this.calls.delete(update.toolCallId)
-          this.completed.add(update.toolCallId)
-          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: extractToolOutput(update) })
+          session.inFlight.delete(update.toolCallId)
+          session.completed.add(update.toolCallId)
+          // An update's collected text is already its tool output.
+          const output = update.sessionUpdate === "tool_call_update" ? chunk.content : extractToolOutput(update)
+          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output })
         }
         return
       }
@@ -80,18 +88,26 @@ export class SessionUpdateEvents {
     }
   }
 
-  /** Forgets calls in flight, for a room or session that is going away. */
+  /** Forgets every session's calls, for a room or connection that is going away. */
   public reset(): void {
-    this.calls.clear()
-    this.completed.clear()
+    this.sessions.clear()
   }
 
-  private refine(update: ToolCallFrame): ToolCallState {
+  private session(sessionId: string): SessionCalls {
+    let session = this.sessions.get(sessionId)
+    if (!session) {
+      session = { inFlight: new Map(), completed: new Set() }
+      this.sessions.set(sessionId, session)
+    }
+    return session
+  }
+
+  private refine({ inFlight }: SessionCalls, update: ToolCallFrame): ToolCallState {
     const { toolCallId, rawInput } = update
-    let call = this.calls.get(toolCallId)
+    let call = inFlight.get(toolCallId)
     if (!call) {
       call = { reported: false }
-      this.calls.set(toolCallId, call)
+      inFlight.set(toolCallId, call)
     }
     // Kind is stored separately; folding it into `name` would let a later
     // kind-only frame overwrite a bridge/ACP name.

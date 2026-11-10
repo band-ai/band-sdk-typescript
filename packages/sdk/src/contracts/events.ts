@@ -7,6 +7,9 @@ export type LinkDisconnectReason = "dropped" | "closed" | "terminal";
 /** How a tool call ended. */
 export type ToolCallEndStatus = "completed" | "failed";
 
+/** How a permission request was answered. */
+export type ApprovalOutcome = "selected" | "cancelled";
+
 /**
  * What a running agent reports to the process hosting it through
  * `Agent.observe`. Local only: nothing here is posted to a room.
@@ -15,11 +18,12 @@ export type ToolCallEndStatus = "completed" | "failed";
  * - Rooms: each time a joined room's handling starts, one `room.joined`; when
  *   that handling ends, one `room.stopped`. `room.left` follows `room.stopped`
  *   only when membership was lost.
- * - Link: per connection, one `link.connected`, then at most one
- *   `link.disconnected` per outage, then `link.connected` with `reconnected`
- *   once it is back. Nothing is reported before the first up or after
- *   `terminal`.
- * - Tools: one `tool.call` per `toolCallId`, then at most one `tool.result`.
+ * - Link: per connection, one `link.connected`; while down, one
+ *   `link.disconnected` per distinct reason (a drop, then a local stop,
+ *   reports both); then `link.connected` with `reconnected` once it is back.
+ *   Nothing is reported before the first up or after `terminal`.
+ * - Tools: one `tool.call` per `toolCallId` within an agent session, then at
+ *   most one `tool.result`.
  *   One `approval.resolved` per `approval.requested`.
  */
 export type AgentEvent =
@@ -58,7 +62,7 @@ export type AgentEvent =
       options: ReadonlyArray<{ optionId: string; name: string; kind: string }>;
     }
   /** That request was answered: `selected` with the option chosen, or `cancelled`. */
-  | { type: "approval.resolved"; roomId: string; toolCallId: string; outcome: "selected" | "cancelled"; optionId?: string }
+  | { type: "approval.resolved"; roomId: string; toolCallId: string; outcome: ApprovalOutcome; optionId?: string }
   /** Handling of a joined room's messages started: on joining it, and again after a reset. */
   | { type: "room.joined"; roomId: string }
   /** The agent is no longer a member of a room. Stopping the agent reports `room.stopped`, not this. */

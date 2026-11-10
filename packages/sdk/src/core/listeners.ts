@@ -19,3 +19,11 @@ export function notifyEach<T>(
     }
   }
 }
+
+/** Adds `listener` to `listeners`; the returned function removes it. */
+export function subscribe<T>(listeners: Set<T>, listener: T): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}

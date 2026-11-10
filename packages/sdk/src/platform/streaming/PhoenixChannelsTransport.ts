@@ -1,6 +1,6 @@
 import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { RuntimeStateError, TransportError } from "../../core/errors";
-import { notifyEach } from "../../core/listeners";
+import { notifyEach, subscribe } from "../../core/listeners";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
@@ -265,10 +265,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public onTerminal(observer: TerminalObserver): () => void {
-    this.terminalObservers.add(observer);
-    return () => {
-      this.terminalObservers.delete(observer);
-    };
+    return subscribe(this.terminalObservers, observer);
   }
 
   public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
@@ -325,24 +322,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public onReconnected(observer: ReconnectObserver): () => void {
-    this.reconnectObservers.add(observer);
-    return () => {
-      this.reconnectObservers.delete(observer);
-    };
+    return subscribe(this.reconnectObservers, observer);
   }
 
   public onDropped(observer: DropObserver): () => void {
-    this.dropObservers.add(observer);
-    return () => {
-      this.dropObservers.delete(observer);
-    };
+    return subscribe(this.dropObservers, observer);
   }
 
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
-    this.topicRejoinObservers.add(observer);
-    return () => {
-      this.topicRejoinObservers.delete(observer);
-    };
+    return subscribe(this.topicRejoinObservers, observer);
   }
 
   private handleJoinSettled(topic: string, joined: boolean): void {

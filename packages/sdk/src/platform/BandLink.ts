@@ -16,7 +16,7 @@ import type {
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
-import { notifyEach } from "../core/listeners";
+import { notifyEach, subscribe } from "../core/listeners";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { AgentEvent, LinkDisconnectReason } from "../contracts/events";
@@ -314,10 +314,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
    * Returns an unsubscribe function.
    */
   public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
-    this.connectionListeners.add(listener);
-    return () => {
-      this.connectionListeners.delete(listener);
-    };
+    return subscribe(this.connectionListeners, listener);
   }
 
   private reportConnection(change: LinkConnectionChange): void {

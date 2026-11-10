@@ -52,12 +52,18 @@ export class AgentEventHub {
     }
   };
 
+  /**
+   * Checked at call time, so a listener another one removes during the same
+   * delivery is skipped. Returns the result so `notifyEach` catches a rejection.
+   */
+  private readonly whileRegistered = (registration: Registration) => (event: AgentEvent): unknown =>
+    this.registrations.has(registration) ? registration.listener(event) : undefined;
+
   private readonly drain = (): void => {
     // Shifted only after delivery, so an emit from inside a listener joins this drain.
     for (let next = this.pending[0]; next; next = this.pending[0]) {
       const { event, recipients } = next;
-      const live = recipients.filter((registration) => this.registrations.has(registration));
-      notifyEach(live.map(({ listener }) => listener), event, (error) => logListenerFailure(this.logger, event, error));
+      notifyEach(recipients.map(this.whileRegistered), event, (error) => logListenerFailure(this.logger, event, error));
       this.pending.shift();
     }
   };

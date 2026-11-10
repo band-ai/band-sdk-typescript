@@ -56,6 +56,21 @@ describe("AgentEventHub delivery", () => {
     expect(late).toEqual([MARKER]);
   });
 
+  it("skips a listener another listener removes while the same event is being delivered", async () => {
+    const hub = new AgentEventHub(makeLoggerSpy());
+    const removed: AgentEvent[] = [];
+    let stopRemoved = () => {};
+    hub.observe((event) => {
+      if (event.type === "room.joined") stopRemoved();
+    });
+    stopRemoved = hub.observe((event) => { removed.push(event); });
+
+    hub.emit(room("room.joined", "a"));
+    await delivered(hub);
+
+    expect(removed).toEqual([]);
+  });
+
   it("never shows a listener added again the events emitted before it was added again", async () => {
     const hub = new AgentEventHub(makeLoggerSpy());
     const seen: AgentEvent[] = [];
@@ -74,9 +89,9 @@ describe("AgentEventHub delivery", () => {
   it("logs a throwing or rejecting listener and still delivers to the others", async () => {
     const logger = makeLoggerSpy();
     const allLogged = createDeferred();
+    const forEvent = () => logger.warn.mock.calls.filter(([, context]) => context?.eventType === "room.joined");
     logger.warn.mockImplementation(() => {
-      // Two failing listeners, each for the event and the marker.
-      if (logger.warn.mock.calls.length === 4) allLogged.resolve();
+      if (forEvent().length === 2) allLogged.resolve();
     });
     const hub = new AgentEventHub(logger);
     const seen: AgentEvent[] = [];
@@ -89,9 +104,8 @@ describe("AgentEventHub delivery", () => {
 
     expect(seen).toEqual([room("room.joined", "a"), MARKER]);
     await allLogged.promise;
-    const forEvent = logger.warn.mock.calls.filter(([, context]) => context?.eventType === "room.joined");
     const failure = (message: string) => ["agent_events.listener_failed", { eventType: "room.joined", error: new Error(message) }];
-    expect(forEvent).toHaveLength(2);
-    expect(forEvent).toEqual(expect.arrayContaining([failure("boom"), failure("async boom")]));
+    expect(forEvent()).toHaveLength(2);
+    expect(forEvent()).toEqual(expect.arrayContaining([failure("boom"), failure("async boom")]));
   });
 });
