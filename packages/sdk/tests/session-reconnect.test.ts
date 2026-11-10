@@ -332,6 +332,35 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(changes).toEqual([{ connected: true, reconnected: false }]);
     });
 
+    it("does not report a mid-connect drop or reconnect after a prior closed", async () => {
+      const transport = new FakeTransport();
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+      await link.disconnect();
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "closed" },
+      ]);
+
+      transport.gateConnect();
+      const connecting = link.connect();
+      transport.triggerDrop();
+      await transport.triggerReconnect({ generation: 1, joinedTopics: new Set() });
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "closed" },
+      ]);
+      transport.releaseConnection();
+      await connecting;
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "closed" },
+        { connected: true, reconnected: false },
+      ]);
+    });
+
     it("does not report closed after terminal", async () => {
       const transport = new FakeTransport();
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });

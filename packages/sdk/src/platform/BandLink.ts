@@ -246,6 +246,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     // Counts drops for this connect epoch so a reconnect that finishes after a
     // newer drop does not report a stale up.
     let dropGeneration = 0;
+    // Per connectSession, not link lifetime: a prior closed/terminal leaves
+    // `reported` non-null, but this session still has not told observers it is up.
+    let reportedUp = false;
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
       const dropsSeen = dropGeneration;
       await this.subscriptionManager.reconcileReconnect(snapshot);
@@ -261,6 +264,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         );
         return;
       }
+      // A settle before this session's first up must not claim reconnected:true
+      // and suppress the real first up when connect() returns.
+      if (!reportedUp) {
+        return;
+      }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
       this.reportConnection({ connected: true, reconnected: true });
     });
@@ -270,8 +278,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       dropGeneration += 1;
-      // Observers only learn about downs after the first up for this session.
-      if (this.reported === null) {
+      // Observers only learn about downs after this session's first up.
+      if (!reportedUp) {
         return;
       }
       this.reportConnection({ connected: false, reason: "dropped" });
@@ -297,6 +305,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       throw error;
     }
     this.connected = true;
+    reportedUp = true;
     this.reportConnection({ connected: true, reconnected: false });
   }
 

@@ -293,9 +293,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly roomTurns = createRoomTurnLock()
   // The turn holding each room, so `cancelTurn` can reach its prompt.
   private readonly activeTurns = new Map<string /* roomId */, ActiveTurn>()
-  // Rooms whose host cancel has settled: survives `activeTurns` clearing so a
-  // late permission request cannot auto-allow until the next turn starts.
-  private readonly cancelledRooms = new Set<string /* roomId */>()
+  // Bumped when a room opens an ACP prompt. Host cancel stamps
+  // `cancelledThroughGeneration` at the then-current value so a late
+  // permission from that prompt stays refused until a newer prompt opens —
+  // not merely until the next `onMessage` entry.
+  private readonly promptGeneration = new Map<string /* roomId */, number>()
+  private readonly cancelledThroughGeneration = new Map<string /* roomId */, number>()
   // Bumped each time a room starts a *new* establishment (never on a
   // coalesced reuse) and whenever a room is torn down. An establishment
   // captures its own value at the start; if the room has moved on by the
@@ -399,8 +402,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       this.roomTools.set(context.roomId, tools)
       const turn: ActiveTurn = { cancelled: false, cancellation: createDeferred() }
       this.activeTurns.set(context.roomId, turn)
-      // A new turn may approve again; clear any prior host-cancel marker first.
-      this.cancelledRooms.delete(context.roomId)
       try {
         await this.runTurn(message, tools, participantsMessage, contactsMessage, context, history, turn)
       } finally {
@@ -474,7 +475,10 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       const response = await withTimeout(
         this.raceAgainstConnectionClose(activeConnection, promptSession.run(async () => {
           // Set in the same synchronous step as the send, so no cancel can
-          // land between the check above and the prompt.
+          // land between the check above and the prompt. Bumping generation
+          // here ends the prior host-cancel refuse window for this room.
+          const nextPromptGeneration = (this.promptGeneration.get(context.roomId) ?? 0) + 1
+          this.promptGeneration.set(context.roomId, nextPromptGeneration)
           turn.prompt = { connection: activeConnection, sessionId: activeSessionId, sessionKey }
           try {
             return await activeConnection.prompt({
@@ -635,7 +639,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return false
     }
     turn.cancelled = true
-    this.cancelledRooms.add(roomId)
+    this.cancelledThroughGeneration.set(roomId, this.promptGeneration.get(roomId) ?? 0)
     turn.cancellation.resolve()
     this.onTurnCancelled(roomId)
     const prompt = turn.prompt
@@ -685,7 +689,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
-    this.cancelledRooms.delete(roomId)
+    this.promptGeneration.delete(roomId)
+    this.cancelledThroughGeneration.delete(roomId)
     this.sessionEvents.reset()
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
@@ -722,7 +727,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.activeTurns.clear()
-    this.cancelledRooms.clear()
+    this.promptGeneration.clear()
+    this.cancelledThroughGeneration.clear()
     this.sessionEvents.reset()
     this.sessionsInFlight.clear()
     this.roomTurns.clear()
@@ -1520,9 +1526,10 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       rawInput: params.toolCall.rawInput,
     }) ?? "unknown"
     const options = params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind }))
-    // After cancel settles, activeTurns is cleared but this room must still
-    // refuse auto-allow until the next turn starts — emit cancelled, not selected.
-    if (this.cancelledRooms.has(roomId)) {
+    // After cancel settles, activeTurns is cleared but permissions from the
+    // cancelled prompt must still refuse until a newer prompt opens.
+    const cancelledThrough = this.cancelledThroughGeneration.get(roomId)
+    if (cancelledThrough !== undefined && (this.promptGeneration.get(roomId) ?? 0) <= cancelledThrough) {
       this.observer({ type: "approval.requested", roomId, toolCallId, toolName, options })
       this.observer({ type: "approval.resolved", roomId, toolCallId, outcome: "cancelled" })
       return CANCELLED_PERMISSION_RESPONSE
