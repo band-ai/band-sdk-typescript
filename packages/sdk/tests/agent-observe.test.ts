@@ -11,10 +11,12 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { Agent } from "../src/agent/Agent";
 import type { AgentEvent } from "../src/contracts/events";
+import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
 import { createDeferred } from "../src/core/deferred";
 import { BandLink } from "../src/platform/BandLink";
 import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
+import { codexNamedBandTool, cursorLateNamedBandTool } from "./fixtures/providerTraces";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { tmpRoot } from "./testUtils";
 
@@ -251,7 +253,43 @@ describe("Agent.observe", () => {
     expect(await room.outcome(message)).toBe("failed");
     expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed")).toEqual([
       { type: "turn.started", roomId: ROOM, messageId: message },
-      { type: "turn.failed", roomId: ROOM, messageId: message, error: expect.any(String) },
+      { type: "turn.failed", roomId: ROOM, messageId: message, error: expect.stringContaining("agent crashed") },
+    ]);
+  });
+
+  it("reports approval.resolved cancelled for a late permission after cancelTurn settles", async () => {
+    let peerRef: AgentSideConnection | undefined;
+    let sessionRef: string | undefined;
+    const turnEnded = createDeferred();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      peerRef = peer;
+      sessionRef = sessionId;
+      await turnEnded.promise;
+      return { stopReason: "cancelled" as const };
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    const message = await room.say("owner", "edit my notes");
+    await vi.waitFor(() => { expect(peerRef).toBeDefined(); });
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    turnEnded.resolve();
+    expect(await room.outcome(message)).toBe("processed");
+
+    const late = await peerRef!.requestPermission({
+      sessionId: sessionRef!,
+      toolCall: { toolCallId: "late-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
+      options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
+    });
+    expect(late).toEqual({ outcome: { outcome: "cancelled" } });
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      {
+        type: "approval.requested",
+        roomId: ROOM,
+        toolCallId: "late-1",
+        toolName: "Edit",
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
+      },
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "late-1", outcome: "cancelled" },
     ]);
   });
 
@@ -385,6 +423,15 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports only terminal when the link disconnects after a terminal down", async () => {
+    const { agent, events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    platform.transport.terminate(new WebSocketDisconnectError(TERMINAL_REASON));
+    await agent.stop();
+    expect(ofTypes(events, "link.disconnected")).toEqual([
+      { type: "link.disconnected", reason: "terminal" },
+    ]);
+  });
+
   it.each([
     {
       bridge: "Claude Code's",
@@ -409,6 +456,27 @@ describe("Agent.observe", () => {
       call: { toolCallId: "call_02", name: "read", kind: "read" },
       result: { toolCallId: "call_02", status: "completed", output: "notes.md" },
     },
+    {
+      bridge: "Cursor's",
+      frames: cursorLateNamedBandTool("cursor-1"),
+      call: {
+        toolCallId: "cursor-1",
+        name: `${MCP_SERVER_NAME}-band_send_message`,
+        kind: "other",
+        input: { providerIdentifier: MCP_SERVER_NAME, toolName: "band_send_message", args: { content: "hi" } },
+      },
+      result: { toolCallId: "cursor-1", status: "completed", output: "{}" },
+    },
+    {
+      bridge: "Codex's",
+      frames: codexNamedBandTool("codex-1"),
+      call: {
+        toolCallId: "codex-1",
+        name: `${MCP_SERVER_NAME}-band_send_message`,
+        input: { server: MCP_SERVER_NAME, tool: "band_send_message", arguments: {} },
+      },
+      result: { toolCallId: "codex-1", status: "completed", output: "{}" },
+    },
   ])("reports $bridge recorded tool call once, by its tool name or kind and never its title", async ({ frames, call, result }) => {
     const { events, room } = await startAgent(acpAdapter(async (peer, { sessionId }) => {
       for (const update of frames) await peer.sessionUpdate({ sessionId, update });
@@ -420,6 +488,25 @@ describe("Agent.observe", () => {
     expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
       { type: "tool.call", roomId: ROOM, ...call },
       { type: "tool.result", roomId: ROOM, ...result },
+    ]);
+  });
+
+  it("ignores a duplicate terminal tool_call_update after tool.result", async () => {
+    const frames: SessionUpdate[] = [
+      { sessionUpdate: "tool_call", toolCallId: "dup-1", title: "Read notes.md", kind: "read", status: "pending", rawInput: { path: "notes.md" } },
+      { sessionUpdate: "tool_call_update", toolCallId: "dup-1", status: "completed", rawOutput: "notes" },
+      { sessionUpdate: "tool_call_update", toolCallId: "dup-1", status: "completed", rawOutput: "notes again" },
+    ];
+    const { events, room } = await startAgent(acpAdapter(async (peer, { sessionId }) => {
+      for (const update of frames) await peer.sessionUpdate({ sessionId, update });
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }));
+
+    expect(await room.outcome(await room.say("owner", "run it"))).toBe("processed");
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "dup-1", name: "read", kind: "read", input: { path: "notes.md" } },
+      { type: "tool.result", roomId: ROOM, toolCallId: "dup-1", status: "completed", output: "notes" },
     ]);
   });
 });

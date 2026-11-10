@@ -1,6 +1,6 @@
 import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentControlTopic } from "@band-ai/band-sdk-core";
+import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
@@ -17,7 +17,7 @@ import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSoc
 import type { ReconnectSnapshot } from "../src/platform/streaming/transport";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
-import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, FakeTransport, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
 
 /**
  * Core `Session` as the transport's only reconnect policy, over the real
@@ -256,6 +256,9 @@ describe("core Session owns reconnects (real wire)", () => {
       link.onConnectionChange((change) => changes.push(change));
       await link.connect();
 
+      // Refuse the transport's automatic retry so the drop cannot settle as a
+      // reconnect before this test's local disconnect runs.
+      peer.refuseUpgrades({ status: 503 });
       peer.severAllConnections();
       await wireUntil(() => changes.some((change) => !change.connected && change.reason === "dropped"));
       await onWireClock(link.disconnect());
@@ -283,6 +286,72 @@ describe("core Session owns reconnects (real wire)", () => {
       expect(changes).toEqual([
         { connected: true, reconnected: false },
         { connected: false, reason: "dropped" },
+        { connected: false, reason: "terminal" },
+      ]);
+    });
+
+    it("does not report a reconnect up that settled after a newer drop", async () => {
+      const transport = new FakeTransport();
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+      await link.subscribeRoom("room-1");
+
+      transport.triggerDrop();
+      const chat = chatRoomTopic("room-1");
+      const participants = roomParticipantsTopic("room-1");
+      const releaseLeave = transport.gateLeave(chat);
+      const reconnecting = transport.triggerReconnect({
+        generation: 1,
+        joinedTopics: new Set(),
+        attemptedTopics: new Set([chat, participants]),
+      });
+      await transport.left.until(() => transport.left.entries.includes(chat));
+      transport.triggerDrop();
+      releaseLeave();
+      await reconnecting;
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+      ]);
+    });
+
+    it("does not report dropped before the first up", async () => {
+      const transport = new FakeTransport();
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      transport.gateConnect();
+      const connecting = link.connect();
+      transport.triggerDrop();
+      expect(changes).toEqual([]);
+      transport.releaseConnection();
+      await connecting;
+      expect(changes).toEqual([{ connected: true, reconnected: false }]);
+    });
+
+    it("does not report closed after terminal", async () => {
+      const transport = new FakeTransport();
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+
+      transport.terminate(new WebSocketDisconnectError({
+        source: "agent_control",
+        code: "session.already_connected",
+        message: "superseded",
+        retryable: false,
+        retryAfter: null,
+        targetSocketId: null,
+        correlationId: null,
+      }));
+      await link.disconnect();
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
         { connected: false, reason: "terminal" },
       ]);
     });
