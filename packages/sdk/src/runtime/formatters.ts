@@ -1,7 +1,7 @@
 import type { ParticipantFields } from "@band-ai/band-sdk-core";
 import type { ChatParticipant } from "../client/rest/types";
 import type { MetadataMap, ParticipantRecord, ToolModelMessage } from "../contracts/dtos";
-import { ensureHandlePrefix } from "./types";
+import { ensureHandlePrefix, type PlatformMessage } from "./types";
 
 function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -166,4 +166,28 @@ export function buildParticipantsMessage(participants: Array<Record<string, unkn
   );
 
   return lines.join("\n");
+}
+
+/** The message the agent sees for a platform message record, its mentions resolved to names. */
+export function toPlatformMessage(roomId: string, payload: {
+  id: string;
+  content: string;
+  sender_id: string;
+  sender_type: string;
+  sender_name?: string | null;
+  message_type: string;
+  metadata?: Record<string, unknown> | null;
+  inserted_at: string;
+}): PlatformMessage {
+  return {
+    id: payload.id,
+    roomId,
+    content: resolveMentions(payload.content, payload.metadata),
+    senderId: payload.sender_id,
+    senderType: payload.sender_type,
+    senderName: payload.sender_name ?? null,
+    messageType: payload.message_type,
+    metadata: payload.metadata ?? {},
+    createdAt: new Date(payload.inserted_at),
+  };
 }

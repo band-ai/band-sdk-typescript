@@ -31,7 +31,6 @@ import type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
-  ListRoomHistoryRequest,
   PaginatedResponse,
   PlatformChatMessage,
   RestApi,
@@ -288,18 +287,6 @@ export class RestFacade implements RestApi {
     return this.callOptional(
       "listMessages",
       OPTIONAL_UNSUPPORTED_MESSAGES.listMessages,
-      (method) => method(request, options),
-      request,
-    );
-  }
-
-  public async listRoomHistory(
-    request: ListRoomHistoryRequest,
-    options?: RestRequestOptions,
-  ): Promise<PaginatedResponse<PlatformChatMessage>> {
-    return this.callOptional(
-      "listRoomHistory",
-      OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory,
       (method) => method(request, options),
       request,
     );

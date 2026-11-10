@@ -24,9 +24,9 @@ export interface McpToolRegistration {
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
   /**
-   * `tools` is the room's tools when the server serves a single room (an ACP
-   * or Codex room's own server, or a single-room SDK server), so a host's own
-   * tool can act on that room's turn; undefined on a multi-room server.
+   * `tools` is the room's tools on a single-room server and undefined on a
+   * multi-room one. They carry the room's full authority (sending, participants,
+   * contacts, memory), whatever tools the server itself enables.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }

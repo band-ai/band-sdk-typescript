@@ -67,13 +67,6 @@ export interface CreateChatRequest {
   title?: string;
 }
 
-/** One room-history page: `cursor` from the previous page, omitted for the newest. */
-export interface ListRoomHistoryRequest {
-  chatId: string;
-  cursor?: string;
-  limit: number;
-}
-
 export interface ChatMessageMention {
   id: string;
   handle?: string;
@@ -253,14 +246,6 @@ export interface MessageQueueRestApi {
   ): Promise<PlatformChatMessage | null>;
 }
 
-export interface RoomHistoryRestApi {
-  /** One keyset page of the room's messages, every status, newest first. */
-  listRoomHistory?(
-    _request: ListRoomHistoryRequest,
-    _options?: RestRequestOptions,
-  ): Promise<PaginatedResponse<PlatformChatMessage>>;
-}
-
 export interface ActivityRestApi {
   /** Reports whether the agent is working in the room; Band answers 404 while the room has no active execution. */
   reportActivity?(
@@ -279,8 +264,7 @@ export type AgentToolsRestApi =
   & MemoryRestApi
   & ChatTaskRestApi
   & ContextRestApi
-  & MessageQueueRestApi
-  & RoomHistoryRestApi;
+  & MessageQueueRestApi;
 
 export type BandLinkRestApi =
   & AgentProfileRestApi
@@ -463,7 +447,7 @@ export interface FernBandClientLike {
   agentApiMessages?: {
     listAgentMessages?(
       chatId: string,
-      request?: { page?: number; page_size?: number; status?: string; cursor?: string; sort_order?: "asc" | "desc"; limit?: number },
+      request?: { page?: number; page_size?: number; status?: string },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     createAgentChatMessage?(

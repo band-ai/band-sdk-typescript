@@ -4,23 +4,21 @@ export type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
-  ListRoomHistoryRequest,
   FernBandClientLike,
   PaginatedResponse,
   PaginationMetadata,
   PlatformChatMessage,
   RestApi,
   ChatTaskRestApi,
-  RoomHistoryRestApi,
 } from "../client/rest/types";
 export {
   fetchCursorTail,
   fetchPaginated,
   getRecentMessages,
   listAllPeers,
-  readRoomHistoryPage,
-  DEFAULT_ROOM_HISTORY_PAGE,
-  MAX_ROOM_HISTORY_PAGE,
+  fetchContextPage,
+  DEFAULT_CONTEXT_PAGE,
+  MAX_CURSOR_PAGE,
   normalizePaginationMetadata,
 } from "../client/rest/pagination";
 export type { CursorPageRequest, CursorTail, CursorTailOptions } from "../client/rest/pagination";

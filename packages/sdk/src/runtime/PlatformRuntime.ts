@@ -1,6 +1,5 @@
 import { bindWorkingCycle } from "./workingState";
-import { isSyntheticTurn, type AdapterToolsProtocol, type FrameworkAdapter, type PlatformMessageLike, type Preprocessor } from "../contracts/protocols";
-import { overrideTools } from "../core/overrideTools";
+import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
@@ -14,7 +13,8 @@ import {
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
 import { RuntimeStateError, ValidationError } from "../core/errors";
-import { DefaultPreprocessor, toPlatformMessage } from "./preprocessing/DefaultPreprocessor";
+import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
+import { toPlatformMessage } from "./formatters";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
 import type { RuntimeLifecycleState } from "./lifecycle";
@@ -538,8 +538,7 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!admitted()) return;
       this.events.emit({ type: "turn.started", roomId, messageId });
       started = true;
-      const tools = pinTurnInbound(input.tools, input.message);
-      await adapter.onEvent({ ...input, tools: lease ? bindWorkingCycle(tools, lease) : tools, holdRoomUntil });
+      await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
     } catch (error) {
       succeeded = false;
       caughtError = error;
@@ -573,15 +572,4 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.contactHandler.handle(event);
     }
   }
-}
-
-/** `tools` whose room-history reads pin `inbound`, so a turn always sees the message it is answering. */
-function pinTurnInbound(tools: AdapterToolsProtocol, inbound: PlatformMessageLike): AdapterToolsProtocol {
-  const readRoomHistory = tools.readRoomHistory;
-  if (!readRoomHistory) {
-    return tools;
-  }
-  return overrideTools(tools, {
-    readRoomHistory: (args = {}) => readRoomHistory.call(tools, { ...args, pinned: args.pinned ?? inbound }),
-  });
 }

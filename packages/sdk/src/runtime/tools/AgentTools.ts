@@ -2,13 +2,12 @@ import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
-import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
+import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
-import { listAllPeers, readRoomHistoryPage } from "../../client/rest/pagination";
+import { fetchContextPage, listAllPeers } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
-import { toPlatformMessage } from "../preprocessing/DefaultPreprocessor";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
@@ -46,8 +45,8 @@ import {
   isToolExecutorError,
   sendFailureViaEvent,
   type ToolExecutorError,
-  type ReadRoomHistoryArgs,
-  type RoomHistoryPage,
+  type FetchRoomContextArgs,
+  type RoomContextPage,
 } from "../../contracts/protocols";
 import {
   CHAT_TOOL_NAMES,
@@ -124,7 +123,7 @@ const ADAPTER_TOOL_METHODS: Record<AdapterToolMethodName, keyof AgentToolsCapabi
   createTask: "tasks",
   getTask: "tasks",
   updateTask: "tasks",
-  readRoomHistory: null,
+  fetchRoomContext: null,
 
 };
 
@@ -260,12 +259,10 @@ export class AgentTools implements AgentToolsProtocol {
     return api(this.roomId, taskRef(id), request, DEFAULT_REQUEST_OPTIONS);
   }
 
-  /** One page of the room's history, newest first, with `pinned` (when given) first and not repeated. */
-  public async readRoomHistory(args: ReadRoomHistoryArgs = {}): Promise<RoomHistoryPage> {
-    const { messages, nextCursor } = await readRoomHistoryPage(this.rest, this.roomId, args, DEFAULT_REQUEST_OPTIONS);
-    const page = messages.map((message) => toPlatformMessage(this.roomId, message));
-    const { pinned } = args;
-    return { messages: pinned ? [pinned, ...page.filter((message) => message.id !== pinned.id)] : page, nextCursor };
+  /** One page of the agent's context in this room, oldest first. */
+  public async fetchRoomContext(args: FetchRoomContextArgs = {}): Promise<RoomContextPage> {
+    const { messages, nextCursor } = await fetchContextPage(this.rest, this.roomId, args, DEFAULT_REQUEST_OPTIONS);
+    return { messages: messages.map((message) => toPlatformMessage(this.roomId, message)), nextCursor };
   }
 
   public async createChatroom(taskId?: string): Promise<string> {

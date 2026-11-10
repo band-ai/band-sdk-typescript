@@ -12,7 +12,7 @@ import { Band } from "@band-ai/rest-client";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
 import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
-import type { ChatRoom, CreateChatRequest, ListRoomHistoryRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
+import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import type { SessionConfig } from "../../../src/runtime/types";
@@ -122,7 +122,6 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly peerCalls = new RecordLog<number>();
   public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
-  public readonly historyRequests = new RecordLog<ListRoomHistoryRequest>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -357,15 +356,13 @@ export class RecordingRestApi extends FakeRestApi {
   public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
+    // Band refuses a cursor it never handed out rather than restarting the walk.
+    if ((cursor !== undefined && !/^[1-9]\d*$/.test(cursor)) || start > conversation.length) {
+      throw new Band.BadRequestError({ error: { code: "invalid_cursor", message: "Invalid cursor", request_id: randomUUID() } });
+    }
     const end = start + limit;
     const hasMore = end < conversation.length;
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
-  }
-
-  /** The room's messages newest first, as Band's agent message list serves `status=all&sort_order=desc`: keyset pages. */
-  public async listRoomHistory(request: ListRoomHistoryRequest): Promise<PaginatedResponse<PlatformChatMessage>> {
-    this.historyRequests.record(request);
-    return roomHistoryPage(this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item), request);
   }
 
   public remember(roomId: string, item: PlatformChatMessage): void {
@@ -674,15 +671,6 @@ export class BandPlatform implements AsyncDisposable {
   public async [Symbol.asyncDispose](): Promise<void> {
     await this.runtime?.stop();
   }
-}
-
-/** One page of `oldestFirst` newest first, keyed by message id, as Band serves `status=all&sort_order=desc`. */
-export function roomHistoryPage(oldestFirst: PlatformChatMessage[], { cursor, limit }: ListRoomHistoryRequest): PaginatedResponse<PlatformChatMessage> {
-  const newestFirst = [...oldestFirst].reverse();
-  const start = cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === cursor) + 1;
-  const data = newestFirst.slice(start, start + limit);
-  const hasMore = start + limit < newestFirst.length;
-  return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
 }
 
 export function person(id: string): ParticipantRecord {
