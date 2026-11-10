@@ -31,9 +31,19 @@ establish peer approval, or waive required CI/merge-queue checks.
 
 ## Ship intent
 
-**Headed toward ship** when the user asked to assess toward merge, or to
-approve / enable auto-merge / merge / queue / ship. A design-only or
-scope-only ask (right seam? keep narrow?) is **not** headed toward ship.
+**Headed toward ship** when the user asked to assess a PR toward merge —
+including "is this PR good", "assess this PR" / "asses this pr", evaluate /
+quality-check toward shipping — or to approve / enable auto-merge / merge /
+queue / ship.
+
+**Not** headed toward ship when the ask is clearly design-only or scope-only
+(right seam? keep narrow?) with no assess-toward-merge or ship verbs. If the
+same message mixes design questions with ship/merge verbs, treat it as headed
+toward ship.
+
+**Asked to ship** means the user explicitly asked to approve / enable
+auto-merge / merge / queue / ship. Assess-toward-merge alone is headed toward
+ship (so `--fix` runs) but is **not** an ask to ship.
 
 ## Hard gate
 
@@ -46,10 +56,13 @@ or recommend MERGE until all of the following hold:
    `issue:` findings; nits/suggestions fixed in the converging round).
 2. Every proven out-of-scope item has a Linear ticket link or an explicit
    leave-open decision recorded in this run's output (a pre-review "don't
-   file tickets" answer is **not** leave-open for later OOS findings).
+   file tickets" answer is **not** leave-open for later OOS findings; a
+   here-is-a-review **drop** is not leave-open).
 3. Author readiness against `AGENTS.md` "PR Lifecycle and Readiness Review"
    passes; otherwise keep draft and do not promote or merge.
 4. CI / merge-queue required checks allow the ship action.
+5. The user **asked to ship** (see Ship intent). Without that ask, end with
+   `Merge: not yet` and do not recommend MERGE even when items 1–4 hold.
 
 Do **not** re-invoke `--fix` after capped or not-converging to force green.
 Those outcomes are not success: report the signal, keep threads open per
@@ -150,8 +163,9 @@ Use that single run's outcome:
   in-run Wait/resume still applies inside that one invocation)
 - **`--fix` stripped** / verdict-only → **blocked**; do not ship
 
-Out-of-scope findings: disposition via step 4 (ticket or explicit leave-open).
-Deferred items need a ticket link before merge.
+Out-of-scope findings: disposition via step 4 — each needs a ticket link or
+an explicit leave-open recorded in the assess output before merge (same as
+hard-gate item 2).
 
 For a **design-only** ask: stop after steps 1–4 (and any wrong-layer /
 incomplete-claim disposition). Report that `--fix` is still required before
@@ -160,16 +174,15 @@ review/fix.
 
 ### 6. Ship
 
-Only when headed toward ship, step 5 **converged**, hard-gate items 2–4 hold,
-and the user asked to ship:
+Only when hard-gate items 1–5 all hold:
 
 - Summarize goal, design verdict, scope call, tickets filed, review/fix
   outcome (converged; cycles run)
 - Approve and merge (or queue) only when CI/merge-queue gates allow — never
   bypass required checks
 
-If the user did **not** ask to ship: end with `Merge: not yet` and do **not**
-recommend MERGE even if review/fix converged.
+If the user did **not** ask to ship: after a converging `--fix` run, end with
+`Merge: not yet` and do **not** recommend MERGE.
 
 ## Output
 
