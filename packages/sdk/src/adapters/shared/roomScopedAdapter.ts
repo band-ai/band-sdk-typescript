@@ -74,7 +74,7 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
 
   /** Asks the room's own engine; a room with no engine yet has nothing to answer. */
   public isControlMessage(message: PlatformMessageLike, roomId: string): boolean {
-    return this.rooms.get(roomId)?.engine.isControlMessage?.(message, roomId) ?? false;
+    return this.roomEngine(roomId)?.isControlMessage?.(message, roomId) ?? false;
   }
 
   /** The room's engine, or undefined while the room has none. */
