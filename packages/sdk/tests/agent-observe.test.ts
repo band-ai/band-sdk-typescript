@@ -2,6 +2,7 @@ import {
   AgentSideConnection,
   type Agent as AcpAgent,
   type PromptRequest,
+  type RequestPermissionResponse,
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -75,6 +76,10 @@ const EMPTY_INPUT_CALL: SessionUpdate[] = [
 const ONE_FRAME_CALL: SessionUpdate[] = [
   { sessionUpdate: "tool_call", toolCallId: "call_03", title: "Read notes.md", kind: "read", status: "completed", rawInput: { path: "notes.md" }, rawOutput: "three notes" },
 ];
+
+const EDIT_CALL = { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" } as const;
+const ALLOW_OPTION = { kind: "allow_once", optionId: "allow", name: "Allow" } as const;
+const DENY_OPTION = { kind: "reject_once", optionId: "deny", name: "Deny" } as const;
 
 const RUN_ECHO_CALL: SessionUpdate = {
   sessionUpdate: "tool_call", toolCallId: "reuse-1", title: "Run echo", kind: "execute", status: "pending", rawInput: { command: "echo hi" },
@@ -315,18 +320,20 @@ describe("Agent.observe", () => {
   });
 
   it("reports a permission request cancelled when resolvePermission rejects", async () => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
     const adapter = acpAdapter(async (peer, { sessionId }) => {
       const answer = await peer.requestPermission({
         sessionId,
         toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
         options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
       });
-      expect(answer.outcome).toEqual({ outcome: "cancelled" });
+      answered.resolve(answer.outcome);
       return workThenAnswer(peer, sessionId);
     }, { resolvePermission: async () => { throw new Error("approval UI unavailable"); } });
     const { events, room } = await startAgent(adapter);
 
     expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "cancelled" });
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
       {
         type: "approval.requested",
@@ -336,6 +343,205 @@ describe("Agent.observe", () => {
         options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
       },
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it.each([true, false])("answers a permission request itself when no resolver is set, posting it as before, observed: %s", async (observe) => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [DENY_OPTION, ALLOW_OPTION] });
+      answered.resolve(answer.outcome);
+      return workThenAnswer(peer, sessionId);
+    });
+    const { events, room } = await startAgent(adapter, { observe });
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "selected", optionId: "allow" });
+    expect(room.posted.filter(({ content }) => content.startsWith("Permission requested"))).toEqual([{
+      roomId: ROOM,
+      content: "Permission requested: Edit notes.md",
+      mentions: [],
+      messageType: "tool_call",
+      metadata: { permission_request: true, tool_name: "Edit notes.md", tool_call_id: "edit-1", acp_session_id: "session-1", auto_allowed: true },
+    }]);
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual(observe
+      ? [
+        {
+          type: "approval.requested",
+          roomId: ROOM,
+          toolCallId: "edit-1",
+          toolName: "Edit",
+          options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }, { optionId: "allow", name: "Allow", kind: "allow_once" }],
+        },
+        { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
+      ]
+      : []);
+  });
+
+  it("answers cancelled and posts nothing when a directly attached sink cancels the turn on approval.requested", async () => {
+    const answered = createDeferred<string>();
+    let asked = false;
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const { outcome } = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(outcome.outcome);
+      return { stopReason: "cancelled" as const };
+    }, { resolvePermission: () => { asked = true; return new Promise<never>(() => {}); } });
+    const { room } = await startAgent(adapter, { observe: false });
+    // Attached directly, a sink runs synchronously, inside the request it reports.
+    const seen: AgentEvent[] = [];
+    let cancelled: Promise<boolean> | undefined;
+    adapter.attachObserver((event) => {
+      seen.push(event);
+      if (event.type === "approval.requested") cancelled = adapter.cancelTurn(ROOM);
+    });
+
+    const message = await room.say("owner", "edit my notes");
+    expect(await answered.promise).toBe("cancelled");
+    expect(await cancelled).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    expect(asked, "never handed to resolvePermission").toBe(false);
+    expect(room.posted).toEqual([]);
+    expect(ofTypes(seen, "approval.requested", "approval.resolved")).toEqual([
+      expect.objectContaining({ type: "approval.requested", toolCallId: "edit-1" }),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it("still answers a permission request when a directly attached sink throws", async () => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(answer.outcome);
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => "allow" });
+    const { room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "selected", optionId: "allow" });
+  });
+
+  it("drops a room whose engine failed to start when a directly attached sink throws, so its next message starts it again", async () => {
+    const root = tmpRoot();
+    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
+    await mkdir(dirname(config), { recursive: true });
+    await writeFile(config, "{ allow: ");
+    const adapter = new CursorACPAdapter({
+      cwd: root,
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
+        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: ({ sessionId }) => workThenAnswer(peer, sessionId),
+      })),
+    });
+    const { room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
+    await writeFile(config, "{}");
+    expect(await room.outcome(await room.say("owner", "hello again"))).toBe("processed");
+  });
+
+  it("fails a room with its own error, not a throwing sink's, when its workspace is taken", async () => {
+    const shared = join(tmpRoot(), "shared");
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId), { cwd: undefined, workspaceForRoom: () => shared });
+    const { platform, room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    const other = await platform.room("room-2");
+    const message = await other.say("owner", "hello");
+    expect(await other.outcome(message)).toBe("failed");
+    expect(other.failureLabels(message)).toEqual([expect.stringContaining("already in use by room room-1")]);
+  });
+
+  it("keeps an answered permission settled when its room closes while the request is still posting", async () => {
+    const answered = createDeferred();
+    const ended = createDeferred<unknown>();
+    const processStopped = createDeferred();
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
+        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: async ({ sessionId }) => {
+          await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+          return { stopReason: "end_turn" as const };
+        },
+      }), () => processStopped.resolve()),
+      resolvePermission: async (_request, signal) => {
+        signal.addEventListener("abort", () => ended.resolve(signal.reason));
+        answered.resolve();
+        return "allow";
+      },
+    });
+    const { room } = await startAgent(adapter);
+    const requestPosting = room.holdEvent((content) => content.startsWith("Permission requested"));
+
+    await room.say("owner", "edit my notes");
+    await requestPosting.sending;
+    await answered.promise;
+    await room.remove();
+    await processStopped.promise;
+    requestPosting.release();
+
+    expect(await ended.promise, "the answer was taken before the room closed").toBe("settled");
+  });
+
+  it.each([
+    ["its room is removed", "room-closed"],
+    ["its process exits", "connection-lost"],
+  ] as const)("reports one cancelled approval.resolved when %s while a manual approval is pending", async (ending, reason) => {
+    const asked = createDeferred<AbortSignal>();
+    let exitProcess = (): void => {};
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((peer, exit): AcpAgent => {
+        exitProcess = exit;
+        return {
+          initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+          authenticate: async () => ({}),
+          newSession: async () => ({ sessionId: "session-1" }),
+          cancel: async () => {},
+          prompt: async ({ sessionId }) => {
+            await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+            return { stopReason: "end_turn" as const };
+          },
+        };
+      }),
+      resolvePermission: (_request, signal) => {
+        asked.resolve(signal);
+        return new Promise<never>(() => {});
+      },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+    const resolved = nextEvent(agent, "approval.resolved");
+
+    await room.say("owner", "edit my notes");
+    const signal = await asked.promise;
+    if (ending === "its room is removed") {
+      await room.remove();
+    } else {
+      exitProcess();
+    }
+
+    expect(await resolved).toEqual({ type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" });
+    expect(signal.reason).toBe(reason);
+    const linkClosed = nextEvent(agent, "link.disconnected");
+    await agent.stop();
+    await linkClosed;
+    expect(ofTypes(events, "approval.requested", "approval.resolved").map((event) => event.type)).toEqual([
+      "approval.requested",
+      "approval.resolved",
     ]);
   });
 

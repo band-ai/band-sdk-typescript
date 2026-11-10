@@ -19,7 +19,7 @@ import { UnsupportedFeatureError } from "../core/errors";
 import { notifyEach } from "../core/listeners";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
-import type { LinkDisconnectReason } from "../contracts/events";
+import type { AgentEvent, LinkDisconnectReason } from "../contracts/events";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
@@ -104,9 +104,7 @@ function validationErrorDetails(error: unknown): Record<string, unknown> {
 }
 
 /** A change in whether this link can reach Band; see `BandLink.onConnectionChange`. */
-export type LinkConnectionChange =
-  | { connected: true; reconnected: boolean }
-  | { connected: false; reason: LinkDisconnectReason };
+export type LinkConnectionChange = Extract<AgentEvent, { type: "link.connected" | "link.disconnected" }>;
 
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
@@ -227,7 +225,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
       if (downs === downsSeen) {
-        reportAfterUp({ connected: true, reconnected: true });
+        reportAfterUp({ type: "link.connected", reconnected: true });
       }
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
@@ -236,7 +234,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       downs += 1;
-      reportAfterUp({ connected: false, reason });
+      reportAfterUp({ type: "link.disconnected", reason });
     };
     const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));
     const stopTerminal = this.transport.onTerminal(() => reportDown("terminal"));
@@ -263,7 +261,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     }
     this.connected = true;
     reportedUp = true;
-    this.reportConnection({ connected: true, reconnected: false });
+    this.reportConnection({ type: "link.connected", reconnected: false });
   }
 
   /**
@@ -302,7 +300,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       await this.transport.disconnect();
     } finally {
       this.connected = false;
-      this.reportConnection({ connected: false, reason: "closed" });
+      this.reportConnection({ type: "link.disconnected", reason: "closed" });
       this.session.clearReconnectObserver();
       this.subscriptionManager.endSession();
     }
@@ -324,10 +322,10 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   private reportConnection(change: LinkConnectionChange): void {
     const last = this.reported;
-    const repeat = change.connected
-      ? last?.connected === true
+    const repeat = change.type === "link.connected"
+      ? last?.type === "link.connected"
       // Terminal is the final down; a later local disconnect adds nothing.
-      : last?.connected === false && (last.reason === change.reason || last.reason === "terminal");
+      : last?.type === "link.disconnected" && (last.reason === change.reason || last.reason === "terminal");
     if (repeat) {
       return;
     }

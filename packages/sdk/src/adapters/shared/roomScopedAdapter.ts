@@ -3,6 +3,7 @@ import type { AgentEventListener } from "../../contracts/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { isolatedListener } from "../../runtime/agentEvents";
 import { asErrorMessage } from "./coercion";
 import { RoomWorkspaces, type RoomWorkspaceOptions } from "./roomWorkspace";
 
@@ -38,7 +39,7 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   // A room that rejoins while its old engine is still closing waits on this.
   private readonly closing = new Map<string, Promise<void>>();
   private stopped = false;
-  /** Where engines report local events; a no-op until the runtime attaches one. */
+  /** Where engines report local events; a no-op until a sink is attached. Never throws. */
   protected observer: AgentEventListener = () => {};
 
   protected constructor(options: RoomScopedAdapterOptions<H>) {
@@ -50,8 +51,9 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   /** Builds the engine for one room; `workspace` is its claimed real path. */
   protected abstract createRoom(roomId: string, workspace: string): E;
 
+  /** Isolated here, so a failing sink cannot change room cleanup, permission answers or errors. */
   public attachObserver(sink: AgentEventListener): void {
-    this.observer = sink;
+    this.observer = isolatedListener(sink, this.roomLogger);
   }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {

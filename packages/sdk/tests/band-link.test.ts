@@ -671,8 +671,8 @@ describe("BandLink connection changes", () => {
     await reconnecting;
 
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "dropped" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "dropped" },
     ]);
   });
 
@@ -698,9 +698,9 @@ describe("BandLink connection changes", () => {
     await reconnecting;
 
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "dropped" },
-      { connected: false, reason: "terminal" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "dropped" },
+      { type: "link.disconnected", reason: "terminal" },
     ]);
   });
 
@@ -715,7 +715,7 @@ describe("BandLink connection changes", () => {
     expect(changes).toEqual([]);
     transport.releaseConnection();
     await connecting;
-    expect(changes).toEqual([{ connected: true, reconnected: false }]);
+    expect(changes).toEqual([{ type: "link.connected", reconnected: false }]);
   });
 
   it("does not report a mid-connect drop or reconnect after a prior closed", async () => {
@@ -726,8 +726,8 @@ describe("BandLink connection changes", () => {
     await link.connect();
     await link.disconnect();
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "closed" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
     ]);
 
     transport.gateConnect();
@@ -735,15 +735,15 @@ describe("BandLink connection changes", () => {
     transport.triggerDrop();
     await transport.triggerReconnect({ generation: 1, joinedTopics: new Set() });
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "closed" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
     ]);
     transport.releaseConnection();
     await connecting;
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "closed" },
-      { connected: true, reconnected: false },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+      { type: "link.connected", reconnected: false },
     ]);
   });
 
@@ -758,8 +758,8 @@ describe("BandLink connection changes", () => {
     await link.disconnect();
 
     expect(changes).toEqual([
-      { connected: true, reconnected: false },
-      { connected: false, reason: "terminal" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "terminal" },
     ]);
   });
 });

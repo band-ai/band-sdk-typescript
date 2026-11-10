@@ -3,7 +3,7 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import type { AgentEventListener } from "../../contracts/events"
 import { asNonEmptyString, asOptionalRecord } from "../shared/coercion"
 import { extractToolOutput, type ToolCallFrame } from "./client"
-import { acpToolCallName, isTerminalToolStatus } from "./toolCalls"
+import { isTerminalToolStatus, mcpInvocationName } from "./toolCalls"
 import type { CollectedChunk } from "./types"
 
 // `_meta` entries in which an ACP bridge names its agent's own tool, by bridge.
@@ -16,18 +16,21 @@ interface ToolCallState {
   reported: boolean
 }
 
-/** The tool name observers see; the rule is documented on `AgentEvent`'s `tool.call`. */
-export function observedToolName(source: {
+interface ToolCallNaming {
   name?: string | null
   kind?: string | null
   _meta?: unknown
   rawInput?: unknown
-}): string | undefined {
-  return asNonEmptyString(source.name)
-    ?? bridgeToolName(source._meta)
-    ?? asNonEmptyString(acpToolCallName(source.rawInput, ""))
-    ?? asNonEmptyString(source.kind)
-    ?? undefined
+}
+
+/** The tool name observers see; the rule is documented on `AgentEvent`'s `tool.call`. */
+export function observedToolName(source: ToolCallNaming): string | undefined {
+  return carriedToolName(source) ?? asNonEmptyString(source.kind) ?? undefined
+}
+
+/** A name the call carries itself, before the `kind` fallback. */
+function carriedToolName({ name, _meta, rawInput }: ToolCallNaming): string | undefined {
+  return asNonEmptyString(name) ?? bridgeToolName(_meta) ?? mcpInvocationName(rawInput)
 }
 
 /**
@@ -92,7 +95,7 @@ export class SessionUpdateEvents {
     }
     // Kind is stored separately; folding it into `name` would let a later
     // kind-only frame overwrite a bridge/ACP name.
-    call.name = observedToolName({ name: update.name, _meta: update._meta, rawInput }) ?? call.name
+    call.name = carriedToolName({ name: update.name, _meta: update._meta, rawInput }) ?? call.name
     call.kind = update.kind ?? call.kind
     if (!call.reported && hasInput(rawInput)) this.report(toolCallId, call, rawInput)
     return call
@@ -100,7 +103,7 @@ export class SessionUpdateEvents {
 
   private report(toolCallId: string, call: ToolCallState, input: unknown): void {
     call.reported = true
-    const name = call.name ?? call.kind
+    const name = observedToolName(call)
     this.emit({
       type: "tool.call",
       roomId: this.roomId,

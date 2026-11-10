@@ -236,8 +236,8 @@ export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "comman
   cwd: string;
   roomId: string;
   provider: string;
-  /** Where the room reports local events; nothing sent here is posted. */
-  observer?: AgentEventListener;
+  /** Where the room reports local events; nothing sent here is posted. Must not throw. */
+  observer: AgentEventListener;
 }
 
 /** The turn holding a room; `prompt` is set while its ACP prompt is in flight. */
@@ -343,7 +343,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.resolveSessionModel = options.resolveSessionModel
     this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
-    this.observer = options.observer ?? (() => {})
+    this.observer = options.observer
     this.sessionEvents = new SessionUpdateEvents(options.roomId, this.observer)
     this.customSection = options.customSection
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
@@ -1523,20 +1523,22 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
     })
     let response: RequestPermissionResponse
-    try {
-      response = controller?.signal.aborted || turn?.cancelled
-        ? CANCELLED_PERMISSION_RESPONSE
-        : await this.handlePermissionRequest(tools, roomId, params, turn, controller)
-    } catch (error) {
-      this.safeWarn("permission handling failed; cancelling the request", {
-        sessionId: params.sessionId,
-        roomId,
-        error: String(error),
-      })
-      response = CANCELLED_PERMISSION_RESPONSE
-    } finally {
+    if (controller?.signal.aborted || turn?.cancelled) {
+      // `resolveManually` never runs to untrack it.
       if (controller) {
         this.untrackPending(key, controller)
+      }
+      response = CANCELLED_PERMISSION_RESPONSE
+    } else {
+      try {
+        response = await this.handlePermissionRequest(tools, roomId, params, turn, controller, key)
+      } catch (error) {
+        this.safeWarn("permission handling failed; cancelling the request", {
+          sessionId: params.sessionId,
+          roomId,
+          error: String(error),
+        })
+        response = CANCELLED_PERMISSION_RESPONSE
       }
     }
     const { outcome } = response
@@ -1571,6 +1573,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     params: RequestPermissionRequest,
     turn: ActiveTurn | undefined,
     controller: AbortController | undefined,
+    pendingKey: string,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
@@ -1615,7 +1618,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         }
       }),
       controller
-        ? this.resolveManually(roomId, params, controller)
+        ? this.resolveManually(roomId, params, controller, pendingKey)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
@@ -1688,6 +1691,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     roomId: string,
     params: RequestPermissionRequest,
     controller: AbortController,
+    pendingKey: string,
   ): Promise<string | undefined> {
     const abandoned = new Promise<undefined>((resolve) => {
       controller.signal.addEventListener("abort", () => resolve(undefined))
@@ -1712,6 +1716,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       ])
     } finally {
       clearTimeout(timer)
+      // Answered or given up: a cleanup from here on must not abort it.
+      this.untrackPending(pendingKey, controller)
       // The final abort reason is decided by `handlePermissionRequest`, once
       // the actual `RequestPermissionResponse` is known — not here, and not
       // unconditionally `"settled"`: that would contradict a response that

@@ -56,11 +56,27 @@ describe("AgentEventHub delivery", () => {
     expect(late).toEqual([MARKER]);
   });
 
+  it("never shows a listener added again the events emitted before it was added again", async () => {
+    const hub = new AgentEventHub(makeLoggerSpy());
+    const seen: AgentEvent[] = [];
+    const listener = (event: AgentEvent) => { seen.push(event); };
+    const stop = hub.observe(listener);
+
+    hub.emit(room("room.joined", "before"));
+    stop();
+    hub.observe(listener);
+    hub.emit(room("room.joined", "after"));
+    await delivered(hub);
+
+    expect(seen).toEqual([room("room.joined", "after"), MARKER]);
+  });
+
   it("logs a throwing or rejecting listener and still delivers to the others", async () => {
     const logger = makeLoggerSpy();
-    const bothLogged = createDeferred();
+    const allLogged = createDeferred();
     logger.warn.mockImplementation(() => {
-      if (logger.warn.mock.calls.length === 2) bothLogged.resolve();
+      // Two failing listeners, each for the event and the marker.
+      if (logger.warn.mock.calls.length === 4) allLogged.resolve();
     });
     const hub = new AgentEventHub(logger);
     const seen: AgentEvent[] = [];
@@ -71,7 +87,11 @@ describe("AgentEventHub delivery", () => {
     hub.emit(room("room.joined", "a"));
     await delivered(hub);
 
-    expect(seen[0]).toEqual(room("room.joined", "a"));
-    await bothLogged.promise;
+    expect(seen).toEqual([room("room.joined", "a"), MARKER]);
+    await allLogged.promise;
+    const forEvent = logger.warn.mock.calls.filter(([, context]) => context?.eventType === "room.joined");
+    const failure = (message: string) => ["agent_events.listener_failed", { eventType: "room.joined", error: new Error(message) }];
+    expect(forEvent).toHaveLength(2);
+    expect(forEvent).toEqual(expect.arrayContaining([failure("boom"), failure("async boom")]));
   });
 });

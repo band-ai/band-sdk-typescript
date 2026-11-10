@@ -15,7 +15,7 @@ import {
  */
 export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, TurnTools, ACPRoomAgent> {
   protected readonly provider: string = "acp"
-  private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider">
+  private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider" | "observer">
 
   public constructor(options: ACPClientAdapterOptions) {
     const { cwd, workspaceForRoom, ...roomOptions } = options

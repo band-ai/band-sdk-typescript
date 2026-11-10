@@ -136,11 +136,7 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   private observeLink(): void {
-    this.stopObservingLink = this.link.onConnectionChange((change) => {
-      this.events.emit(change.connected
-        ? { type: "link.connected", reconnected: change.reconnected }
-        : { type: "link.disconnected", reason: change.reason });
-    });
+    this.stopObservingLink = this.link.onConnectionChange(this.events.emit);
   }
 
   private unobserveLink(): void {
@@ -270,7 +266,7 @@ export class PlatformRuntime implements AsyncDisposable {
 
     await this.initialize();
     assertNotSuperseded();
-    // Until the matching stop, which may run on a borrowed link this runtime does not own.
+    // Relays link changes until `stop()` unsubscribes, since a borrowed link can outlive this runtime.
     this.observeLink();
     // Claimed before `onStarted` so a stop() landing mid-startup still owes this
     // adapter its `onRuntimeStop` — several adapters only abort a hung startup

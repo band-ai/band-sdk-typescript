@@ -247,10 +247,10 @@ describe("core Session owns reconnects (real wire)", () => {
       await onWireClock(link.disconnect());
 
       expect(changes.entries).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: true, reconnected: true },
-        { connected: false, reason: "closed" },
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
       ]);
     });
 
@@ -268,10 +268,10 @@ describe("core Session owns reconnects (real wire)", () => {
 
       // Session judges the superseded socket's own close stale, so the drop is reported once.
       expect(changes.entries).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: true, reconnected: true },
-        { connected: false, reason: "closed" },
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
       ]);
     });
 
@@ -286,13 +286,13 @@ describe("core Session owns reconnects (real wire)", () => {
       // reconnect before this test's local disconnect runs.
       peer.refuseUpgrades({ status: 503 });
       peer.severAllConnections();
-      await onWireClock(changes.next((change) => !change.connected && change.reason === "dropped"));
+      await onWireClock(changes.next((change) => change.type === "link.disconnected" && change.reason === "dropped"));
       await onWireClock(link.disconnect());
 
       expect(changes.entries).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: false, reason: "closed" },
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.disconnected", reason: "closed" },
       ]);
     });
 
@@ -312,10 +312,10 @@ describe("core Session owns reconnects (real wire)", () => {
       await onWireClock(link.disconnect());
 
       expect(changes.entries).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: true, reconnected: true },
-        { connected: false, reason: "closed" },
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
       ]);
     });
 
@@ -328,13 +328,13 @@ describe("core Session owns reconnects (real wire)", () => {
 
       peer.refuseUpgrades({ status: 403 });
       peer.severAllConnections();
-      await onWireClock(changes.next((change) => !change.connected && change.reason === "terminal"));
+      await onWireClock(changes.next((change) => change.type === "link.disconnected" && change.reason === "terminal"));
       await advanceWireClock(PAST_ANY_DELAY_MS);
 
       expect(changes.entries).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: false, reason: "terminal" },
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.disconnected", reason: "terminal" },
       ]);
     });
 

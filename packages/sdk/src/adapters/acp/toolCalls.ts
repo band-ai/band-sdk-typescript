@@ -29,18 +29,24 @@ const MCP_INVOCATION_KEYS = [
  * a display string.
  */
 export function acpToolCallName(rawInput: unknown, title: string): string {
+  return mcpInvocationName(rawInput) ?? title;
+}
+
+/** The MCP tool a call's arguments name as `{ server, tool }`, spelled as MCP exposes it. */
+export function mcpInvocationName(rawInput: unknown): string | undefined {
   const input = asOptionalRecord(rawInput);
-  if (input) {
-    const inputKeys = Object.keys(input);
-    for (const keys of MCP_INVOCATION_KEYS) {
-      const [server, tool] = [input[keys[0]], input[keys[1]]];
-      const matches = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
-      if (matches && typeof server === "string" && typeof tool === "string") {
-        return mcpToolSpelling(server, tool);
-      }
+  if (!input) {
+    return undefined;
+  }
+  const inputKeys = Object.keys(input);
+  for (const keys of MCP_INVOCATION_KEYS) {
+    const [server, tool] = [input[keys[0]], input[keys[1]]];
+    const matches = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
+    if (matches && typeof server === "string" && typeof tool === "string") {
+      return mcpToolSpelling(server, tool);
     }
   }
-  return title;
+  return undefined;
 }
 
 /**
@@ -114,5 +120,5 @@ export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal
  */
 function nativeToolName(chunk: CollectedChunk): string {
   const kind = typeof chunk.metadata.kind === "string" ? chunk.metadata.kind : "";
-  return acpToolCallName(chunk.metadata.raw_input, "") || kind;
+  return mcpInvocationName(chunk.metadata.raw_input) ?? kind;
 }
