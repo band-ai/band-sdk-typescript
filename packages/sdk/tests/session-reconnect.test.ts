@@ -139,7 +139,6 @@ async function refused(peer: FakePhoenixPeer, count = 1): Promise<void> {
   await onWireClock(peer.refusals.until(() => peer.refusals.entries.length >= count));
 }
 
-/** Records every connection change `link` reports, to await one without polling. */
 /** Advances the clock until the peer has accepted `count` connections in total. */
 async function reconnected(peer: FakePhoenixPeer, count: number): Promise<void> {
   await onWireClock(connectionNumber(peer, count));

@@ -34,7 +34,9 @@ export type {
   AgentEvent,
   AgentEventListener,
   AgentEventType,
+  ApprovalOutcome,
   LinkDisconnectReason,
+  ToolCallEndStatus,
 } from "../contracts/events";
 export {
   BandSdkError,

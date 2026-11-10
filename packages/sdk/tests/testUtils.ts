@@ -14,6 +14,7 @@ import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, FAILURE_METADATA_
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { RuntimeStateError } from "../src/core/errors";
+import { Serializer } from "../src/core/singleFlight";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -340,6 +341,7 @@ export class FakeTransport implements StreamingTransport {
   private connectGate: Promise<void> = Promise.resolve();
   private releaseConnectGate: (() => void) | null = null;
   private connectError: unknown = null;
+  private readonly reconnectDeliveries = new Serializer();
 
   /** As the transport contract asks, an abort of `signal` rejects a connect still waiting. */
   public async connect(signal?: AbortSignal): Promise<void> {
@@ -572,8 +574,12 @@ export class FakeTransport implements StreamingTransport {
     }
   }
 
-  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
-  public async triggerReconnect(
+  /**
+   * Simulates a settled transport-level reconnect for tests driving BandLink's observer(s).
+   * Like the real transport, deliveries run one at a time, so a reconnect queues behind
+   * a slower earlier one and its socket can drop before its observers start.
+   */
+  public triggerReconnect(
     snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
       Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
   ): Promise<void> {
@@ -582,7 +588,10 @@ export class FakeTransport implements StreamingTransport {
       ...snapshot,
       attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,
     };
-    await Promise.all([...this.observers].map((observer) => observer(full)));
+    const observers = [...this.observers];
+    return this.reconnectDeliveries.run(async () => {
+      await Promise.all(observers.map((observer) => observer(full)));
+    });
   }
 }
 

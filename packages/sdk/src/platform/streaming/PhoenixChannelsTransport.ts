@@ -483,7 +483,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   /** Session chose to retry: once per decision, so a supersede's later stale close adds nothing. */
   private notifyDropped(reason: WebSocketDisconnectReason): void {
     notifyEach(this.dropObservers, reason, (error) => {
-      this.logger.error("Drop observer failed", { error });
+      this.logger.error("Drop observer failed", { reason, error });
     });
   }
 

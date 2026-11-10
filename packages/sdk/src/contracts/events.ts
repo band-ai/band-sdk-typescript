@@ -24,7 +24,7 @@ export type ApprovalOutcome = "selected" | "cancelled";
  *   Nothing is reported before the first up or after `terminal`.
  * - Tools: one `tool.call` per `toolCallId` within an agent session, then at
  *   most one `tool.result`.
- *   One `approval.resolved` per `approval.requested`.
+ * - Approvals: one `approval.resolved` per `approval.requested`.
  */
 export type AgentEvent =
   /**
@@ -35,7 +35,7 @@ export type AgentEvent =
   | { type: "turn.started"; roomId: string; messageId: string }
   /** The adapter finished the turn without throwing. */
   | { type: "turn.completed"; roomId: string; messageId: string }
-  /** The adapter threw; `error` is the label Band records for the message: the error's own message. */
+  /** The adapter threw; `error` is the thrown error's message, the same label Band records for the message. */
   | { type: "turn.failed"; roomId: string; messageId: string; error: string }
   /** Reasoning text as the agent streams it; consecutive events continue one run. */
   | { type: "thought"; roomId: string; text: string }

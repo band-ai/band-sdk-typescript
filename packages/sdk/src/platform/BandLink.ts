@@ -203,9 +203,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number, signal: AbortSignal): Promise<void> {
-    // Counts downs (drops and terminal) for this connect epoch, so a reconnect
-    // that finishes after a newer down does not report a stale up.
-    let downs = 0;
     let reportedUp = false;
     // Observers hear nothing from this session before its first up: a prior
     // session's closed/terminal leaves `reported` set, so the gate is per session.
@@ -215,7 +212,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       }
     };
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
-      const downsSeen = downs;
       await this.subscriptionManager.reconcileReconnect(snapshot);
       if (this.session.isStale(epoch)) {
         this.logger.debug(
@@ -224,7 +220,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      if (downs === downsSeen) {
+      // Reconciliation can outlast its socket (or start after it already dropped),
+      // so report the up only while the transport is still connected.
+      if (this.transport.isConnected()) {
         reportAfterUp({ type: "link.connected", reconnected: true });
       }
     });
@@ -233,7 +231,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       if (this.session.isStale(epoch)) {
         return;
       }
-      downs += 1;
       reportAfterUp({ type: "link.disconnected", reason });
     };
     const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));

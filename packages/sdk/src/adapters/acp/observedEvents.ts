@@ -77,9 +77,7 @@ export class SessionUpdateEvents {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           session.inFlight.delete(update.toolCallId)
           session.completed.add(update.toolCallId)
-          // An update's collected text is already its tool output.
-          const output = update.sessionUpdate === "tool_call_update" ? chunk.content : extractToolOutput(update)
-          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output })
+          this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: extractToolOutput(update) })
         }
         return
       }

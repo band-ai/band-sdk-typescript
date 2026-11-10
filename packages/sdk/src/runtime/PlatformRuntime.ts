@@ -137,6 +137,10 @@ export class PlatformRuntime implements AsyncDisposable {
 
   private observeLink(): void {
     this.stopObservingLink = this.link.onConnectionChange(this.events.emit);
+    // A borrowed link may already be up, and its connect() then reports nothing.
+    if (this.link.isConnected()) {
+      this.events.emit({ type: "link.connected", reconnected: false });
+    }
   }
 
   private unobserveLink(): void {

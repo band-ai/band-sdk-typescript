@@ -99,7 +99,9 @@ export type {
   AgentEvent,
   AgentEventListener,
   AgentEventType,
+  ApprovalOutcome,
   LinkDisconnectReason,
+  ToolCallEndStatus,
 } from "./core";
 
 export type {

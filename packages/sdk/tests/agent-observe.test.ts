@@ -16,7 +16,7 @@ import { CursorACPAdapter } from "../src/adapters/cursor-acp";
 import { CURSOR_PROJECT_CONFIG } from "../src/adapters/cursor-acp/permissions";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
-import { Agent } from "../src/agent/Agent";
+import { Agent, type AgentCreateOptions } from "../src/agent/Agent";
 import type { AgentEvent, AgentEventListener } from "../src/contracts/events";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
@@ -137,6 +137,15 @@ function cursorAdapter(cwd: string, onPrompt: OnPrompt = endTurn) {
   return new CursorACPAdapter({ cwd, enableMcpTools: false, connectionFactory: fixtureAgent(onPrompt) });
 }
 
+/** A workspace root whose room has an unparseable Cursor project config; returns the root and that config's path. */
+async function brokenCursorWorkspace() {
+  const root = tmpRoot();
+  const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
+  await mkdir(dirname(config), { recursive: true });
+  await writeFile(config, "{ allow: ");
+  return { root, config };
+}
+
 /** One turn's worth of agent output: a thought, a tool call and its result, then the reply. */
 async function workThenAnswer(peer: AgentSideConnection, sessionId: string, beforeAnswer: () => Promise<void> = async () => {}) {
   await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "weighing the options" } } });
@@ -149,13 +158,16 @@ async function workThenAnswer(peer: AgentSideConnection, sessionId: string, befo
   return { stopReason: "end_turn" as const };
 }
 
+type CreateAgentOptions = Partial<Omit<AgentCreateOptions, "adapter">> & { observe?: boolean };
+
 /** An agent on `platform`, not yet started; `events` is everything it reports, when `observe`. */
-function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, { observe = true }: { observe?: boolean } = {}) {
+function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, { observe = true, ...options }: CreateAgentOptions = {}) {
   const agent = Agent.create({
     adapter,
     agentId: AGENT_ID,
     apiKey: AGENT_API_KEY,
     link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    ...options,
   });
   const events: AgentEvent[] = [];
   if (observe) {
@@ -291,6 +303,25 @@ describe("Agent.observe", () => {
       editApprovalRequested(ALLOW_OPTION, DENY_OPTION),
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
     ]);
+  });
+
+  it("reports a permission request for a call known only by its title without a tool name", async () => {
+    const titleOnly = { toolCallId: "rm-1", title: "`rm -rf build`" };
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: titleOnly, options: [ALLOW_OPTION, DENY_OPTION] });
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => "allow" });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "clean the build"))).toBe("processed");
+    const [requested] = ofTypes(events, "approval.requested");
+    expect(requested).toEqual({
+      type: "approval.requested",
+      roomId: ROOM,
+      toolCallId: "rm-1",
+      options: [ALLOW_OPTION, DENY_OPTION].map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+    });
+    expect(requested).not.toHaveProperty("toolName");
   });
 
   it("reports approval.resolved cancelled when cancelTurn runs while permission is pending", async () => {
@@ -449,10 +480,7 @@ describe("Agent.observe", () => {
   });
 
   it("drops a room whose engine failed to start when a directly attached sink throws, so its next message starts it again", async () => {
-    const root = tmpRoot();
-    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
-    await mkdir(dirname(config), { recursive: true });
-    await writeFile(config, "{ allow: ");
+    const { root, config } = await brokenCursorWorkspace();
     const adapter = cursorAdapter(root, (peer, { sessionId }) => workThenAnswer(peer, sessionId));
     const { room } = await startAgent(adapter, { observe: false });
     adapter.attachObserver(() => { throw new Error("sink bug"); });
@@ -578,10 +606,7 @@ describe("Agent.observe", () => {
   });
 
   it("reports a room whose engine cannot start in its workspace", async () => {
-    const root = tmpRoot();
-    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
-    await mkdir(dirname(config), { recursive: true });
-    await writeFile(config, "{ allow: ");
+    const { root } = await brokenCursorWorkspace();
     const adapter = cursorAdapter(root);
     const { events, room } = await startAgent(adapter);
 
@@ -880,16 +905,11 @@ describe("Agent.observe", () => {
     // Band's push of the new hub room is held, so its first turn runs before admission.
     platform.rest.onRoomCreated = (roomId) => created.resolve(roomId);
     const hubTurn = createDeferred();
-    const agent = Agent.create({
-      adapter: new GenericAdapter(async ({ tools }) => { hubTurn.resolve(); tools.turn.settle(); }),
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
-      contactConfig: { strategy: "hub_room", hubTaskId: "contacts" },
-    });
-    const events: AgentEvent[] = [];
-    agent.observe((event) => { events.push(event); });
-    onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
+    const { agent, events } = createAgent(
+      new GenericAdapter(async ({ tools }) => { hubTurn.resolve(); tools.turn.settle(); }),
+      platform,
+      { contactConfig: { strategy: "hub_room", hubTaskId: "contacts" } },
+    );
     await agent.start();
 
     await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_request_received", {
@@ -979,6 +999,21 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports a borrowed link that was already connected before start as connected, then closed", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    const link = new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link });
+    await link.connect();
+    const { agent, events } = createAgent(new GenericAdapter(async () => {}), platform, { link });
+
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
   it("reports link dropped, reconnected, and terminal", async () => {
     const { agent, events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
     expect(ofTypes(events, "link.connected")).toEqual([{ type: "link.connected", reconnected: false }]);
@@ -1063,6 +1098,16 @@ describe("Agent.observe", () => {
       result: { toolCallId: "call_03", status: "completed", output: "three notes" },
     },
     {
+      bridge: "a call named by its first frame and then updated with only its kind, as a",
+      frames: [
+        { sessionUpdate: "tool_call", toolCallId: "named-1", _meta: { claudeCode: { toolName: "Bash" } }, rawInput: {}, status: "pending", title: "Terminal", kind: "execute" },
+        { sessionUpdate: "tool_call_update", toolCallId: "named-1", kind: "execute", rawInput: { command: "echo hi" } },
+        { sessionUpdate: "tool_call_update", toolCallId: "named-1", status: "completed", rawOutput: "hi" },
+      ] satisfies SessionUpdate[],
+      call: { toolCallId: "named-1", name: "Bash", kind: "execute", input: { command: "echo hi" } },
+      result: { toolCallId: "named-1", status: "completed", output: "hi" },
+    },
+    {
       bridge: "Cursor's",
       frames: cursorLateNamedBandTool("cursor-1"),
       call: {
@@ -1098,6 +1143,7 @@ describe("Agent.observe", () => {
   });
 
   it("reports a toolCallId again in a new session on the same agent process", async () => {
+    let processes = 0;
     let sessions = 0;
     const adapter = acpAdapter(async (peer, { sessionId }) => {
       await peer.sessionUpdate({ sessionId, update: ONE_FRAME_CALL[0] });
@@ -1105,11 +1151,15 @@ describe("Agent.observe", () => {
       if (sessionId === "session-1") throw RequestError.internalError(undefined, "model overloaded");
       await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
       return { stopReason: "end_turn" };
-    }, {}, { overrides: { newSession: async () => ({ sessionId: `session-${++sessions}` }) } });
+    }, {}, { overrides: {
+      initialize: async () => { processes += 1; return { protocolVersion: 1, agentCapabilities: {} }; },
+      newSession: async () => ({ sessionId: `session-${++sessions}` }),
+    } });
     const { events, room } = await startAgent(adapter);
 
     expect(await room.outcome(await room.say("owner", "first"))).toBe("failed");
     expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+    expect(processes).toBe(1);
     expect(sessions).toBe(2);
     const call = { type: "tool.call", roomId: ROOM, toolCallId: "call_03", name: "read", kind: "read", input: { path: "notes.md" } };
     const result = { type: "tool.result", roomId: ROOM, toolCallId: "call_03", status: "completed", output: "three notes" };
