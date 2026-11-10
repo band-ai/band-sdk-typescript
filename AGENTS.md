@@ -42,8 +42,9 @@ to implementation, testing, or review. Discovery alone does not load instruction
 Read the linked `SKILL.md` directly when automatic loading is unavailable.
 
 Follow each activation rule: `band-code-review` runs when a review is requested;
-`band-pr-assess` when assessing a PR toward merge (always runs
-`band-code-review --fix` until it converges).
+`band-pr-assess` when assessing a PR toward merge (runs
+`band-code-review --fix` until it converges, unless a wrong-layer stop
+halts before that gate).
 Use only skills that actually exist and disclose missing guidance when it
 materially affects the work. Read [the shared runtime guidance](.claude/skills/workflow-runtime.md)
 for host capabilities, authorization, delegation and cleanup.
