@@ -1,6 +1,14 @@
 # Changelog
 
 
+## [2.1.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.1...sdk-v2.1.0) (2026-11-10)
+
+
+### Features
+
+* **adapters:** let ACP and Claude SDK adapters expose board and task tools ([#406](https://github.com/band-ai/band-sdk-typescript/issues/406)) ([d477c46](https://github.com/band-ai/band-sdk-typescript/commit/d477c46b330b68d1a7eefb64835f0f7c514fb685))
+* **agent:** cancel a running ACP turn without resetting its session ([#405](https://github.com/band-ai/band-sdk-typescript/issues/405)) ([5ef2c47](https://github.com/band-ai/band-sdk-typescript/commit/5ef2c475dea47d6ed60e9415755cff425618ccc3))
+
 ## [2.0.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.0...sdk-v2.0.1) (2026-11-09)
 
 
