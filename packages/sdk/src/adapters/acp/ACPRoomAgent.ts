@@ -20,12 +20,14 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/acp-client";
+import type { AgentEventListener } from "../../contracts/events";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { observedToolName, SessionUpdateEvents } from "./observedEvents";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
@@ -123,6 +125,7 @@ const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 // config bound because authenticating makes a network round trip.
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+const PROCESS_EXITED_ERROR = "The ACP agent process exited";
 // How much of a dying agent's stderr its exit warning carries.
 const STDERR_TAIL_LINES = 20;
 
@@ -233,6 +236,8 @@ export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "comman
   cwd: string;
   roomId: string;
   provider: string;
+  /** Where the room reports local events; nothing sent here is posted. Must not throw. */
+  observer: AgentEventListener;
 }
 
 /** The turn holding a room; `prompt` is set while its ACP prompt is in flight. */
@@ -302,6 +307,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly permissionTimeoutMs: number
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
+  private readonly observer: AgentEventListener
+  private readonly sessionEvents: SessionUpdateEvents
   private readonly customSection?: string
 
   private live: LiveConnection | null = null
@@ -336,6 +343,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.resolveSessionModel = options.resolveSessionModel
     this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
+    this.observer = options.observer
+    this.sessionEvents = new SessionUpdateEvents(options.roomId, this.observer)
     this.customSection = options.customSection
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
@@ -671,6 +680,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
+    this.sessionEvents.reset()
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
@@ -706,6 +716,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.activeTurns.clear()
+    this.sessionEvents.reset()
     this.sessionsInFlight.clear()
     this.roomTurns.clear()
     // Same reasoning as `onCleanup`, for every room at once: a still-pending
@@ -812,6 +823,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     owner.client?.forgetSession(owner.sessionId)
   }
 
+  /** The room's agent process could not start, or exited on its own. */
+  private reportRoomFailed(error: string): void {
+    this.observer({ type: "room.failed", roomId: this.roomId, error })
+  }
+
   private sessionKey(generation: number, sessionId: string): string {
     return `${generation}:${sessionId}`
   }
@@ -877,8 +893,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       const client = new BandACPClient(
         this.roomId,
         (params) => this.routePermissionRequest(params, owner.generation),
-        this.extensionHandler,
-        (method, params) => this.isHumanDecision(method, params),
+        {
+          extensionHandler: this.extensionHandler,
+          humanDecision: (method, params) => this.isHumanDecision(method, params),
+          observeUpdate: (sessionId, update, chunk) => this.sessionEvents.observe(sessionId, update, chunk),
+        },
       )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {
@@ -931,7 +950,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       }
       this.live = live
       // A process that exits on its own must lose Band access too.
-      void connection.closed.finally(() => this.retireConnection(connection, live.generation))
+      void connection.closed.finally(() => {
+        // Still live means nothing here retired it: the process ended on its own.
+        const exitedOnItsOwn = this.live === live
+        // Retired first, so a throwing observer cannot keep Band access alive.
+        this.retireConnection(connection, live.generation)
+        if (exitedOnItsOwn) {
+          this.safeWarn("acp_client.process_exited_on_its_own", { roomId: this.roomId })
+          this.reportRoomFailed(PROCESS_EXITED_ERROR)
+        }
+      })
       return live
     } catch (error) {
       // Installing is the `try`'s last, infallible step, so a throw here means
@@ -940,6 +968,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         await (handle ? stoppingBackendFirst(handle, backend) : backend)?.stop()
       } catch (stopError) {
         this.safeWarn("acp_client.handle_stop_after_handshake_failure", { error: asErrorMessage(stopError) })
+      }
+      // A stop or cleanup ended this attempt on purpose, whatever error that surfaced as.
+      const superseded = attempt.signal.aborted || generation !== this.connectionGeneration
+      if (!superseded) {
+        this.reportRoomFailed(asErrorMessage(error))
       }
       throw error
     } finally {
@@ -1118,6 +1151,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
     this.connectionGeneration++
     this.live = null
+    // A later process may reuse toolCallIds; forget this connection's in-flight calls.
+    this.sessionEvents.reset()
     live.client.retire()
     this.pruneConnectionGeneration(generation)
     abandon(
@@ -1479,16 +1514,49 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return CANCELLED_PERMISSION_RESPONSE
     }
 
-    try {
-      return await this.handlePermissionRequest(tools, roomId, params, connectionGeneration, turn)
-    } catch (error) {
-      this.safeWarn("permission handling failed; cancelling the request", {
-        sessionId: params.sessionId,
-        roomId,
-        error: String(error),
-      })
-      return CANCELLED_PERMISSION_RESPONSE
+    // Tracked before the observer runs: a sink attached directly through
+    // `attachObserver` may call back synchronously, and its cancel must reach this request.
+    const controller = this.resolvePermission ? new AbortController() : undefined
+    if (controller) {
+      this.trackPending(key, controller)
     }
+    const toolCallId = params.toolCall.toolCallId
+    const toolName = observedToolName(params.toolCall)
+    this.observer({
+      type: "approval.requested",
+      roomId,
+      toolCallId,
+      ...(toolName !== undefined ? { toolName } : {}),
+      options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+    })
+    let response: RequestPermissionResponse
+    if (controller?.signal.aborted || turn?.cancelled) {
+      // `resolveManually` never runs to untrack it.
+      if (controller) {
+        this.untrackPending(key, controller)
+      }
+      response = CANCELLED_PERMISSION_RESPONSE
+    } else {
+      try {
+        response = await this.handlePermissionRequest(tools, roomId, params, turn, controller, key)
+      } catch (error) {
+        this.safeWarn("permission handling failed; cancelling the request", {
+          sessionId: params.sessionId,
+          roomId,
+          error: String(error),
+        })
+        response = CANCELLED_PERMISSION_RESPONSE
+      }
+    }
+    const { outcome } = response
+    this.observer({
+      type: "approval.resolved",
+      roomId,
+      toolCallId,
+      outcome: outcome.outcome,
+      ...(outcome.outcome === "selected" ? { optionId: outcome.optionId } : {}),
+    })
+    return response
   }
 
   private promptActivity(tools: TurnTools): PromptActivity {
@@ -1510,8 +1578,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     tools: TurnTools,
     roomId: string,
     params: RequestPermissionRequest,
-    connectionGeneration: number,
     turn: ActiveTurn | undefined,
+    controller: AbortController | undefined,
+    pendingKey: string,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
@@ -1522,14 +1591,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // empty-`options` edge case `choosePermissionOption` maps to `null`
     // (and `toResponse` below maps to `cancelled`, never "auto-allowed").
     const autoSelection = this.resolvePermission ? undefined : choosePermissionOption(params.options)
-
-    // Created and tracked before anything below is awaited: a room/adapter
-    // teardown racing the `sendEvent` call must still find this request
-    // cancellable immediately, not only once `resolveManually` itself runs.
-    const controller = this.resolvePermission ? new AbortController() : undefined
-    if (controller) {
-      this.trackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
-    }
 
     // A room's only way to learn a request is pending at all — if it never
     // posts, no human can honestly be said to have been asked, so this
@@ -1564,7 +1625,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         }
       }),
       controller
-        ? this.resolveManually(roomId, params, controller, connectionGeneration)
+        ? this.resolveManually(roomId, params, controller, pendingKey)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
@@ -1637,7 +1698,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     roomId: string,
     params: RequestPermissionRequest,
     controller: AbortController,
-    connectionGeneration: number,
+    pendingKey: string,
   ): Promise<string | undefined> {
     const abandoned = new Promise<undefined>((resolve) => {
       controller.signal.addEventListener("abort", () => resolve(undefined))
@@ -1662,7 +1723,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
+      // Answered or given up: a cleanup from here on must not abort it.
+      this.untrackPending(pendingKey, controller)
       // The final abort reason is decided by `handlePermissionRequest`, once
       // the actual `RequestPermissionResponse` is known — not here, and not
       // unconditionally `"settled"`: that would contradict a response that

@@ -96,6 +96,12 @@ export type {
   MemoryTools,
   TaskTools,
   ToolExecutor,
+  AgentEvent,
+  AgentEventListener,
+  AgentEventType,
+  ApprovalOutcome,
+  LinkDisconnectReason,
+  ToolCallEndStatus,
 } from "./core";
 
 export type {

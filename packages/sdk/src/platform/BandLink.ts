@@ -16,8 +16,10 @@ import type {
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
+import { notifyEach, subscribe } from "../core/listeners";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
+import type { AgentEvent, LinkDisconnectReason } from "../contracts/events";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
@@ -101,6 +103,9 @@ function validationErrorDetails(error: unknown): Record<string, unknown> {
   return details;
 }
 
+/** A change in whether this link can reach Band; see `BandLink.onConnectionChange`. */
+export type LinkConnectionChange = Extract<AgentEvent, { type: "link.connected" | "link.disconnected" }>;
+
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
   private readonly apiKey: string;
@@ -120,6 +125,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private connectAbort: AbortController | null = null;
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
+  private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
+  /** Last reachability report, so each up and each distinct down reason is told once. */
+  private reported: LinkConnectionChange | null = null;
 
   public get capabilities(): AgentToolsCapabilities { return this._capabilities; }
 
@@ -195,6 +203,14 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number, signal: AbortSignal): Promise<void> {
+    let reportedUp = false;
+    // Observers hear nothing from this session before its first up: a prior
+    // session's closed/terminal leaves `reported` set, so the gate is per session.
+    const reportAfterUp = (change: LinkConnectionChange): void => {
+      if (reportedUp) {
+        this.reportConnection(change);
+      }
+    };
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
       await this.subscriptionManager.reconcileReconnect(snapshot);
       if (this.session.isStale(epoch)) {
@@ -204,11 +220,26 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+      // Reconciliation can outlast its socket (or start after it already dropped),
+      // so report the up only while the transport is still connected.
+      if (this.transport.isConnected()) {
+        reportAfterUp({ type: "link.connected", reconnected: true });
+      }
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
+    const reportDown = (reason: Exclude<LinkDisconnectReason, "closed">): void => {
+      if (this.session.isStale(epoch)) {
+        return;
+      }
+      reportAfterUp({ type: "link.disconnected", reason });
+    };
+    const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));
+    const stopTerminal = this.transport.onTerminal(() => reportDown("terminal"));
     this.session.reconnectObserverTeardown = () => {
       stopReconnected?.();
       stopRejoined?.();
+      stopDropped?.();
+      stopTerminal();
     };
 
     try {
@@ -226,6 +257,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       throw error;
     }
     this.connected = true;
+    reportedUp = true;
+    this.reportConnection({ type: "link.connected", reconnected: false });
   }
 
   /**
@@ -264,9 +297,36 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       await this.transport.disconnect();
     } finally {
       this.connected = false;
+      this.reportConnection({ type: "link.disconnected", reason: "closed" });
       this.session.clearReconnectObserver();
       this.subscriptionManager.endSession();
     }
+  }
+
+  /**
+   * Reports each transition between reaching Band and not: up after a
+   * connect or a reconnect, down on a drop the transport retries, a local
+   * disconnect, or a session that ended for good. A later down with a
+   * different reason is reported even when the link was already down.
+   * Returns an unsubscribe function.
+   */
+  public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
+    return subscribe(this.connectionListeners, listener);
+  }
+
+  private reportConnection(change: LinkConnectionChange): void {
+    const last = this.reported;
+    const repeat = change.type === "link.connected"
+      ? last?.type === "link.connected"
+      // Terminal is the final down; a later local disconnect adds nothing.
+      : last?.type === "link.disconnected" && (last.reason === change.reason || last.reason === "terminal");
+    if (repeat) {
+      return;
+    }
+    this.reported = change;
+    notifyEach(this.connectionListeners, change, (error) => {
+      this.logger.warn("Connection change listener failed", { error });
+    });
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {

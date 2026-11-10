@@ -20,7 +20,10 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
+import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
+import type { AgentEventListener } from "../contracts/events";
+import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -67,6 +70,9 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
+  private readonly events: AgentEventHub;
+  /** Stops relaying link changes; held from start until the matching stop. */
+  private stopObservingLink: (() => void) | null = null;
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
@@ -110,6 +116,7 @@ export class PlatformRuntime implements AsyncDisposable {
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
+    this.events = new AgentEventHub(this.logger);
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
     this._onParticipantRemoved = options.onParticipantRemoved;
@@ -121,6 +128,24 @@ export class PlatformRuntime implements AsyncDisposable {
       logger: this.logger,
       isLegalTransition: isLegalRuntimeTransition,
     });
+  }
+
+  /** Adds a listener for this agent's local events; the returned function removes it. */
+  public observe(listener: AgentEventListener): () => void {
+    return this.events.observe(listener);
+  }
+
+  private observeLink(): void {
+    this.stopObservingLink = this.link.onConnectionChange(this.events.emit);
+    // A borrowed link may already be up, and its connect() then reports nothing.
+    if (this.link.isConnected()) {
+      this.events.emit({ type: "link.connected", reconnected: false });
+    }
+  }
+
+  private unobserveLink(): void {
+    this.stopObservingLink?.();
+    this.stopObservingLink = null;
   }
 
   /** Current lifecycle state of this runtime. */
@@ -247,12 +272,15 @@ export class PlatformRuntime implements AsyncDisposable {
 
     await this.initialize();
     assertNotSuperseded();
+    // Relays link changes until `stop()` unsubscribes, since a borrowed link can outlive this runtime.
+    this.observeLink();
     // Claimed before `onStarted` so a stop() landing mid-startup still owes this
     // adapter its `onRuntimeStop` — several adapters only abort a hung startup
     // when that hook runs.
     this.activeAdapter = adapter;
 
     try {
+      adapter.attachObserver?.(this.events.emit);
       await adapter.onStarted(this._agentName, this._agentDescription);
       assertNotSuperseded();
 
@@ -301,6 +329,9 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
+        onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
+        onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
+        onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
         onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
@@ -399,6 +430,8 @@ export class PlatformRuntime implements AsyncDisposable {
     }
 
     await isolateTeardown(errors, () => Promise.resolve(adapter?.onRuntimeStop?.()));
+    // After the runtime stop above, so its `link.disconnected` is still relayed.
+    this.unobserveLink();
 
     if (errors.length > 0) {
       throw this.recordStopFailure(
@@ -498,15 +531,23 @@ export class PlatformRuntime implements AsyncDisposable {
     const startedAt = Date.now();
     let succeeded = true;
     let caughtError: unknown;
+    let started = false;
     try {
       await lease?.ready;
       if (!admitted()) return;
+      this.events.emit({ type: "turn.started", roomId, messageId });
+      started = true;
       await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
       await lease?.end();
+    }
+    if (started) {
+      this.events.emit(succeeded
+        ? { type: "turn.completed", roomId, messageId }
+        : { type: "turn.failed", roomId, messageId, error: turnFailureLabel(caughtError) });
     }
     if (!admitted()) return;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
@@ -516,8 +557,7 @@ export class PlatformRuntime implements AsyncDisposable {
       if (decision.decision === "processed") {
         await this.link.markProcessed(roomId, messageId, messageMarkOptions);
       } else {
-        const label = caughtError instanceof Error ? caughtError.message : String(caughtError);
-        await this.link.markFailed(roomId, messageId, label, messageMarkOptions);
+        await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), messageMarkOptions);
       }
     }
 
