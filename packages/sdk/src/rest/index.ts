@@ -4,6 +4,7 @@ export type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
+  ListRoomHistoryRequest,
   FernBandClientLike,
   PaginatedResponse,
   PaginationMetadata,

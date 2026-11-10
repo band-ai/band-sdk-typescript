@@ -737,6 +737,7 @@
         "FernRestAdapterOptions",
         "GetBoardArgs",
         "GetTaskArgs",
+        "ListRoomHistoryRequest",
         "ListTasksArgs",
         "MAX_ROOM_HISTORY_PAGE",
         "PaginatedResponse",

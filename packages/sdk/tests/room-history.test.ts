@@ -6,12 +6,12 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import type { PaginatedResponse, PlatformChatMessage } from "../src/client/rest/types";
+import type { ListRoomHistoryRequest, PaginatedResponse, PlatformChatMessage } from "../src/client/rest/types";
 import type { PlatformMessageLike, RoomHistoryPage } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import type { McpToolRegistration } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
-import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { BandPlatform, person, roomHistoryPage } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { FakeRestApi, tmpRoot } from "./testUtils";
 
@@ -28,21 +28,16 @@ const chatMessage = (index: number): PlatformChatMessage => ({
   inserted_at: new Date(Date.UTC(2026, 10, 9, 12, index)).toISOString(),
 });
 
-/** Band's agent message list on `status=all&sort_order=desc`: keyset pages, newest first. */
 class HistoryRestApi extends FakeRestApi {
-  public readonly requests: Array<{ chatId: string; cursor?: string; limit: number }> = [];
+  public readonly requests: ListRoomHistoryRequest[] = [];
 
   public constructor(private readonly oldestFirst: PlatformChatMessage[]) {
     super();
   }
 
-  public async listRoomHistory(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
+  public async listRoomHistory(request: ListRoomHistoryRequest): Promise<PaginatedResponse<PlatformChatMessage>> {
     this.requests.push(request);
-    const newestFirst = [...this.oldestFirst].reverse();
-    const start = request.cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === request.cursor) + 1;
-    const data = newestFirst.slice(start, start + request.limit);
-    const hasMore = start + request.limit < newestFirst.length;
-    return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
+    return roomHistoryPage(this.oldestFirst, request);
   }
 }
 

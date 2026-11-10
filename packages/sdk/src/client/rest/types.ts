@@ -67,6 +67,13 @@ export interface CreateChatRequest {
   title?: string;
 }
 
+/** One room-history page: `cursor` from the previous page, omitted for the newest. */
+export interface ListRoomHistoryRequest {
+  chatId: string;
+  cursor?: string;
+  limit: number;
+}
+
 export interface ChatMessageMention {
   id: string;
   handle?: string;
@@ -249,7 +256,7 @@ export interface MessageQueueRestApi {
 export interface RoomHistoryRestApi {
   /** One keyset page of the room's messages, every status, newest first. */
   listRoomHistory?(
-    _request: { chatId: string; cursor?: string; limit: number },
+    _request: ListRoomHistoryRequest,
     _options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>>;
 }

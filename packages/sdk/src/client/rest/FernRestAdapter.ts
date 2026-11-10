@@ -35,6 +35,7 @@ import type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
+  ListRoomHistoryRequest,
   PaginatedResponse,
   PlatformChatMessage,
 } from "./types";
@@ -694,7 +695,7 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async listRoomHistory(
-    request: { chatId: string; cursor?: string; limit: number },
+    request: ListRoomHistoryRequest,
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>> {
     const api = this.client.agentApiMessages?.listAgentMessages?.bind(this.client.agentApiMessages);
