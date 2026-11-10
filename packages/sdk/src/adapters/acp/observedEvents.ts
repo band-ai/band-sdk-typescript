@@ -15,6 +15,19 @@ interface ToolCallState {
 }
 
 /**
+ * The programmatic tool name for observe: ACP `name` when non-empty, else a
+ * bridge `_meta` name, else `kind`. Never `title`.
+ */
+export function observedToolName(source: {
+  name?: string | null
+  kind?: string | null
+  _meta?: unknown
+}): string | undefined {
+  if (typeof source.name === "string" && source.name.length > 0) return source.name
+  return bridgeToolName(source._meta) ?? nonEmpty(source.kind)
+}
+
+/**
  * Turns one room's ACP session updates into local events. A bridge may send a
  * call's `tool_call` more than once, first without its input (Claude Code
  * does), so each call is reported once: when a frame brings its input, or,
@@ -42,10 +55,17 @@ export class SessionUpdateEvents {
         }
         return
       case "tool_call":
-        this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind ?? undefined, update.rawInput)
+        // Kind is stored separately; do not fold it into `name` here or a
+        // later kind-only frame would overwrite a bridge/ACP name.
+        this.refine(update.toolCallId, observedToolName({ name: update.name, _meta: update._meta }), update.kind ?? undefined, update.rawInput)
         return
       case "tool_call_update": {
-        const call = this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind ?? undefined, update.rawInput)
+        const call = this.refine(
+          update.toolCallId,
+          observedToolName({ name: update.name, _meta: update._meta }),
+          update.kind ?? undefined,
+          update.rawInput,
+        )
         if (update.status === "completed" || update.status === "failed") {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           this.calls.delete(update.toolCallId)
@@ -96,6 +116,10 @@ function bridgeToolName(meta: unknown): string | undefined {
     if (typeof toolName === "string" && toolName.length > 0) return toolName
   }
   return undefined
+}
+
+function nonEmpty(value: string | null | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
 function hasInput(input: unknown): boolean {

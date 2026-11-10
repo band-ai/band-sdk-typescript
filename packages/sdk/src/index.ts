@@ -100,6 +100,7 @@ export type {
   AgentEventListener,
   AgentEventSink,
   AgentEventType,
+  LinkDisconnectReason,
 } from "./core";
 
 export type {

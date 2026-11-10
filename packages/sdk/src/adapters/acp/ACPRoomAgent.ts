@@ -27,7 +27,7 @@ import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/err
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { SessionUpdateEvents } from "./observedEvents";
+import { observedToolName, SessionUpdateEvents } from "./observedEvents";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
@@ -1139,6 +1139,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
     this.connectionGeneration++
     this.live = null
+    // A later process may reuse toolCallIds; forget this connection's in-flight calls.
+    this.sessionEvents.reset()
     live.client.retire()
     this.pruneConnectionGeneration(generation)
     abandon(
@@ -1505,7 +1507,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       type: "approval.requested",
       roomId,
       toolCallId,
-      toolName: params.toolCall.title ?? "unknown",
+      toolName: observedToolName(params.toolCall) ?? "unknown",
       options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
     })
     let response: RequestPermissionResponse

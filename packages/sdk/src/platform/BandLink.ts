@@ -18,6 +18,7 @@ import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./ev
 import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
+import type { LinkDisconnectReason } from "../contracts/events";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
@@ -104,7 +105,12 @@ function validationErrorDetails(error: unknown): Record<string, unknown> {
 /** A change in whether this link can reach Band; see `BandLink.onConnectionChange`. */
 export type LinkConnectionChange =
   | { connected: true; reconnected: boolean }
-  | { connected: false; reason: "dropped" | "closed" | "terminal" };
+  | { connected: false; reason: LinkDisconnectReason };
+
+/** What listeners were last told about reachability (down reasons included). */
+type ReportedConnection =
+  | { connected: true }
+  | { connected: false; reason: LinkDisconnectReason };
 
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
@@ -126,8 +132,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
   private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
-  /** What listeners were last told, so each transition is reported once. */
-  private reportedUp = false;
+  /** Last reachability report, so each up and each distinct down reason is told once. */
+  private reported: ReportedConnection | null = null;
 
   public get capabilities(): AgentToolsCapabilities { return this._capabilities; }
 
@@ -138,7 +144,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   /**
    * Reports each transition between reaching Band and not: up after a
    * connect or a reconnect, down on a drop the transport retries, a local
-   * disconnect, or a session that ended for good. Returns an unsubscribe function.
+   * disconnect, or a session that ended for good. A later down with a
+   * different reason is reported even when the link was already down.
+   * Returns an unsubscribe function.
    */
   public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
     this.connectionListeners.add(listener);
@@ -148,10 +156,16 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private reportConnection(change: LinkConnectionChange): void {
-    if (change.connected === this.reportedUp) {
+    if (change.connected) {
+      if (this.reported?.connected === true) {
+        return;
+      }
+      this.reported = { connected: true };
+    } else if (this.reported?.connected === false && this.reported.reason === change.reason) {
       return;
+    } else {
+      this.reported = { connected: false, reason: change.reason };
     }
-    this.reportedUp = change.connected;
     for (const listener of [...this.connectionListeners]) {
       try {
         listener(change);

@@ -1,4 +1,10 @@
 /**
+ * Why a live Band link is down: `dropped` while it retries on its own,
+ * `closed` by a local disconnect, `terminal` when it ended for good.
+ */
+export type LinkDisconnectReason = "dropped" | "closed" | "terminal";
+
+/**
  * What a running agent reports to the process hosting it through
  * `Agent.observe`. Local only: nothing here is posted to a room.
  */
@@ -15,10 +21,10 @@ export type AgentEvent =
   | { type: "message"; roomId: string; text: string }
   /**
    * The agent started a tool call, reported once per `toolCallId`. `name` is
-   * the agent's own tool name when its bridge reports one, else its ACP
-   * `kind`; absent when neither is known. A display title is never used: it
-   * can hold a whole command line. `input` is the agent's own argument
-   * record, as it sent it, when it sends one.
+   * ACP's programmatic tool `name` when non-empty, else a bridge `_meta`
+   * name, else ACP `kind`; absent when none is known. A display title is
+   * never used: it can hold a whole command line. `input` is the agent's
+   * own argument record, as it sent it, when it sends one.
    */
   | { type: "tool.call"; roomId: string; toolCallId: string; name?: string; kind?: string; input?: unknown }
   /** A tool call ended. `output` is its result text. */
@@ -43,11 +49,8 @@ export type AgentEvent =
   | { type: "room.stopped"; roomId: string }
   /** The connection to Band is up; `reconnected` when it came back after a drop. */
   | { type: "link.connected"; reconnected: boolean }
-  /**
-   * The connection to Band is down: `dropped` while it retries on its own,
-   * `closed` by a local disconnect, `terminal` when it ended for good.
-   */
-  | { type: "link.disconnected"; reason: "dropped" | "closed" | "terminal" };
+  /** The connection to Band is down; see `LinkDisconnectReason`. */
+  | { type: "link.disconnected"; reason: LinkDisconnectReason };
 
 export type AgentEventType = AgentEvent["type"];
 

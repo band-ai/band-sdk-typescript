@@ -541,10 +541,13 @@ export class PlatformRuntime implements AsyncDisposable {
     } finally {
       await lease?.end();
     }
+    const failureLabel = succeeded
+      ? undefined
+      : caughtError instanceof Error ? caughtError.message : String(caughtError);
     if (started) {
       this.events.emit(succeeded
         ? { type: "turn.completed", roomId, messageId }
-        : { type: "turn.failed", roomId, messageId, error: caughtError instanceof Error ? caughtError.message : String(caughtError) });
+        : { type: "turn.failed", roomId, messageId, error: failureLabel! });
     }
     if (!admitted()) return;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
@@ -554,8 +557,7 @@ export class PlatformRuntime implements AsyncDisposable {
       if (decision.decision === "processed") {
         await this.link.markProcessed(roomId, messageId, messageMarkOptions);
       } else {
-        const label = caughtError instanceof Error ? caughtError.message : String(caughtError);
-        await this.link.markFailed(roomId, messageId, label, messageMarkOptions);
+        await this.link.markFailed(roomId, messageId, failureLabel!, messageMarkOptions);
       }
     }
 
