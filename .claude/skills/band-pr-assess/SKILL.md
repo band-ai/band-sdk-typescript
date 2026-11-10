@@ -32,9 +32,9 @@ establish peer approval, or waive required CI/merge-queue checks.
 ## Ship intent
 
 **Headed toward ship** when the user asked to assess a PR toward merge —
-including "is this PR good", "assess this PR" / "asses this pr", evaluate /
-quality-check toward shipping — or to approve / enable auto-merge / merge /
-queue / ship.
+including "is this PR good", "assess this PR" / "asses this pr", "evaluate
+this PR", "quality-check this PR" — or to approve / enable auto-merge /
+merge / queue / ship.
 
 **Not** headed toward ship when the ask is clearly design-only or scope-only
 (right seam? keep narrow?) with no assess-toward-merge or ship verbs. If the
