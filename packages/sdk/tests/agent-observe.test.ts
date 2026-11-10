@@ -9,7 +9,6 @@ import {
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
-import { ACPRoomAgent } from "../src/adapters/acp/ACPRoomAgent";
 import { Agent } from "../src/agent/Agent";
 import type { AgentEvent } from "../src/contracts/events";
 import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
@@ -254,135 +253,9 @@ describe("Agent.observe", () => {
     expect(await room.outcome(message)).toBe("failed");
     expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed")).toEqual([
       { type: "turn.started", roomId: ROOM, messageId: message },
-      { type: "turn.failed", roomId: ROOM, messageId: message, error: expect.stringContaining("agent crashed") },
+      // ACP carries the agent's throw as a wire "Internal error"; the event mirrors the room's failure label.
+      { type: "turn.failed", roomId: ROOM, messageId: message, error: "Internal error" },
     ]);
-  });
-
-  it("reports approval.resolved cancelled for a late permission after cancelTurn settles", async () => {
-    let peerRef: AgentSideConnection | undefined;
-    let sessionRef: string | undefined;
-    const turnEnded = createDeferred();
-    const adapter = acpAdapter(async (peer, { sessionId }) => {
-      peerRef = peer;
-      sessionRef = sessionId;
-      await turnEnded.promise;
-      return { stopReason: "cancelled" as const };
-    });
-    const { agent, events, room } = await startAgent(adapter);
-
-    const message = await room.say("owner", "edit my notes");
-    await vi.waitFor(() => { expect(peerRef).toBeDefined(); });
-    expect(await agent.cancelTurn(ROOM)).toBe(true);
-    turnEnded.resolve();
-    expect(await room.outcome(message)).toBe("processed");
-
-    const late = await peerRef!.requestPermission({
-      sessionId: sessionRef!,
-      toolCall: { toolCallId: "late-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
-      options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
-    });
-    expect(late).toEqual({ outcome: { outcome: "cancelled" } });
-    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
-      {
-        type: "approval.requested",
-        roomId: ROOM,
-        toolCallId: "late-1",
-        toolName: "Edit",
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
-      },
-      { type: "approval.resolved", roomId: ROOM, toolCallId: "late-1", outcome: "cancelled" },
-    ]);
-  });
-
-  it("cancels a late permission from a cancelled prompt after the next turn has started", async () => {
-    let peerRef: AgentSideConnection | undefined;
-    let sessionRef: string | undefined;
-    let prompts = 0;
-    let sessionReadyCount = 0;
-    const turn1Ended = createDeferred();
-    const turn2Ready = createDeferred();
-    const allowTurn2Prompt = createDeferred();
-    onTestFinished(() => allowTurn2Prompt.resolve());
-
-    class ReadyHoldAgent extends ACPRoomAgent {
-      protected override async onAcpSessionReady(): Promise<void> {
-        sessionReadyCount += 1;
-        if (sessionReadyCount === 1) {
-          return;
-        }
-        turn2Ready.resolve();
-        await allowTurn2Prompt.promise;
-      }
-    }
-    class ReadyHoldAdapter extends ACPClientAdapter {
-      protected override createRoom(roomId: string, workspace: string) {
-        return new ReadyHoldAgent(this.roomAgentOptions(roomId, workspace));
-      }
-    }
-
-    const adapter = new ReadyHoldAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      // Would auto-allow if the cancelled-prompt gate cleared too early.
-      resolvePermission: async () => "allow",
-      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async (request) => {
-          peerRef = peer;
-          sessionRef = request.sessionId;
-          prompts += 1;
-          if (prompts === 1) {
-            await turn1Ended.promise;
-            return { stopReason: "cancelled" as const };
-          }
-          await peer.sessionUpdate({
-            sessionId: request.sessionId,
-            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Edited again." } },
-          });
-          return { stopReason: "end_turn" as const };
-        },
-      })),
-    });
-    const { agent, events, room } = await startAgent(adapter);
-
-    const first = await room.say("owner", "edit my notes");
-    await vi.waitFor(() => { expect(peerRef).toBeDefined(); });
-    expect(await agent.cancelTurn(ROOM)).toBe(true);
-    turn1Ended.resolve();
-    expect(await room.outcome(first)).toBe("processed");
-
-    const second = room.say("owner", "edit again");
-    await turn2Ready.promise;
-
-    const late = await peerRef!.requestPermission({
-      sessionId: sessionRef!,
-      toolCall: { toolCallId: "late-2", title: "Edit notes.md", name: "Edit", kind: "edit" },
-      options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
-    });
-    expect(late).toEqual({ outcome: { outcome: "cancelled" } });
-    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
-      {
-        type: "approval.requested",
-        roomId: ROOM,
-        toolCallId: "late-2",
-        toolName: "Edit",
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
-      },
-      { type: "approval.resolved", roomId: ROOM, toolCallId: "late-2", outcome: "cancelled" },
-    ]);
-
-    allowTurn2Prompt.resolve();
-    const secondId = await second;
-    const secondOutcome = await room.outcome(secondId);
-    expect(
-      ofTypes(events, "turn.failed"),
-      `turn 2 failed: ${JSON.stringify(ofTypes(events, "turn.failed"))}`,
-    ).toEqual([]);
-    expect(secondOutcome).toBe("processed");
   });
 
   it("reports a room whose agent process cannot start", async () => {

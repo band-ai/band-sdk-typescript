@@ -161,7 +161,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       this.reported = { connected: true };
-    } else if (this.reported?.connected === false && this.reported.reason === change.reason) {
+    } else if (this.reported?.connected === false
+      && (this.reported.reason === change.reason || this.reported.reason === "terminal")) {
+      // Terminal is the final down; a later local disconnect adds nothing.
       return;
     } else {
       this.reported = { connected: false, reason: change.reason };
@@ -258,19 +260,12 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         );
         return;
       }
-      if (dropGeneration !== dropsSeen) {
-        this.logger.debug(
-          "Reconnect reconciliation settled after a newer drop, discarding reconnected event",
-        );
-        return;
-      }
-      // A settle before this session's first up must not claim reconnected:true
-      // and suppress the real first up when connect() returns.
-      if (!reportedUp) {
-        return;
-      }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      this.reportConnection({ connected: true, reconnected: true });
+      // Observers hear an up only after this session's first up, and not for
+      // a reconcile that a newer drop already made stale.
+      if (reportedUp && dropGeneration === dropsSeen) {
+        this.reportConnection({ connected: true, reconnected: true });
+      }
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
     const stopDropped = this.transport.onDropped?.(() => {
@@ -368,13 +363,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private handleTerminal(error: WebSocketDisconnectError): void {
     this.connected = false;
     this.reportConnection({ connected: false, reason: "terminal" });
-    // Terminal is the final down: deactivate so a later local disconnect does
-    // not emit `closed` after observers already saw the session end for good.
-    if (this.session.isActive) {
-      this.session.deactivate();
-      this.session.clearReconnectObserver();
-      this.subscriptionManager.endSession();
-    }
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
       waiter?.reject(error);
