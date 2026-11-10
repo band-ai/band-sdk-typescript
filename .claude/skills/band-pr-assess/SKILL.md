@@ -8,7 +8,7 @@ description: >-
   PR", "quality-check this PR", /band-pr-assess, or asks whether a change is the
   right cross-system design before shipping. Not a substitute for band-pr-triage
   alone; merge is forbidden until that --fix run has converged (skip --fix on
-  wrong-layer or design-only stops).
+  wrong-layer, incomplete-claim, or design-only stops).
 argument-hint: "[target]"
 ---
 
@@ -59,8 +59,10 @@ that skill, and stop for a user decision (design fix / rethink / stop).
 If push access is missing and `band-code-review` strips `--fix` to
 verdict-only, the gate is **blocked** (not converged) — do not ship.
 
-Wrong-layer and design-only stops (below) end the run **before** this gate;
-do not run `--fix` or ship to paper over them.
+Wrong-layer, incomplete-claim, and design-only stops (below) end the run
+**before** this gate; do not run `--fix` or ship to paper over them. A
+design-only ask may still run `--fix` when the user explicitly asks for
+review/fix in the same turn.
 
 ## Steps
 
@@ -132,8 +134,9 @@ cover them.
 
 ### 5. Required review/fix (must converge)
 
-Run this step only when headed toward ship, and only if step 2 did not stop
-the run.
+Run this step only when headed toward ship (or the user explicitly asked for
+review/fix), and only if step 2 left no unresolved **wrong layer** or
+**incomplete claim** disposition.
 
 Run [band-code-review](../band-code-review/SKILL.md) with **`--fix`** on the
 same target **once**. Follow that skill fully (workspace, simplify, cycles,
