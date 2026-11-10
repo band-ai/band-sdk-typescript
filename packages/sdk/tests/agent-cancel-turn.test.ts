@@ -22,8 +22,14 @@ function harness(onPrompt: (peer: AgentSideConnection, request: PromptRequest, c
   const record = { connections: 0, stops: 0, sessions: [] as string[], prompts: [] as string[], cancels: [] as string[] };
   let cancelled = createDeferred();
   const sessionHolds: Array<{ requested: () => void; answered: Promise<boolean> }> = [];
+  const initializeHolds: Array<{ requested: () => void; released: Promise<void> }> = [];
   const connectionFactory = inMemoryAgent((peer): AcpAgent => ({
-    initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+    initialize: async () => {
+      const hold = initializeHolds.shift();
+      hold?.requested();
+      if (hold) await hold.released;
+      return { protocolVersion: 1, agentCapabilities: {} };
+    },
     authenticate: async () => ({}),
     newSession: async () => {
       const hold = sessionHolds.shift();
@@ -47,6 +53,14 @@ function harness(onPrompt: (peer: AgentSideConnection, request: PromptRequest, c
   }), () => { record.stops += 1; });
   return {
     record,
+    /** Holds the next `initialize`: `requested` settles once it arrives, and it answers on `release`. */
+    holdNextInitialize: () => {
+      const requested = createDeferred();
+      const released = createDeferred();
+      initializeHolds.push({ requested: () => requested.resolve(), released: released.promise });
+      onTestFinished(() => released.resolve());
+      return { requested: requested.promise, release: () => released.resolve() };
+    },
     /** Holds the next `session/new`: `requested` settles once it arrives, and it answers on `succeed` or `fail`. */
     holdNextSession: () => {
       const requested = createDeferred();
@@ -208,6 +222,27 @@ describe("Agent.cancelTurn", () => {
     announcement.release();
     expect(await room.outcome(message)).toBe("processed");
     expect(decisions).toEqual(["cancelled"]);
+  });
+
+  it("ends a turn cancelled while initialize is unanswered, and keeps that connection for the next turn", async () => {
+    const acp = harness(async (peer, { sessionId }) => {
+      await say(peer, sessionId, "answer");
+      return { stopReason: "end_turn" };
+    });
+    const initialize = acp.holdNextInitialize();
+    const { agent, room } = await startAgent(new ACPClientAdapter(acp.options));
+
+    const first = await room.say("owner", "first");
+    await initialize.requested;
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    expect(await room.outcome(first), "settled while initialize is still unanswered").toBe("processed");
+    expect(acp.record).toMatchObject({ connections: 1, sessions: [], prompts: [], cancels: [] });
+
+    const second = await room.say("owner", "second");
+    initialize.release();
+    expect(await room.outcome(second)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answer"]);
+    expect(acp.record).toMatchObject({ connections: 1, stops: 0, sessions: ["session-1"], prompts: ["session-1"], cancels: [] });
   });
 
   it("ends a turn cancelled while session/new is unanswered, and keeps that session for the next turn", async () => {
