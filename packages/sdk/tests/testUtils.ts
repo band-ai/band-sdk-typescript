@@ -127,7 +127,11 @@ export class CallHolds<A extends unknown[]> {
   public hold(matches: (...args: A) => boolean, options: { error?: Error } = {}): HeldCall<A> {
     const hold: Hold<A> = { matches, error: options.error, sending: createDeferred<A>(), released: createDeferred() };
     this.holds.push(hold);
-    return { sending: hold.sending.promise, release: () => hold.released.resolve() };
+    const release = () => hold.released.resolve();
+    // A failed assertion must not leave the held call parked, or teardown hangs
+    // waiting for a release that never comes.
+    onTestFinished(release);
+    return { sending: hold.sending.promise, release };
   }
 
   public async pass(...args: A): Promise<void> {

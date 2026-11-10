@@ -23,6 +23,11 @@ export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, T
     this.roomOptions = { ...roomOptions, command: validateACPClientOptions(options) }
   }
 
+  /** Cancels the room's running turn; see {@link ACPRoomAgent.cancelTurn}. */
+  public async cancelTurn(roomId: string): Promise<boolean> {
+    return (await this.roomEngine(roomId)?.cancelTurn(roomId)) ?? false
+  }
+
   protected createRoom(roomId: string, workspace: string): ACPRoomAgent {
     return new ACPRoomAgent(this.roomAgentOptions(roomId, workspace))
   }
