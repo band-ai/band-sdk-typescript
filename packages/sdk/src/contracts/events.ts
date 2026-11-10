@@ -4,16 +4,23 @@
  */
 export type LinkDisconnectReason = "dropped" | "closed" | "terminal";
 
+/** How a tool call ended. */
+export type ToolCallEndStatus = "completed" | "failed";
+
 /**
  * What a running agent reports to the process hosting it through
  * `Agent.observe`. Local only: nothing here is posted to a room.
  */
 export type AgentEvent =
-  /** A turn for `messageId` reached the adapter. */
+  /**
+   * The runtime is handing the turn for `messageId` to the adapter. The
+   * adapter may not hold it yet, so `cancelTurn` called synchronously from
+   * this event can resolve false.
+   */
   | { type: "turn.started"; roomId: string; messageId: string }
   /** The adapter finished the turn without throwing. */
   | { type: "turn.completed"; roomId: string; messageId: string }
-  /** The adapter threw; `error` is its message. */
+  /** The adapter threw; `error` is the label Band records for the message: the error's own message. */
   | { type: "turn.failed"; roomId: string; messageId: string; error: string }
   /** Reasoning text as the agent streams it; consecutive events continue one run. */
   | { type: "thought"; roomId: string; text: string }
@@ -29,7 +36,7 @@ export type AgentEvent =
    */
   | { type: "tool.call"; roomId: string; toolCallId: string; name?: string; kind?: string; input?: unknown }
   /** A tool call ended. `output` is its result text. */
-  | { type: "tool.result"; roomId: string; toolCallId: string; status: "completed" | "failed"; output: string }
+  | { type: "tool.result"; roomId: string; toolCallId: string; status: ToolCallEndStatus; output: string }
   /** The agent asked for permission to run a tool. */
   | {
       type: "approval.requested";
@@ -47,7 +54,8 @@ export type AgentEvent =
   | { type: "room.left"; roomId: string }
   /**
    * The room's agent process could not start, or exited on its own; the
-   * room's messages fail until a later start succeeds.
+   * room's messages fail until a later start succeeds. `error` is the
+   * failure's message with its causes, truncated.
    */
   | { type: "room.failed"; roomId: string; error: string }
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */

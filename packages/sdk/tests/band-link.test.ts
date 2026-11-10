@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { agentRoomsTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
-import { BandLink } from "../src/platform/BandLink";
+import { BandLink, type LinkConnectionChange } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import {
   WebSocketDisconnectError,
@@ -644,5 +644,122 @@ describe("BandLink rejoin catch-up", () => {
 
     expect(transport.observers.size).toBe(0);
     expect(transport.rejoinObservers.size).toBe(0);
+  });
+});
+
+describe("BandLink connection changes", () => {
+  it("does not report a reconnect up that settled after a newer drop", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
+    const changes: LinkConnectionChange[] = [];
+    link.onConnectionChange((change) => changes.push(change));
+    await link.connect();
+    await link.subscribeRoom("room-1");
+
+    transport.triggerDrop();
+    const chat = chatRoomTopic("room-1");
+    const participants = roomParticipantsTopic("room-1");
+    const releaseLeave = transport.gateLeave(chat);
+    const reconnecting = transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set(),
+      attemptedTopics: new Set([chat, participants]),
+    });
+    await transport.left.until(() => transport.left.entries.includes(chat));
+    transport.triggerDrop();
+    releaseLeave();
+    await reconnecting;
+
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "dropped" },
+    ]);
+  });
+
+  it("does not report a reconnect up that settled after the session ended for good", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
+    const changes: LinkConnectionChange[] = [];
+    link.onConnectionChange((change) => changes.push(change));
+    await link.connect();
+    await link.subscribeRoom("room-1");
+
+    transport.triggerDrop();
+    const chat = chatRoomTopic("room-1");
+    const releaseLeave = transport.gateLeave(chat);
+    const reconnecting = transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set(),
+      attemptedTopics: new Set([chat, roomParticipantsTopic("room-1")]),
+    });
+    await transport.left.until(() => transport.left.entries.includes(chat));
+    transport.terminate(new WebSocketDisconnectError(supersededReason));
+    releaseLeave();
+    await reconnecting;
+
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "dropped" },
+      { connected: false, reason: "terminal" },
+    ]);
+  });
+
+  it("does not report dropped before the first up", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
+    const changes: LinkConnectionChange[] = [];
+    link.onConnectionChange((change) => changes.push(change));
+    transport.gateConnect();
+    const connecting = link.connect();
+    transport.triggerDrop();
+    expect(changes).toEqual([]);
+    transport.releaseConnection();
+    await connecting;
+    expect(changes).toEqual([{ connected: true, reconnected: false }]);
+  });
+
+  it("does not report a mid-connect drop or reconnect after a prior closed", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
+    const changes: LinkConnectionChange[] = [];
+    link.onConnectionChange((change) => changes.push(change));
+    await link.connect();
+    await link.disconnect();
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "closed" },
+    ]);
+
+    transport.gateConnect();
+    const connecting = link.connect();
+    transport.triggerDrop();
+    await transport.triggerReconnect({ generation: 1, joinedTopics: new Set() });
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "closed" },
+    ]);
+    transport.releaseConnection();
+    await connecting;
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "closed" },
+      { connected: true, reconnected: false },
+    ]);
+  });
+
+  it("does not report closed after terminal", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({ agentId: "agent-1", apiKey: "test-key", transport, restApi: new FakeRestApi() });
+    const changes: LinkConnectionChange[] = [];
+    link.onConnectionChange((change) => changes.push(change));
+    await link.connect();
+
+    transport.terminate(new WebSocketDisconnectError(supersededReason));
+    await link.disconnect();
+
+    expect(changes).toEqual([
+      { connected: true, reconnected: false },
+      { connected: false, reason: "terminal" },
+    ]);
   });
 });

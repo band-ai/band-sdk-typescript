@@ -1,16 +1,14 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 
 import type { AgentEventListener } from "../../contracts/events"
-import { asOptionalRecord } from "../shared/coercion"
-import { extractToolOutput } from "./client"
-import { acpToolCallName } from "./toolCalls"
+import { asNonEmptyString, asOptionalRecord } from "../shared/coercion"
+import { extractToolOutput, type ToolCallFrame } from "./client"
+import { acpToolCallName, isTerminalToolStatus } from "./toolCalls"
 import type { CollectedChunk } from "./types"
 
 // `_meta` entries in which an ACP bridge names its agent's own tool, by bridge.
 // `title` is display copy (a command line, a sentence) and never the name.
 const BRIDGE_TOOL_NAME_KEYS = ["claudeCode"] as const
-
-type ToolCallFrame = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>
 
 interface ToolCallState {
   name?: string
@@ -25,10 +23,11 @@ export function observedToolName(source: {
   _meta?: unknown
   rawInput?: unknown
 }): string | undefined {
-  return nonEmpty(source.name)
+  return asNonEmptyString(source.name)
     ?? bridgeToolName(source._meta)
-    ?? nonEmpty(acpToolCallName(source.rawInput, ""))
-    ?? nonEmpty(source.kind)
+    ?? asNonEmptyString(acpToolCallName(source.rawInput, ""))
+    ?? asNonEmptyString(source.kind)
+    ?? undefined
 }
 
 /**
@@ -65,7 +64,7 @@ export class SessionUpdateEvents {
       case "tool_call_update": {
         if (this.completed.has(update.toolCallId)) return
         const call = this.refine(update)
-        if (update.status === "completed" || update.status === "failed") {
+        if (isTerminalToolStatus(update.status)) {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           this.calls.delete(update.toolCallId)
           this.completed.add(update.toolCallId)
@@ -116,14 +115,10 @@ export class SessionUpdateEvents {
 function bridgeToolName(meta: unknown): string | undefined {
   const record = asOptionalRecord(meta)
   for (const key of BRIDGE_TOOL_NAME_KEYS) {
-    const toolName = asOptionalRecord(record?.[key])?.toolName
-    if (typeof toolName === "string" && toolName.length > 0) return toolName
+    const toolName = asNonEmptyString(asOptionalRecord(record?.[key])?.toolName)
+    if (toolName !== null) return toolName
   }
   return undefined
-}
-
-function nonEmpty(value: string | null | undefined): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
 function hasInput(input: unknown): boolean {

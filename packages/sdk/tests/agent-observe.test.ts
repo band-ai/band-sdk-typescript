@@ -6,7 +6,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
+import { agentContactsTopic, agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
@@ -15,7 +15,7 @@ import { CURSOR_PROJECT_CONFIG } from "../src/adapters/cursor-acp/permissions";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
 import { Agent } from "../src/agent/Agent";
-import type { AgentEvent } from "../src/contracts/events";
+import type { AgentEvent, AgentEventListener } from "../src/contracts/events";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
 import { createDeferred } from "../src/core/deferred";
@@ -286,6 +286,36 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("answers a permission request cancelled at once when a listener cancels the turn on approval.requested", async () => {
+    let asked = 0;
+    const answered = createDeferred<string>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const { outcome } = await peer.requestPermission({
+        sessionId,
+        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
+        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
+      });
+      answered.resolve(outcome.outcome);
+      return { stopReason: "cancelled" as const };
+    }, { resolvePermission: async () => { asked += 1; return "allow"; } });
+    const { agent, events, room } = await startAgent(adapter);
+    let cancelled: Promise<boolean> | undefined;
+    agent.observe((event) => {
+      if (event.type === "approval.requested") cancelled = agent.cancelTurn(ROOM);
+    });
+
+    const message = await room.say("owner", "edit my notes");
+    expect(await answered.promise).toBe("cancelled");
+    expect(await cancelled).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    // Cancelled before anyone was asked: the host is not asked and the room is not told.
+    expect({ asked, posted: posted(room) }).toEqual({ asked: 0, posted: [] });
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      expect.objectContaining({ type: "approval.requested", toolCallId: "edit-1" }),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
   it("reports a permission request cancelled when resolvePermission rejects", async () => {
     const adapter = acpAdapter(async (peer, { sessionId }) => {
       const answer = await peer.requestPermission({
@@ -374,6 +404,19 @@ describe("Agent.observe", () => {
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
     expect(ofTypes(events, "room.failed")).toEqual([
       { type: "room.failed", roomId: ROOM, error: expect.stringContaining("is not valid JSON") },
+    ]);
+  });
+
+  it("reports a room whose workspace another room already holds", async () => {
+    const shared = join(tmpRoot(), "shared");
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId), { cwd: undefined, workspaceForRoom: () => shared });
+    const { events, platform, room } = await startAgent(adapter);
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    const other = await platform.room("room-2");
+    expect(await other.outcome(await other.say("owner", "hello"))).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: "room-2", error: expect.stringContaining("already in use by room room-1") },
     ]);
   });
 
@@ -570,6 +613,37 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports no turn for a message still queued when its room is removed", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const { agent, events, platform, room } = await startAgent(new GenericAdapter(async ({ message, tools }) => {
+      if (message.content === "first") {
+        entered.resolve();
+        await release.promise;
+      }
+      tools.turn.settle();
+    }));
+
+    const first = await room.say("owner", "first");
+    await entered.promise;
+    await room.say("owner", "second");
+    // Rooms' events are dispatched in order, so this turn starting means "second" is queued.
+    const other = await platform.room("room-2");
+    const otherStarted = nextEvent(agent, "turn.started", other.id);
+    await other.say("owner", "elsewhere");
+    await otherStarted;
+    await room.remove();
+    await room.left();
+    release.resolve();
+    await agent.stop();
+
+    expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed").filter((event) => "roomId" in event && event.roomId === ROOM)).toEqual([
+      { type: "turn.started", roomId: ROOM, messageId: first },
+      { type: "turn.completed", roomId: ROOM, messageId: first },
+    ]);
+  });
+
   it("reports the room joined again when its handling resumes after a reset", async () => {
     const { agent, events, room } = await startAgent(new GenericAdapter(async ({ tools }) => { tools.turn.settle(); }));
     const first = await room.say("owner", "first");
@@ -628,6 +702,39 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports a contact hub room joined once when Band announces it after its first turn", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    const announce = platform.rest.onRoomCreated!;
+    const created = createDeferred<string>();
+    // Band's push of the new hub room is held, so its first turn runs before admission.
+    platform.rest.onRoomCreated = (roomId) => created.resolve(roomId);
+    const hubTurn = createDeferred();
+    const agent = Agent.create({
+      adapter: new GenericAdapter(async ({ tools }) => { hubTurn.resolve(); tools.turn.settle(); }),
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+      contactConfig: { strategy: "hub_room", hubTaskId: "contacts" },
+    });
+    const events: AgentEvent[] = [];
+    agent.observe((event) => { events.push(event); });
+    onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
+    await agent.start();
+
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_request_received", {
+      id: "request-1", from_handle: "alice", from_name: "Alice", message: "Hello", status: "pending", inserted_at: new Date().toISOString(),
+    });
+    const hub = await created.promise;
+    await hubTurn.promise;
+    announce(hub);
+    // Queued behind the announce, so once it is handled the admission was too.
+    const room = platform.created(hub);
+    expect(await room.outcome(await platform.post(hub, "owner", "hello"))).toBe("processed");
+    await agent.stop();
+
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: hub }]);
+  });
+
   it("reports a room joined once when Band announces it again", async () => {
     const { events, platform, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
     await platform.room(ROOM);
@@ -650,6 +757,41 @@ describe("Agent.observe", () => {
 
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
     expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: ROOM }]);
+  });
+
+  it.each(["attachObserver", "onStarted"] as const)("cleans up a start whose %s throws, so a restart reports its link once", async (failing) => {
+    let failOnce = true;
+    const failFirst = (): void => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error(`${failing} failed`);
+      }
+    };
+    let runtimeStops = 0;
+    class FailingStartAdapter extends GenericAdapter {
+      public attachObserver(_sink: AgentEventListener): void {
+        if (failing === "attachObserver") failFirst();
+      }
+      public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
+        if (failing === "onStarted") failFirst();
+        await super.onStarted(agentName, agentDescription);
+      }
+      public async onRuntimeStop(): Promise<void> {
+        runtimeStops += 1;
+      }
+    }
+    const platform = BandPlatform.host([person("owner")]);
+    const { agent, events } = createAgent(new FailingStartAdapter(async ({ tools }) => { tools.turn.settle(); }), platform);
+
+    await expect(agent.start()).rejects.toThrow(`${failing} failed`);
+    expect(runtimeStops).toBe(1);
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
   });
 
   it("reports each start's link once when the agent restarts", async () => {

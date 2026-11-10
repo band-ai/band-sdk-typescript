@@ -138,24 +138,39 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
     if (existing) {
       return existing.ready.then(() => existing.engine);
     }
-    const workspace = this.workspaces.claim(roomId);
     let engine: E;
     try {
-      engine = this.createRoom(roomId, workspace);
+      engine = this.createEngine(roomId);
     } catch (error) {
-      this.workspaces.release(roomId);
+      this.reportRoomFailed(roomId, error);
       throw error;
     }
     const entry: RoomEntry<E> = { engine, ready: this.startRoom(roomId, engine) };
     this.rooms.set(roomId, entry);
     // A room that failed to start is dropped, so its next message tries again.
     entry.ready.catch((error: unknown) => {
-      this.observer({ type: "room.failed", roomId, error: asErrorMessage(error) });
+      this.reportRoomFailed(roomId, error);
       if (this.rooms.get(roomId) === entry) {
         void this.onCleanup(roomId);
       }
     });
     return entry.ready.then(() => engine);
+  }
+
+  /** Claims the room's workspace and builds its engine, releasing the claim if that fails. */
+  private createEngine(roomId: string): E {
+    const workspace = this.workspaces.claim(roomId);
+    try {
+      return this.createRoom(roomId, workspace);
+    } catch (error) {
+      this.workspaces.release(roomId);
+      throw error;
+    }
+  }
+
+  /** The room's engine could not be claimed, built or started. */
+  private reportRoomFailed(roomId: string, error: unknown): void {
+    this.observer({ type: "room.failed", roomId, error: asErrorMessage(error) });
   }
 
   private async startRoom(roomId: string, engine: E): Promise<void> {

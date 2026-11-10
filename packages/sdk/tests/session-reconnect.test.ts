@@ -1,6 +1,6 @@
 import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
@@ -17,7 +17,7 @@ import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSoc
 import type { ReconnectSnapshot } from "../src/platform/streaming/transport";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
-import { FAKE_WIRE_CLOCK, FakeRestApi, FakeTransport, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
 
 /**
  * Core `Session` as the transport's only reconnect policy, over the real
@@ -30,15 +30,6 @@ const CONTROL_TOPIC = agentControlTopic(AGENT_ID);
 const ROOM = "chat_room:room-1";
 /** Longer than any delay the fast policy picks, plus phoenix's own teardown. */
 const PAST_ANY_DELAY_MS = 5_000;
-const SUPERSEDED_REASON = {
-  source: "agent_control",
-  code: "session.already_connected",
-  message: "superseded",
-  retryable: false,
-  retryAfter: null,
-  targetSocketId: null,
-  correlationId: null,
-} satisfies WebSocketDisconnectReason;
 
 type PolicyOverrides = Parameters<typeof fastSessionPolicy>[0];
 
@@ -305,6 +296,29 @@ describe("core Session owns reconnects (real wire)", () => {
       ]);
     });
 
+    it("reports one drop across several refused reconnects, then the reconnect", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      peer.refuseUpgrades({ status: 503 });
+      peer.severAllConnections();
+      await refused(peer, 3);
+      peer.acceptUpgrades();
+      await reconnected(peer, 2);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
+      await onWireClock(link.disconnect());
+
+      expect(changes.entries).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: true, reconnected: true },
+        { connected: false, reason: "closed" },
+      ]);
+    });
+
     it("still reports terminal after a drop whose reconnect is refused", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
@@ -324,62 +338,6 @@ describe("core Session owns reconnects (real wire)", () => {
       ]);
     });
 
-    it("does not report a reconnect up that settled after a newer drop", async () => {
-      const transport = new FakeTransport();
-      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
-      await link.connect();
-      await link.subscribeRoom("room-1");
-
-      transport.triggerDrop();
-      const chat = chatRoomTopic("room-1");
-      const participants = roomParticipantsTopic("room-1");
-      const releaseLeave = transport.gateLeave(chat);
-      const reconnecting = transport.triggerReconnect({
-        generation: 1,
-        joinedTopics: new Set(),
-        attemptedTopics: new Set([chat, participants]),
-      });
-      await transport.left.until(() => transport.left.entries.includes(chat));
-      transport.triggerDrop();
-      releaseLeave();
-      await reconnecting;
-
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-      ]);
-    });
-
-    it("does not report a reconnect up that settled after the session ended for good", async () => {
-      const transport = new FakeTransport();
-      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
-      await link.connect();
-      await link.subscribeRoom("room-1");
-
-      transport.triggerDrop();
-      const chat = chatRoomTopic("room-1");
-      const releaseLeave = transport.gateLeave(chat);
-      const reconnecting = transport.triggerReconnect({
-        generation: 1,
-        joinedTopics: new Set(),
-        attemptedTopics: new Set([chat, roomParticipantsTopic("room-1")]),
-      });
-      await transport.left.until(() => transport.left.entries.includes(chat));
-      transport.terminate(new WebSocketDisconnectError(SUPERSEDED_REASON));
-      releaseLeave();
-      await reconnecting;
-
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: false, reason: "terminal" },
-      ]);
-    });
-
     it("does not report a boot the platform refuses for good as a link going down", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
@@ -392,65 +350,6 @@ describe("core Session owns reconnects (real wire)", () => {
 
       expect(agent.terminals).toEqual([expect.objectContaining({ status: 403, retryable: false })]);
       expect(changes).toEqual([]);
-    });
-
-    it("does not report dropped before the first up", async () => {
-      const transport = new FakeTransport();
-      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
-      transport.gateConnect();
-      const connecting = link.connect();
-      transport.triggerDrop();
-      expect(changes).toEqual([]);
-      transport.releaseConnection();
-      await connecting;
-      expect(changes).toEqual([{ connected: true, reconnected: false }]);
-    });
-
-    it("does not report a mid-connect drop or reconnect after a prior closed", async () => {
-      const transport = new FakeTransport();
-      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
-      await link.connect();
-      await link.disconnect();
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "closed" },
-      ]);
-
-      transport.gateConnect();
-      const connecting = link.connect();
-      transport.triggerDrop();
-      await transport.triggerReconnect({ generation: 1, joinedTopics: new Set() });
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "closed" },
-      ]);
-      transport.releaseConnection();
-      await connecting;
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "closed" },
-        { connected: true, reconnected: false },
-      ]);
-    });
-
-    it("does not report closed after terminal", async () => {
-      const transport = new FakeTransport();
-      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
-      await link.connect();
-
-      transport.terminate(new WebSocketDisconnectError(SUPERSEDED_REASON));
-      await link.disconnect();
-
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "terminal" },
-      ]);
     });
 
     it("drops a reconnected socket whose agent_control rejoin fails, and reconnects again", async () => {

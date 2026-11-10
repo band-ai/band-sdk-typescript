@@ -137,35 +137,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this._capabilities = pruneUnsupported(this._capabilities, featureFlags);
   }
 
-  /**
-   * Reports each transition between reaching Band and not: up after a
-   * connect or a reconnect, down on a drop the transport retries, a local
-   * disconnect, or a session that ended for good. A later down with a
-   * different reason is reported even when the link was already down.
-   * Returns an unsubscribe function.
-   */
-  public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
-    this.connectionListeners.add(listener);
-    return () => {
-      this.connectionListeners.delete(listener);
-    };
-  }
-
-  private reportConnection(change: LinkConnectionChange): void {
-    const last = this.reported;
-    const repeat = change.connected
-      ? last?.connected === true
-      // Terminal is the final down; a later local disconnect adds nothing.
-      : last?.connected === false && (last.reason === change.reason || last.reason === "terminal");
-    if (repeat) {
-      return;
-    }
-    this.reported = change;
-    notifyEach(this.connectionListeners, change, (error) => {
-      this.logger.warn("Connection change listener failed", { error });
-    });
-  }
-
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
     this.apiKey = options.apiKey;
@@ -237,9 +208,14 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     // Counts downs (drops and terminal) for this connect epoch, so a reconnect
     // that finishes after a newer down does not report a stale up.
     let downs = 0;
-    // Per connectSession, not link lifetime: a prior closed/terminal leaves
-    // `reported` non-null, but this session still has not told observers it is up.
     let reportedUp = false;
+    // Observers hear nothing from this session before its first up: a prior
+    // session's closed/terminal leaves `reported` set, so the gate is per session.
+    const reportAfterUp = (change: LinkConnectionChange): void => {
+      if (reportedUp) {
+        this.reportConnection(change);
+      }
+    };
     const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
       const downsSeen = downs;
       await this.subscriptionManager.reconcileReconnect(snapshot);
@@ -250,10 +226,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      // Observers hear an up only after this session's first up, and not for
-      // a reconcile that a newer down already made stale.
-      if (reportedUp && downs === downsSeen) {
-        this.reportConnection({ connected: true, reconnected: true });
+      if (downs === downsSeen) {
+        reportAfterUp({ connected: true, reconnected: true });
       }
     });
     const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
@@ -262,10 +236,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         return;
       }
       downs += 1;
-      // Observers only learn about downs after this session's first up.
-      if (reportedUp) {
-        this.reportConnection({ connected: false, reason });
-      }
+      reportAfterUp({ connected: false, reason });
     };
     const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));
     const stopTerminal = this.transport.onTerminal(() => reportDown("terminal"));
@@ -335,6 +306,35 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       this.session.clearReconnectObserver();
       this.subscriptionManager.endSession();
     }
+  }
+
+  /**
+   * Reports each transition between reaching Band and not: up after a
+   * connect or a reconnect, down on a drop the transport retries, a local
+   * disconnect, or a session that ended for good. A later down with a
+   * different reason is reported even when the link was already down.
+   * Returns an unsubscribe function.
+   */
+  public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => {
+      this.connectionListeners.delete(listener);
+    };
+  }
+
+  private reportConnection(change: LinkConnectionChange): void {
+    const last = this.reported;
+    const repeat = change.connected
+      ? last?.connected === true
+      // Terminal is the final down; a later local disconnect adds nothing.
+      : last?.connected === false && (last.reason === change.reason || last.reason === "terminal");
+    if (repeat) {
+      return;
+    }
+    this.reported = change;
+    notifyEach(this.connectionListeners, change, (error) => {
+      this.logger.warn("Connection change listener failed", { error });
+    });
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {

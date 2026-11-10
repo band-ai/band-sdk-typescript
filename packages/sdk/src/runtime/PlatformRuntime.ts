@@ -148,10 +148,6 @@ export class PlatformRuntime implements AsyncDisposable {
     this.stopObservingLink = null;
   }
 
-  private emitRoom(type: "room.joined" | "room.left" | "room.stopped", roomId: string): void {
-    this.events.emit({ type, roomId });
-  }
-
   /** Current lifecycle state of this runtime. */
   public get state(): RuntimeLifecycleState {
     return this.lifecycle.state;
@@ -280,9 +276,9 @@ export class PlatformRuntime implements AsyncDisposable {
     // adapter its `onRuntimeStop` — several adapters only abort a hung startup
     // when that hook runs.
     this.activeAdapter = adapter;
-    adapter.attachObserver?.(this.events.emit);
 
     try {
+      adapter.attachObserver?.(this.events.emit);
       await adapter.onStarted(this._agentName, this._agentDescription);
       assertNotSuperseded();
 
@@ -331,9 +327,9 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
-        onRoomAdmitted: (roomId) => this.emitRoom("room.joined", roomId),
-        onRoomRemoved: (roomId) => this.emitRoom("room.left", roomId),
-        onRoomStopped: (roomId) => this.emitRoom("room.stopped", roomId),
+        onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
+        onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
+        onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
         onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
