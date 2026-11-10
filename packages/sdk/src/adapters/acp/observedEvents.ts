@@ -2,6 +2,7 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk"
 
 import type { AgentEventSink } from "../../contracts/events"
 import { asOptionalRecord } from "../shared/coercion"
+import { acpToolCallName } from "./toolCalls"
 import type { CollectedChunk } from "./types"
 
 // `_meta` entries in which an ACP bridge names its agent's own tool, by bridge.
@@ -16,15 +17,19 @@ interface ToolCallState {
 
 /**
  * The programmatic tool name for observe: ACP `name` when non-empty, else a
- * bridge `_meta` name, else `kind`. Never `title`.
+ * bridge `_meta` name, else an MCP spelling from `rawInput`, else `kind`.
+ * Never `title`.
  */
 export function observedToolName(source: {
   name?: string | null
   kind?: string | null
   _meta?: unknown
+  rawInput?: unknown
 }): string | undefined {
   if (typeof source.name === "string" && source.name.length > 0) return source.name
-  return bridgeToolName(source._meta) ?? nonEmpty(source.kind)
+  return bridgeToolName(source._meta)
+    ?? nonEmpty(acpToolCallName(source.rawInput, ""))
+    ?? nonEmpty(source.kind)
 }
 
 /**
@@ -35,6 +40,8 @@ export function observedToolName(source: {
  */
 export class SessionUpdateEvents {
   private readonly calls = new Map<string, ToolCallState>()
+  /** Tool call ids that already emitted `tool.result`; further terminals are ignored. */
+  private readonly completed = new Set<string>()
 
   public constructor(
     private readonly roomId: string,
@@ -55,20 +62,28 @@ export class SessionUpdateEvents {
         }
         return
       case "tool_call":
+        if (this.completed.has(update.toolCallId)) return
         // Kind is stored separately; do not fold it into `name` here or a
         // later kind-only frame would overwrite a bridge/ACP name.
-        this.refine(update.toolCallId, observedToolName({ name: update.name, _meta: update._meta }), update.kind ?? undefined, update.rawInput)
+        this.refine(
+          update.toolCallId,
+          observedToolName({ name: update.name, _meta: update._meta, rawInput: update.rawInput }),
+          update.kind ?? undefined,
+          update.rawInput,
+        )
         return
       case "tool_call_update": {
+        if (this.completed.has(update.toolCallId)) return
         const call = this.refine(
           update.toolCallId,
-          observedToolName({ name: update.name, _meta: update._meta }),
+          observedToolName({ name: update.name, _meta: update._meta, rawInput: update.rawInput }),
           update.kind ?? undefined,
           update.rawInput,
         )
         if (update.status === "completed" || update.status === "failed") {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           this.calls.delete(update.toolCallId)
+          this.completed.add(update.toolCallId)
           this.emit({ type: "tool.result", roomId: this.roomId, toolCallId: update.toolCallId, status: update.status, output: chunk.content })
         }
         return
@@ -81,6 +96,7 @@ export class SessionUpdateEvents {
   /** Forgets calls in flight, for a room or session that is going away. */
   public reset(): void {
     this.calls.clear()
+    this.completed.clear()
   }
 
   private refine(toolCallId: string, name: string | undefined, kind: string | undefined, input: unknown): ToolCallState {

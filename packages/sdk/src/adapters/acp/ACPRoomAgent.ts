@@ -293,6 +293,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly roomTurns = createRoomTurnLock()
   // The turn holding each room, so `cancelTurn` can reach its prompt.
   private readonly activeTurns = new Map<string /* roomId */, ActiveTurn>()
+  // Rooms whose host cancel has settled: survives `activeTurns` clearing so a
+  // late permission request cannot auto-allow until the next turn starts.
+  private readonly cancelledRooms = new Set<string /* roomId */>()
   // Bumped each time a room starts a *new* establishment (never on a
   // coalesced reuse) and whenever a room is torn down. An establishment
   // captures its own value at the start; if the room has moved on by the
@@ -396,6 +399,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       this.roomTools.set(context.roomId, tools)
       const turn: ActiveTurn = { cancelled: false, cancellation: createDeferred() }
       this.activeTurns.set(context.roomId, turn)
+      // A new turn may approve again; clear any prior host-cancel marker first.
+      this.cancelledRooms.delete(context.roomId)
       try {
         await this.runTurn(message, tools, participantsMessage, contactsMessage, context, history, turn)
       } finally {
@@ -587,7 +592,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
           : configError
             ? configError.toAgentFailure()
             : acpError
-              ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
+              ? agentFailure(this.provider, asErrorMessage(error), String(acpError.code), acpError.data)
               : agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
         {
@@ -630,6 +635,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return false
     }
     turn.cancelled = true
+    this.cancelledRooms.add(roomId)
     turn.cancellation.resolve()
     this.onTurnCancelled(roomId)
     const prompt = turn.prompt
@@ -679,6 +685,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
+    this.cancelledRooms.delete(roomId)
     this.sessionEvents.reset()
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
@@ -715,6 +722,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.activeTurns.clear()
+    this.cancelledRooms.clear()
     this.sessionEvents.reset()
     this.sessionsInFlight.clear()
     this.roomTurns.clear()
@@ -1498,17 +1506,34 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
     const turn = this.activeTurns.get(roomId)
     if (turn?.cancelled) {
-      // A cancelled turn approves nothing more; the room's next turn can.
+      // While the cancelled turn is still active: refuse with no approval.* —
+      // in-flight pending permissions already emit approval.resolved cancelled
+      // via cancelPendingPermissions. A post-settle late request is handled below.
       return CANCELLED_PERMISSION_RESPONSE
     }
 
     const toolCallId = params.toolCall.toolCallId
+    const toolName = observedToolName({
+      name: params.toolCall.name,
+      kind: params.toolCall.kind,
+      _meta: params.toolCall._meta,
+      rawInput: params.toolCall.rawInput,
+    }) ?? "unknown"
+    const options = params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind }))
+    // After cancel settles, activeTurns is cleared but this room must still
+    // refuse auto-allow until the next turn starts — emit cancelled, not selected.
+    if (this.cancelledRooms.has(roomId)) {
+      this.observer({ type: "approval.requested", roomId, toolCallId, toolName, options })
+      this.observer({ type: "approval.resolved", roomId, toolCallId, outcome: "cancelled" })
+      return CANCELLED_PERMISSION_RESPONSE
+    }
+
     this.observer({
       type: "approval.requested",
       roomId,
       toolCallId,
-      toolName: observedToolName(params.toolCall) ?? "unknown",
-      options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+      toolName,
+      options,
     })
     let response: RequestPermissionResponse
     try {
