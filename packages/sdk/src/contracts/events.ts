@@ -10,12 +10,23 @@ export type ToolCallEndStatus = "completed" | "failed";
 /**
  * What a running agent reports to the process hosting it through
  * `Agent.observe`. Local only: nothing here is posted to a room.
+ *
+ * Pairing rules:
+ * - Rooms: each time a joined room's handling starts, one `room.joined`; when
+ *   that handling ends, one `room.stopped`. `room.left` follows `room.stopped`
+ *   only when membership was lost.
+ * - Link: per connection, one `link.connected`, then at most one
+ *   `link.disconnected` per outage, then `link.connected` with `reconnected`
+ *   once it is back. Nothing is reported before the first up or after
+ *   `terminal`.
+ * - Tools: one `tool.call` per `toolCallId`, then at most one `tool.result`.
+ *   One `approval.resolved` per `approval.requested`.
  */
 export type AgentEvent =
   /**
    * The runtime is handing the turn for `messageId` to the adapter. The
-   * adapter may not hold it yet, so `cancelTurn` called synchronously from
-   * this event can resolve false.
+   * adapter may not hold it yet when this is delivered, so a `cancelTurn`
+   * made in response can resolve false.
    */
   | { type: "turn.started"; roomId: string; messageId: string }
   /** The adapter finished the turn without throwing. */
@@ -68,8 +79,11 @@ export type AgentEvent =
 export type AgentEventType = AgentEvent["type"];
 
 /**
- * Receives each event synchronously, in order, on the code path that produced
- * it, so it should return quickly. A listener that throws or rejects is logged
- * and skipped; it cannot fail the turn or starve the other listeners.
+ * Receives each event in emit order, on a microtask after the code that
+ * produced it, so a listener may call back into the agent (for example
+ * `cancelTurn`) without landing mid-operation; the agent may have moved on by
+ * then. A listener added later never sees earlier events, and one removed
+ * before delivery is skipped. A listener that throws or rejects is logged and
+ * skipped; it cannot fail the turn or starve the other listeners.
  */
 export type AgentEventListener = (event: AgentEvent) => void;

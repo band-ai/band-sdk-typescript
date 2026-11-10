@@ -286,8 +286,7 @@ describe("Agent.observe", () => {
     ]);
   });
 
-  it("answers a permission request cancelled at once when a listener cancels the turn on approval.requested", async () => {
-    let asked = 0;
+  it("answers a permission request cancelled when a listener cancels the turn on approval.requested", async () => {
     const answered = createDeferred<string>();
     const adapter = acpAdapter(async (peer, { sessionId }) => {
       const { outcome } = await peer.requestPermission({
@@ -297,7 +296,7 @@ describe("Agent.observe", () => {
       });
       answered.resolve(outcome.outcome);
       return { stopReason: "cancelled" as const };
-    }, { resolvePermission: async () => { asked += 1; return "allow"; } });
+    }, { resolvePermission: () => new Promise<never>(() => {}) });
     const { agent, events, room } = await startAgent(adapter);
     let cancelled: Promise<boolean> | undefined;
     agent.observe((event) => {
@@ -308,8 +307,7 @@ describe("Agent.observe", () => {
     expect(await answered.promise).toBe("cancelled");
     expect(await cancelled).toBe(true);
     expect(await room.outcome(message)).toBe("processed");
-    // Cancelled before anyone was asked: the host is not asked and the room is not told.
-    expect({ asked, posted: posted(room) }).toEqual({ asked: 0, posted: [] });
+    // Delivered after the request is pending, so the listener's cancel aborts it like any other cancel.
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
       expect.objectContaining({ type: "approval.requested", toolCallId: "edit-1" }),
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
@@ -809,22 +807,28 @@ describe("Agent.observe", () => {
   });
 
   it("reports link dropped, reconnected, and terminal", async () => {
-    const { events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    const { agent, events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
     expect(ofTypes(events, "link.connected")).toEqual([{ type: "link.connected", reconnected: false }]);
 
+    const dropped = nextEvent(agent, "link.disconnected");
     platform.transport.triggerDrop();
+    await dropped;
     expect(ofTypes(events, "link.disconnected")).toEqual([{ type: "link.disconnected", reason: "dropped" }]);
 
+    const reconnected = nextEvent(agent, "link.connected");
     await platform.transport.triggerReconnect({
       generation: 1,
       joinedTopics: new Set(platform.transport.bound.entries),
     });
+    await reconnected;
     expect(ofTypes(events, "link.connected")).toEqual([
       { type: "link.connected", reconnected: false },
       { type: "link.connected", reconnected: true },
     ]);
 
+    const terminal = nextEvent(agent, "link.disconnected");
     platform.transport.terminate(new WebSocketDisconnectError(TERMINAL_REASON));
+    await terminal;
     expect(ofTypes(events, "link.disconnected")).toEqual([
       { type: "link.disconnected", reason: "dropped" },
       { type: "link.disconnected", reason: "terminal" },

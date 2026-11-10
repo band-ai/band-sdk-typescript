@@ -1507,8 +1507,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       return CANCELLED_PERMISSION_RESPONSE
     }
 
-    // Tracked before the observer runs, so a cancel made from its listener
-    // reaches this request like any other cancel.
+    // Tracked before the observer runs: a sink attached directly through
+    // `attachObserver` may call back synchronously, and its cancel must reach this request.
     const controller = this.resolvePermission ? new AbortController() : undefined
     if (controller) {
       this.trackPending(key, controller)

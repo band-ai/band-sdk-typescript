@@ -228,8 +228,9 @@ export class Agent {
   /**
    * Adds a listener for this agent's local events — turns, tool calls,
    * thoughts, approvals, rooms, and the link to Band — and returns a function
-   * that removes it. Observing never posts anything to a room. Listeners run
-   * synchronously; one that throws is logged and skipped.
+   * that removes it. Observing never posts anything to a room. Events arrive
+   * in order on a microtask after they happen; a listener that throws is
+   * logged and skipped.
    */
   public observe(listener: AgentEventListener): () => void {
     return this.platformRuntime.observe(listener);
