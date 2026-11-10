@@ -9,6 +9,8 @@ import type { CollectedChunk } from "./types"
 // `title` is display copy (a command line, a sentence) and never the name.
 const BRIDGE_TOOL_NAME_KEYS = ["claudeCode"] as const
 
+type ToolCallFrame = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>
+
 interface ToolCallState {
   name?: string
   kind?: string
@@ -26,8 +28,8 @@ export function observedToolName(source: {
   _meta?: unknown
   rawInput?: unknown
 }): string | undefined {
-  if (typeof source.name === "string" && source.name.length > 0) return source.name
-  return bridgeToolName(source._meta)
+  return nonEmpty(source.name)
+    ?? bridgeToolName(source._meta)
     ?? nonEmpty(acpToolCallName(source.rawInput, ""))
     ?? nonEmpty(source.kind)
 }
@@ -63,23 +65,11 @@ export class SessionUpdateEvents {
         return
       case "tool_call":
         if (this.completed.has(update.toolCallId)) return
-        // Kind is stored separately; do not fold it into `name` here or a
-        // later kind-only frame would overwrite a bridge/ACP name.
-        this.refine(
-          update.toolCallId,
-          observedToolName({ name: update.name, _meta: update._meta, rawInput: update.rawInput }),
-          update.kind ?? undefined,
-          update.rawInput,
-        )
+        this.refine(update)
         return
       case "tool_call_update": {
         if (this.completed.has(update.toolCallId)) return
-        const call = this.refine(
-          update.toolCallId,
-          observedToolName({ name: update.name, _meta: update._meta, rawInput: update.rawInput }),
-          update.kind ?? undefined,
-          update.rawInput,
-        )
+        const call = this.refine(update)
         if (update.status === "completed" || update.status === "failed") {
           if (!call.reported) this.report(update.toolCallId, call, undefined)
           this.calls.delete(update.toolCallId)
@@ -99,15 +89,18 @@ export class SessionUpdateEvents {
     this.completed.clear()
   }
 
-  private refine(toolCallId: string, name: string | undefined, kind: string | undefined, input: unknown): ToolCallState {
+  private refine(update: ToolCallFrame): ToolCallState {
+    const { toolCallId, rawInput } = update
     let call = this.calls.get(toolCallId)
     if (!call) {
       call = { reported: false }
       this.calls.set(toolCallId, call)
     }
-    call.name = name ?? call.name
-    call.kind = kind ?? call.kind
-    if (!call.reported && hasInput(input)) this.report(toolCallId, call, input)
+    // Kind is stored separately; folding it into `name` would let a later
+    // kind-only frame overwrite a bridge/ACP name.
+    call.name = observedToolName({ name: update.name, _meta: update._meta, rawInput }) ?? call.name
+    call.kind = update.kind ?? call.kind
+    if (!call.reported && hasInput(rawInput)) this.report(toolCallId, call, rawInput)
     return call
   }
 

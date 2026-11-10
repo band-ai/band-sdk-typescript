@@ -156,18 +156,15 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private reportConnection(change: LinkConnectionChange): void {
-    if (change.connected) {
-      if (this.reported?.connected === true) {
-        return;
-      }
-      this.reported = { connected: true };
-    } else if (this.reported?.connected === false
-      && (this.reported.reason === change.reason || this.reported.reason === "terminal")) {
+    const last = this.reported;
+    const repeat = change.connected
+      ? last?.connected === true
       // Terminal is the final down; a later local disconnect adds nothing.
+      : last?.connected === false && (last.reason === change.reason || last.reason === "terminal");
+    if (repeat) {
       return;
-    } else {
-      this.reported = { connected: false, reason: change.reason };
     }
+    this.reported = change.connected ? { connected: true } : { connected: false, reason: change.reason };
     for (const listener of [...this.connectionListeners]) {
       try {
         listener(change);

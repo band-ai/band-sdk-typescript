@@ -1503,19 +1503,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
 
     const toolCallId = params.toolCall.toolCallId
-    const toolName = observedToolName({
-      name: params.toolCall.name,
-      kind: params.toolCall.kind,
-      _meta: params.toolCall._meta,
-      rawInput: params.toolCall.rawInput,
-    }) ?? "unknown"
-    const options = params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind }))
     this.observer({
       type: "approval.requested",
       roomId,
       toolCallId,
-      toolName,
-      options,
+      toolName: observedToolName(params.toolCall) ?? "unknown",
+      options: params.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
     })
     let response: RequestPermissionResponse
     try {
