@@ -32,13 +32,17 @@ export class SessionUpdateEvents {
   public observe(update: SessionUpdate, chunk: CollectedChunk): void {
     switch (update.sessionUpdate) {
       case "agent_thought_chunk":
-        if (chunk.content) this.emit({ type: "thought", roomId: this.roomId, text: chunk.content })
-        return
       case "agent_message_chunk":
-        if (chunk.content) this.emit({ type: "message", roomId: this.roomId, text: chunk.content })
+        if (chunk.content) {
+          this.emit({
+            type: update.sessionUpdate === "agent_thought_chunk" ? "thought" : "message",
+            roomId: this.roomId,
+            text: chunk.content,
+          })
+        }
         return
       case "tool_call":
-        this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind, update.rawInput)
+        this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind ?? undefined, update.rawInput)
         return
       case "tool_call_update": {
         const call = this.refine(update.toolCallId, bridgeToolName(update._meta), update.kind ?? undefined, update.rawInput)
@@ -60,10 +64,13 @@ export class SessionUpdateEvents {
   }
 
   private refine(toolCallId: string, name: string | undefined, kind: string | undefined, input: unknown): ToolCallState {
-    const call = this.calls.get(toolCallId) ?? { reported: false }
+    let call = this.calls.get(toolCallId)
+    if (!call) {
+      call = { reported: false }
+      this.calls.set(toolCallId, call)
+    }
     call.name = name ?? call.name
     call.kind = kind ?? call.kind
-    this.calls.set(toolCallId, call)
     if (!call.reported && hasInput(input)) this.report(toolCallId, call, input)
     return call
   }

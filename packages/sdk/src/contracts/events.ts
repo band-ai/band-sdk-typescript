@@ -59,4 +59,4 @@ export type AgentEventType = AgentEvent["type"];
 export type AgentEventListener = (event: AgentEvent) => void;
 
 /** Where a component reports events; the runtime fans them out to listeners. */
-export type AgentEventSink = (event: AgentEvent) => void;
+export type AgentEventSink = AgentEventListener;

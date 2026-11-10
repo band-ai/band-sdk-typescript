@@ -494,12 +494,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
     if (verdict.kind === "retry") {
-      for (const observer of [...this.dropObservers]) {
-        try {
-          observer(verdict.reason);
-        } catch (error) {
-          this.logger.error("Drop observer failed", { error });
-        }
+      this.notifyDropObservers(verdict.reason);
+    }
+  }
+
+  private notifyDropObservers(reason: WebSocketDisconnectReason): void {
+    for (const observer of [...this.dropObservers]) {
+      try {
+        observer(reason);
+      } catch (error) {
+        this.logger.error("Drop observer failed", { error });
       }
     }
   }

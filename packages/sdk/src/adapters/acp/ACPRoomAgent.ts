@@ -958,8 +958,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       } catch (stopError) {
         this.safeWarn("acp_client.handle_stop_after_handshake_failure", { error: asErrorMessage(stopError) })
       }
-      if (asErrorMessage(error) !== CONNECTION_ATTEMPT_SUPERSEDED_ERROR) {
-        this.observer({ type: "room.failed", roomId: this.roomId, error: asErrorMessage(error) })
+      const message = asErrorMessage(error)
+      if (message !== CONNECTION_ATTEMPT_SUPERSEDED_ERROR) {
+        this.observer({ type: "room.failed", roomId: this.roomId, error: message })
       }
       throw error
     } finally {
@@ -1519,9 +1520,13 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       response = CANCELLED_PERMISSION_RESPONSE
     }
     const { outcome } = response
-    this.observer(outcome.outcome === "selected"
-      ? { type: "approval.resolved", roomId, toolCallId, outcome: "selected", optionId: outcome.optionId }
-      : { type: "approval.resolved", roomId, toolCallId, outcome: "cancelled" })
+    this.observer({
+      type: "approval.resolved",
+      roomId,
+      toolCallId,
+      outcome: outcome.outcome,
+      ...(outcome.outcome === "selected" ? { optionId: outcome.optionId } : {}),
+    })
     return response
   }
 

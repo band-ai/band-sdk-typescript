@@ -133,6 +133,22 @@ export class PlatformRuntime implements AsyncDisposable {
     return this.events.observe(listener);
   }
 
+  private observeLink(): void {
+    if (this.observingLink) {
+      return;
+    }
+    this.observingLink = true;
+    this.link.onConnectionChange((change) => {
+      this.events.emit(change.connected
+        ? { type: "link.connected", reconnected: change.reconnected }
+        : { type: "link.disconnected", reason: change.reason });
+    });
+  }
+
+  private emitRoom(type: "room.joined" | "room.left" | "room.stopped", roomId: string): void {
+    this.events.emit({ type, roomId });
+  }
+
   /** Current lifecycle state of this runtime. */
   public get state(): RuntimeLifecycleState {
     return this.lifecycle.state;
@@ -189,24 +205,15 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   private async doInitialize(): Promise<void> {
-    if (!this.linkInstance) {
-      this.linkInstance = new BandLink({
-        ...this.linkOptions,
-        agentId: this._agentId,
-        apiKey: this._apiKey,
-        wsUrl: this._wsUrl,
-        restUrl: this._restUrl,
-      });
-    }
-    if (!this.observingLink) {
-      // For the runtime's lifetime: the link is this runtime's, and reconnects reuse it.
-      this.observingLink = true;
-      this.link.onConnectionChange((change) => {
-        this.events.emit(change.connected
-          ? { type: "link.connected", reconnected: change.reconnected }
-          : { type: "link.disconnected", reason: change.reason });
-      });
-    }
+    this.linkInstance ??= new BandLink({
+      ...this.linkOptions,
+      agentId: this._agentId,
+      apiKey: this._apiKey,
+      wsUrl: this._wsUrl,
+      restUrl: this._restUrl,
+    });
+    // For the runtime's lifetime: the link is this runtime's, and reconnects reuse it.
+    this.observeLink();
 
     const me = !this.configuredIdentity || this.link.capabilities.tasks
       ? await this.link.rest.getAgentMe()
@@ -321,9 +328,9 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
-        onRoomJoined: (roomId) => this.events.emit({ type: "room.joined", roomId }),
-        onRoomLeft: (roomId) => this.events.emit({ type: "room.left", roomId }),
-        onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
+        onRoomJoined: (roomId) => this.emitRoom("room.joined", roomId),
+        onRoomLeft: (roomId) => this.emitRoom("room.left", roomId),
+        onRoomStopped: (roomId) => this.emitRoom("room.stopped", roomId),
         onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
