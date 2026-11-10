@@ -23,7 +23,9 @@ interface RoomPresenceOptions {
 }
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
-type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
+/** `removed` when the agent lost the room's membership; `stopped` when presence stopped tracking it. */
+type RoomLeaveReason = "removed" | "stopped";
+type RoomPresenceLeaveHandler = (roomId: string, reason: RoomLeaveReason) => Promise<void>;
 type RoomEvent = MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent;
 type RoomPresenceEventHandler = (roomId: string, event: RoomEvent) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
@@ -239,7 +241,7 @@ export class RoomPresence implements AsyncDisposable {
     await Promise.all(
       roomIds.map(async (roomId) => {
         await this.unsubscribeRoom(roomId);
-        await this.onRoomLeft?.(roomId);
+        await this.onRoomLeft?.(roomId, "stopped");
       }),
     );
   }
@@ -313,7 +315,7 @@ export class RoomPresence implements AsyncDisposable {
       this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
       return;
     }
-    await this.onRoomLeft?.(roomId);
+    await this.onRoomLeft?.(roomId, "removed");
   }
 
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
@@ -365,7 +367,7 @@ export class RoomPresence implements AsyncDisposable {
     await Promise.all(
       reconciliation.removed.map(async (roomId) => {
         await this.leaveRoomTracking(roomId);
-        await this.onRoomLeft?.(roomId);
+        await this.onRoomLeft?.(roomId, "removed");
       }),
     );
 

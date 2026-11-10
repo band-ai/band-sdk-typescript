@@ -22,6 +22,8 @@ export interface BandMcpServerOptions {
   port?: number;
   /** Enable memory tools. */
   enableMemoryTools?: boolean;
+  /** Enable board and task tools. */
+  enableTaskTools?: boolean;
   /** Enable contact tools. */
   enableContactTools?: boolean;
   /** Additional MCP tool registrations to expose alongside the built-in tools. */
@@ -66,6 +68,7 @@ export class BandMcpServer {
     const regOptions: BuildRegistrationsOptions = {
       execute: options.execute,
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     };

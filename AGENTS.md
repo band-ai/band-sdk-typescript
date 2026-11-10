@@ -41,7 +41,12 @@ the existing skills relevant to the task. Reassess when moving from research
 to implementation, testing, or review. Discovery alone does not load instructions.
 Read the linked `SKILL.md` directly when automatic loading is unavailable.
 
-Follow each activation rule: `band-code-review` runs when a review is requested.
+Follow each activation rule: `band-code-review` runs when a review is requested;
+`band-pr-assess` when assessing a PR toward merge — including "is this PR
+good", "assess this PR", "evaluate this PR", "quality-check this PR"
+(invokes `band-code-review --fix` once and requires that run to converge
+before ship, unless a wrong-layer, incomplete-claim, design-only, or
+no-push stop halts first).
 Use only skills that actually exist and disclose missing guidance when it
 materially affects the work. Read [the shared runtime guidance](.claude/skills/workflow-runtime.md)
 for host capabilities, authorization, delegation and cleanup.
@@ -67,6 +72,7 @@ with explicit user approval.
 | [band-run-e2e-live](.claude/skills/band-run-e2e-live/SKILL.md) | running existing live baseline scenarios |
 | [band-investigate-test-error](.claude/skills/band-investigate-test-error/SKILL.md) | finding the cause of a failing or flaky test |
 | [band-code-review](.claude/skills/band-code-review/SKILL.md) | explicitly running the team's six-angle PR or branch review |
+| [band-pr-assess](.claude/skills/band-pr-assess/SKILL.md) | end-to-end PR assessment ("is this PR good", "assess/evaluate/quality-check this PR"); one converging `band-code-review --fix` before ship |
 | [band-here-is-a-review](.claude/skills/band-here-is-a-review/SKILL.md) | verifying and handling supplied review feedback |
 | [band-pr-triage](.claude/skills/band-pr-triage/SKILL.md) | a quick read-only PR readiness assessment |
 | [band-ci-triage](.claude/skills/band-ci-triage/SKILL.md) | investigating failing checks at the tested revision |
@@ -131,6 +137,12 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 - `band_get_memory`: retrieve a specific memory by id
 - `band_supersede_memory`: soft-delete an outdated memory (keeps audit trail)
 - `band_archive_memory`: archive a memory (hide but preserve)
+
+### Board and Task Tools
+- `band_get_board` / `band_set_board`: read or upsert the room's goal (`GET`/`PUT /api/v1/agent/chats/{chat_id}/board`)
+- `band_list_tasks`, `band_create_task`, `band_get_task`, `band_update_task`: the room's shared task board
+
+All six need the `tasks` capability (`BandLink` `capabilities.tasks`, pruned unless Band reports `ff_room_tasks`). MCP registrations include them only with `enableTaskTools`, which `ACPClientAdapter`, `ClaudeSDKAdapter`, `createBandMcpBackend`, and `createBandSdkMcpServer` pass through; it defaults to off.
 
 Tool schemas live in `packages/sdk/src/contracts/toolSchemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
 

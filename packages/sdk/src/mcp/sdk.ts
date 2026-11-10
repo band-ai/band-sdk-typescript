@@ -12,6 +12,7 @@ import { createSdkMcpBridge } from "./sdkTools";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
+  enableTaskTools?: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
@@ -63,6 +64,7 @@ export function createBandSdkMcpServer(
 ): BandSdkMcpServer {
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
+    enableTaskTools: options.enableTaskTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
   };

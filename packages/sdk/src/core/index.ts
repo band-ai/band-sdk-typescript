@@ -33,6 +33,14 @@ export type {
   AdapterToolsProtocol,
   AgentToolsProtocol,
 } from "../contracts/protocols";
+export type {
+  AgentEvent,
+  AgentEventListener,
+  AgentEventType,
+  ApprovalOutcome,
+  LinkDisconnectReason,
+  ToolCallEndStatus,
+} from "../contracts/events";
 export {
   BandSdkError,
   UnsupportedFeatureError,

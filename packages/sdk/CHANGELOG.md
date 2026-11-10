@@ -1,6 +1,21 @@
 # Changelog
 
 
+## [2.1.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.1...sdk-v2.1.0) (2026-11-10)
+
+
+### Features
+
+* **adapters:** let ACP and Claude SDK adapters expose board and task tools ([#406](https://github.com/band-ai/band-sdk-typescript/issues/406)) ([d477c46](https://github.com/band-ai/band-sdk-typescript/commit/d477c46b330b68d1a7eefb64835f0f7c514fb685))
+* **agent:** cancel a running ACP turn without resetting its session ([#405](https://github.com/band-ai/band-sdk-typescript/issues/405)) ([5ef2c47](https://github.com/band-ai/band-sdk-typescript/commit/5ef2c475dea47d6ed60e9415755cff425618ccc3))
+
+## [2.0.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.0...sdk-v2.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* end the WebSocket session when an upgrade is refused with 401 ([#403](https://github.com/band-ai/band-sdk-typescript/issues/403)) ([4e8931c](https://github.com/band-ai/band-sdk-typescript/commit/4e8931c2a5e6fa6d40a8c5a8dc33999073342522))
+
 ## [2.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v1.0.0...sdk-v2.0.0) (2026-11-09)
 
 

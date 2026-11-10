@@ -3,6 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
+import { TASK_TOOL_NAMES } from "../src/contracts/toolSchemas";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { describeNestedObjectTool } from "./nestedObjectTool";
 import { FakeRestApi } from "./testUtils";
@@ -86,16 +87,25 @@ describe("createBandSdkMcpServer", () => {
   }
 
   it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
-    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, enableTaskTools: true, getToolsForRoom: () => undefined });
     const client = await connectClient(bridge);
 
     try {
       // One schema the SDK's converter can't render fails the whole listing, so the agent sees no Band tools.
       const { tools } = await client.listTools();
       expect(tools.map((listed) => listed.name).sort()).toEqual(bridge.toolDefinitions.map((entry) => entry.name).sort());
+      expect(bridge.allowedTools).toEqual(expect.arrayContaining(["mcp__band__band_get_board", "mcp__band__band_set_board"]));
     } finally {
       await client.close();
     }
+  });
+
+  it("omits board and task tools from allowedTools unless enableTaskTools is set", () => {
+    const off = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const on = createBandSdkMcpServer({ enableMemoryTools: true, enableTaskTools: true, getToolsForRoom: () => undefined });
+    const prefixed = [...TASK_TOOL_NAMES].map((name) => `mcp__band__${name}`);
+    expect(prefixed.filter((name) => off.allowedTools.includes(name))).toEqual([]);
+    expect(on.allowedTools).toEqual(expect.arrayContaining(prefixed));
   });
 
   it("passes an object-typed argument through the server's validation unchanged", async () => {

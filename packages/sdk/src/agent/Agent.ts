@@ -1,6 +1,8 @@
 import type { FrameworkAdapter } from "../contracts/protocols";
+import type { AgentEventListener } from "../contracts/events";
 import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
+import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger } from "../core/logger";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
@@ -208,6 +210,29 @@ export class Agent {
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
     return await this.platformRuntime.resetRoomSession(roomId, timeoutMs);
+  }
+
+  /**
+   * Cancels the turn running in `roomId` without resetting the room's session,
+   * unlike {@link Agent.resetRoomSession}. Resolves false when no turn is
+   * running there; rejects with `UnsupportedFeatureError` when the adapter
+   * cannot cancel a turn.
+   */
+  public async cancelTurn(roomId: string): Promise<boolean> {
+    if (!this.adapter.cancelTurn) {
+      throw new UnsupportedFeatureError("This agent's adapter cannot cancel a turn");
+    }
+    return await this.adapter.cancelTurn(roomId);
+  }
+
+  /**
+   * Adds a listener for this agent's local events — turns, tool calls,
+   * thoughts, approvals, rooms, and the link to Band — and returns a function
+   * that removes it. Observing never posts anything to a room. Delivery
+   * follows {@link AgentEventListener}.
+   */
+  public observe(listener: AgentEventListener): () => void {
+    return this.platformRuntime.observe(listener);
   }
 
   /** Start the agent, listen for messages, and block until shutdown. Registers SIGINT/SIGTERM handlers by default. */

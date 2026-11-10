@@ -99,6 +99,12 @@ export type {
   ReadRoomHistoryArgs,
   RoomHistoryPage,
   ToolExecutor,
+  AgentEvent,
+  AgentEventListener,
+  AgentEventType,
+  ApprovalOutcome,
+  LinkDisconnectReason,
+  ToolCallEndStatus,
 } from "./core";
 
 export type {

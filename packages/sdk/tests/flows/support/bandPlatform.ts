@@ -60,6 +60,8 @@ export interface AgentIdentityOptions {
 interface Settled {
   readonly messageId: string;
   readonly outcome: Outcome;
+  /** The label a failed mark carried. */
+  readonly error?: string;
 }
 
 type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
@@ -143,6 +145,7 @@ export class RecordingRestApi extends FakeRestApi {
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  public readonly eventHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
@@ -303,6 +306,7 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
+    await this.eventHolds.pass(roomId, event.content);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -387,8 +391,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settle(messageId, "processed");
   }
 
-  public override async markMessageFailed(_roomId: string, messageId: string) {
-    return this.settle(messageId, "failed");
+  public override async markMessageFailed(_roomId: string, messageId: string, error: string) {
+    return this.settle(messageId, "failed", error);
   }
 
   /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
@@ -420,8 +424,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome) {
-    this.settled.record({ messageId, outcome });
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
     return {};
   }
 
@@ -497,6 +501,11 @@ export class BandRoom {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
   }
 
+  /** The labels the runtime marked `messageId` failed with so far. */
+  public failureLabels(messageId: string): string[] {
+    return this.platform.rest.settled.entries.flatMap((settled) => settled.messageId === messageId && settled.error !== undefined ? [settled.error] : []);
+  }
+
   /** Every outcome the runtime has settled `messageId` with so far. */
   public outcomes(messageId: string): Outcome[] {
     return this.platform.rest.settled.entries.filter((settled) => settled.messageId === messageId).map((settled) => settled.outcome);
@@ -510,6 +519,11 @@ export class BandRoom {
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
   public holdMessage(matches: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[roomId: string, content: string]> {
     return this.platform.rest.messageHolds.hold((roomId, content) => roomId === this.id && matches(content), options);
+  }
+
+  /** Keeps the agent's next matching event in flight until released. */
+  public holdEvent(matches: (content: string) => boolean): HeldCall<[roomId: string, content: string]> {
+    return this.platform.rest.eventHolds.hold((roomId, content) => roomId === this.id && matches(content));
   }
 
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */
