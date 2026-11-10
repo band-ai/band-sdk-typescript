@@ -71,7 +71,7 @@ with explicit user approval.
 | [band-run-e2e-live](.claude/skills/band-run-e2e-live/SKILL.md) | running existing live baseline scenarios |
 | [band-investigate-test-error](.claude/skills/band-investigate-test-error/SKILL.md) | finding the cause of a failing or flaky test |
 | [band-code-review](.claude/skills/band-code-review/SKILL.md) | explicitly running the team's six-angle PR or branch review |
-| [band-pr-assess](.claude/skills/band-pr-assess/SKILL.md) | end-to-end PR assessment (goal/design/scope/follow-ups); one converging `band-code-review --fix` run before ship |
+| [band-pr-assess](.claude/skills/band-pr-assess/SKILL.md) | end-to-end PR assessment ("is this PR good", "assess this PR"); one converging `band-code-review --fix` before ship |
 | [band-here-is-a-review](.claude/skills/band-here-is-a-review/SKILL.md) | verifying and handling supplied review feedback |
 | [band-pr-triage](.claude/skills/band-pr-triage/SKILL.md) | a quick read-only PR readiness assessment |
 | [band-ci-triage](.claude/skills/band-ci-triage/SKILL.md) | investigating failing checks at the tested revision |

@@ -3,11 +3,12 @@ name: band-pr-assess
 description: >-
   Assess a PR's goal, design fit, and scope, file follow-up tickets when needed,
   then invoke band-code-review --fix once (default cycles) before any
-  approve/merge when headed toward ship. Use when the user asks to assess,
-  evaluate, or quality-check a PR end-to-end toward merge (/band-pr-assess), or
-  asks whether a change is the right cross-system design before shipping. Not a
-  substitute for band-pr-triage alone; merge is forbidden until that --fix run
-  has converged (skip --fix on wrong-layer or design-only stops).
+  approve/merge when headed toward ship. Use when the user asks to assess a PR
+  (including typos like "asses this pr"), says "is this PR good", "evaluate this
+  PR", "quality-check this PR", /band-pr-assess, or asks whether a change is the
+  right cross-system design before shipping. Not a substitute for band-pr-triage
+  alone; merge is forbidden until that --fix run has converged (skip --fix on
+  wrong-layer or design-only stops).
 argument-hint: "[target]"
 ---
 
