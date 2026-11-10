@@ -26,6 +26,7 @@ import type {
   PeerRecord,
 } from "../src/contracts/dtos";
 import type {
+  DropObserver,
   ReconnectObserver,
   ReconnectSnapshot,
   StreamingTransport,
@@ -312,6 +313,7 @@ export class FakeTransport implements StreamingTransport {
   /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
   public readonly observers = new Set<ReconnectObserver>();
   public readonly rejoinObservers = new Set<TopicRejoinObserver>();
+  public readonly dropObservers = new Set<DropObserver>();
   /** Every topic bound, in order; await it to act once a subscription is in place. */
   public readonly bound = new RecordLog<string>();
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
@@ -528,6 +530,11 @@ export class FakeTransport implements StreamingTransport {
     return () => this.observers.delete(observer);
   }
 
+  public onDropped(observer: DropObserver): () => void {
+    this.dropObservers.add(observer);
+    return () => this.dropObservers.delete(observer);
+  }
+
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
     this.rejoinObservers.add(observer);
     return () => this.rejoinObservers.delete(observer);
@@ -540,11 +547,28 @@ export class FakeTransport implements StreamingTransport {
     }
   }
 
+  /** Simulates a live connection drop the transport will retry on its own. */
+  public triggerDrop(reason: WebSocketDisconnectReason = {
+    source: "websocket_close",
+    code: "websocket.closed",
+    message: "dropped",
+    retryable: true,
+    closeCode: 1006,
+    closeReason: null,
+  }): void {
+    this.connected = false;
+    this.disconnectReason = reason;
+    for (const observer of [...this.dropObservers]) {
+      observer(reason);
+    }
+  }
+
   /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
   public async triggerReconnect(
     snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
       Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
   ): Promise<void> {
+    this.connected = true;
     const full: ReconnectSnapshot = {
       ...snapshot,
       attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,

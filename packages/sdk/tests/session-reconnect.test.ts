@@ -248,6 +248,45 @@ describe("core Session owns reconnects (real wire)", () => {
       ]);
     });
 
+    it("still reports closed after a drop that never came back", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+
+      peer.severAllConnections();
+      await wireUntil(() => changes.some((change) => !change.connected && change.reason === "dropped"));
+      await onWireClock(link.disconnect());
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: false, reason: "closed" },
+      ]);
+    });
+
+    it("still reports terminal after a drop whose reconnect is refused", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes: LinkConnectionChange[] = [];
+      link.onConnectionChange((change) => changes.push(change));
+      await link.connect();
+
+      peer.refuseUpgrades({ status: 403 });
+      peer.severAllConnections();
+      await wireUntil(() => changes.some((change) => !change.connected && change.reason === "terminal"));
+      await advanceWireClock(PAST_ANY_DELAY_MS);
+
+      expect(changes).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: false, reason: "terminal" },
+      ]);
+    });
+
     it("drops a reconnected socket whose agent_control rejoin fails, and reconnects again", async () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);

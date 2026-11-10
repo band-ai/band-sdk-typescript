@@ -1,16 +1,34 @@
-import type { AgentSideConnection, Agent as AcpAgent, PromptRequest, SessionUpdate } from "@agentclientprotocol/sdk";
-import { describe, expect, it, onTestFinished } from "vitest";
+import {
+  AgentSideConnection,
+  ClientSideConnection,
+  ndJsonStream,
+  type Agent as AcpAgent,
+  type PromptRequest,
+  type SessionUpdate,
+} from "@agentclientprotocol/sdk";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { Agent } from "../src/agent/Agent";
 import type { AgentEvent } from "../src/contracts/events";
 import { createDeferred } from "../src/core/deferred";
 import { BandLink } from "../src/platform/BandLink";
+import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
+
+const TERMINAL_REASON = {
+  source: "agent_control",
+  code: "session.already_connected",
+  message: "superseded",
+  retryable: false,
+  retryAfter: null,
+  targetSocketId: null,
+  correlationId: null,
+} satisfies WebSocketDisconnectReason;
 
 /** Claude Code's ACP bridge on one Bash call, as recorded: the call arrives twice, first with no input, and its title is display copy. */
 const CLAUDE_BASH_CALL: SessionUpdate[] = [
@@ -46,7 +64,10 @@ const EMPTY_INPUT_CALL: SessionUpdate[] = [
 ];
 
 /** A real ACP agent behind the adapter; each prompt runs `onPrompt`. */
-function acpAdapter(onPrompt: (peer: AgentSideConnection, request: PromptRequest) => Promise<{ stopReason: "end_turn" }>, options: Partial<ACPClientAdapterOptions> = {}) {
+function acpAdapter(
+  onPrompt: (peer: AgentSideConnection, request: PromptRequest) => Promise<{ stopReason: "end_turn" | "cancelled" }>,
+  options: Partial<ACPClientAdapterOptions> = {},
+) {
   return new ACPClientAdapter({
     command: ["acp-fixture"],
     cwd: tmpRoot(),
@@ -74,7 +95,7 @@ async function workThenAnswer(peer: AgentSideConnection, sessionId: string, befo
   return { stopReason: "end_turn" as const };
 }
 
-async function startAgent(adapter: ACPClientAdapter) {
+async function startAgent(adapter: ACPClientAdapter, { observe = true }: { observe?: boolean } = {}) {
   const platform = BandPlatform.host([person("owner")]);
   const agent = Agent.create({
     adapter,
@@ -83,7 +104,9 @@ async function startAgent(adapter: ACPClientAdapter) {
     link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
   });
   const events: AgentEvent[] = [];
-  agent.observe((event) => { events.push(event); });
+  if (observe) {
+    agent.observe((event) => { events.push(event); });
+  }
   await agent.start();
   onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
   return { agent, platform, events, room: await platform.room(ROOM) };
@@ -127,8 +150,7 @@ describe("Agent.observe", () => {
 
   it("leaves what the room sees unchanged", async () => {
     const turn = async (observe: boolean) => {
-      const { agent, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
-      if (observe) agent.observe(() => {});
+      const { room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), { observe });
       expect(await room.outcome(await room.say("owner", "what is in my notes?"))).toBe("processed");
       return posted(room);
     };
@@ -168,7 +190,7 @@ describe("Agent.observe", () => {
     const adapter = acpAdapter(async (peer, { sessionId }) => {
       await peer.requestPermission({
         sessionId,
-        toolCall: { toolCallId: "edit-1", title: "Edit notes.md" },
+        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
         options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
       });
       return workThenAnswer(peer, sessionId);
@@ -181,10 +203,45 @@ describe("Agent.observe", () => {
         type: "approval.requested",
         roomId: ROOM,
         toolCallId: "edit-1",
-        toolName: "Edit notes.md",
+        toolName: "Edit",
         options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
       },
       { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
+    ]);
+  });
+
+  it("reports approval.resolved cancelled when cancelTurn runs while permission is pending", async () => {
+    const asked = createDeferred();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({
+        sessionId,
+        toolCall: { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" },
+        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }, { kind: "reject_once", optionId: "deny", name: "Deny" }],
+      });
+      return { stopReason: "cancelled" as const };
+    }, {
+      resolvePermission: (_request, signal) => {
+        const answer = createDeferred<string | undefined>();
+        signal.addEventListener("abort", () => answer.resolve(undefined));
+        asked.resolve();
+        return answer.promise;
+      },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    const message = await room.say("owner", "edit my notes");
+    await asked.promise;
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      {
+        type: "approval.requested",
+        roomId: ROOM,
+        toolCallId: "edit-1",
+        toolName: "Edit",
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
+      },
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
     ]);
   });
 
@@ -212,6 +269,83 @@ describe("Agent.observe", () => {
     ]);
   });
 
+  it("reports process exit as room.failed, and a reused toolCallId still as tool.call", async () => {
+    let kill = () => {};
+    let prompts = 0;
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: async (client) => {
+        let closeOutgoing!: () => void;
+        let closeIncoming!: () => void;
+        const outgoing = new TransformStream<Uint8Array, Uint8Array>({ start: (controller) => { closeOutgoing = () => controller.terminate(); } });
+        const incoming = new TransformStream<Uint8Array, Uint8Array>({ start: (controller) => { closeIncoming = () => controller.terminate(); } });
+        const peer = new AgentSideConnection((served): AcpAgent => ({
+          initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+          authenticate: async () => ({}),
+          newSession: async () => ({ sessionId: `session-${prompts + 1}` }),
+          cancel: async () => {},
+          prompt: async ({ sessionId }) => {
+            prompts += 1;
+            await served.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "reuse-1",
+                title: "Run echo",
+                kind: "execute",
+                status: "pending",
+                rawInput: { command: "echo hi" },
+              },
+            });
+            if (prompts === 1) {
+              kill();
+              await new Promise(() => {});
+            }
+            await served.sessionUpdate({
+              sessionId,
+              update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: "hi" },
+            });
+            await served.sessionUpdate({
+              sessionId,
+              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } },
+            });
+            return { stopReason: "end_turn" };
+          },
+        }), ndJsonStream(incoming.writable, outgoing.readable));
+        const connection = new ClientSideConnection(() => client, ndJsonStream(outgoing.writable, incoming.readable));
+        kill = () => { closeOutgoing(); closeIncoming(); };
+        return {
+          connection,
+          stop: async () => {
+            closeOutgoing();
+            closeIncoming();
+            await Promise.all([connection.closed, peer.closed]);
+          },
+        };
+      },
+    });
+    const { events, room } = await startAgent(adapter);
+
+    const first = await room.say("owner", "run it");
+    await vi.waitFor(() => {
+      expect(ofTypes(events, "room.failed")).toEqual([
+        { type: "room.failed", roomId: ROOM, error: "The ACP agent process exited" },
+      ]);
+    });
+    expect(await room.outcome(first)).toBe("failed");
+    expect(ofTypes(events, "tool.call")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+    ]);
+
+    expect(await room.outcome(await room.say("owner", "run it again"))).toBe("processed");
+    expect(ofTypes(events, "tool.call")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+    ]);
+  });
+
   it("reports leaving a room, and the link closing when the agent stops", async () => {
     const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
     expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
@@ -225,6 +359,29 @@ describe("Agent.observe", () => {
       { type: "room.stopped", roomId: ROOM },
       { type: "room.left", roomId: ROOM },
       { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports link dropped, reconnected, and terminal", async () => {
+    const { events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    expect(ofTypes(events, "link.connected")).toEqual([{ type: "link.connected", reconnected: false }]);
+
+    platform.transport.triggerDrop();
+    expect(ofTypes(events, "link.disconnected")).toEqual([{ type: "link.disconnected", reason: "dropped" }]);
+
+    await platform.transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set(platform.transport.bound.entries),
+    });
+    expect(ofTypes(events, "link.connected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.connected", reconnected: true },
+    ]);
+
+    platform.transport.terminate(new WebSocketDisconnectError(TERMINAL_REASON));
+    expect(ofTypes(events, "link.disconnected")).toEqual([
+      { type: "link.disconnected", reason: "dropped" },
+      { type: "link.disconnected", reason: "terminal" },
     ]);
   });
 
