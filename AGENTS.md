@@ -138,6 +138,12 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 - `band_supersede_memory`: soft-delete an outdated memory (keeps audit trail)
 - `band_archive_memory`: archive a memory (hide but preserve)
 
+### Board and Task Tools
+- `band_get_board` / `band_set_board`: read or upsert the room's goal (`GET`/`PUT /api/v1/agent/chats/{chat_id}/board`)
+- `band_list_tasks`, `band_create_task`, `band_get_task`, `band_update_task`: the room's shared task board
+
+All six need the `tasks` capability (`BandLink` `capabilities.tasks`, pruned unless Band reports `ff_room_tasks`). MCP registrations include them only with `enableTaskTools`, which `ACPClientAdapter`, `ClaudeSDKAdapter`, `createBandMcpBackend`, and `createBandSdkMcpServer` pass through; it defaults to off.
+
 Tool schemas live in `packages/sdk/src/contracts/toolSchemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
 
 ## Turn Outcome
