@@ -3,6 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
+import { TASK_TOOL_NAMES } from "../src/contracts/toolSchemas";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { describeNestedObjectTool } from "./nestedObjectTool";
 import { FakeRestApi } from "./testUtils";
@@ -97,6 +98,14 @@ describe("createBandSdkMcpServer", () => {
     } finally {
       await client.close();
     }
+  });
+
+  it("omits board and task tools from allowedTools unless enableTaskTools is set", () => {
+    const off = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const on = createBandSdkMcpServer({ enableMemoryTools: true, enableTaskTools: true, getToolsForRoom: () => undefined });
+    const prefixed = [...TASK_TOOL_NAMES].map((name) => `mcp__band__${name}`);
+    expect(prefixed.filter((name) => off.allowedTools.includes(name))).toEqual([]);
+    expect(on.allowedTools).toEqual(expect.arrayContaining(prefixed));
   });
 
   it("passes an object-typed argument through the server's validation unchanged", async () => {
