@@ -18,11 +18,7 @@ interface ToolCallState {
   reported: boolean
 }
 
-/**
- * The programmatic tool name for observe: ACP `name` when non-empty, else a
- * bridge `_meta` name, else an MCP spelling from `rawInput`, else `kind`.
- * Never `title`.
- */
+/** The tool name observers see; the rule is documented on `AgentEvent`'s `tool.call`. */
 export function observedToolName(source: {
   name?: string | null
   kind?: string | null

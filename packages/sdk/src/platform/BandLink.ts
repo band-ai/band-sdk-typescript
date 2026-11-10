@@ -108,11 +108,6 @@ export type LinkConnectionChange =
   | { connected: true; reconnected: boolean }
   | { connected: false; reason: LinkDisconnectReason };
 
-/** What listeners were last told about reachability (down reasons included). */
-type ReportedConnection =
-  | { connected: true }
-  | { connected: false; reason: LinkDisconnectReason };
-
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
   private readonly apiKey: string;
@@ -134,7 +129,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly session = new Session();
   private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
   /** Last reachability report, so each up and each distinct down reason is told once. */
-  private reported: ReportedConnection | null = null;
+  private reported: LinkConnectionChange | null = null;
 
   public get capabilities(): AgentToolsCapabilities { return this._capabilities; }
 
@@ -165,7 +160,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     if (repeat) {
       return;
     }
-    this.reported = change.connected ? { connected: true } : { connected: false, reason: change.reason };
+    this.reported = change;
     notifyEach(this.connectionListeners, change, (error) => {
       this.logger.warn("Connection change listener failed", { error });
     });

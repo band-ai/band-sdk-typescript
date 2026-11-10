@@ -40,6 +40,11 @@ export function asErrorMessage(error: unknown): string {
   return formatCaughtError(error, 0);
 }
 
+/** How a failed turn is labelled to Band, observers and logs: the bare error message, untruncated. */
+export function turnFailureLabel(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function formatCaughtError(error: unknown, depth: number): string {
   if (typeof error !== "object" || error === null) {
     return truncate(String(error));

@@ -41,7 +41,7 @@ export type AgentEvent =
     }
   /** That request was answered: `selected` with the option chosen, or `cancelled`. */
   | { type: "approval.resolved"; roomId: string; toolCallId: string; outcome: "selected" | "cancelled"; optionId?: string }
-  /** The agent joined a room and handles its messages. */
+  /** Handling of a joined room's messages started: on joining it, and again after a reset. */
   | { type: "room.joined"; roomId: string }
   /** The agent is no longer a member of a room. Stopping the agent reports `room.stopped`, not this. */
   | { type: "room.left"; roomId: string }

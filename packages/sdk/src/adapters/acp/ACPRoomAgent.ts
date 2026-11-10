@@ -945,10 +945,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // A process that exits on its own must lose Band access too.
       void connection.closed.finally(() => {
         // Still live means nothing here retired it: the process ended on its own.
-        if (this.live === live) {
+        const exitedOnItsOwn = this.live === live
+        // Retired first, so a throwing observer cannot keep Band access alive.
+        this.retireConnection(connection, live.generation)
+        if (exitedOnItsOwn) {
           this.observer({ type: "room.failed", roomId: this.roomId, error: PROCESS_EXITED_ERROR })
         }
-        this.retireConnection(connection, live.generation)
       })
       return live
     } catch (error) {

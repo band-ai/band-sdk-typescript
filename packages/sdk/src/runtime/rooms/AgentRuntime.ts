@@ -27,11 +27,11 @@ interface AgentRuntimeOptions {
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
-  /** An admission started handling a room; repeated admissions of a handled room are not reported. */
+  /** Handling of an admitted room started: once per execution, so again after a reset. */
   onRoomAdmitted?: (roomId: string) => void;
   /** The agent lost a room's membership; not called for rooms dropped by `stop()`. */
   onRoomRemoved?: (roomId: string) => void;
-  /** A room's execution stopped: the room was left or reset, or the runtime stopped. */
+  /** A reported room's execution stopped: the room was left or reset, or the runtime stopped. */
   onRoomStopped?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
   onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
@@ -65,6 +65,8 @@ export class AgentRuntime {
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
+  /** Executions reported through `onRoomAdmitted`, so each start and stop is reported once. */
+  private readonly announced = new WeakSet<Execution>();
   private readonly logger: Logger;
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
@@ -114,19 +116,19 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {
-      // Presence notifies every admitting caller, so a room already handled is not news.
-      const admitted = !this.executions.has(roomId);
-      this.getOrCreateExecution(roomId);
-      if (admitted) {
-        this.onRoomAdmitted?.(roomId);
-      }
+      // The execution may predate admission (a contact hub event), so report it now.
+      this.announceExecution(roomId, this.getOrCreateExecution(roomId));
       await this.onRoomJoined?.(roomId, payload);
     };
     this.presence.onRoomLeft = async (roomId, reason) => {
-      // Membership loss revokes admission even when the current handler cannot finish.
-      await this.teardownExecution(roomId, 0);
-      if (reason === "removed") {
-        this.onRoomRemoved?.(roomId);
+      try {
+        // Membership loss revokes admission even when the current handler cannot finish.
+        await this.teardownExecution(roomId, 0);
+      } finally {
+        // Reported even when the adapter's cleanup threw: the membership is gone either way.
+        if (reason === "removed") {
+          this.onRoomRemoved?.(roomId);
+        }
       }
       await this.onRoomLeft?.(roomId);
     };
@@ -407,10 +409,19 @@ export class AgentRuntime {
    * share one execution's stop, so only the one that still finds it reports it.
    */
   private evictExecution(roomId: string, execution: Execution | undefined): void {
-    if (execution && this.executions.get(roomId) === execution) {
+    if (execution && this.executions.get(roomId) === execution && this.announced.has(execution)) {
       this.onRoomStopped?.(roomId);
     }
     this.executions.delete(roomId);
+  }
+
+  /** Reports `execution` as handling `roomId` once the room is admitted; unadmitted rooms are not news. */
+  private announceExecution(roomId: string, execution: Execution): void {
+    if (this.announced.has(execution) || this.presence.roster.roomMembership(roomId) !== "admitted") {
+      return;
+    }
+    this.announced.add(execution);
+    this.onRoomAdmitted?.(roomId);
   }
 
   private async enqueueUnlessStopping(roomId: string, event: PlatformEvent): Promise<void> {
@@ -449,6 +460,7 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.executions.set(roomId, execution);
+    this.announceExecution(roomId, execution);
     if (this.stopMidStart) {
       this.stopExecutionMidStart(execution);
     }

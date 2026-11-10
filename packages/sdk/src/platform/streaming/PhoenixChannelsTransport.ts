@@ -475,6 +475,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           this.logger.warn("Phoenix session superseded", { reason, verdict });
           if (verdict?.kind === "retry") {
             this.dropLiveConnection(reason);
+            this.notifyDropped(reason);
           }
         },
       },
@@ -487,10 +488,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
     if (verdict.kind === "retry") {
-      notifyEach(this.dropObservers, verdict.reason, (error) => {
-        this.logger.error("Drop observer failed", { error });
-      });
+      this.notifyDropped(verdict.reason);
     }
+  }
+
+  /** Session chose to retry: once per decision, so a supersede's later stale close adds nothing. */
+  private notifyDropped(reason: WebSocketDisconnectReason): void {
+    notifyEach(this.dropObservers, reason, (error) => {
+      this.logger.error("Drop observer failed", { error });
+    });
   }
 
   private nextAttemptDelayMs(): number {

@@ -148,6 +148,13 @@ async function refused(peer: FakePhoenixPeer, count = 1): Promise<void> {
   await onWireClock(peer.refusals.until(() => peer.refusals.entries.length >= count));
 }
 
+/** Records every connection change `link` reports, to await one without polling. */
+function recordConnectionChanges(link: BandLink): RecordLog<LinkConnectionChange> {
+  const changes = new RecordLog<LinkConnectionChange>();
+  link.onConnectionChange((change) => changes.record(change));
+  return changes;
+}
+
 /** Advances the clock until the peer has accepted `count` connections in total. */
 async function reconnected(peer: FakePhoenixPeer, count: number): Promise<void> {
   await onWireClock(connectionNumber(peer, count));
@@ -240,16 +247,36 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
+      const changes = recordConnectionChanges(link);
       await link.connect();
 
       peer.severAllConnections();
       await reconnected(peer, 2);
-      await wireUntil(() => changes.length >= 3);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
       await onWireClock(link.disconnect());
 
-      expect(changes).toEqual([
+      expect(changes.entries).toEqual([
+        { connected: true, reconnected: false },
+        { connected: false, reason: "dropped" },
+        { connected: true, reconnected: true },
+        { connected: false, reason: "closed" },
+      ]);
+    });
+
+    it("tells connection listeners about the bounce a retryable supersede causes, once", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      pushSupersede(peer);
+      await reconnected(peer, 2);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
+      await onWireClock(link.disconnect());
+
+      // Session judges the superseded socket's own close stale, so the drop is reported once.
+      expect(changes.entries).toEqual([
         { connected: true, reconnected: false },
         { connected: false, reason: "dropped" },
         { connected: true, reconnected: true },
@@ -261,18 +288,17 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
+      const changes = recordConnectionChanges(link);
       await link.connect();
 
       // Refuse the transport's automatic retry so the drop cannot settle as a
       // reconnect before this test's local disconnect runs.
       peer.refuseUpgrades({ status: 503 });
       peer.severAllConnections();
-      await wireUntil(() => changes.some((change) => !change.connected && change.reason === "dropped"));
+      await onWireClock(changes.next((change) => !change.connected && change.reason === "dropped"));
       await onWireClock(link.disconnect());
 
-      expect(changes).toEqual([
+      expect(changes.entries).toEqual([
         { connected: true, reconnected: false },
         { connected: false, reason: "dropped" },
         { connected: false, reason: "closed" },
@@ -283,16 +309,15 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
+      const changes = recordConnectionChanges(link);
       await link.connect();
 
       peer.refuseUpgrades({ status: 403 });
       peer.severAllConnections();
-      await wireUntil(() => changes.some((change) => !change.connected && change.reason === "terminal"));
+      await onWireClock(changes.next((change) => !change.connected && change.reason === "terminal"));
       await advanceWireClock(PAST_ANY_DELAY_MS);
 
-      expect(changes).toEqual([
+      expect(changes.entries).toEqual([
         { connected: true, reconnected: false },
         { connected: false, reason: "dropped" },
         { connected: false, reason: "terminal" },

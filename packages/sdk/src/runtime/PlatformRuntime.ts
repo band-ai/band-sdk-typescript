@@ -20,17 +20,13 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
+import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
 import type { AgentEventListener } from "../contracts/events";
 import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
-
-/** How a failed turn is labelled, both to Band and to observers. */
-function turnFailureLabel(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export interface PlatformRuntimeOptions {
   agentId: string;

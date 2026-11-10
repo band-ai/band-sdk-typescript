@@ -107,7 +107,10 @@ export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal
   };
 }
 
-/** ACP titles can contain commands; only structured tool names or categories are public detail. */
+/**
+ * ACP titles can contain commands; only structured tool names or categories are public detail.
+ * Posted Band activity keeps this narrower rule; local observe uses `observedToolName`.
+ */
 function nativeToolName(chunk: CollectedChunk): string {
   const kind = typeof chunk.metadata.kind === "string" ? chunk.metadata.kind : "";
   return acpToolCallName(chunk.metadata.raw_input, "") || kind;
