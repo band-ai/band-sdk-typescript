@@ -299,12 +299,11 @@ export class PlatformRuntime implements AsyncDisposable {
     }
     const runtime = this.runtime;
     // A runtime still starting admits it once its start-up has listed its rooms.
-    if (runtime?.state.status !== "running") {
-      return false;
+    if (runtime?.state.status === "running") {
+      await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
     }
-    await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
-    // A stop since owns the room, whatever its join did.
-    return this.runtime === runtime && runtime.presence.isAdmitted(roomId);
+    // Whatever runtime there is now: a stop meanwhile left none, a restart its own admission.
+    return this.runtime?.presence.isAdmitted(roomId) ?? false;
   }
 
   /**
