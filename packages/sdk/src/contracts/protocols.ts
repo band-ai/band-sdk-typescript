@@ -1,5 +1,6 @@
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 import { isBlankEventContent, type ChatEventType } from "./chatEvents";
+import type { AgentEventListener } from "./events";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
@@ -163,29 +164,26 @@ export interface ContactTools {
   respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult>;
 }
 
-export interface ReadRoomHistoryArgs {
-  /** `nextCursor` from the previous page; omit for the newest page. */
+export interface FetchRoomContextArgs {
+  /** `nextCursor` from the previous page; omit for the oldest page. */
   cursor?: string;
-  /** History messages per page, 1 to 100; 20 by default. */
+  /** Messages per page, at most `MAX_CURSOR_PAGE`; `DEFAULT_CONTEXT_PAGE` by default. */
   limit?: number;
-  /**
-   * Put first on every page, and only there. During a turn the runtime pins
-   * the turn's own inbound message, so the agent always sees what it is
-   * answering, whichever page it reads.
-   */
-  pinned?: PlatformMessageLike;
 }
 
-export interface RoomHistoryPage {
-  /** Newest first, after the pinned message when there is one. */
+export interface RoomContextPage {
+  /** Oldest first. */
   messages: PlatformMessageLike[];
-  /** Pass back as `cursor` for the next older page; null at the room's first message. */
+  /** Pass back as `cursor` for the next page; null once this page reaches the newest message. */
   nextCursor: string | null;
 }
 
-export interface RoomHistoryTools {
-  /** One page of the room's history, newest first. */
-  readRoomHistory(args?: ReadRoomHistoryArgs): Promise<RoomHistoryPage>;
+export interface RoomContextTools {
+  /**
+   * One page of the agent's context in the room: its own messages of every type and the
+   * text messages that mention it, oldest first. Not the room's full history.
+   */
+  fetchRoomContext(args?: FetchRoomContextArgs): Promise<RoomContextPage>;
 }
 
 export interface TaskTools {
@@ -316,7 +314,7 @@ export interface AdapterToolsProtocol
     Partial<ContactTools>,
     Partial<MemoryTools>,
     Partial<TaskTools>,
-    Partial<RoomHistoryTools> {
+    Partial<RoomContextTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
 }
@@ -379,6 +377,18 @@ export interface FrameworkAdapter {
    */
   isControlMessage?(message: PlatformMessageLike, roomId: string): boolean;
   onCleanup(roomId: string): Promise<void>;
+  /**
+   * Cancels the turn running in `roomId` without resetting the room's session,
+   * so the room's next message continues it. Resolves false when no turn is
+   * running there.
+   */
+  cancelTurn?(roomId: string): Promise<boolean>;
+  /**
+   * Hands the adapter the sink for what only it can see — its agent's
+   * thoughts, tool calls, approvals, and room process failures — before
+   * `onStarted`. The sink is local: nothing reported through it is posted.
+   */
+  attachObserver?(sink: AgentEventListener): void;
   onStarted(agentName: string, agentDescription: string): Promise<void>;
   onRuntimeStop?(): Promise<void>;
 }

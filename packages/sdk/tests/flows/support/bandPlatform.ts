@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
-import { Band } from "@band-ai/rest-client";
+import { Band, BandError } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
@@ -60,6 +60,8 @@ export interface AgentIdentityOptions {
 interface Settled {
   readonly messageId: string;
   readonly outcome: Outcome;
+  /** The label a failed mark carried. */
+  readonly error?: string;
 }
 
 type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
@@ -120,7 +122,6 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly peerCalls = new RecordLog<number>();
   public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
-  public readonly historyRequests = new RecordLog<{ chatId: string; cursor?: string; limit: number }>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -143,6 +144,7 @@ export class RecordingRestApi extends FakeRestApi {
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  public readonly eventHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
@@ -303,6 +305,7 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
+    await this.eventHolds.pass(roomId, event.content);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -353,19 +356,14 @@ export class RecordingRestApi extends FakeRestApi {
   public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
+    // Band refuses a cursor it never handed out rather than restarting the walk.
+    if ((cursor !== undefined && !/^[1-9]\d*$/.test(cursor)) || start > conversation.length) {
+      // The generated client maps no 400 here, so a real rejection is a plain BandError.
+      throw new BandError({ statusCode: 400, body: { error: { code: "invalid_cursor", message: "Invalid cursor", request_id: randomUUID() } } });
+    }
     const end = start + limit;
     const hasMore = end < conversation.length;
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
-  }
-
-  /** The room's messages newest first, as Band's agent message list serves `status=all&sort_order=desc`: keyset pages. */
-  public async listRoomHistory(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
-    this.historyRequests.record(request);
-    const newestFirst = this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item).reverse();
-    const start = request.cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === request.cursor) + 1;
-    const data = newestFirst.slice(start, start + request.limit);
-    const hasMore = start + request.limit < newestFirst.length;
-    return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
   }
 
   public remember(roomId: string, item: PlatformChatMessage): void {
@@ -387,8 +385,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settle(messageId, "processed");
   }
 
-  public override async markMessageFailed(_roomId: string, messageId: string) {
-    return this.settle(messageId, "failed");
+  public override async markMessageFailed(_roomId: string, messageId: string, error: string) {
+    return this.settle(messageId, "failed", error);
   }
 
   /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
@@ -420,8 +418,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome) {
-    this.settled.record({ messageId, outcome });
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
     return {};
   }
 
@@ -497,6 +495,11 @@ export class BandRoom {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
   }
 
+  /** The labels the runtime marked `messageId` failed with so far. */
+  public failureLabels(messageId: string): string[] {
+    return this.platform.rest.settled.entries.flatMap((settled) => settled.messageId === messageId && settled.error !== undefined ? [settled.error] : []);
+  }
+
   /** Every outcome the runtime has settled `messageId` with so far. */
   public outcomes(messageId: string): Outcome[] {
     return this.platform.rest.settled.entries.filter((settled) => settled.messageId === messageId).map((settled) => settled.outcome);
@@ -510,6 +513,11 @@ export class BandRoom {
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
   public holdMessage(matches: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[roomId: string, content: string]> {
     return this.platform.rest.messageHolds.hold((roomId, content) => roomId === this.id && matches(content), options);
+  }
+
+  /** Keeps the agent's next matching event in flight until released. */
+  public holdEvent(matches: (content: string) => boolean): HeldCall<[roomId: string, content: string]> {
+    return this.platform.rest.eventHolds.hold((roomId, content) => roomId === this.id && matches(content));
   }
 
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */

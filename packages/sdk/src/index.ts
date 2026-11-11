@@ -95,10 +95,16 @@ export type {
   ContactTools,
   MemoryTools,
   TaskTools,
-  RoomHistoryTools,
-  ReadRoomHistoryArgs,
-  RoomHistoryPage,
+  RoomContextTools,
+  FetchRoomContextArgs,
+  RoomContextPage,
   ToolExecutor,
+  AgentEvent,
+  AgentEventListener,
+  AgentEventType,
+  ApprovalOutcome,
+  LinkDisconnectReason,
+  ToolCallEndStatus,
 } from "./core";
 
 export type {

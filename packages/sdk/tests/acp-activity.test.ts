@@ -12,6 +12,7 @@ import { createDeferred } from "../src/core/deferred";
 import { trackNativeActivity } from "../src/runtime/workingState";
 import { CallHolds, RecordLog, tmpRoot } from "./testUtils";
 import { scopedActivity } from "./support/scopedActivity";
+import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import type { CollectedChunk } from "../src/adapters/acp/types";
 import { fileURLToPath } from "node:url";
 import { codexNamedBandTool, cursorLateNamedBandTool } from "./fixtures/providerTraces";
@@ -87,10 +88,12 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
     const delivered = createDeferred();
     const { log, activity } = activityLog();
     const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }), {
-      extNotification: async () => {
-        entered.resolve();
-        await release.promise;
-        return [toolCallFrame({ tool_call_id: "idle-call", kind: "execute", status: "in_progress" }, "tool_call", "old command")];
+      extensionHandler: {
+        extNotification: async () => {
+          entered.resolve();
+          await release.promise;
+          return [toolCallFrame({ tool_call_id: "idle-call", kind: "execute", status: "in_progress" }, "tool_call", "old command")];
+        },
       },
     });
     client.beginSession("session");
@@ -151,10 +154,12 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
 
   it("buffers extension notifications in wire order before the prompt resolves", async () => {
     const client = new BandACPClient("room", async () => ({ outcome: { outcome: "cancelled" } }), {
-      extNotification: async () => [
-        toolCallFrame({ tool_call_id: "native", status: "in_progress", kind: "execute" }, "tool_call", "Bash"),
-        { chunkType: "text", content: "Done.", metadata: {}, streamed: true },
-      ],
+      extensionHandler: {
+        extNotification: async () => [
+          toolCallFrame({ tool_call_id: "native", status: "in_progress", kind: "execute" }, "tool_call", "Bash"),
+          { chunkType: "text", content: "Done.", metadata: {}, streamed: true },
+        ],
+      },
     });
     expect(await buffersInWireOrder(client, async (agent) => {
       await agent.extNotification("_cursor/native_tools", { sessionId: "session" });
@@ -171,7 +176,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
       if (toolCall.toolCallId === "two") secondAsked.resolve();
       await (toolCall.toolCallId === "one" ? first : second).promise;
       return ALLOW;
-    }, undefined, () => true);
+    }, { humanDecision: () => true });
     client.beginSession("session");
     const work = client.enterPromptSession("session", activity).run(() => provider.promise);
     const peer = acpPeer(client, idleAgent(), log);
@@ -199,7 +204,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
 
   it("reports no wait for an automatic decision", async () => {
     const { log, activity } = activityLog();
-    const client = new BandACPClient("room", async () => ALLOW, undefined, () => false);
+    const client = new BandACPClient("room", async () => ALLOW, { humanDecision: () => false });
     client.beginSession("session");
     const owner = client.enterPromptSession("session", activity);
     const peer = acpPeer(client, idleAgent(), log);
@@ -218,7 +223,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
       asked.resolve();
       await unanswered.promise;
       return ALLOW;
-    }, undefined, () => true);
+    }, { humanDecision: () => true });
     client.beginSession("session");
     const owner = client.enterPromptSession("session", activity);
     const work = owner.run(() => provider.promise);
@@ -242,7 +247,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
       asked.resolve();
       await unanswered.promise;
       return ALLOW;
-    }, undefined, () => true);
+    }, { humanDecision: () => true });
     client.beginSession("session");
     const work = client.enterPromptSession("session", activity).run(() => unanswered.promise);
     const peer = acpPeer(client, idleAgent(), log);
@@ -259,7 +264,7 @@ describe("ACP activity at the real JSON-RPC boundary", () => {
   it("attributes a request that names no session to the one prompt in flight", async () => {
     const provider = createDeferred();
     const { log, activity } = activityLog();
-    const client = new BandACPClient("room", async () => ALLOW, undefined, () => true);
+    const client = new BandACPClient("room", async () => ALLOW, { humanDecision: () => true });
     client.beginSession("session");
     const work = client.enterPromptSession("session", activity).run(() => provider.promise);
     const peer = acpPeer(client, idleAgent(), log);
@@ -383,22 +388,6 @@ describe("native tool call observation", () => {
     expect(await published([bandCall])).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: `${MCP_SERVER_NAME}-band_send_message` }]);
   });
 });
-
-/** A connection factory serving `served` over in-memory pipes, to the adapter's own client. */
-function inMemoryAgent(served: (peer: AgentSideConnection) => Agent, onStop: () => void = () => {}) {
-  return async (client: Client) => {
-    let closeOutgoing!: () => void;
-    let closeIncoming!: () => void;
-    const outgoing = new TransformStream<Uint8Array, Uint8Array>({ start: (controller) => { closeOutgoing = () => controller.terminate(); } });
-    const incoming = new TransformStream<Uint8Array, Uint8Array>({ start: (controller) => { closeIncoming = () => controller.terminate(); } });
-    const peer = new AgentSideConnection(served, ndJsonStream(incoming.writable, outgoing.readable));
-    const connection = new ClientSideConnection(() => client, ndJsonStream(outgoing.writable, incoming.readable));
-    return { connection, stop: async () => {
-      onStop(); closeOutgoing(); closeIncoming();
-      await Promise.all([connection.closed, peer.closed]);
-    } };
-  };
-}
 
 /** Starts `adapter` on a platform with one room, and returns how to send it a message. */
 async function startAdapter(adapter: ACPClientAdapter, rest?: RecordingRestApi, config?: Parameters<typeof BandPlatform.start>[3]) {

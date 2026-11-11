@@ -73,6 +73,8 @@ export interface ClaudeSDKAdapterOptions {
   permissionMode?: ClaudePermissionMode;
   enableExecutionReporting?: boolean;
   enableMemoryTools?: boolean;
+  /** Exposes the room's board and task tools; Band serves them only with the `tasks` capability. */
+  enableTaskTools?: boolean;
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
   customTools?: CustomToolDef[];
@@ -110,6 +112,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly permissionMode: ClaudePermissionMode;
   private readonly enableExecutionReporting: boolean;
   private readonly enableMemoryTools: boolean;
+  private readonly enableTaskTools: boolean;
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
   private readonly customTools: CustomToolDef[];
@@ -143,6 +146,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     this.permissionMode = options?.permissionMode ?? "acceptEdits";
     this.enableExecutionReporting = options?.enableExecutionReporting ?? false;
     this.enableMemoryTools = options?.enableMemoryTools ?? false;
+    this.enableTaskTools = options?.enableTaskTools ?? false;
     this.enableMcpTools = options?.enableMcpTools ?? true;
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
     const customTools = [...buildCustomToolIndex(options?.customTools ?? []).values()];
@@ -244,7 +248,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   private buildRegistrations(resolve: (roomId: string) => TurnTools | undefined) {
-    const room = buildRoomScopedRegistrations(resolve, { enableMemoryTools: this.enableMemoryTools, enableContactTools: true });
+    const room = buildRoomScopedRegistrations(resolve, {
+      enableMemoryTools: this.enableMemoryTools,
+      enableTaskTools: this.enableTaskTools,
+      enableContactTools: true,
+    });
     const custom = buildCustomMcpRegistrations(this.customTools, resolve);
     const registrations = [...room, ...scopeHostTools(this.additionalMcpTools, resolve)];
     assertCustomToolNamesAvailable(custom.map(({ name }) => name), registrations.map(({ name }) => name));

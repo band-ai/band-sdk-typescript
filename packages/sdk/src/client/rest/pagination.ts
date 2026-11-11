@@ -2,7 +2,7 @@ import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { ChatMessageType } from "../../contracts/chatEvents";
 import type { RestRequestOptions } from "./requestOptions";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
-import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage, RoomHistoryRestApi } from "./types";
+import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
 import type { PeerRecord } from "../../contracts/dtos";
 
 interface FetchPageRequest {
@@ -209,15 +209,19 @@ export async function fetchCursorTail<T>(
     const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
     items.push(...(where ? data.filter(where) : data));
     items.splice(0, Math.max(0, items.length - keep));
-    if (metadata?.has_more !== true) {
-      return { items, truncated: false };
+    const next = nextCursorOf(metadata);
+    if (next === null) {
+      return { items, truncated: metadata?.has_more === true };
     }
-    cursor = typeof metadata.next_cursor === "string" ? metadata.next_cursor : undefined;
-    if (!cursor) {
-      break;
-    }
+    cursor = next;
   }
   return { items, truncated: true };
+}
+
+/** The cursor of the page after this one; null when Band has no more, or has more but handed back no cursor. */
+function nextCursorOf(metadata: PaginationMetadata | undefined): string | null {
+  const next = metadata?.next_cursor;
+  return metadata?.has_more === true && typeof next === "string" && next !== "" ? next : null;
 }
 
 /** Every peer the agent can reach, all pages in one call; with `notInChat`, those not in that room. */
@@ -235,38 +239,46 @@ export async function listAllPeers(
   });
 }
 
-/** History messages per room-history page by default, and at most: Band serves up to 100. */
-export const DEFAULT_ROOM_HISTORY_PAGE = 20;
-export const MAX_ROOM_HISTORY_PAGE = 100;
+/** The most items Band serves on one cursor page. */
+export const MAX_CURSOR_PAGE = 100;
+/** Messages per `fetchContextPage` page by default: Band's own cursor-page default. */
+export const DEFAULT_CONTEXT_PAGE = 50;
+
+function assertCursorLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CURSOR_PAGE) {
+    throw new ValidationError(`limit must be an integer from 1 to ${MAX_CURSOR_PAGE}`);
+  }
+}
 
 /**
- * One page of a room's messages of every type and status, newest first, and
- * the cursor of the next older page: null once the page reaches the room's
- * first message. Unlike `getRecentMessages`, this is the room's history, not
- * the agent's context, and it pages without a cap.
+ * One cursor page of the agent's context in a room, oldest first: its own messages of every
+ * type and the text messages that mention it, not the room's full history. Pass `nextCursor`
+ * back for the following page; it is null once the page reaches the newest message.
+ * Throws `ValidationError` when Band reports more without a cursor, since a null
+ * `nextCursor` would then wrongly claim the newest message was reached.
  */
-export async function readRoomHistoryPage(
-  rest: RoomHistoryRestApi,
+export async function fetchContextPage(
+  rest: ContextRestApi,
   chatId: string,
-  { cursor, limit = DEFAULT_ROOM_HISTORY_PAGE }: { cursor?: string; limit?: number },
+  { cursor, limit = DEFAULT_CONTEXT_PAGE }: Partial<CursorPageRequest> = {},
   options?: RestRequestOptions,
 ): Promise<{ messages: PlatformChatMessage[]; nextCursor: string | null }> {
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ROOM_HISTORY_PAGE) {
-    throw new ValidationError(`limit must be an integer from 1 to ${MAX_ROOM_HISTORY_PAGE}`);
+  assertCursorLimit(limit);
+  const getChatContext = rest.getChatContext?.bind(rest);
+  if (!getChatContext) {
+    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.getChatContext);
   }
-  const listRoomHistory = rest.listRoomHistory?.bind(rest);
-  if (!listRoomHistory) {
-    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
+  const { data, metadata } = await getChatContext({ chatId, cursor, limit }, options);
+  const nextCursor = nextCursorOf(metadata);
+  if (nextCursor === null && metadata?.has_more === true) {
+    throw new ValidationError("Band reported more context without a cursor");
   }
-  const { data, metadata } = await listRoomHistory({ chatId, ...(cursor === undefined ? {} : { cursor }), limit }, options);
-  const next = metadata?.next_cursor;
-  return { messages: data, nextCursor: typeof next === "string" && next !== "" && metadata?.has_more !== false ? next : null };
+  return { messages: data, nextCursor };
 }
 
 const TEXT_MESSAGE: ChatMessageType = "text";
-/** How many messages `getRecentMessages` returns by default, and at most. */
+/** How many messages `getRecentMessages` returns by default; `MAX_CURSOR_PAGE` at most. */
 export const DEFAULT_RECENT_MESSAGES = 20;
-export const MAX_RECENT_MESSAGES = 100;
 
 /**
  * The newest `limit` text messages in a room, oldest first. Band's context holds the
@@ -279,9 +291,7 @@ export async function getRecentMessages(
   limit = DEFAULT_RECENT_MESSAGES,
   options?: RestRequestOptions,
 ): Promise<PlatformChatMessage[]> {
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECENT_MESSAGES) {
-    throw new ValidationError(`limit must be an integer from 1 to ${MAX_RECENT_MESSAGES}`);
-  }
+  assertCursorLimit(limit);
   const getChatContext = rest.getChatContext?.bind(rest);
   if (!getChatContext) {
     throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.getChatContext);

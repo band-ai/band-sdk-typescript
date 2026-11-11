@@ -561,6 +561,25 @@ describe("ClaudeSDKAdapter", () => {
     });
   });
 
+  it.each([false, true])("exposes board tools on the query bridge only when enableTaskTools is set (enabled=%s)", async (enableTaskTools) => {
+    let allowedTools: string[] | undefined;
+    const adapter = new ClaudeSDKAdapter({
+      enableTaskTools,
+      queryFn: ({ options }) => {
+        allowedTools = options?.allowedTools as string[] | undefined;
+        return streamFrom([]);
+      },
+    });
+    await adapter.onStarted("Agent", "description");
+    await adapter.onMessage(makeMessage("hello"), new FakeTools(), new HistoryProvider([]), null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-1",
+    });
+    const board = ["mcp__band__band_get_board", "mcp__band__band_set_board"];
+    if (enableTaskTools) expect(allowedTools).toEqual(expect.arrayContaining(board));
+    else expect(board.filter((name) => allowedTools?.includes(name))).toEqual([]);
+  });
+
   it("reports tool summary events when execution reporting is enabled", async () => {
     const queryFn: ClaudeSDKQuery = () =>
       streamFrom([

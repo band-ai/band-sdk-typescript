@@ -30,6 +30,8 @@ export interface McpToolRegistration {
    * server passes the room the call names in `room_id`, which the tool must
    * declare to receive them; there, a tool that declares no `room_id` gets
    * tools that throw on use, since the call cannot say which room it means.
+   * They carry the room's full authority (sending, participants, contacts,
+   * memory), whatever tools the server itself enables.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -111,18 +113,25 @@ export function scopeToRoom<T>(
   return {
     ...tool,
     inputSchema: { type: "object", properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY }, required: [...required, ROOM_ID_ARG] },
-    execute: async ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
-      const roomId = asNonEmptyString(roomIdArg);
-      if (!roomId) {
-        return errorResult(`Missing required ${ROOM_ID_ARG}`);
-      }
-      const tools = resolver(roomId);
-      if (!tools) {
-        return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
-      }
-      return execute(tools, args);
-    },
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
   };
+}
+
+/** Runs `run` with the tools of the room `roomIdArg` names, refusing a call that names no known room. */
+async function inRoom<T>(
+  roomIdArg: unknown,
+  resolver: (roomId: string) => T | undefined,
+  run: (tools: T) => Promise<McpToolResult>,
+): Promise<McpToolResult> {
+  const roomId = asNonEmptyString(roomIdArg);
+  if (!roomId) {
+    return errorResult(`Missing required ${ROOM_ID_ARG}`);
+  }
+  const tools = resolver(roomId);
+  if (!tools) {
+    return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
+  }
+  return run(tools);
 }
 
 /**
@@ -158,20 +167,7 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
       const unscoped = roomlessHostTools(tool.name);
       return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, unscoped) };
     }
-    return {
-      ...tool,
-      execute: async (args: Record<string, unknown>) => {
-        const roomId = asNonEmptyString(args[ROOM_ID_ARG]);
-        if (!roomId) {
-          return errorResult(`Missing required ${ROOM_ID_ARG}`);
-        }
-        const tools = resolver(roomId);
-        if (!tools) {
-          return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
-        }
-        return tool.execute(args, tools);
-      },
-    };
+    return { ...tool, execute: (args: Record<string, unknown>) => inRoom(args[ROOM_ID_ARG], resolver, (tools) => tool.execute(args, tools)) };
   });
 }
 
