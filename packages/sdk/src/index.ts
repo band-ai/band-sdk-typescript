@@ -1,5 +1,5 @@
 export { Agent } from "./agent/Agent";
-export type { AgentCreateOptions, AgentRooms, AllowRoomOptions } from "./agent/Agent";
+export type { AgentCreateOptions, AgentRooms } from "./agent/Agent";
 
 export { BandLink, deriveDefaultRestUrl } from "./platform/BandLink";
 export type { PlatformEvent, ContactEvent, ReconnectedEvent } from "./platform/events";
@@ -9,7 +9,7 @@ export type {
   WebSocketDisconnectReason,
 } from "./platform/streaming/disconnectReason";
 export { PlatformRuntime } from "./runtime/PlatformRuntime";
-export type { PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
+export type { AllowRoomOptions, PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
 export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
 export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./runtime/lifecycle";

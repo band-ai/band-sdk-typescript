@@ -5,8 +5,6 @@ import type { Logger } from "../core/logger";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger } from "../core/logger";
 import { PlatformRuntime, type AllowRoomOptions, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
-
-export type { AllowRoomOptions };
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";

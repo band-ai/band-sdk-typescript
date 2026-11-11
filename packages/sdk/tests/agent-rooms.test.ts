@@ -64,6 +64,30 @@ function heldAcpAdapter() {
   return { adapter, counts, release, initializing, stops };
 }
 
+/** Holds the agent's next room listing on Band until `release`, resolving `listing` once it is requested. */
+function holdNextRoomListing(platform: BandPlatform) {
+  const listChats = platform.rest.listChats.bind(platform.rest);
+  let entered!: () => void;
+  const listing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held = false;
+  platform.rest.listChats = async (...args: Parameters<typeof listChats>) => {
+    if (!held) {
+      held = true;
+      entered();
+      await released;
+    }
+    return await listChats(...args);
+  };
+  onTestFinished(() => release());
+  return { listing, release };
+}
+
 /** An agent created on `platform`, observed from its first event. */
 function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, roomFilter?: (room: MetadataMap) => boolean) {
   const agent = Agent.create({
@@ -256,7 +280,8 @@ describe("agent.rooms", () => {
     await stops.until(() => counts.stopped === 1);
     expect(counts).toEqual({ started: 1, stopped: 1 });
     expect(subscribed(ROOM_B)).toBe(false);
-    expect(roomEvents(ROOM_B)).not.toContain("room.joined");
+    // Nothing is reported for the room, not even room.ready for the start the deny made moot.
+    expect(roomEvents(ROOM_B)).toEqual([]);
   });
 
   it("reports no room.failed when a deny stops a warm start on purpose", async () => {
@@ -308,5 +333,84 @@ describe("agent.rooms", () => {
 
     expect(subscribed(ROOM_A)).toBe(true);
     expect(subscribed(ROOM_B)).toBe(false);
+  });
+
+  it("starts an admitted room's agent on a warm allow, reporting room.ready and no second join", async () => {
+    const { adapter, counts, release } = heldAcpAdapter();
+    release();
+    const { agent, roomEvents } = await startAgent(adapter);
+
+    await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(true);
+
+    expect(counts.started).toBe(1);
+    expect(roomEvents(ROOM_B)).toEqual(["room.joined", "room.ready"]);
+  });
+
+  it("resolves false when a deny leaves an admitted room during its warm allow", async () => {
+    const { adapter, release, initializing } = heldAcpAdapter();
+    const { agent, subscribed } = await startAgent(adapter);
+
+    const allowing = agent.rooms.allow(ROOM_B, { warm: true });
+    await initializing;
+    await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
+    release();
+
+    await expect(allowing).resolves.toBe(false);
+    expect(subscribed(ROOM_B)).toBe(false);
+  });
+
+  it("admits a warm-allowed room only through the allow, across reconnects during its listing and its start", async () => {
+    const { adapter, release, initializing } = heldAcpAdapter();
+    const { agent, platform, subscribed, roomEvents } = await startAgent(adapter, [ROOM_A]);
+    const listing = holdNextRoomListing(platform);
+    const reconnect = (generation: number) =>
+      platform.transport.triggerReconnect({ generation, joinedTopics: new Set(platform.transport.bound.entries) });
+
+    const allowing = agent.rooms.allow(ROOM_B, { warm: true });
+    await listing.listing;
+    await reconnect(1);
+    expect(subscribed(ROOM_B)).toBe(false);
+    listing.release();
+    await initializing;
+    await reconnect(2);
+    expect(subscribed(ROOM_B)).toBe(false);
+    release();
+
+    await expect(allowing).resolves.toBe(true);
+    expect(subscribed(ROOM_B)).toBe(true);
+    expect(roomEvents(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+  });
+
+  it("starts one agent and reports one room.ready and one join for two warm allows of a room at once", async () => {
+    const { adapter, counts, release, initializing } = heldAcpAdapter();
+    const { agent, roomEvents } = await startAgent(adapter, [ROOM_A]);
+
+    const first = agent.rooms.allow(ROOM_B, { warm: true });
+    await initializing;
+    const second = agent.rooms.allow(ROOM_B, { warm: true });
+    release();
+
+    // The second allow supersedes the first, which leaves the room to it.
+    await expect(Promise.all([first, second])).resolves.toEqual([false, true]);
+    expect(counts).toEqual({ started: 1, stopped: 0 });
+    expect(roomEvents(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+  });
+
+  it("admits a member room allowed while start is still joining the rooms before it", async () => {
+    const { adapter } = turnRecorder();
+    const platform = BandPlatform.host([person("owner")]);
+    await platform.room(ROOM_A);
+    await platform.room(ROOM_B);
+    const { agent, subscribed } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
+    const releaseA = platform.transport.gateJoin(chatRoomTopic(ROOM_A));
+
+    const starting = agent.start();
+    // Rooms are joined one at a time, so B is not yet decided on while A's join is held.
+    await vi.waitFor(() => expect(platform.transport.joinCalls).toContain(chatRoomTopic(ROOM_A)));
+    await expect(agent.rooms.allow(ROOM_B)).resolves.toBe(false);
+    releaseA();
+    await starting;
+
+    expect(subscribed(ROOM_B)).toBe(true);
   });
 });

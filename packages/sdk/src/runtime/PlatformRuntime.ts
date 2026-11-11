@@ -3,6 +3,7 @@ import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../co
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
+import { roomIdOf } from "./rooms/subscriptions";
 import {
   parseSessionConfig,
   type AgentConfig,
@@ -475,18 +476,27 @@ export class PlatformRuntime implements AsyncDisposable {
    * that call, so no other path dispatches its messages before `room.ready`.
    */
   private admitsRoom(room: MetadataMap): boolean {
-    const roomId = typeof room.id === "string" ? room.id : undefined;
-    if (roomId !== undefined && this.warmingRooms.has(roomId)) {
+    const roomId = roomIdOf(room);
+    if (roomId !== undefined && this.warmingRooms.has(roomId) && !this.isAdmitted(roomId)) {
       return false;
     }
     const decision = roomId === undefined ? undefined : this.roomDecisions.get(roomId);
     return decision ? decision.allowed : (this._roomFilter?.(room) ?? true);
   }
 
+  private isAdmitted(roomId: string): boolean {
+    return this.runtime?.presence.roster.roomMembership(roomId) === "admitted";
+  }
+
   private decideRoom(roomId: string, allowed: boolean): number {
     this.roomDecisionSeq += 1;
     this.roomDecisions.set(roomId, { allowed, seq: this.roomDecisionSeq });
     return this.roomDecisionSeq;
+  }
+
+  /** Whether the allow or deny that made `seq` is still the room's latest decision on the runtime it was made on. */
+  private isCurrentDecision(runtime: AgentRuntime, roomId: string, seq: number): boolean {
+    return this.roomDecisions.get(roomId)?.seq === seq && this.runtime === runtime;
   }
 
   /**
@@ -506,40 +516,51 @@ export class PlatformRuntime implements AsyncDisposable {
       return false;
     }
     // Already handled: admitting it again would report a second join.
-    if (runtime.presence.roster.roomMembership(roomId) === "admitted") {
+    if (this.isAdmitted(roomId)) {
       if (options.warm) {
-        await this.warmRoom(adapter, roomId);
+        await this.warmRoom(adapter, runtime, roomId, seq);
       }
-      return true;
-    }
-    const payload = await runtime.presence.memberRoom(roomId);
-    if (payload === undefined) {
-      return false;
+      return this.isAdmitted(roomId);
     }
     if (!options.warm) {
-      return await this.admitIfCurrent(runtime, roomId, seq, payload);
+      const payload = await runtime.presence.memberRoom(roomId);
+      return payload !== undefined && (await this.admitIfCurrent(runtime, roomId, seq, payload));
     }
+    // From here until this call admits the room, no other path may: none of
+    // its messages runs before `room.ready`.
     this.warmingRooms.set(roomId, (this.warmingRooms.get(roomId) ?? 0) + 1);
+    let payload: MetadataMap | undefined;
     try {
-      await this.warmRoom(adapter, roomId);
+      payload = await runtime.presence.memberRoom(roomId);
+      if (payload !== undefined) {
+        await this.warmRoom(adapter, runtime, roomId, seq);
+      }
     } finally {
       const remaining = (this.warmingRooms.get(roomId) ?? 1) - 1;
       if (remaining > 0) this.warmingRooms.set(roomId, remaining);
       else this.warmingRooms.delete(roomId);
+    }
+    if (payload === undefined) {
+      return false;
     }
     const admitted = await this.admitIfCurrent(runtime, roomId, seq, payload);
     // The warmed agent serves nobody unless a later allow now owns the room.
     const decision = this.roomDecisions.get(roomId);
     const laterAllow = decision?.allowed === true && decision.seq !== seq;
     if (!admitted && !laterAllow && this.runtime === runtime) {
-      await adapter.onCleanup(roomId);
+      this.logger.debug("Releasing a warmed room agent that was not admitted", { roomId });
+      try {
+        await adapter.onCleanup(roomId);
+      } catch (error) {
+        this.logger.warn("Failed to release a warmed room agent", { roomId, error: asErrorMessage(error) });
+      }
     }
     return admitted;
   }
 
   /** Admits the room unless a later allow or deny for it, or a stop, superseded the call that made `seq`. */
   private async admitIfCurrent(runtime: AgentRuntime, roomId: string, seq: number, payload: MetadataMap): Promise<boolean> {
-    if (this.roomDecisions.get(roomId)?.seq !== seq || this.runtime !== runtime) {
+    if (!this.isCurrentDecision(runtime, roomId, seq)) {
       return false;
     }
     return await runtime.presence.admitRoom(roomId, payload);
@@ -561,18 +582,21 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * Starts the room's agent and reports `room.ready`. A start failure is the
-   * adapter's to report as `room.failed`; it alone knows whether a stop or
-   * cleanup ended the start on purpose.
+   * Starts the room's agent and reports `room.ready` unless a later allow or
+   * deny, or a stop, superseded the call that made `seq`. A start failure is
+   * the adapter's to report as `room.failed`; it alone knows whether a stop
+   * or cleanup ended the start on purpose.
    */
-  private async warmRoom(adapter: FrameworkAdapter, roomId: string): Promise<void> {
+  private async warmRoom(adapter: FrameworkAdapter, runtime: AgentRuntime, roomId: string, seq: number): Promise<void> {
     try {
       await adapter.warmRoom?.(roomId);
     } catch (error) {
       this.logger.warn("Room agent did not start ahead of the room's messages", { roomId, error: asErrorMessage(error) });
       return;
     }
-    this.events.emit({ type: "room.ready", roomId });
+    if (this.isCurrentDecision(runtime, roomId, seq)) {
+      this.events.emit({ type: "room.ready", roomId });
+    }
   }
 
   public async runForever(): Promise<void> {
