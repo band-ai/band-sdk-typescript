@@ -74,6 +74,8 @@ export class AgentRuntime {
   private readonly executions = new Map<string, Execution>();
   /** Who pauses each room, kept across its executions, so a reset or rejoin starts paused. */
   private readonly roomPauses = new Map<string, Set<RoomPauseSource>>();
+  /** Rooms Band played while a reset held them, which their next execution catches up. */
+  private readonly owedCatchUps = new Set<string>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   /** Executions reported through `onRoomAdmitted`, so each start and stop is reported once. */
   private readonly announced = new WeakSet<Execution>();
@@ -425,20 +427,33 @@ export class AgentRuntime {
   }
 
   /**
-   * Band played `roomId`: see `Execution.play`. A room whose session was
-   * reset while Band held it gets its execution now, whose start-up sweep
-   * catches it up. Returns whether Band's pause was recorded.
+   * Band played `roomId`: see `Execution.play`. A room whose execution is
+   * not running, because a reset is stopping it or has evicted it, owes a
+   * catch-up instead: its next execution, created as soon as no reset holds
+   * the room, runs what Band kept in its start-up sweep. Returns whether
+   * Band's pause was recorded.
    */
   public playRoom(roomId: string): boolean {
     const execution = this.executions.get(roomId);
-    if (execution) {
+    if (execution?.state.status === "running") {
       return execution.play();
     }
     const lifted = this.roomPauses.get(roomId)?.delete("band") ?? false;
-    if (lifted && this.lifecycle.is("running") && this.presence.roster.roomMembership(roomId) === "admitted") {
-      this.getOrCreateExecution(roomId);
+    this.owedCatchUps.add(roomId);
+    if (!execution) {
+      this.settleOwedCatchUp(roomId);
     }
     return lifted;
+  }
+
+  /** Gives a room owed a catch-up its execution, if it is still admitted and none is running. */
+  private settleOwedCatchUp(roomId: string): void {
+    if (!this.owedCatchUps.delete(roomId)) {
+      return;
+    }
+    if (this.lifecycle.is("running") && !this.executions.has(roomId) && this.presence.roster.roomMembership(roomId) === "admitted") {
+      this.getOrCreateExecution(roomId);
+    }
   }
 
   /** The room's pause record, which each of its executions shares. */
@@ -481,6 +496,8 @@ export class AgentRuntime {
     this.evictExecution(roomId, execution);
     this.contexts.delete(roomId);
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
+    // After the adapter let go of the old session, so the new one starts clean.
+    this.settleOwedCatchUp(roomId);
 
     if (errors.length > 0) {
       throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");

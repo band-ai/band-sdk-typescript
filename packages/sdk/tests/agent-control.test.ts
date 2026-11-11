@@ -384,12 +384,19 @@ describe("agent.control from Band", () => {
 
   it("cuts a long turn short when its keep-alive report is echoed as not working, the only sign of a missed stop for a turn that writes nothing", async () => {
     const { adapter, handled, release } = firstTurnHangs();
-    const { platform, roomA, next } = await startAgent(adapter, { workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { platform, roomA, next } = await startAgent(adapter, { workingKeepAliveSeconds: 3 });
     const first = await roomA.say("owner", "first");
     await handled.until(() => handled.entries.length === 1);
 
     platform.control("stop", ROOM_A, { delivered: false });
+    // The turn's next keep-alive is the first report Band answers as not working.
+    await vi.advanceTimersByTimeAsync(3_000);
     expect(await next(is("turn.stopped", ROOM_A))).toMatchObject({ messageId: first, mode: "stop" });
+    vi.useRealTimers();
     expect(roomA.outcomes(first)).toEqual([]);
     release();
     platform.control("play", ROOM_A);
@@ -776,6 +783,24 @@ describe("agent.control from Band", () => {
     await agent.resetRoomSession(ROOM_A);
 
     platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(kept)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([kept]);
+  });
+  it("catches a stopped room up on a play that lands while a reset is closing its execution", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const { agent, platform, roomA, next } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    // The kept message makes the stopped room check /next for a missed play; holding that check holds the reset's close.
+    const check = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    const kept = await roomA.say("owner", "kept while stopped");
+    await check.sending;
+    const reset = agent.resetRoomSession(ROOM_A, 0);
+
+    platform.control("play", ROOM_A);
+    check.release();
+    await reset;
 
     expect(await roomA.outcome(kept)).toBe("processed");
     expect(handled.entries.map((turn) => turn.messageId)).toEqual([kept]);

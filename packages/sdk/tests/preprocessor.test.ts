@@ -79,6 +79,9 @@ describe("DefaultPreprocessor", () => {
       participantsMessage: first?.participantsMessage,
       contactsMessage: first?.contactsMessage,
     });
+    // Forgotten, so the replay does not see its own message as earlier history.
+    expect(replayed?.history.raw).toEqual(first?.history.raw);
+    expect(replayed?.history.raw.map((entry) => entry.id)).not.toContain("m1");
   });
 
   describe("mention tokens", () => {

@@ -203,8 +203,9 @@ export class PlatformRuntime implements AsyncDisposable {
     this.events.emit({ type: "room.resumed", roomId, source: "band" });
   }
 
-  private resumeBandPause(roomId: string): void {
-    if (this.runtime?.resumeRoom(roomId, "band")) {
+  /** Band played `roomId`, by its push or as a check found: lifts its pause and catches it up. */
+  private playBand(roomId: string): void {
+    if (this.runtime?.playRoom(roomId)) {
       this.reportBandResumed(roomId);
     }
   }
@@ -247,9 +248,7 @@ export class PlatformRuntime implements AsyncDisposable {
         this.cancelAdapterTurn(adapter, roomId);
         return;
       case "play":
-        if (runtime.playRoom(roomId)) {
-          this.reportBandResumed(roomId);
-        }
+        this.playBand(roomId);
         return;
       case "interrupt":
         if (!runtime.interruptTurn(roomId)) {
@@ -456,7 +455,7 @@ export class PlatformRuntime implements AsyncDisposable {
         onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
-        onMissedPlay: (roomId) => this.resumeBandPause(roomId),
+        onMissedPlay: (roomId) => this.playBand(roomId),
         onBandStopCleared: (roomId) => this.reportBandResumed(roomId),
         onExecute: (context, event, admitted, holdRoomUntil, stopped) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil, stopped),
         isControlEvent: (event) => this.isControlEvent(adapter, event),

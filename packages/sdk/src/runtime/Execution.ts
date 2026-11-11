@@ -353,7 +353,7 @@ export class Execution {
 
   /** Refuses new work once the execution has ended or is stopping. */
   private assertAccepting(): void {
-    if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
+    if (!this.isActive()) {
       // `closed` can be true slightly ahead of `status` reaching "stopped" (see
       // runStop): the queue stops accepting before the final drain it is
       // closing for has finished, so report the status as-is rather than
