@@ -399,9 +399,10 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async markMessageProcessing(roomId: string, messageId: string) {
-    this.processing.record(messageId);
     await this.processingHolds.pass(messageId);
+    // A refused claim claims nothing.
     this.refuseWhileStopped(roomId);
+    this.processing.record(messageId);
     return {};
   }
 

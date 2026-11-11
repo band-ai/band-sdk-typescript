@@ -6,13 +6,21 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
   return forwardTools(() => tools, overrides);
 }
 
+/** `tools`, running `beforeCall` before each of its methods; it may throw to refuse the call. */
+export function guardedTools<T extends object>(tools: T, beforeCall: () => void): T {
+  return forward(() => tools, {}, beforeCall);
+}
+
 /**
  * A tools object whose every access reaches `resolve()`'s tools at that
- * moment, with `overrides` replacing some members, and `beforeCall` run
- * before each of its methods (it may throw to refuse the call). `Reflect.get(tools, key,
+ * moment, with `overrides` replacing some members. `Reflect.get(tools, key,
  * tools)` keeps inherited accessors/methods bound to the real tools instance.
  */
-export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}, beforeCall?: () => void): T {
+export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}): T {
+  return forward(resolve, overrides);
+}
+
+function forward<T extends object>(resolve: () => T, overrides: Partial<T>, beforeCall?: () => void): T {
   return new Proxy({} as T, {
     has(_target, key) {
       return Object.hasOwn(overrides, key) || Reflect.has(resolve(), key);

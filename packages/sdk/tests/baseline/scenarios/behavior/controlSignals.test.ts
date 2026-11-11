@@ -46,13 +46,15 @@ describe(SCENARIO, () => {
     const release = createDeferred();
     onTestFinished(() => release.resolve());
     const handled = new RecordLog<string>();
+    const finished = new RecordLog<string>();
     const adapter = new GenericAdapter(async ({ message, tools }) => {
       handled.record(message.id);
       if (handled.entries.length === 1) {
         entered.resolve();
         await release.promise;
       }
-      await tools.executeToolCall(NO_REPLY_TOOL_NAME, {});
+      // The cut-short turn's tools are revoked, so its late call is refused.
+      await tools.executeToolCall(NO_REPLY_TOOL_NAME, {}).finally(() => finished.record(message.id));
     });
     await using running = await Agents.runAs(identity, adapter, { sessionConfig: { stoppedResyncSeconds: STOPPED_RESYNC_SECONDS } });
     const events = recordEvents(running);
@@ -65,12 +67,16 @@ describe(SCENARIO, () => {
     // Either way the turn is cut short while still held, so its message is left for the replay.
     await events.next(inRoom(room.id, "turn.stopped"));
     release.resolve();
-    expect(delivery.status(sent)).not.toBe(DELIVERY_STATUS.processed);
+    await finished.until(() => finished.entries.length === 1);
+    // What Band stores, not a frame: the cut-short turn left the message claimed and unsettled.
+    const claimed = await identity.rest.listMessages({ chatId: room.id, page: 1, pageSize: 50, status: "processing" });
+    expect(claimed.data.map((message) => message.id)).toContain(sent.id);
 
     await Rooms.controlAgents(room, AGENT_CONTROL.play);
 
     assertDeliveryStatus(await delivery.untilProcessed(sent), DELIVERY_STATUS.processed, "replayed on play");
     expect(handled.entries).toEqual([sent.id, sent.id]);
+    expect(delivery.history(sent).filter((status) => status === DELIVERY_STATUS.processed)).toEqual([DELIVERY_STATUS.processed]);
   });
 
   it("takes no turn in a stopped room until Band plays it", async () => {

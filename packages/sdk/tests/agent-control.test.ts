@@ -99,12 +99,20 @@ describe("agent.control from Band", () => {
     const second = await roomA.say("owner", "second");
     expect(roomA.outcomes(first)).toEqual([]);
 
+    // The adapter could not cancel the cut-short turn, so the replay's catch-up waits for it.
+    const catchUp = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    let caughtUp = false;
+    void catchUp.sending.then(() => {
+      caughtUp = true;
+    });
     platform.control("play", ROOM_A);
     await next(is("room.resumed", ROOM_A));
     await drain();
-    // The adapter could not cancel the cut-short turn, so the replay waits for it.
-    expect(handled.entries).toHaveLength(1);
+    expect(caughtUp).toBe(false);
     release();
+    await catchUp.sending;
+    expect(ended.entries).toEqual([first]);
+    catchUp.release();
 
     expect(await roomA.outcome(first)).toBe("processed");
     expect(await roomA.outcome(second)).toBe("processed");
@@ -419,5 +427,116 @@ describe("agent.control from Band", () => {
 
     await next(is("room.resumed", ROOM_A));
     expect(await roomA.outcome(waiting)).toBe("processed");
+  });
+
+  it("replays the stopped turn's message before anything queued behind it", async () => {
+    const { adapter, handled, release } = firstTurnHangs();
+    const { platform, roomA, next } = await startAgent(adapter);
+    const first = await roomA.say("owner", "first");
+    await handled.until(() => handled.entries.length === 1);
+    const second = await roomA.say("owner", "second");
+
+    platform.control("stop", ROOM_A);
+    await next(is("turn.stopped", ROOM_A));
+    platform.control("play", ROOM_A);
+    await next(is("room.resumed", ROOM_A));
+    release();
+
+    expect(await roomA.outcome(second)).toBe("processed");
+    expect(await roomA.outcome(first)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([first, first, second]);
+  });
+
+  it("stops gracefully after a play its room was stopped again before it caught up", async () => {
+    const { adapter, handled, ended, release } = firstTurnHangs();
+    const { agent, platform, roomA, next, events } = await startAgent(adapter);
+    await roomA.say("owner", "first");
+    await handled.until(() => handled.entries.length === 1);
+    platform.control("stop", ROOM_A);
+    await next(is("turn.stopped", ROOM_A));
+    const mark = events.entries.length;
+    platform.control("play", ROOM_A);
+    await next(is("room.resumed", ROOM_A), mark);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A), mark);
+    release();
+    await ended.until(() => ended.entries.length === 1);
+
+    // A zero budget reports graceful only if every room is idle now.
+    await expect(agent.stop(0)).resolves.toBe(true);
+  });
+
+  it.each(["stop", "interrupt"] as const)("settles a turn %s cut short while it was being prepared, and gives back what preparing it took", async (mode) => {
+    const bootstraps = new RecordLog<{ messageId: string; isSessionBootstrap: boolean }>();
+    const adapter = new GenericAdapter(async ({ message, isSessionBootstrap, tools }) => {
+      bootstraps.record({ messageId: message.id, isSessionBootstrap });
+      tools.turn.settle();
+    });
+    const { platform, roomA, next } = await startAgent(adapter);
+    // A session's first turn hydrates its history before the adapter sees it.
+    const hydrating = createDeferred();
+    const hydrated = createDeferred();
+    onTestFinished(() => hydrated.resolve());
+    const getChatContext = platform.rest.getChatContext.bind(platform.rest);
+    let held = false;
+    platform.rest.getChatContext = async (request) => {
+      if (!held) {
+        held = true;
+        hydrating.resolve();
+        await hydrated.promise;
+      }
+      return await getChatContext(request);
+    };
+    const first = await roomA.say("owner", "first");
+    await hydrating.promise;
+
+    platform.control(mode, ROOM_A);
+    // Signals apply in order, so once B's later stop applied, A's signal has too.
+    platform.control("stop", ROOM_B);
+    await next(is("room.paused", ROOM_B));
+    hydrated.resolve();
+    if (mode === "stop") {
+      platform.control("play", ROOM_A);
+    }
+
+    expect(await roomA.outcome(first)).toBe("processed");
+    const second = await roomA.say("owner", "second");
+    expect(await roomA.outcome(second)).toBe("processed");
+    // A stopped message runs again, as the session's first turn; an interrupted one is consumed unrun.
+    expect(bootstraps.entries).toEqual(mode === "stop"
+      ? [{ messageId: first, isSessionBootstrap: true }, { messageId: second, isSessionBootstrap: false }]
+      : [{ messageId: second, isSessionBootstrap: true }]);
+  });
+
+  it("ends Band's pause when the agent loses the room, so a rejoined room runs without a play", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const { platform, roomA, next, of, events } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    await roomA.remove();
+    await next(is("room.left", ROOM_A));
+    // Band's stop went with the membership.
+    platform.rest.stoppedRooms.delete(ROOM_A);
+    const mark = events.entries.length;
+
+    await platform.room(ROOM_A);
+    await next(is("room.joined", ROOM_A), mark);
+    const after = await roomA.say("owner", "after rejoining");
+
+    expect(await roomA.outcome(after)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([after]);
+    expect(of(ROOM_A).filter((type) => type === "room.paused" || type === "room.resumed")).toEqual(["room.paused", "room.resumed"]);
+  });
+
+  it("does not remember a signal that reached no handled room, so its repeat applies once the room is", async () => {
+    const { adapter } = settlingAdapter();
+    const { platform, next } = await startAgent(adapter);
+    const stop = platform.control("stop", "room-c");
+
+    await platform.room("room-c");
+    await next(is("room.joined", "room-c"));
+    platform.control("stop", "room-c", { correlationId: stop });
+
+    await next(is("room.paused", "room-c"));
   });
 });

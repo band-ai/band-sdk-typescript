@@ -48,8 +48,13 @@ interface ExecutionOptions {
   /** Whether a message answers what a held turn waits on, so it runs during the hold. */
   isControlEvent?: (event: PlatformEvent) => boolean;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
-  /** Sources already pausing the room, so a new execution starts paused and skips its catch-up. */
-  pausedBy?: Iterable<RoomPauseSource>;
+  /**
+   * The room's pause record, shared with its owner and with every later
+   * execution of the room: sources already in it start this one paused, and
+   * its catch-up is skipped. Updated only through `pause`/`resume` while
+   * this execution runs.
+   */
+  pausedBy?: Set<RoomPauseSource>;
   /** Band serves this stopped room again: its play was missed, so the owner of the pause should lift Band's. */
   onMissedPlay?: () => void;
   /** How often a room Band stopped checks whether Band serves it again. */
@@ -140,7 +145,7 @@ export class Execution {
     this.isControlEvent = options.isControlEvent ?? (() => false);
     this.onFailure = options.onFailure;
     this.logger = resolveLogger(options.logger);
-    this.pausedBy = new Set(options.pausedBy);
+    this.pausedBy = options.pausedBy ?? new Set();
     this.onMissedPlay = options.onMissedPlay;
     this.stoppedProbeIntervalMs = options.stoppedProbeIntervalMs ?? DEFAULT_STOPPED_RESYNC_SECONDS * MS_PER_SECOND;
     this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
@@ -157,7 +162,7 @@ export class Execution {
       },
     });
     this.processTask = this.runProcessLoop();
-    if (this.pausedBy.has("band")) this.scheduleStoppedProbe();
+    if (this.isBandStopped()) this.scheduleStoppedProbe();
     // A non-graceful stop deliberately detaches the loop, so keep its outcome
     // observed here; real callers still see it via waitUntilStopped()/stop().
     void this.processTask.catch(() => undefined);
@@ -221,8 +226,8 @@ export class Execution {
 
   /**
    * Lifts `source`'s pause. Once no source pauses the room it catches up on
-   * what Band kept for it, the stopped turn's message first. Returns whether
-   * `source` was pausing the room.
+   * what Band kept for it, the stopped turn's message first, before anything
+   * queued meanwhile. Returns whether `source` was pausing the room.
    */
   public resume(source: RoomPauseSource): boolean {
     if (!this.pausedBy.delete(source)) {
@@ -231,8 +236,12 @@ export class Execution {
     if (source === "band") this.clearStoppedProbe();
     this.logger.info("room resumed", { roomId: this.roomId, source, stillPausedBy: [...this.pausedBy] });
     if (!this.isPaused() && this.isActive()) {
-      // After any hold: a stopped turn the adapter could not cancel may still be running.
-      this.push({ event: CATCH_UP_EVENT, syncBoundary: this.syncBoundaries.beginBoundary(), afterHold: true });
+      // Ahead of the work queued behind the stopped turn, which it replays first,
+      // and after any hold: a stopped turn the adapter could not cancel may still
+      // be running. Its sweep opens no boundary until it runs, so a pause before
+      // then leaves nothing for an idle wait to wait on.
+      this.deferCatchUp();
+      this.wake();
     }
     return true;
   }
@@ -246,9 +255,14 @@ export class Execution {
     return this.pausedBy.size > 0;
   }
 
+  /** Whether Band has stopped the agent in this room, as opposed to only the host pausing it. */
+  private isBandStopped(): boolean {
+    return this.pausedBy.has("band");
+  }
+
   /** Queues one check for a missed play now, unless one is already waiting. */
   private probeSoon(): void {
-    if (!this.pausedBy.has("band") || !this.isActive()) return;
+    if (!this.isBandStopped() || !this.isActive()) return;
     if (this.eventQueue.some((queued) => queued.event === CATCH_UP_EVENT && !queued.afterHold)) return;
     this.push({ event: CATCH_UP_EVENT, syncBoundary: null });
   }
@@ -266,6 +280,11 @@ export class Execution {
       this.probeSoon();
     }, this.stoppedProbeIntervalMs);
     this.stoppedProbe.unref?.();
+  }
+
+  /** Keeps a periodic check scheduled while Band has the room stopped. */
+  private ensureStoppedProbe(): void {
+    if (this.isBandStopped() && this.stoppedProbe === null) this.scheduleStoppedProbe();
   }
 
   private clearStoppedProbe(): void {
@@ -520,28 +539,28 @@ export class Execution {
   }
 
   /**
-   * Band serves a stopped room nothing from /next, so a message there after a
-   * reconnect means a play arrived while the socket was down: Band's pause is over.
+   * Band serves a stopped room nothing from /next, so a message there means
+   * Band played the room and its push was missed: Band's pause is over.
    */
   private async probeForMissedPlay(): Promise<void> {
-    if (!this.pausedBy.has("band")) return;
+    if (!this.isBandStopped()) return;
     let next: PlatformMessage | null;
     try {
       next = await this.link.getNextMessage(this.roomId);
     } catch (error: unknown) {
       this.logger.warn("Failed to probe a stopped room for a missed play", { roomId: this.roomId, error });
-      if (this.stoppedProbe === null) this.scheduleStoppedProbe();
+      this.ensureStoppedProbe();
       return;
     }
-    if (next && this.pausedBy.has("band")) {
+    if (next && this.isBandStopped()) {
       this.logger.info("stopped room is served again; its play was missed", { roomId: this.roomId, messageId: next.id });
       this.onMissedPlay?.();
-    } else if (this.pausedBy.has("band") && this.stoppedProbe === null) {
-      this.scheduleStoppedProbe();
+    } else {
+      this.ensureStoppedProbe();
     }
   }
 
-  /** Leaves the rest of a catch-up for once the hold ends, ahead of the work waiting on it. */
+  /** Queues one catch-up ahead of the work waiting, to run once no hold is in place. */
   private deferCatchUp(): void {
     if (!this.eventQueue.some((entry) => entry.afterHold)) {
       this.eventQueue.unshift({ event: CATCH_UP_EVENT, syncBoundary: null, afterHold: true });

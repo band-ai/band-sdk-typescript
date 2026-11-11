@@ -834,4 +834,32 @@ describe("Execution bootstrap messages", () => {
     await ran.promise;
     expect(processed).toEqual(["synthetic"]);
   });
+
+  it("runs a room only once every pause source has lifted its pause, and catches up then", async () => {
+    let reads = 0;
+    const caughtUp = createDeferred<void>();
+    const { execution } = createExecution({
+      getNextMessage: async () => {
+        reads += 1;
+        if (reads > 1) caughtUp.resolve();
+        return null;
+      },
+    });
+    onTestFinished(() => execution.stop(0).then(() => undefined));
+    await execution.waitForIdle();
+    const startupReads = reads;
+
+    expect(execution.pause("host")).toBe(true);
+    expect(execution.pause("band")).toBe(true);
+    expect(execution.pause("band")).toBe(false);
+    expect(execution.resume("band")).toBe(true);
+    await execution.waitForIdle();
+    expect(execution.isPaused()).toBe(true);
+    expect(reads).toBe(startupReads);
+
+    expect(execution.resume("host")).toBe(true);
+    await caughtUp.promise;
+    expect(execution.isPaused()).toBe(false);
+  });
 });
+

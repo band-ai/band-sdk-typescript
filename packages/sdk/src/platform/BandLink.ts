@@ -353,7 +353,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private dispatchControl(payload: Record<string, unknown>): void {
     const control = parseAgentControl(payload);
     if (!control) {
-      this.logger.warn("Invalid agent.control payload", { payload });
+      // Field names only: the payload is Band's untrusted content, with ids and free text.
+      this.logger.warn("Invalid agent.control payload", { fields: Object.keys(payload) });
       return;
     }
     notifyEach(this.controlListeners, control, (error) => {

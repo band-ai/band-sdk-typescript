@@ -35,8 +35,10 @@ interface AgentRuntimeOptions {
   onRoomRemoved?: (roomId: string) => void;
   /** A reported room's execution stopped: the room was left or reset, or the runtime stopped. */
   onRoomStopped?: (roomId: string) => void;
-  /** A room Band stopped is served again after a reconnect: its play was missed while the socket was down. */
+  /** A room Band stopped is served again: its play push was missed. */
   onMissedPlay?: (roomId: string) => void;
+  /** Losing a room's membership ended the pause Band's stop put on it. */
+  onBandStopCleared?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
   onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
@@ -61,6 +63,7 @@ export class AgentRuntime {
   private readonly onRoomRemoved?: AgentRuntimeOptions["onRoomRemoved"];
   private readonly onRoomStopped?: AgentRuntimeOptions["onRoomStopped"];
   private readonly onMissedPlay?: AgentRuntimeOptions["onMissedPlay"];
+  private readonly onBandStopCleared?: AgentRuntimeOptions["onBandStopCleared"];
   private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
   private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
   private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
@@ -96,6 +99,7 @@ export class AgentRuntime {
     this.onRoomRemoved = options.onRoomRemoved;
     this.onRoomStopped = options.onRoomStopped;
     this.onMissedPlay = options.onMissedPlay;
+    this.onBandStopCleared = options.onBandStopCleared;
     this.onError = options.onError;
     this.logger = resolveLogger(options.logger);
     this.onContactEvent = options.onContactEvent;
@@ -136,7 +140,12 @@ export class AgentRuntime {
         // Reported even when the adapter's cleanup threw: the membership is gone either way.
         if (reason === "removed") {
           // Band's stop held the agent's handling of the room, which is gone with the membership.
-          this.roomPauses.get(roomId)?.delete("band");
+          if (this.resumeRoom(roomId, "band")) {
+            this.onBandStopCleared?.(roomId);
+          }
+          if (this.roomPauses.get(roomId)?.size === 0) {
+            this.roomPauses.delete(roomId);
+          }
           this.onRoomRemoved?.(roomId);
         }
       }
@@ -397,27 +406,32 @@ export class AgentRuntime {
    * `source` was already pausing it.
    */
   public pauseRoom(roomId: string, source: RoomPauseSource): boolean {
-    const sources = this.roomPauses.get(roomId) ?? new Set<RoomPauseSource>();
+    const execution = this.executions.get(roomId);
+    if (execution) {
+      return execution.pause(source);
+    }
+    const sources = this.pausesOf(roomId);
     if (sources.has(source)) {
       return false;
     }
     sources.add(source);
-    this.roomPauses.set(roomId, sources);
-    this.executions.get(roomId)?.pause(source);
     return true;
   }
 
   /** Lifts `source`'s pause on `roomId`; false when it was not pausing the room. */
   public resumeRoom(roomId: string, source: RoomPauseSource): boolean {
-    const sources = this.roomPauses.get(roomId);
-    if (!sources?.delete(source)) {
-      return false;
+    const execution = this.executions.get(roomId);
+    return execution ? execution.resume(source) : (this.roomPauses.get(roomId)?.delete(source) ?? false);
+  }
+
+  /** The room's pause record, which each of its executions shares. */
+  private pausesOf(roomId: string): Set<RoomPauseSource> {
+    let sources = this.roomPauses.get(roomId);
+    if (!sources) {
+      sources = new Set();
+      this.roomPauses.set(roomId, sources);
     }
-    if (sources.size === 0) {
-      this.roomPauses.delete(roomId);
-    }
-    this.executions.get(roomId)?.resume(source);
-    return true;
+    return sources;
   }
 
   /** Ends `roomId`'s running turn and consumes its message; false when none runs. */
@@ -506,7 +520,7 @@ export class AgentRuntime {
       onFailure: async (error, event) => {
         await this.failRuntime(error, event);
       },
-      pausedBy: this.roomPauses.get(roomId),
+      pausedBy: this.pausesOf(roomId),
       onMissedPlay: () => this.onMissedPlay?.(roomId),
       stoppedProbeIntervalMs: this.sessionConfig.stoppedResyncSeconds * MS_PER_SECOND,
       logger: this.logger,

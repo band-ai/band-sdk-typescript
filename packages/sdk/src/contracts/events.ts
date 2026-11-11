@@ -10,7 +10,11 @@ export type ToolCallEndStatus = "completed" | "failed";
 /** How a permission request was answered. */
 export type ApprovalOutcome = "selected" | "cancelled";
 
-/** Who paused a room: Band, by an `agent.control` stop, or the process hosting the agent. */
+/**
+ * Who paused a room: `band`, by an `agent.control` stop or by refusing the
+ * agent's writes; or `host`, the process hosting the agent, which no public
+ * API pauses with yet.
+ */
 export type RoomPauseSource = "band" | "host";
 
 /**
