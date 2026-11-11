@@ -17,6 +17,8 @@ import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 import { createDeferred, type Deferred } from "../core/deferred";
 import { turnFailureLabel } from "../core/coercion";
 import type { RoomPauseSource, TurnStopMode } from "../contracts/events";
+import { DEFAULT_STOPPED_RESYNC_SECONDS } from "./types";
+import { MS_PER_SECOND } from "../core/deadline";
 
 /**
  * `holdRoomUntil` keeps the room's other work queued until a turn that
@@ -42,8 +44,10 @@ interface ExecutionOptions {
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   /** Sources already pausing the room, so a new execution starts paused and skips its catch-up. */
   pausedBy?: Iterable<RoomPauseSource>;
-  /** Band serves this stopped room again after a reconnect: the owner of the pause should lift Band's. */
+  /** Band serves this stopped room again: its play was missed, so the owner of the pause should lift Band's. */
   onMissedPlay?: () => void;
+  /** How often a room Band stopped checks whether Band serves it again. */
+  stoppedProbeIntervalMs?: number;
   logger?: Logger;
 }
 
@@ -90,6 +94,9 @@ export class Execution {
   private readonly isControlEvent: (event: PlatformEvent) => boolean;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly onMissedPlay?: () => void;
+  private readonly stoppedProbeIntervalMs: number;
+  /** While Band has the room stopped, schedules the next check for a missed play. */
+  private stoppedProbe: ReturnType<typeof setTimeout> | null = null;
   private readonly logger: Logger;
   private readonly eventQueue: QueuedEvent[] = [];
   private readonly arrivals: Array<() => void> = [];
@@ -124,6 +131,7 @@ export class Execution {
     this.logger = resolveLogger(options.logger);
     this.pausedBy = new Set(options.pausedBy);
     this.onMissedPlay = options.onMissedPlay;
+    this.stoppedProbeIntervalMs = options.stoppedProbeIntervalMs ?? DEFAULT_STOPPED_RESYNC_SECONDS * MS_PER_SECOND;
     this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
       owner: "Execution",
       logContext: { roomId: this.roomId },
@@ -138,6 +146,7 @@ export class Execution {
       },
     });
     this.processTask = this.runProcessLoop();
+    if (this.pausedBy.has("band")) this.scheduleStoppedProbe();
     // A non-graceful stop deliberately detaches the loop, so keep its outcome
     // observed here; real callers still see it via waitUntilStopped()/stop().
     void this.processTask.catch(() => undefined);
@@ -189,6 +198,7 @@ export class Execution {
       return false;
     }
     this.pausedBy.add(source);
+    if (source === "band") this.scheduleStoppedProbe();
     const stoppedTurn = this.pausedBy.size === 1 && this.stopRunningTurn("stop");
     this.logger.info("room paused", { roomId: this.roomId, source, stoppedTurn });
     this.notifyIfIdle();
@@ -204,9 +214,11 @@ export class Execution {
     if (!this.pausedBy.delete(source)) {
       return false;
     }
+    if (source === "band") this.clearStoppedProbe();
     this.logger.info("room resumed", { roomId: this.roomId, source, stillPausedBy: [...this.pausedBy] });
     if (!this.isPaused() && this.isActive()) {
-      this.push({ event: CATCH_UP_EVENT, syncBoundary: this.syncBoundaries.beginBoundary() });
+      // After any hold: a stopped turn the adapter could not cancel may still be running.
+      this.push({ event: CATCH_UP_EVENT, syncBoundary: this.syncBoundaries.beginBoundary(), afterHold: true });
     }
     return true;
   }
@@ -218,6 +230,30 @@ export class Execution {
 
   public isPaused(): boolean {
     return this.pausedBy.size > 0;
+  }
+
+  /**
+   * Checks for a missed play after the interval, through the queue like a
+   * reconnect's catch-up; the check schedules the next one while Band still
+   * has the room stopped.
+   */
+  private scheduleStoppedProbe(): void {
+    this.clearStoppedProbe();
+    if (!this.isActive()) return;
+    this.stoppedProbe = setTimeout(() => {
+      this.stoppedProbe = null;
+      if (this.pausedBy.has("band") && this.isActive()) {
+        this.push({ event: CATCH_UP_EVENT, syncBoundary: null });
+      }
+    }, this.stoppedProbeIntervalMs);
+    this.stoppedProbe.unref?.();
+  }
+
+  private clearStoppedProbe(): void {
+    if (this.stoppedProbe !== null) {
+      clearTimeout(this.stoppedProbe);
+      this.stoppedProbe = null;
+    }
   }
 
   private stopRunningTurn(mode: TurnStopMode): boolean {
@@ -330,6 +366,7 @@ export class Execution {
     // itself reporting "stopped": enqueue() must reject from this point on
     // even though the drain below hasn't finished yet.
     this.closed = true;
+    this.clearStoppedProbe();
     this.wake();
 
     if (graceful || timeoutMs === undefined) {
@@ -362,6 +399,7 @@ export class Execution {
       await this.processLoop();
     } catch (error) {
       this.closed = true;
+      this.clearStoppedProbe();
       this.dropQueued();
       await this.context.closeWorkingState();
       this.markFailed(error, "process-loop-failed");
@@ -473,11 +511,14 @@ export class Execution {
       next = await this.link.getNextMessage(this.roomId);
     } catch (error: unknown) {
       this.logger.warn("Failed to probe a stopped room for a missed play", { roomId: this.roomId, error });
+      if (this.stoppedProbe === null) this.scheduleStoppedProbe();
       return;
     }
     if (next && this.pausedBy.has("band")) {
       this.logger.info("stopped room is served again; its play was missed", { roomId: this.roomId, messageId: next.id });
       this.onMissedPlay?.();
+    } else if (this.pausedBy.has("band") && this.stoppedProbe === null) {
+      this.scheduleStoppedProbe();
     }
   }
 

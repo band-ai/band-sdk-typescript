@@ -50,6 +50,7 @@ export {
   TransportError,
   RuntimeStateError,
   RecoverableTurnError,
+  RoomExecutionStoppedError,
 } from "./errors";
 export { WebSocketDisconnectError } from "../platform/streaming/disconnectReason";
 export type {

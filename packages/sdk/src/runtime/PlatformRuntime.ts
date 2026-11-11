@@ -145,9 +145,11 @@ export class PlatformRuntime implements AsyncDisposable {
   private observeLink(): void {
     const stopConnection = this.link.onConnectionChange(this.events.emit);
     const stopControl = this.link.onControl((control) => this.queueControl(control));
+    const stopObservedStops = this.link.onExecutionStopped((roomId) => this.observeBandStop(roomId));
     this.stopObservingLink = () => {
       stopConnection();
       stopControl();
+      stopObservedStops();
     };
     // A borrowed link may already be up, and its connect() then reports nothing.
     if (this.link.isConnected()) {
@@ -169,6 +171,22 @@ export class PlatformRuntime implements AsyncDisposable {
     this.controlLane = this.controlLane.then(apply).catch((error: unknown) => {
       this.logger.error("Failed to apply a control signal", { error });
     });
+  }
+
+  /**
+   * Band refused a request in `roomId` as stopped, so its stop push was missed
+   * or is still on its way: pause the room now, synchronously, so the turn that
+   * made the request is cut short before it settles its message, then cancel it.
+   */
+  private observeBandStop(roomId: string): void {
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    if (!runtime || !adapter || !runtime.pauseRoom(roomId, "band")) {
+      return;
+    }
+    this.logger.info("Band has stopped the agent in a room; pausing it", { roomId });
+    this.events.emit({ type: "room.paused", roomId, source: "band" });
+    this.queueOnControlLane(() => this.cancelAdapterTurn(adapter, roomId));
   }
 
   private resumeBandPause(roomId: string): void {
@@ -630,11 +648,16 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
+        const turn = adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
         stopMode = await untilStopped<TurnStopMode>(
-          adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil }),
+          turn,
           stopped,
           (error) => this.logger.debug("A stopped turn failed after the runtime stopped waiting on it", { roomId, messageId, error }),
         );
+        if (stopMode) {
+          // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
+          holdRoomUntil(turn.then(() => undefined, () => undefined));
+        }
       }
     } catch (error) {
       succeeded = false;

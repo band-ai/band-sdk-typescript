@@ -5,6 +5,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution, type ExecutionHandler } from "../Execution";
 import type { RoomPauseSource } from "../../contracts/events";
+import { MS_PER_SECOND } from "../../core/deadline";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import type { RuntimeLifecycleState } from "../lifecycle";
 import {
@@ -507,6 +508,7 @@ export class AgentRuntime {
       },
       pausedBy: this.roomPauses.get(roomId),
       onMissedPlay: () => this.onMissedPlay?.(roomId),
+      stoppedProbeIntervalMs: this.sessionConfig.stoppedResyncSeconds * MS_PER_SECOND,
       logger: this.logger,
     });
     this.executions.set(roomId, execution);

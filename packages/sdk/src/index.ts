@@ -157,6 +157,7 @@ export {
   FAILURE_METADATA_KEY,
   toFailureEvent,
   RecoverableTurnError,
+  RoomExecutionStoppedError,
   DeliveryFailedError,
   deliverReply,
   deliverNotice,

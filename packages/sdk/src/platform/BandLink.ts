@@ -15,7 +15,7 @@ import type {
   BandLinkRestApi,
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
-import { UnsupportedFeatureError } from "../core/errors";
+import { RoomExecutionStoppedError, UnsupportedFeatureError } from "../core/errors";
 import { notifyEach, subscribe } from "../core/listeners";
 import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
@@ -128,6 +128,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly session = new Session();
   private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
   private readonly controlListeners = new Set<(control: AgentControl) => void>();
+  private readonly executionStoppedListeners = new Set<(roomId: string) => void>();
   /** Last reachability report, so each up and each distinct down reason is told once. */
   private reported: LinkConnectionChange | null = null;
 
@@ -158,7 +159,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         { activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }) },
       );
 
-    this.rest = restApi;
+    // Every REST call Band refuses because it stopped the agent in a room tells the stop listeners.
+    this.rest = reportingExecutionStops(restApi, (roomId) => this.reportExecutionStopped(roomId));
 
     this.transport =
       options.transport ??
@@ -329,6 +331,23 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
    */
   public onControl(listener: (control: AgentControl) => void): () => void {
     return subscribe(this.controlListeners, listener);
+  }
+
+  /**
+   * Calls `listener` with a room's id whenever Band shows it has stopped the
+   * agent there: it refused a claim, acknowledgement or post as stopped, or
+   * echoed a working report as not working. This is how a stop whose
+   * `agent.control` push never arrived (delivery is best-effort) is found.
+   * Called synchronously, before the refused call's caller sees the refusal.
+   */
+  public onExecutionStopped(listener: (roomId: string) => void): () => void {
+    return subscribe(this.executionStoppedListeners, listener);
+  }
+
+  private reportExecutionStopped(roomId: string): void {
+    notifyEach(this.executionStoppedListeners, roomId, (error) => {
+      this.logger.warn("Execution-stopped listener failed", { roomId, error });
+    });
   }
 
   private dispatchControl(payload: Record<string, unknown>): void {
@@ -625,7 +644,12 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   public async reportActivity(roomId: string, working: boolean, options?: ReportActivityOptions): Promise<{ working: boolean }> {
     if (!this.rest.reportActivity) throw new UnsupportedFeatureError("Activity reporting is not available in current REST adapter");
-    return await this.rest.reportActivity(roomId, working, options);
+    const reported = await this.rest.reportActivity(roomId, working, options);
+    // Band echoes a working report as not working for a room it stopped the agent in.
+    if (working && !reported.working) {
+      this.reportExecutionStopped(roomId);
+    }
+    return reported;
   }
 
   public async listChats(
@@ -680,4 +704,32 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       });
     }
   }
+}
+
+/**
+ * `rest`, with every rejection that is a {@link RoomExecutionStoppedError}
+ * reported to `onStopped` before it reaches the caller. Methods `rest` lacks
+ * stay absent, so optional-endpoint checks still see them missing.
+ */
+function reportingExecutionStops<T extends object>(rest: T, onStopped: (roomId: string) => void): T {
+  return new Proxy(rest, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") {
+        return value;
+      }
+      return (...args: unknown[]): unknown => {
+        const result: unknown = Reflect.apply(value, target, args);
+        if (!(result instanceof Promise)) {
+          return result;
+        }
+        return result.catch((error: unknown) => {
+          if (error instanceof RoomExecutionStoppedError) {
+            onStopped(error.roomId);
+          }
+          throw error;
+        });
+      };
+    },
+  });
 }
