@@ -164,6 +164,20 @@ export class ExecutionContext {
     }
   }
 
+  /**
+   * Forgets `messageId`, so the room handles it afresh when Band serves it
+   * again: a turn a pause cut short left it for replay.
+   */
+  public forgetMessage(messageId: string): void {
+    this.dedupCache.delete(messageId);
+    const index = this.history.findIndex((entry) => entry.id === messageId);
+    if (index >= 0) this.history.splice(index, 1);
+    this.rebuildMessageIds();
+    if (this.contextCache) {
+      this.contextCache.messages = this.contextCache.messages.filter((entry) => entry.id !== messageId);
+    }
+  }
+
   public getRawHistory(): MetadataMap[] {
     return this.history.map((entry) => ({
       id: entry.id,

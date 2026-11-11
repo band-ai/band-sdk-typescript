@@ -39,7 +39,9 @@ export type {
   AgentEventType,
   ApprovalOutcome,
   LinkDisconnectReason,
+  RoomPauseSource,
   ToolCallEndStatus,
+  TurnStopMode,
 } from "../contracts/events";
 export {
   BandSdkError,

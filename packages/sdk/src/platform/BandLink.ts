@@ -40,6 +40,7 @@ import {
 } from "@band-ai/band-sdk-core";
 import { SubscriptionManager } from "./SubscriptionManager";
 import { roomIdOfChatTopic } from "./roomTopics";
+import { parseAgentControl, type AgentControl } from "./control";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -126,6 +127,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
   private readonly connectionListeners = new Set<(change: LinkConnectionChange) => void>();
+  private readonly controlListeners = new Set<(control: AgentControl) => void>();
   /** Last reachability report, so each up and each distinct down reason is told once. */
   private reported: LinkConnectionChange | null = null;
 
@@ -235,7 +237,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     };
     const stopDropped = this.transport.onDropped?.(() => reportDown("dropped"));
     const stopTerminal = this.transport.onTerminal(() => reportDown("terminal"));
+    const stopControl = this.transport.onControl?.((payload) => {
+      if (!this.session.isStale(epoch)) {
+        this.dispatchControl(payload);
+      }
+    });
     this.session.reconnectObserverTeardown = () => {
+      stopControl?.();
       stopReconnected?.();
       stopRejoined?.();
       stopDropped?.();
@@ -312,6 +320,26 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
    */
   public onConnectionChange(listener: (change: LinkConnectionChange) => void): () => void {
     return subscribe(this.connectionListeners, listener);
+  }
+
+  /**
+   * Calls `listener` with each `agent.control` signal Band pushes while
+   * connected, synchronously and in arrival order, outside the event stream so
+   * it can act on a turn already running. Returns a function that removes it.
+   */
+  public onControl(listener: (control: AgentControl) => void): () => void {
+    return subscribe(this.controlListeners, listener);
+  }
+
+  private dispatchControl(payload: Record<string, unknown>): void {
+    const control = parseAgentControl(payload);
+    if (!control) {
+      this.logger.warn("Invalid agent.control payload", { payload });
+      return;
+    }
+    notifyEach(this.controlListeners, control, (error) => {
+      this.logger.warn("Control listener failed", { error });
+    });
   }
 
   private reportConnection(change: LinkConnectionChange): void {

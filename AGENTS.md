@@ -184,7 +184,7 @@ WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/Ph
 | Chat Room | `chat_room:{chat_room_id}` | `message_created` |
 | Room Participants | `room_participants:{chat_room_id}` | `participant_added`, `participant_removed` |
 | Agent Contacts | `agent_contacts:{agent_id}` | `contact_request_received`, `contact_request_updated`, `contact_added`, `contact_removed` |
-| Agent Control | `agent_control:{agent_id}` | `supersede` |
+| Agent Control | `agent_control:{agent_id}` | `supersede`, `agent.control` |
 
 ### Event Types
 
@@ -224,6 +224,10 @@ Two runtime consumers act on it:
 - `Execution` (via `AgentRuntime`) intercepts it in its serialized event queue and calls `synchronizeWithNext()` again — the same `/messages/next` catch-up sweep used at startup — so messages missed during the disconnect are picked up before normal WebSocket processing resumes. The event itself is never forwarded to `onExecute`/adapters.
 
 A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no payload, and `roomId` is set only for a single room's channel rejoin.
+
+### Band control signals (`agent.control`)
+
+Band pushes `agent.control` (`interrupt`, `stop`, `play`; one room or agent-wide) on the agent control channel. The transport hands it to `BandLink.onControl` outside the event stream, validated by Core; `PlatformRuntime` dedupes on `correlation_id`, applies signals in order, and pauses or resumes the room's `Execution` (pause source `"band"`). A stopped turn's message stays `processing` for `/messages/next` to serve again on play; an interrupted one is marked processed. While stopped, Band serves the room nothing from `/next`, so a reconnect probes it to find a missed play. The Python SDK's `runtime/control.py` and `Execution.stop_room`/`resume_room` are the counterpart.
 
 ## Contact Event Handling
 

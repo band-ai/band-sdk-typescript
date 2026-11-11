@@ -10,14 +10,26 @@ export type ToolCallEndStatus = "completed" | "failed";
 /** How a permission request was answered. */
 export type ApprovalOutcome = "selected" | "cancelled";
 
+/** Who paused a room: Band, by an `agent.control` stop, or the process hosting the agent. */
+export type RoomPauseSource = "band" | "host";
+
+/**
+ * How a running turn was cut short: `stop` leaves its message for Band to
+ * serve again once the room resumes; `interrupt` consumes it.
+ */
+export type TurnStopMode = "stop" | "interrupt";
+
 /**
  * What a running agent reports to the process hosting it through
  * `Agent.observe`. Local only: nothing here is posted to a room.
  *
  * Pairing rules:
+ * - Turns: each `turn.started` ends with one `turn.completed`, `turn.failed`
+ *   or `turn.stopped`.
  * - Rooms: each time a joined room's handling starts, one `room.joined`; when
  *   that handling ends, one `room.stopped`. `room.left` follows `room.stopped`
- *   only when membership was lost.
+ *   only when membership was lost. Per pause source, `room.paused` and
+ *   `room.resumed` alternate.
  * - Link: per connection, one `link.connected`; while down, one
  *   `link.disconnected` per distinct reason (a drop, then a local stop,
  *   reports both); then `link.connected` with `reconnected` once it is back.
@@ -37,6 +49,13 @@ export type AgentEvent =
   | { type: "turn.completed"; roomId: string; messageId: string }
   /** The adapter threw; `error` is the thrown error's message, the same label Band records for the message. */
   | { type: "turn.failed"; roomId: string; messageId: string; error: string }
+  /**
+   * A pause (`stop`) or an interrupt cut the turn short. The runtime no
+   * longer waits on it, and nothing it reports afterwards settles the
+   * message: `stop` leaves the message for Band to serve again on resume,
+   * `interrupt` consumes it. An adapter that can cancel a turn is asked to.
+   */
+  | { type: "turn.stopped"; roomId: string; messageId: string; mode: TurnStopMode }
   /** Reasoning text as the agent streams it; consecutive events continue one run. */
   | { type: "thought"; roomId: string; text: string }
   /** Reply text as the agent streams it, before any of it is posted. */
@@ -75,6 +94,13 @@ export type AgentEvent =
   | { type: "room.failed"; roomId: string; error: string }
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */
   | { type: "room.stopped"; roomId: string }
+  /**
+   * `source` paused the room: no turn starts there, and Band keeps its
+   * messages, until every source that paused it resumes it.
+   */
+  | { type: "room.paused"; roomId: string; source: RoomPauseSource }
+  /** `source` lifted its pause; the room catches up once no source pauses it. */
+  | { type: "room.resumed"; roomId: string; source: RoomPauseSource }
   /** The connection to Band is up; `reconnected` when it came back after a drop. */
   | { type: "link.connected"; reconnected: boolean }
   /** The connection to Band is down; see `LinkDisconnectReason`. */

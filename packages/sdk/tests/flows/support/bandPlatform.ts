@@ -192,15 +192,23 @@ export class RecordingRestApi extends FakeRestApi {
     return { working };
   }
 
-  /** The oldest message in the room not yet settled, as `/messages/next` serves it. */
+  /** Rooms Band has stopped the agent in: their `/messages/next` serves nothing until a play. */
+  public readonly stoppedRooms = new Set<string>();
+
+  /** The oldest message in the room not yet settled, as `/messages/next` serves it; nothing in a stopped room. */
   public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
-    const pending = this.unsettledIn(request.chatId)[0];
+    const pending = this.stoppedRooms.has(request.chatId) ? undefined : this.unsettledIn(request.chatId)[0];
     await this.nextMessageHolds.pass(request.chatId);
     return pending ?? null;
   }
 
   private unsettledIn(roomId: string): PlatformChatMessage[] {
     return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
+  }
+
+  /** Every room the agent is in. */
+  public roomIds(): string[] {
+    return [...this.rooms.keys()];
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
@@ -617,6 +625,30 @@ export class BandPlatform implements AsyncDisposable {
     this.rest.addRoom(roomId, participants);
     await this.announce(roomId);
     return new BandRoom(roomId, this);
+  }
+
+  /**
+   * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
+   * its rooms for null, as its `agent.control` push does; a stopped room's
+   * `/messages/next` serves nothing until a play, as on Band. With
+   * `delivered: false` the agent misses the push. Returns its correlation id.
+   */
+  public control(
+    mode: "stop" | "play" | "interrupt",
+    roomId: string | null,
+    options: { delivered?: boolean; correlationId?: string } = {},
+  ): string {
+    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+      if (mode === "stop") this.rest.stoppedRooms.add(room);
+      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    }
+    const correlationId = options.correlationId ?? randomUUID();
+    if (options.delivered !== false) {
+      this.transport.pushControl({
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+      });
+    }
+    return correlationId;
   }
 
   /** A room the agent created, as `band_create_chatroom` reported it. */

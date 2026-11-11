@@ -104,7 +104,9 @@ export type {
   AgentEventType,
   ApprovalOutcome,
   LinkDisconnectReason,
+  RoomPauseSource,
   ToolCallEndStatus,
+  TurnStopMode,
 } from "./core";
 
 export type {

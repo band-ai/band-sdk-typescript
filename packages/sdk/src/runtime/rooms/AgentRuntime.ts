@@ -4,6 +4,7 @@ import { RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution, type ExecutionHandler } from "../Execution";
+import type { RoomPauseSource } from "../../contracts/events";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import type { RuntimeLifecycleState } from "../lifecycle";
 import {
@@ -33,6 +34,8 @@ interface AgentRuntimeOptions {
   onRoomRemoved?: (roomId: string) => void;
   /** A reported room's execution stopped: the room was left or reset, or the runtime stopped. */
   onRoomStopped?: (roomId: string) => void;
+  /** A room Band stopped is served again after a reconnect: its play was missed while the socket was down. */
+  onMissedPlay?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
   onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
@@ -56,6 +59,7 @@ export class AgentRuntime {
   private readonly onRoomAdmitted?: AgentRuntimeOptions["onRoomAdmitted"];
   private readonly onRoomRemoved?: AgentRuntimeOptions["onRoomRemoved"];
   private readonly onRoomStopped?: AgentRuntimeOptions["onRoomStopped"];
+  private readonly onMissedPlay?: AgentRuntimeOptions["onMissedPlay"];
   private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
   private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
   private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
@@ -64,6 +68,8 @@ export class AgentRuntime {
   private readonly sessionConfig: ResolvedSessionConfig;
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
+  /** Who pauses each room, kept across its executions, so a reset or rejoin starts paused. */
+  private readonly roomPauses = new Map<string, Set<RoomPauseSource>>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   /** Executions reported through `onRoomAdmitted`, so each start and stop is reported once. */
   private readonly announced = new WeakSet<Execution>();
@@ -88,6 +94,7 @@ export class AgentRuntime {
     this.onRoomAdmitted = options.onRoomAdmitted;
     this.onRoomRemoved = options.onRoomRemoved;
     this.onRoomStopped = options.onRoomStopped;
+    this.onMissedPlay = options.onMissedPlay;
     this.onError = options.onError;
     this.logger = resolveLogger(options.logger);
     this.onContactEvent = options.onContactEvent;
@@ -127,6 +134,8 @@ export class AgentRuntime {
       } finally {
         // Reported even when the adapter's cleanup threw: the membership is gone either way.
         if (reason === "removed") {
+          // Band's stop held the agent's handling of the room, which is gone with the membership.
+          this.roomPauses.get(roomId)?.delete("band");
           this.onRoomRemoved?.(roomId);
         }
       }
@@ -381,6 +390,45 @@ export class AgentRuntime {
     return await this.teardownExecution(roomId, timeoutMs);
   }
 
+  /**
+   * Pauses `roomId` for `source`, now and for every later execution of the
+   * room, until {@link resumeRoom}; see `Execution.pause`. False when
+   * `source` was already pausing it.
+   */
+  public pauseRoom(roomId: string, source: RoomPauseSource): boolean {
+    const sources = this.roomPauses.get(roomId) ?? new Set<RoomPauseSource>();
+    if (sources.has(source)) {
+      return false;
+    }
+    sources.add(source);
+    this.roomPauses.set(roomId, sources);
+    this.executions.get(roomId)?.pause(source);
+    return true;
+  }
+
+  /** Lifts `source`'s pause on `roomId`; false when it was not pausing the room. */
+  public resumeRoom(roomId: string, source: RoomPauseSource): boolean {
+    const sources = this.roomPauses.get(roomId);
+    if (!sources?.delete(source)) {
+      return false;
+    }
+    if (sources.size === 0) {
+      this.roomPauses.delete(roomId);
+    }
+    this.executions.get(roomId)?.resume(source);
+    return true;
+  }
+
+  /** Ends `roomId`'s running turn and consumes its message; false when none runs. */
+  public interruptTurn(roomId: string): boolean {
+    return this.executions.get(roomId)?.interrupt() ?? false;
+  }
+
+  /** The rooms this runtime is handling now, which an agent-wide control signal reaches. */
+  public handledRoomIds(): string[] {
+    return [...this.executions.keys()];
+  }
+
   private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
     const execution = this.executions.get(roomId);
     const errors: unknown[] = [];
@@ -457,6 +505,8 @@ export class AgentRuntime {
       onFailure: async (error, event) => {
         await this.failRuntime(error, event);
       },
+      pausedBy: this.roomPauses.get(roomId),
+      onMissedPlay: () => this.onMissedPlay?.(roomId),
       logger: this.logger,
     });
     this.executions.set(roomId, execution);
