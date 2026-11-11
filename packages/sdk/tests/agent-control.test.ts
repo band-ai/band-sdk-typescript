@@ -404,4 +404,52 @@ describe("agent.control from Band", () => {
 
     expect(stopped.entries).toEqual([ROOM_A]);
   });
+
+  it("refuses the tools of an interrupted turn the adapter could not cancel, so its late reply never posts", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    onTestFinished(() => release());
+    const outcomes = new RecordLog<string>();
+    const adapter = new GenericAdapter(async ({ message, tools }) => {
+      if (outcomes.entries.length === 0) {
+        outcomes.record("started");
+        await released;
+        await tools.sendMessage("late reply", ["owner"]).then(
+          () => outcomes.record("posted"),
+          () => outcomes.record("refused"),
+        );
+        return;
+      }
+      await tools.sendMessage(`reply to ${message.content}`, ["owner"]);
+    });
+    const { platform, roomA, next } = await startAgent(adapter);
+    const first = await roomA.say("owner", "first");
+    await outcomes.until(() => outcomes.entries.length === 1);
+
+    platform.control("interrupt", ROOM_A);
+    await next(is("turn.stopped", ROOM_A));
+    release();
+    await outcomes.until(() => outcomes.entries.length === 2);
+
+    expect(outcomes.entries).toEqual(["started", "refused"]);
+    expect(await roomA.outcome(first)).toBe("processed");
+    expect((await roomA.sayAndSettle("owner", "second")).outcome).toBe("processed");
+    expect(roomA.messages.map((posted) => posted.content)).toEqual(["reply to second"]);
+  });
+
+  it("finds a missed play as soon as Band delivers the room a message", async () => {
+    const { adapter } = settlingAdapter();
+    const { platform, roomA, next } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    platform.control("play", ROOM_A, { delivered: false });
+
+    // No reconnect, and the periodic check is a minute away: the message itself prompts the check.
+    const waiting = await roomA.say("owner", "after the missed play");
+
+    await next(is("room.resumed", ROOM_A));
+    expect(await roomA.outcome(waiting)).toBe("processed");
+  });
 });

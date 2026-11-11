@@ -27,6 +27,7 @@ import type { AgentEventListener, TurnStopMode } from "../contracts/events";
 import type { AgentControl, AgentControlMode } from "../platform/control";
 import { ControlDeduplicator, controlTargets } from "./control";
 import { untilStopped } from "../core/signals";
+import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
@@ -648,7 +649,8 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
-        const turn = adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
+        const tools = revokedOnStop(lease ? bindWorkingCycle(input.tools, lease) : input.tools, stopped);
+        const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
         stopMode = await untilStopped<TurnStopMode>(
           turn,
           stopped,

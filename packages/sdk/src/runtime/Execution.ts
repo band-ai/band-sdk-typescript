@@ -17,6 +17,7 @@ import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 import { createDeferred, type Deferred } from "../core/deferred";
 import { turnFailureLabel } from "../core/coercion";
 import type { RoomPauseSource, TurnStopMode } from "../contracts/events";
+import { isSyntheticTurn } from "../contracts/protocols";
 import { DEFAULT_STOPPED_RESYNC_SECONDS } from "./types";
 import { MS_PER_SECOND } from "../core/deadline";
 
@@ -64,6 +65,11 @@ interface QueuedEvent {
 
 /** Queued when a room resumes, to catch up on what Band kept for it as a reconnect would. */
 const CATCH_UP_EVENT: PlatformEvent = { type: "reconnected", roomId: null, payload: {} };
+
+/** A turn the runtime made itself (a contact hub event), which Band does not hold. */
+function isSyntheticEvent(event: Extract<PlatformEvent, { type: "message_created" }>): boolean {
+  return isSyntheticTurn({ senderType: event.payload.sender_type, senderId: event.payload.sender_id });
+}
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
   const insertedAt = message.createdAt.toISOString();
@@ -166,9 +172,12 @@ export class Execution {
   }
 
   public async enqueue(event: PlatformEvent): Promise<void> {
-    if (event.type === "message_created" && this.isPaused()) {
-      // Left on Band, which serves it again once the room resumes.
+    if (event.type === "message_created" && this.isPaused() && !isSyntheticEvent(event)) {
+      // Left on Band, which serves it again once the room resumes. A synthetic
+      // turn exists only here, so it waits in the queue instead.
       this.logger.debug("paused room leaves a live message for later", { roomId: this.roomId, messageId: event.payload.id });
+      // A message Band delivers may mean Band played the room and the push was missed.
+      this.probeSoon();
       return;
     }
     let syncBoundary: SyncBoundary | null = null;
@@ -232,6 +241,13 @@ export class Execution {
     return this.pausedBy.size > 0;
   }
 
+  /** Queues one check for a missed play now, unless one is already waiting. */
+  private probeSoon(): void {
+    if (!this.pausedBy.has("band") || !this.isActive()) return;
+    if (this.eventQueue.some((queued) => queued.event === CATCH_UP_EVENT && !queued.afterHold)) return;
+    this.push({ event: CATCH_UP_EVENT, syncBoundary: null });
+  }
+
   /**
    * Checks for a missed play after the interval, through the queue like a
    * reconnect's catch-up; the check schedules the next one while Band still
@@ -242,9 +258,7 @@ export class Execution {
     if (!this.isActive()) return;
     this.stoppedProbe = setTimeout(() => {
       this.stoppedProbe = null;
-      if (this.pausedBy.has("band") && this.isActive()) {
-        this.push({ event: CATCH_UP_EVENT, syncBoundary: null });
-      }
+      this.probeSoon();
     }, this.stoppedProbeIntervalMs);
     this.stoppedProbe.unref?.();
   }

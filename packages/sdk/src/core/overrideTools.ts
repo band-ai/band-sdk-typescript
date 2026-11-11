@@ -8,10 +8,11 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
 
 /**
  * A tools object whose every access reaches `resolve()`'s tools at that
- * moment, with `overrides` replacing some members. `Reflect.get(tools, key,
+ * moment, with `overrides` replacing some members, and `beforeCall` run
+ * before each of its methods (it may throw to refuse the call). `Reflect.get(tools, key,
  * tools)` keeps inherited accessors/methods bound to the real tools instance.
  */
-export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}): T {
+export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}, beforeCall?: () => void): T {
   return new Proxy({} as T, {
     has(_target, key) {
       return Object.hasOwn(overrides, key) || Reflect.has(resolve(), key);
@@ -22,7 +23,16 @@ export function forwardTools<T extends object>(resolve: () => T, overrides: Part
       }
       const tools = resolve();
       const value: unknown = Reflect.get(tools, key, tools);
-      return typeof value === "function" ? (value.bind(tools) as unknown) : value;
+      if (typeof value !== "function") {
+        return value;
+      }
+      const bound = value.bind(tools) as (...args: unknown[]) => unknown;
+      return beforeCall
+        ? (...args: unknown[]): unknown => {
+          beforeCall();
+          return bound(...args);
+        }
+        : bound;
     },
     // Without this, a write against the empty target would silently succeed
     // and vanish — invisible even to the handler that made it, since `get`
