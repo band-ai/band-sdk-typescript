@@ -420,13 +420,14 @@ describe("core Session owns reconnects (real wire)", () => {
 
     it("reports no reconnect when a room still rejoining on a superseded socket is left", async () => {
       await using peer = await startPeer();
-      // Long enough that the leave lands before the next socket opens.
-      await using agent = transportFor(peer, { baseDelayS: 1, maxDelayS: 1 });
+      await using agent = transportFor(peer);
       await agent.transport.connect();
       await onWireClock(agent.transport.join(ROOM, {}));
       const snapshotConnections: number[] = [];
+      const recovered = createDeferred<void>();
       agent.transport.onReconnected(() => {
         snapshotConnections.push(peer.connections.entries.length);
+        recovered.resolve();
       });
       peer.queueJoinOutcomes(ROOM, ["pending"]);
       peer.severAllConnections();
@@ -436,9 +437,13 @@ describe("core Session owns reconnects (real wire)", () => {
       // The room was all the dropped socket's rejoin still waited on.
       pushSupersede(peer);
       await connectedState(agent.transport, false);
+      // Hold the next socket closed until leave finishes — don't race a delay.
+      peer.refuseUpgrades({ status: 503 });
+      await refused(peer);
       await onWireClock(agent.transport.leave(ROOM));
+      peer.acceptUpgrades();
       await reconnected(peer, 3);
-      await advanceWireClock(100);
+      await onWireClock(recovered.promise);
 
       expect(snapshotConnections).toEqual([3]);
     });
