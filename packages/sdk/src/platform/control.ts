@@ -23,14 +23,12 @@ export interface AgentControl {
   reason: string | null;
 }
 
-/** The signal, validated by Core's `agent.control` contract; null when the payload breaks it. */
-export function parseAgentControl(payload: Record<string, unknown>): AgentControl | null {
-  let normalized: Record<string, unknown>;
-  try {
-    normalized = validateEventPayload(AGENT_CONTROL_EVENT, payload) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+/**
+ * The signal, validated by Core's `agent.control` contract. Throws Core's
+ * validation error, whose `.issues` name what broke it, when the payload does.
+ */
+export function parseAgentControl(payload: Record<string, unknown>): AgentControl {
+  const normalized = validateEventPayload(AGENT_CONTROL_EVENT, payload) as Record<string, unknown>;
   return {
     mode: normalized.mode as AgentControlMode,
     scope: normalized.scope as AgentControl["scope"],

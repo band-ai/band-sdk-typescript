@@ -8,9 +8,14 @@ import { FakeTransport, RecordLog } from "./testUtils";
 const ROOM = "room-1";
 const MESSAGE = "msg-1";
 
+type PeerRest = Awaited<ReturnType<typeof activityPeer>>["rest"];
+
+/** The message-lifecycle endpoints: a claim, and its two acknowledgements. */
+const LIFECYCLE_SUFFIXES = ["/processing", "/processed", "/failed"];
+
 /** Band's answer to an agent write in a room it stopped the agent in: 204 for a claim or acknowledgement, 403 for a post. */
 function stoppedBand({ request, response }: ActivityRequest): void {
-  if (request.url?.endsWith("/processing") || request.url?.endsWith("/processed") || request.url?.endsWith("/failed")) {
+  if (LIFECYCLE_SUFFIXES.some((suffix) => request.url?.endsWith(suffix))) {
     response.writeHead(204);
     response.end();
     return;
@@ -20,11 +25,11 @@ function stoppedBand({ request, response }: ActivityRequest): void {
 
 describe("Band refusing writes in a room it stopped the agent in, over HTTP", () => {
   it.each([
-    ["markMessageProcessing", (rest: Awaited<ReturnType<typeof activityPeer>>["rest"]) => rest.markMessageProcessing(ROOM, MESSAGE)],
-    ["markMessageProcessed", (rest: Awaited<ReturnType<typeof activityPeer>>["rest"]) => rest.markMessageProcessed(ROOM, MESSAGE)],
-    ["markMessageFailed", (rest: Awaited<ReturnType<typeof activityPeer>>["rest"]) => rest.markMessageFailed(ROOM, MESSAGE, "boom")],
-    ["createChatMessage", (rest: Awaited<ReturnType<typeof activityPeer>>["rest"]) => rest.createChatMessage(ROOM, { content: "hi", mentions: [{ id: "user-1" }] })],
-    ["createChatEvent", (rest: Awaited<ReturnType<typeof activityPeer>>["rest"]) => rest.createChatEvent(ROOM, { content: "thinking", messageType: "thought" })],
+    ["markMessageProcessing", (rest: PeerRest) => rest.markMessageProcessing(ROOM, MESSAGE)],
+    ["markMessageProcessed", (rest: PeerRest) => rest.markMessageProcessed(ROOM, MESSAGE)],
+    ["markMessageFailed", (rest: PeerRest) => rest.markMessageFailed(ROOM, MESSAGE, "boom")],
+    ["createChatMessage", (rest: PeerRest) => rest.createChatMessage(ROOM, { content: "hi", mentions: [{ id: "user-1" }] })],
+    ["createChatEvent", (rest: PeerRest) => rest.createChatEvent(ROOM, { content: "thinking", messageType: "thought" })],
   ])("%s rejects with RoomExecutionStoppedError for the room", async (_name, call) => {
     await using peer = await activityPeer(stoppedBand);
 
@@ -32,6 +37,17 @@ describe("Band refusing writes in a room it stopped the agent in, over HTTP", ()
 
     expect(refused).toBeInstanceOf(RoomExecutionStoppedError);
     expect((refused as RoomExecutionStoppedError).roomId).toBe(ROOM);
+  });
+
+  it("recognizes Band's stopped refusal sent as plain text, whatever its case", async () => {
+    await using peer = await activityPeer(({ response }) => {
+      response.writeHead(403, { "content-type": "text/plain" });
+      response.end("Agent Execution Is Stopped in this room");
+    });
+
+    const refused = await peer.rest.createChatMessage(ROOM, { content: "hi", mentions: [{ id: "user-1" }] }).catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(RoomExecutionStoppedError);
   });
 
   it("leaves a claim Band accepts, and a post it forbids for another reason, as they were", async () => {

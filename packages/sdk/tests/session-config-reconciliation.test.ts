@@ -3,6 +3,7 @@ import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { ExecutionContext, type ExecutionContextOptions } from "../src/runtime/ExecutionContext";
 import { BandLink } from "../src/platform/BandLink";
 import { ValidationError } from "../src/core/errors";
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../src/core/deadline";
 import { FakeRestApi, FakeTransport } from "./testUtils";
 import { describe, expect, it, vi } from "vitest";
 
@@ -201,6 +202,17 @@ describe("applySessionConfigSelections", () => {
   });
 });
 
+
+describe("runtime stopped-room resync configuration", () => {
+  // Past `setTimeout`'s bound the check would fire at once, again and again, while Band keeps the room stopped.
+  it.each([0, -1, NaN, Infinity, MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND + 1])("rejects stoppedResyncSeconds %s at construction", (stoppedResyncSeconds) => {
+    expect(() => new PlatformRuntime({ agentId: "agent", apiKey: "key", sessionConfig: { stoppedResyncSeconds } })).toThrow(ValidationError);
+  });
+
+  it("accepts the longest interval a timer can wait", () => {
+    expect(() => new PlatformRuntime({ agentId: "agent", apiKey: "key", sessionConfig: { stoppedResyncSeconds: MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND } })).not.toThrow();
+  });
+});
 
 describe("runtime working-state session configuration", () => {
   it.each([

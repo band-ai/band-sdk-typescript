@@ -7,12 +7,24 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
 }
 
 /**
+ * `tools`, asking `refusal` before each method call. A call it refuses
+ * returns a promise rejected with its error, as an async tool fails; one it
+ * lets through runs as usual.
+ */
+export function guardedTools<T extends object>(tools: T, refusal: (key: PropertyKey) => Error | null): T {
+  return forward(() => tools, {}, refusal);
+}
+
+/**
  * A tools object whose every access reaches `resolve()`'s tools at that
- * moment, with `overrides` replacing some members, and `beforeCall` run
- * before each of its methods (it may throw to refuse the call). `Reflect.get(tools, key,
+ * moment, with `overrides` replacing some members. `Reflect.get(tools, key,
  * tools)` keeps inherited accessors/methods bound to the real tools instance.
  */
-export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}, beforeCall?: () => void): T {
+export function forwardTools<T extends object>(resolve: () => T, overrides: Partial<T> = {}): T {
+  return forward(resolve, overrides);
+}
+
+function forward<T extends object>(resolve: () => T, overrides: Partial<T>, refusal?: (key: PropertyKey) => Error | null): T {
   return new Proxy({} as T, {
     has(_target, key) {
       return Object.hasOwn(overrides, key) || Reflect.has(resolve(), key);
@@ -27,10 +39,10 @@ export function forwardTools<T extends object>(resolve: () => T, overrides: Part
         return value;
       }
       const bound = value.bind(tools) as (...args: unknown[]) => unknown;
-      return beforeCall
+      return refusal
         ? (...args: unknown[]): unknown => {
-          beforeCall();
-          return bound(...args);
+          const refused = refusal(key);
+          return refused ? Promise.reject(refused) : bound(...args);
         }
         : bound;
     },

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ParticipantRecord } from "../contracts/dtos";
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../core/deadline";
 import { ValidationError } from "../core/errors";
 import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../contracts/activity";
 import type {
@@ -55,8 +56,9 @@ export const sessionConfigSchema = z.object({
   /**
    * How often a room Band has stopped checks `/messages/next`, which Band
    * keeps empty while it is stopped, to find a play whose push was missed.
+   * Bounded by what `setTimeout` can wait, which fires at once past that.
    */
-  stoppedResyncSeconds: z.number().positive().finite().default(DEFAULT_STOPPED_RESYNC_SECONDS),
+  stoppedResyncSeconds: z.number().positive().max(MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND).default(DEFAULT_STOPPED_RESYNC_SECONDS),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
   const cadence = config.workingKeepAliveSeconds;

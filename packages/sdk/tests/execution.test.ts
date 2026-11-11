@@ -1,6 +1,6 @@
-import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import { RecoverableTurnError, RuntimeStateError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution } from "../src/runtime/Execution";
@@ -21,7 +21,7 @@ interface BacklogMessage {
   createdAt: Date;
 }
 
-function makeEvent(id: string): PlatformEvent {
+function makeEvent(id: string, sender = { id: "user-1", type: "User" }): PlatformEvent {
   return {
     type: "message_created",
     roomId: "room-1",
@@ -29,8 +29,8 @@ function makeEvent(id: string): PlatformEvent {
       id,
       content: "hello",
       message_type: "text",
-      sender_id: "user-1",
-      sender_type: "User",
+      sender_id: sender.id,
+      sender_type: sender.type,
       sender_name: "User One",
       metadata: {},
       inserted_at: new Date().toISOString(),
@@ -823,18 +823,10 @@ describe("Execution bootstrap messages", () => {
     const ran = createDeferred<void>();
     const { execution, processed } = createExecution({ onExecute: async () => ran.resolve() });
     onTestFinished(() => execution.stop(0).then(() => undefined));
-    const message = (id: string, senderType: string, senderId: string): PlatformEvent => ({
-      type: "message_created",
-      roomId: "room-1",
-      payload: {
-        id, content: id, sender_id: senderId, sender_type: senderType, sender_name: null,
-        message_type: "text", metadata: {}, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      },
-    });
     execution.pause("host");
 
-    await execution.enqueue(message("live", "User", "user-1"));
-    await execution.enqueue(message("synthetic", SYNTHETIC_SENDER_TYPE, SYNTHETIC_CONTACT_EVENTS_SENDER_ID));
+    await execution.enqueue(makeEvent("live"));
+    await execution.enqueue(makeEvent("synthetic", { id: SYNTHETIC_CONTACT_EVENTS_SENDER_ID, type: SYNTHETIC_SENDER_TYPE }));
     await execution.waitForIdle();
     expect(processed).toEqual([]);
 
@@ -842,5 +834,40 @@ describe("Execution bootstrap messages", () => {
     await ran.promise;
     expect(processed).toEqual(["synthetic"]);
   });
-});
 
+  it("runs a room only once every pause source has lifted its pause, and catches up then", async () => {
+    let reads = 0;
+    let startupReads: number | null = null;
+    const caughtUp = createDeferred<void>();
+    const { execution } = createExecution({
+      getNextMessage: async () => {
+        reads += 1;
+        if (startupReads !== null && reads > startupReads) caughtUp.resolve();
+        return null;
+      },
+    });
+    onTestFinished(() => execution.stop(0).then(() => undefined));
+    await execution.waitForIdle();
+    startupReads = reads;
+
+    expect(execution.pause("host")).toBe(true);
+    expect(execution.pause("band")).toBe(true);
+    expect(execution.pause("band")).toBe(false);
+    expect(execution.resume("band")).toBe(true);
+    await execution.waitForIdle();
+    expect(execution.isPaused()).toBe(true);
+    expect(reads).toBe(startupReads);
+
+    expect(execution.resume("host")).toBe(true);
+    await caughtUp.promise;
+    expect(execution.isPaused()).toBe(false);
+  });
+
+  it("refuses a message enqueued after stop, paused or not", async () => {
+    const { execution } = createExecution();
+    execution.pause("band");
+    await execution.stop(0);
+
+    await expect(execution.enqueue(makeEvent("late"))).rejects.toThrow(RuntimeStateError);
+  });
+});

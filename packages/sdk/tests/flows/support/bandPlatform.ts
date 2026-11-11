@@ -15,6 +15,7 @@ import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/r
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { RoomExecutionStoppedError } from "../../../src/core/errors";
+import type { AgentControlMode } from "../../../src/platform/control";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import type { SessionConfig } from "../../../src/runtime/types";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
@@ -149,6 +150,10 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a working report in flight, as a turn's first report is before the turn starts. */
+  public readonly activityHolds = new CallHolds<[roomId: string, working: boolean]>();
+  /** Holds a room's history read, as a session's first turn hydrates it. */
+  public readonly contextHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
   public readonly participantHolds = new CallHolds<[roomId: string]>();
   /** Holds `getAgentMe`, as a slow platform answers it. */
@@ -185,6 +190,8 @@ export class RecordingRestApi extends FakeRestApi {
 
   public async reportActivity(roomId: string, working: boolean) {
     this.assertMember(roomId, "reportActivity");
+    // Awaited only when held: the turn's working reports are timing other tests observe.
+    if (this.activityHolds.isHolding(roomId, working)) await this.activityHolds.pass(roomId, working);
     if (this.refuseActivity) {
       this.refusedReports.record({ roomId, working });
       throw new Band.NotFoundError({ error: { code: "not_found", message: "No active execution", request_id: randomUUID() } });
@@ -377,6 +384,7 @@ export class RecordingRestApi extends FakeRestApi {
    * at a time: what people said and what the agent posted.
    */
   public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
+    await this.contextHolds.pass(chatId);
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
     // Band refuses a cursor it never handed out rather than restarting the walk.
@@ -398,9 +406,10 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async markMessageProcessing(roomId: string, messageId: string) {
-    this.processing.record(messageId);
     await this.processingHolds.pass(messageId);
+    // A refused claim claims nothing.
     this.refuseWhileStopped(roomId);
+    this.processing.record(messageId);
     return {};
   }
 
@@ -659,7 +668,7 @@ export class BandPlatform implements AsyncDisposable {
    * `delivered: false` the agent misses the push. Returns its correlation id.
    */
   public control(
-    mode: "stop" | "play" | "interrupt",
+    mode: AgentControlMode,
     roomId: string | null,
     options: { delivered?: boolean; correlationId?: string } = {},
   ): string {

@@ -409,11 +409,9 @@ async function refusedWhileStopped(chatId: string, call: Promise<unknown>): Prom
 }
 
 function errorBodyMessage(error: unknown): string | null {
-  const body = typeof error === "object" && error !== null && "body" in error ? error.body : undefined;
+  const body = asOptionalRecord(error)?.body;
   if (typeof body === "string") return body;
-  const inner = typeof body === "object" && body !== null && "error" in body ? body.error : undefined;
-  const message = typeof inner === "object" && inner !== null && "message" in inner ? inner.message : undefined;
-  return typeof message === "string" ? message : null;
+  return asString(asOptionalRecord(asOptionalRecord(body)?.error)?.message) ?? null;
 }
 
 /** Posts with `post`, turning Band's refusal of a post in a stopped room into {@link RoomExecutionStoppedError}. */

@@ -145,6 +145,11 @@ export class CallHolds<A extends unknown[]> {
     return { sending: hold.sending.promise, release };
   }
 
+  /** Whether a hold waits for this call; a fake whose timing others rely on awaits `pass` only then. */
+  public isHolding(...args: A): boolean {
+    return this.holds.some((candidate) => candidate.matches(...args));
+  }
+
   public async pass(...args: A): Promise<void> {
     const hold = this.holds.find((candidate) => candidate.matches(...args));
     if (!hold) {
