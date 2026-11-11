@@ -241,15 +241,22 @@ export class Execution {
     }
     if (source === "band") this.clearStoppedProbe();
     this.logger.info("room resumed", { roomId: this.roomId, source, stillPausedBy: [...this.pausedBy] });
+    this.catchUpIfRunnable();
+    return true;
+  }
+
+  /**
+   * Once nothing pauses the room, catches it up on what Band kept: ahead of
+   * the work queued behind a stopped turn, which it replays first, and after
+   * any hold, since a stopped turn the adapter could not cancel may still be
+   * running. Its sweep opens no boundary until it runs, so a pause before
+   * then leaves nothing for an idle wait to wait on.
+   */
+  private catchUpIfRunnable(): void {
     if (!this.isPaused() && this.isActive()) {
-      // Ahead of the work queued behind the stopped turn, which it replays first,
-      // and after any hold: a stopped turn the adapter could not cancel may still
-      // be running. Its sweep opens no boundary until it runs, so a pause before
-      // then leaves nothing for an idle wait to wait on.
       this.deferCatchUp();
       this.wake();
     }
-    return true;
   }
 
   /**
@@ -259,14 +266,9 @@ export class Execution {
    * Returns whether Band's pause was recorded.
    */
   public play(): boolean {
-    if (this.resume("band")) {
-      return true;
-    }
-    if (!this.isPaused() && this.isActive()) {
-      this.deferCatchUp();
-      this.wake();
-    }
-    return false;
+    const lifted = this.resume("band");
+    if (!lifted) this.catchUpIfRunnable();
+    return lifted;
   }
 
   /** Ends the running turn and consumes its message; false when no turn is running. */

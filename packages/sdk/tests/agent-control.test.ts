@@ -912,6 +912,7 @@ describe("agent.control from Band", () => {
     expect(of(ROOM_A).at(-1)).toBe("room.paused");
     expect(handled.entries).toEqual([]);
   });
+
   it("does not lift a newer Band stop on a room's next execution with a check a forced reset left in flight", async () => {
     const { adapter, handled } = settlingAdapter();
     const { agent, platform, roomA, next, of } = await startAgent(adapter);
@@ -939,5 +940,34 @@ describe("agent.control from Band", () => {
 
     expect(of(ROOM_A)).not.toContain("room.resumed");
     expect(handled.entries).toEqual([]);
+  });
+  it("keeps checking a room reset while Band stopped it, so a play whose push was missed is found on the interval", async () => {
+    const { adapter, handled } = settlingAdapter();
+    useFakeTimeouts();
+    const { agent, platform, roomA, next, events } = await startAgent(adapter, { stoppedResyncSeconds: RESYNC_SECONDS });
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    await agent.resetRoomSession(ROOM_A);
+    await next(is("room.stopped", ROOM_A));
+    // The room's next execution starts paused and checks /next at once; Band answers it while still stopped.
+    const startCheck = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    const id = roomA.postBeforeConnect("owner", "bootstrapped");
+    const bootstrapped = agent.bootstrapRoomMessage(ROOM_A, {
+      id, roomId: ROOM_A, content: "bootstrapped", senderId: "owner", senderType: "User", senderName: "owner",
+      messageType: "text", metadata: {}, createdAt: new Date(),
+    });
+    await startCheck.sending;
+    // Band plays the room after answering that check, and the play push is missed.
+    platform.control("play", ROOM_A, { delivered: false });
+    const mark = events.entries.length;
+    startCheck.release();
+
+    await vi.advanceTimersByTimeAsync(RESYNC_MS - 1);
+    expect(handled.entries).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await next(is("room.resumed", ROOM_A), mark);
+    vi.useRealTimers();
+    await bootstrapped;
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([id]);
   });
 });
