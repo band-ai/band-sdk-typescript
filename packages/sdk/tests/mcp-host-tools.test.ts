@@ -127,6 +127,23 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     expect(roomTools.events).toEqual([]);
   });
 
+  it("runs a tool that declares no room_id and only passes its tools along", async () => {
+    const passAlong: McpToolRegistration = {
+      name: "pass_along",
+      description: "Hand the tools to an async helper that never uses them.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      execute: async (_args, tools) => {
+        await Promise.resolve(tools);
+        return { content: [{ type: "text", text: "passed" }] };
+      },
+    };
+    const client = await bridgeClient([passAlong], { [ROOM]: new FakeTools() });
+
+    const result = await client.callTool({ name: "pass_along", arguments: {} });
+
+    expect(textOf(result)).toBe("passed");
+  });
+
   it("fails loudly when a tool that declares no room_id uses room tools on a room-scoped server", async () => {
     const roomTools = new FakeTools();
     const client = await bridgeClient([markUnnamedRoom], { [ROOM]: roomTools });

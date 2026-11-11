@@ -14,6 +14,7 @@ import {
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
+import { UnsupportedFeatureError } from "../src/core/errors";
 import { RestFacade } from "../src/client/rest/RestFacade";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
@@ -1444,6 +1445,47 @@ describe("ClaudeSDKAdapter", () => {
       expect(result?.isError).toBeUndefined();
       expect(otherRoom?.isError).toBe(true);
       expect(tools.events.map((event) => event.content).filter((content) => content.startsWith("marker:"))).toEqual([`marker: ${ROOM_ID}`]);
+    });
+
+    it("keeps a host tool that outlives its turn from writing into the room", async () => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const finished = createDeferred<unknown>();
+      const tools = trackTurn(new FakeTools());
+      const adapter = new ClaudeSDKAdapter({
+        additionalMcpTools: [{
+          name: "slow_mark",
+          description: "Leave a marker in this room after a slow lookup.",
+          inputSchema: { type: "object", properties: { room_id: { type: "string" } }, required: ["room_id"] },
+          execute: async (_args, roomTools) => {
+            entered.resolve();
+            await release.promise;
+            try {
+              await roomTools!.sendEvent("late marker", "thought");
+              finished.resolve(null);
+            } catch (error) {
+              finished.resolve(error);
+            }
+            return { content: [{ type: "text", text: "marked" }] };
+          },
+        }],
+        queryFn: async function* ({ options }) {
+          void callMcpTool(options, "slow_mark", { room_id: ROOM_ID }).catch(() => undefined);
+          const signal = options!.abortController!.signal;
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          throw Object.assign(new Error("Claude Code process aborted by user"), { name: "AbortError" });
+          yield undefined as never;
+        },
+      });
+      await adapter.onStarted("Agent", "desc");
+      const turn = startMessage(adapter, tools);
+      await entered.promise;
+      await adapter.onCleanup(ROOM_ID);
+      await turn;
+      release.resolve();
+
+      expect(await finished.promise).toBeInstanceOf(UnsupportedFeatureError);
+      expect(tools.events.map((event) => event.content)).not.toContain("late marker");
     });
 
     it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {

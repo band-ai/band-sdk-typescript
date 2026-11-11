@@ -1,6 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
   isToolExecutorError,
@@ -130,7 +131,7 @@ function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputS
 async function inRoom<T>(
   roomIdArg: unknown,
   resolver: (roomId: string) => T | undefined,
-  run: (tools: T) => Promise<McpToolResult>,
+  run: (tools: T, roomId: string) => Promise<McpToolResult>,
 ): Promise<McpToolResult> {
   const roomId = asNonEmptyString(roomIdArg);
   if (!roomId) {
@@ -140,7 +141,7 @@ async function inRoom<T>(
   if (!tools) {
     return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
   }
-  return run(tools);
+  return run(tools, roomId);
 }
 
 /**
@@ -174,14 +175,30 @@ export function buildRoomScopedRegistrations(
 export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolResolver): McpToolRegistration[] {
   return hostTools.map((tool) => {
     if (!declaresRoomId(tool.inputSchema.properties)) {
-      const unscoped = roomlessHostTools(tool.name);
-      return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, unscoped) };
+      return bindHostTool(tool, roomlessHostTools(tool.name));
     }
     return {
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
-      execute: (args: Record<string, unknown>) => inRoom(args[ROOM_ID_ARG], resolver, (tools) => tool.execute(args, tools)),
+      execute: (args: Record<string, unknown>) =>
+        inRoom(args[ROOM_ID_ARG], resolver, (_tools, roomId) => tool.execute(args, liveRoomTools(roomId, resolver))),
     };
+  });
+}
+
+function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
+  return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) };
+}
+
+// Resolved on every access rather than once: a host tool can outlive its
+// turn, and once the room no longer resolves it must not act on it.
+function liveRoomTools(roomId: string, resolver: ToolResolver): AdapterToolsProtocol {
+  return forwardTools(() => {
+    const tools = resolver(roomId);
+    if (!tools) {
+      throw new UnsupportedFeatureError(`No tool context found for ${ROOM_ID_ARG} ${roomId}: its turn has ended`);
+    }
+    return tools;
   });
 }
 
@@ -193,7 +210,7 @@ function roomlessHostTools(toolName: string): AdapterToolsProtocol {
       if (typeof key === "symbol" || key === "then") {
         return undefined;
       }
-      throw new Error(
+      throw new UnsupportedFeatureError(
         `Host tool '${toolName}' runs on a room-scoped MCP server: declare ${ROOM_ID_ARG} in its inputSchema to receive the room's tools`,
       );
     },
@@ -210,7 +227,7 @@ export function buildSingleContextRegistrations(
   const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools.map((tool) => ({ ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) })));
+    registrations.push(...options.additionalTools.map((tool) => bindHostTool(tool, tools)));
   }
 
   return wrapExecution(registrations, options.execute);
