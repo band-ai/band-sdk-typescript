@@ -82,7 +82,8 @@ describe("agent.rooms", () => {
     await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
 
     expect(subscribed(ROOM_B)).toBe(false);
-    expect(roomEvents(ROOM_B)).toEqual(["room.joined", "room.stopped", "room.left"]);
+    // The agent stays a member, so the room is stopped, not left.
+    expect(roomEvents(ROOM_B)).toEqual(["room.joined", "room.stopped"]);
     // Band announcing the room again does not bring it back.
     await platform.room(ROOM_B);
     expect(subscribed(ROOM_B)).toBe(false);

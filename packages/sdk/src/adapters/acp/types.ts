@@ -91,7 +91,9 @@ export type ACPPermissionAbandonReason =
   | "timeout"
   | "room-closed"
   | "adapter-stopped"
-  | "connection-lost";
+  | "connection-lost"
+  // The host cancelled the turn the request belongs to (`cancelTurn`).
+  | "turn-cancelled";
 
 // `settled` is bookkeeping, not abandonment: the consumer chose one of this
 // request's own offered options, and the abort controller is simply being

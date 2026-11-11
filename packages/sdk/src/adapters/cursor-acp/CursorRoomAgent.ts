@@ -56,6 +56,7 @@ export type CursorDecisionSettings = Pick<
 // Why a decision ended without an answer. `timeout` is shared with the ACP base class, whose own permission timeout aborts with it.
 const END_REASON = {
   timeout: "timeout" satisfies ACPPermissionAbandonReason,
+  turnCancelled: "turn-cancelled" satisfies ACPPermissionAbandonReason,
   turnFinished: "turn_finished",
   roomCleanup: "room_cleanup",
   stopped: "stopped",
@@ -310,6 +311,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     await super.stop();
   }
 
+  protected override onTurnCancelled(roomId: string): void {
+    this.cancelRoom(roomId, END_REASON.turnCancelled);
+  }
+
   public async resolveExtension(
     method: string,
     params: Record<string, unknown>,
@@ -318,7 +323,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     const turn = this.turn;
     // Only the running prompt's own session may ask. A late ask from a finished
     // prompt can arrive while the next turn is still being established.
-    if (!turn || !sessionId || turn.sessionId !== sessionId) {
+    if (!turn || !sessionId || turn.sessionId !== sessionId || this.isTurnCancelled(turn.roomId)) {
       return CANCELLED;
     }
     if (method === CURSOR_ASK_QUESTION_METHOD) {
@@ -384,7 +389,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
   }
 
   private async waitForDecision(turn: CursorTurn, spec: DecisionSpec, prompt: (token: string) => string, signal?: AbortSignal): Promise<DecisionAnswer> {
-    if (signal?.aborted) {
+    if (signal?.aborted || this.isTurnCancelled(turn.roomId)) {
       return undefined;
     }
     const entry = this.registerDecision(turn, spec, signal);
@@ -392,6 +397,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
       return undefined;
     }
     const result = await this.decisions.wait(entry, entry.payload.answer.promise, { timeoutMs: this.decisionTimeoutMs });
+    if (this.isTurnCancelled(turn.roomId)) {
+      this.abandonDecision(entry, END_REASON.turnCancelled);
+      return undefined;
+    }
     if (result !== TIMED_OUT) {
       return result;
     }

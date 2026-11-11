@@ -15,6 +15,7 @@ import {
 import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 import { createDeferred, type Deferred } from "../core/deferred";
+import { turnFailureLabel } from "../core/coercion";
 
 /** `holdRoomUntil` keeps the room's other work queued until a turn that outlives the handler ends. */
 export type ExecutionHandler = (
@@ -491,11 +492,10 @@ export class Execution {
         this.warnTurnFailed(error, { messageId });
         return;
       }
-      const label = error instanceof Error ? error.message : String(error);
       this.logger.error("Sync message execution failed", {
         roomId: this.roomId,
         messageId,
-        error: label,
+        error: turnFailureLabel(error),
       });
     } finally {
       this.inFlight -= 1;

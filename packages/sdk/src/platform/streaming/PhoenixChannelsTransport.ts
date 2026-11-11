@@ -1,5 +1,6 @@
 import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { RuntimeStateError, TransportError } from "../../core/errors";
+import { notifyEach, subscribe } from "../../core/listeners";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
@@ -220,13 +221,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.logger.warn("Phoenix session ended", { reason: error.reason });
     this.terminal.abort(error);
-    for (const observer of [...this.terminalObservers]) {
-      try {
-        observer(error);
-      } catch (observerError) {
-        this.logger.error("Terminal disconnect observer failed", { error: observerError });
-      }
-    }
+    notifyEach(this.terminalObservers, error, (observerError) => {
+      this.logger.error("Terminal disconnect observer failed", { error: observerError });
+    });
     this.registry.failPendingJoins(error);
     void this.closeSocketLogged();
   }
@@ -268,10 +265,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public onTerminal(observer: TerminalObserver): () => void {
-    this.terminalObservers.add(observer);
-    return () => {
-      this.terminalObservers.delete(observer);
-    };
+    return subscribe(this.terminalObservers, observer);
   }
 
   public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
@@ -328,24 +322,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public onReconnected(observer: ReconnectObserver): () => void {
-    this.reconnectObservers.add(observer);
-    return () => {
-      this.reconnectObservers.delete(observer);
-    };
+    return subscribe(this.reconnectObservers, observer);
   }
 
   public onDropped(observer: DropObserver): () => void {
-    this.dropObservers.add(observer);
-    return () => {
-      this.dropObservers.delete(observer);
-    };
+    return subscribe(this.dropObservers, observer);
   }
 
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
-    this.topicRejoinObservers.add(observer);
-    return () => {
-      this.topicRejoinObservers.delete(observer);
-    };
+    return subscribe(this.topicRejoinObservers, observer);
   }
 
   private handleJoinSettled(topic: string, joined: boolean): void {
@@ -370,13 +355,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   // Synchronous, unlike `notifyReconnectObservers`: an observer's queued catch-up
   // must land before any event the rejoined channel delivers next.
   private notifyTopicRejoined(topic: string): void {
-    for (const observer of [...this.topicRejoinObservers]) {
-      try {
-        observer(topic);
-      } catch (error) {
-        this.logger.error("Topic rejoin observer failed", { topic, error });
-      }
-    }
+    notifyEach(this.topicRejoinObservers, topic, (error) => {
+      this.logger.error("Topic rejoin observer failed", { topic, error });
+    });
   }
 
   private async handleOpen(): Promise<void> {
@@ -482,6 +463,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           this.logger.warn("Phoenix session superseded", { reason, verdict });
           if (verdict?.kind === "retry") {
             this.dropLiveConnection(reason);
+            this.notifyDropped(reason);
           }
         },
       },
@@ -494,14 +476,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const verdict = this.run?.onSocketClose(event) ?? ENDED_VERDICT;
     this.logger.info("Phoenix socket closed", { code: event?.code ?? null, verdict });
     if (verdict.kind === "retry") {
-      for (const observer of [...this.dropObservers]) {
-        try {
-          observer(verdict.reason);
-        } catch (error) {
-          this.logger.error("Drop observer failed", { error });
-        }
-      }
+      this.notifyDropped(verdict.reason);
     }
+  }
+
+  /** Session chose to retry: once per decision, so a supersede's later stale close adds nothing. */
+  private notifyDropped(reason: WebSocketDisconnectReason): void {
+    notifyEach(this.dropObservers, reason, (error) => {
+      this.logger.error("Drop observer failed", { reason, error });
+    });
   }
 
   private nextAttemptDelayMs(): number {

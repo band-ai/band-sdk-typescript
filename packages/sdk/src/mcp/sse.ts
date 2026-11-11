@@ -12,10 +12,12 @@ import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
+  /** Single tools instance or a room resolver, as `McpToolRegistration.execute` describes. */
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   port?: number;
   enableMemoryTools?: boolean;
+  enableTaskTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
@@ -51,6 +53,7 @@ export class BandMcpSseServer {
 
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     }

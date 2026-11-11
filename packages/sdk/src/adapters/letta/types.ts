@@ -12,6 +12,16 @@ export type LettaMessages = LettaMessage[];
 export class LettaHistoryConverter
   implements HistoryConverter<LettaMessages>
 {
+  private agentName = "";
+
+  /**
+   * `/context` labels every agent sender assistant; only this agent's own
+   * messages are its turns, and a peer agent's are input like a user's.
+   */
+  public setAgentName(name: string): void {
+    this.agentName = name;
+  }
+
   public convert(raw: Array<Record<string, unknown>>): LettaMessages {
     const messages: LettaMessages = [];
 
@@ -35,7 +45,8 @@ export class LettaHistoryConverter
         asNonEmptyString(entry.senderType) ??
         "User";
       const role =
-        (asNonEmptyString(entry.role) ?? "user").toLowerCase() === "assistant"
+        (asNonEmptyString(entry.role) ?? "user").toLowerCase() === "assistant" &&
+        sender === this.agentName
           ? "assistant"
           : "user";
 

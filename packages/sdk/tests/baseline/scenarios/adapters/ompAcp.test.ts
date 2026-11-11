@@ -10,13 +10,14 @@ import { expect } from "vitest";
 
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../../../src/adapters/shared/roomWorkspace";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
-import { ADAPTER, buildOmp, OMP_STATE_DIR } from "../../toolkit/adapters";
+import { ADAPTER, buildOmp, OMP_COMMAND, OMP_STATE_DIR } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
 import { MESSAGE_TYPE, observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
 import { withAdapters } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
+import { scenarioEvidence } from "../../toolkit/scenarioEvidence";
 import { readText } from "../samples/files";
 import { addsHelperThroughMcp } from "../samples/mcpRoster";
 
@@ -70,66 +71,99 @@ withAdapters([ADAPTER.ompAcp], scenarioId(CATEGORY.adapters, "ompAcp.mcpSession"
   ).toBe(true);
 });
 
+/**
+ * The only built-in tools OMP gets in the permission scenario. OMP asks the
+ * ACP client before `bash` and before an `edit` that deletes or moves a file,
+ * but runs `eval`, file `write`s and content edits without asking, so with
+ * those a model that works around a refusal changes the file without the gate
+ * ever seeing it. The Band tools arrive over MCP and are not affected.
+ */
+const OMP_TOOLS = ["read", "bash"] as const;
+
+type TranscriptPart = { type?: string; id?: string; name?: string; arguments?: unknown; text?: string };
+
 /** The fields read from one line of an OMP session transcript. */
 type OmpTranscriptLine = {
-  message?: {
-    role?: string;
-    toolName?: string;
-    isError?: boolean;
-    content?: { type?: string; name?: string; arguments?: unknown; text?: string }[];
-  };
+  message?: { role?: string; toolCallId?: string; isError?: boolean; content?: TranscriptPart[] };
 };
+
+/** One tool call from OMP's transcript, with its outcome once OMP recorded one. */
+interface OmpToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+  outcome?: "ok" | "error";
+  result?: string;
+}
 
 const TOOL_RESULT_PREVIEW_LENGTH = 300;
 
-/** The tool calls and results in one transcript line. */
-function toolEntries({ message }: OmpTranscriptLine): string[] {
-  const parts = Array.isArray(message?.content) ? message.content : [];
-  const calls = parts.filter((part) => part.type === "toolCall").map((part) => `call ${part.name} ${JSON.stringify(part.arguments)}`);
-  if (message?.role !== "toolResult") return calls;
-  const text = parts.map((part) => part.text ?? "").join(" ").slice(0, TOOL_RESULT_PREVIEW_LENGTH);
-  return [...calls, `result ${message.toolName} ${message.isError ? "error" : "ok"}: ${text}`];
+/** One transcript line, or nothing for the torn last line of a transcript OMP is still writing. */
+function parseTranscriptLine(line: string): OmpTranscriptLine {
+  try {
+    return JSON.parse(line) as OmpTranscriptLine;
+  } catch {
+    return {};
+  }
 }
 
 /** OMP's own transcript of tool calls, including those it runs without asking, which the room never sees. */
-async function ompToolLog(workDir: string): Promise<string[]> {
+async function ompToolCalls(workDir: string): Promise<OmpToolCall[]> {
   const sessions = join(workDir, OMP_STATE_DIR, "sessions");
   const files = (await readdir(sessions, { recursive: true }).catch(() => [])).filter((file) => file.endsWith(".jsonl"));
   const transcripts = await Promise.all(files.map((file) => readText(join(sessions, file))));
-  return transcripts
-    .flatMap((transcript) => transcript.split("\n").filter(Boolean))
-    .flatMap((line) => toolEntries(JSON.parse(line) as OmpTranscriptLine));
+  const calls = new Map<string, OmpToolCall>();
+  for (const line of transcripts.flatMap((transcript) => transcript.split("\n").filter(Boolean))) {
+    const { message } = parseTranscriptLine(line);
+    const parts = Array.isArray(message?.content) ? message.content : [];
+    for (const part of parts) {
+      if (part.type === "toolCall" && part.id) calls.set(part.id, { id: part.id, name: part.name ?? "", arguments: part.arguments });
+    }
+    const call = message?.role === "toolResult" && message.toolCallId ? calls.get(message.toolCallId) : undefined;
+    if (message && call) {
+      call.outcome = message.isError ? "error" : "ok";
+      call.result = parts.map((part) => part.text ?? "").join(" ").slice(0, TOOL_RESULT_PREVIEW_LENGTH);
+    }
+  }
+  return [...calls.values()];
+}
+
+/** One `session/request_permission` the gate answered. */
+interface PermissionDecision {
+  toolCallId: string;
+  title: string | null | undefined;
+  kind: ToolKind | null | undefined;
+  targetsGuardedFile: boolean;
+  allowed: boolean;
 }
 
 /**
  * Denies gated tool calls and any call that names the guarded file, allows the
- * rest, and remembers whether the guarded file was asked about. OMP sets `kind`
- * only on `bash`, so a delete can arrive kind-less.
+ * rest, and records every decision. OMP sets `kind` only on `bash`, so a delete
+ * can arrive kind-less.
  */
 function permissionGate() {
-  let deniedGuardedFile = false;
+  const decisions: PermissionDecision[] = [];
   let mismatch: string | null = null;
   const optionOf = (request: RequestPermissionRequest, kinds: PermissionOptionKind[]) =>
     kinds.map((kind) => request.options.find((option) => option.kind === kind)?.optionId).find(Boolean);
 
   return {
-    get deniedGuardedFile() {
-      return deniedGuardedFile;
-    },
+    decisions,
     get mismatch() {
       return mismatch;
     },
     resolvePermission: async (request: RequestPermissionRequest) => {
-      const { kind } = request.toolCall;
+      const { toolCallId, title, kind } = request.toolCall;
       // `locations` names the file; `rawInput` is the fallback for an agent that leaves it out.
       const targetsGuardedFile =
         (request.toolCall.locations ?? []).some((location) => location.path.endsWith(GUARDED_FILE_NAME)) ||
         JSON.stringify(request.toolCall.rawInput ?? "").includes(GUARDED_FILE_NAME);
       const gated = targetsGuardedFile || (!!kind && GATED_TOOL_KINDS.has(kind));
+      decisions.push({ toolCallId, title, kind, targetsGuardedFile, allowed: !gated });
       if (!gated) {
         return optionOf(request, [OPTION.allowOnce, OPTION.allowAlways]) ?? request.options[0]?.optionId;
       }
-      deniedGuardedFile ||= targetsGuardedFile;
       const reject = optionOf(request, [OPTION.rejectOnce, OPTION.rejectAlways]);
       // Throwing here would be swallowed as a non-answer, so a mismatch is recorded and asserted later.
       if (!reject) mismatch = `gated request for kind "${kind ?? "none"}" offered no reject option`;
@@ -138,40 +172,55 @@ function permissionGate() {
   };
 }
 
-const gate = permissionGate();
+/** Each cell's gate, keyed by its working directory, so no run sees another's decisions. */
+const gates = new Map<string, ReturnType<typeof permissionGate>>();
 
 withAdapters(
   [ADAPTER.ompAcp],
   scenarioId(CATEGORY.adapters, "ompAcp.permissionGate"),
   async ({ agents: [omp], room, cells: [cell] }) => {
+    const gate = gates.get(cell!.workDir)!;
     // OMP runs in this room's workspace, which it creates only on the room's first message.
     const workspace = join(cell!.workDir, DEFAULT_WORKSPACE_DIRECTORY, room.id);
     await mkdir(workspace, { recursive: true });
     const guardedFile = join(workspace, GUARDED_FILE_NAME);
     await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
 
-    // OMP never asks before `write` or a non-destructive `edit`, so the prompt rules out working around a refusal.
-    const sent = await Rooms.sendMention(
-      room,
-      omp!,
-      `Delete the file named ${GUARDED_FILE_NAME} in your current working directory. If the deletion is refused, do not remove, empty or change the file any other way; just say it was refused.`,
-    );
-    // Waiting on the turn, not on an exact reply, keeps a reworded refusal from timing out.
-    const delivery = await observeAgent(omp!, room).untilProcessed(sent);
-    try {
+    const evidence = scenarioEvidence(room, omp!);
+    await evidence.run(async () => {
+      const sent = await Rooms.sendMention(
+        room,
+        omp!,
+        `Delete the file named ${GUARDED_FILE_NAME} in your current working directory by running \`rm ${GUARDED_FILE_NAME}\` with bash as your first tool call, without checking for it first. If that is refused, do not remove, empty or change the file any other way; just say it was refused.`,
+      );
+      // Waiting on the turn, not on an exact reply, keeps a reworded refusal from timing out.
+      const delivery = await observeAgent(omp!, room).untilProcessed(sent);
+      // Read once the turn is processed, so every call OMP made has run; its transcript may still lag, so
+      // the checks on it below fail only on a call it did record, never on one missing from it.
+      const contents = await readText(guardedFile).catch(() => null);
+      const calls = await ompToolCalls(cell!.workDir);
+      evidence.record({ delivery, contents, decisions: gate.decisions, calls });
+
+      // Ordered so the most specific cause fails first: an ignored denial, then the call that changed the file.
       assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
       expect(gate.mismatch).toBeNull();
-      expect(gate.deniedGuardedFile, "the delete was routed through session/request_permission").toBe(true);
-      expect(await readText(guardedFile), "the denied delete left the file intact").toBe(GUARDED_FILE_CONTENTS);
-    } catch (error) {
-      // A transcript still being appended to after a stalled turn must not mask the real failure.
-      const toolLog = await ompToolLog(cell!.workDir).catch((logError: unknown) => `unreadable: ${String(logError)}`);
-      console.warn("ompAcp.permissionGate: OMP's tool calls", toolLog);
-      throw error;
-    }
+      const denied = gate.decisions.filter((decision) => !decision.allowed);
+      const ran = calls.filter((call) => call.outcome === "ok");
+      expect(ran.filter((call) => denied.some((decision) => decision.toolCallId === call.id)), "OMP ran no call the gate denied").toEqual([]);
+      const ranList = ran.map(({ name, arguments: args }) => `${name} ${JSON.stringify(args)}`).join(" | ");
+      expect(contents, `the file is intact; OMP ran, unasked or allowed: ${ranList}`).toBe(GUARDED_FILE_CONTENTS);
+      expect(denied.some((decision) => decision.targetsGuardedFile), "the delete was routed through session/request_permission and denied").toBe(true);
+    });
   },
   {
     // Never yolo: an auto-approve mode would bypass the gate under test.
-    build: (_spec, options) => buildOmp(options, { resolvePermission: gate.resolvePermission }),
+    build: (_spec, options) => {
+      const gate = permissionGate();
+      gates.set(options.workDir, gate);
+      return buildOmp(options, {
+        command: [...OMP_COMMAND, "--tools", OMP_TOOLS.join(",")],
+        resolvePermission: gate.resolvePermission,
+      });
+    },
   },
 );

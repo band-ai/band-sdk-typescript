@@ -23,7 +23,10 @@ interface RoomPresenceOptions {
 }
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
-type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
+/** `removed` when the agent lost the room's membership; `stopped` when presence stopped tracking it. */
+/** Why a room's handling ended: membership lost, the agent stopped, or the host denied the room. */
+export type RoomLeaveReason = "removed" | "stopped" | "denied";
+type RoomPresenceLeaveHandler = (roomId: string, reason: RoomLeaveReason) => Promise<void>;
 type RoomEvent = MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent;
 type RoomPresenceEventHandler = (roomId: string, event: RoomEvent) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
@@ -239,7 +242,7 @@ export class RoomPresence implements AsyncDisposable {
     await Promise.all(
       roomIds.map(async (roomId) => {
         await this.unsubscribeRoom(roomId);
-        await this.onRoomLeft?.(roomId);
+        await this.onRoomLeft?.(roomId, "stopped");
       }),
     );
   }
@@ -308,23 +311,23 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
 
-    if (!(await this.leaveRoom(roomId))) {
+    if (!(await this.leaveRoom(roomId, "removed"))) {
       this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
     }
   }
 
   /**
-   * Stops handling `roomId` while the agent stays a member: unsubscribes its
+   * Stops handling `roomId`: unsubscribes its
    * topic, drops it from the roster (an admission still in flight goes stale
    * and releases its own subscription), and tears its execution down.
    * Resolves false when the room was not tracked.
    */
-  public async leaveRoom(roomId: string): Promise<boolean> {
+  public async leaveRoom(roomId: string, reason: RoomLeaveReason): Promise<boolean> {
     await this.leaveRoomTracking(roomId);
     if (!this.roster.recordRoomRemoved(roomId)) {
       return false;
     }
-    await this.onRoomLeft?.(roomId);
+    await this.onRoomLeft?.(roomId, reason);
     return true;
   }
 
@@ -387,7 +390,7 @@ export class RoomPresence implements AsyncDisposable {
     await Promise.all(
       reconciliation.removed.map(async (roomId) => {
         await this.leaveRoomTracking(roomId);
-        await this.onRoomLeft?.(roomId);
+        await this.onRoomLeft?.(roomId, "removed");
       }),
     );
 

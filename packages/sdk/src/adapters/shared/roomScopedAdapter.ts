@@ -1,8 +1,9 @@
 import type { HistoryConverter, MessagingTools, PlatformMessageLike } from "../../contracts/protocols";
-import type { AgentEventSink } from "../../contracts/events";
+import type { AgentEventListener } from "../../contracts/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { isolatedListener } from "../../runtime/agentEvents";
 import { asErrorMessage } from "./coercion";
 import { RoomWorkspaces, type RoomWorkspaceOptions } from "./roomWorkspace";
 
@@ -40,8 +41,8 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   // A room that rejoins while its old engine is still closing waits on this.
   private readonly closing = new Map<string, Promise<void>>();
   private stopped = false;
-  /** Where engines report local events; a no-op until the runtime attaches one. */
-  protected observer: AgentEventSink = () => {};
+  /** Where engines report local events; a no-op until a sink is attached. Never throws. */
+  protected observer: AgentEventListener = () => {};
 
   protected constructor(options: RoomScopedAdapterOptions<H>) {
     super({ historyConverter: options.historyConverter });
@@ -52,8 +53,9 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   /** Builds the engine for one room; `workspace` is its claimed real path. */
   protected abstract createRoom(roomId: string, workspace: string): E;
 
-  public attachObserver(sink: AgentEventSink): void {
-    this.observer = sink;
+  /** Isolated here, so a failing sink cannot change room cleanup, permission answers or errors. */
+  public attachObserver(sink: AgentEventListener): void {
+    this.observer = isolatedListener(sink, this.roomLogger);
   }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -83,7 +85,12 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
 
   /** Asks the room's own engine; a room with no engine yet has nothing to answer. */
   public isControlMessage(message: PlatformMessageLike, roomId: string): boolean {
-    return this.rooms.get(roomId)?.engine.isControlMessage?.(message, roomId) ?? false;
+    return this.roomEngine(roomId)?.isControlMessage?.(message, roomId) ?? false;
+  }
+
+  /** The room's engine, or undefined while the room has none. */
+  protected roomEngine(roomId: string): E | undefined {
+    return this.rooms.get(roomId)?.engine;
   }
 
   /**
@@ -143,24 +150,39 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
     if (existing) {
       return existing.ready.then(() => existing.engine);
     }
-    const workspace = this.workspaces.claim(roomId);
     let engine: E;
     try {
-      engine = this.createRoom(roomId, workspace);
+      engine = this.createEngine(roomId);
     } catch (error) {
-      this.workspaces.release(roomId);
+      this.reportRoomFailed(roomId, error);
       throw error;
     }
     const entry: RoomEntry<E> = { engine, ready: this.startRoom(roomId, engine) };
     this.rooms.set(roomId, entry);
     // A room that failed to start is dropped, so its next message tries again.
     entry.ready.catch((error: unknown) => {
-      this.observer({ type: "room.failed", roomId, error: asErrorMessage(error) });
+      this.reportRoomFailed(roomId, error);
       if (this.rooms.get(roomId) === entry) {
         void this.onCleanup(roomId);
       }
     });
     return entry.ready.then(() => engine);
+  }
+
+  /** Claims the room's workspace and builds its engine, releasing the claim if that fails. */
+  private createEngine(roomId: string): E {
+    const workspace = this.workspaces.claim(roomId);
+    try {
+      return this.createRoom(roomId, workspace);
+    } catch (error) {
+      this.workspaces.release(roomId);
+      throw error;
+    }
+  }
+
+  /** The room's engine could not be claimed, built or started. */
+  private reportRoomFailed(roomId: string, error: unknown): void {
+    this.observer({ type: "room.failed", roomId, error: asErrorMessage(error) });
   }
 
   private async startRoom(roomId: string, engine: E): Promise<void> {

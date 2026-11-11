@@ -1,5 +1,6 @@
 import type { BandToolName } from "@band-ai/band-sdk-core";
 
+import type { ToolCallEndStatus } from "../../contracts/events";
 import { mcpToolSpelling, resolveBandToolName } from "../../contracts/toolSchemas";
 import type { Turn } from "../../core/turn";
 import type { NativeActivity } from "../../runtime/workingState";
@@ -8,10 +9,10 @@ import type { CollectedChunk } from "./types";
 
 // A call is pending until it reports otherwise, and ends on one of the other two.
 export const PENDING = "pending";
-const COMPLETED = "completed";
-const FAILED = "failed";
+const COMPLETED = "completed" satisfies ToolCallEndStatus;
+const FAILED = "failed" satisfies ToolCallEndStatus;
 
-function isTerminalToolStatus(status: string): boolean {
+export function isTerminalToolStatus(status: unknown): status is ToolCallEndStatus {
   return status === COMPLETED || status === FAILED;
 }
 
@@ -28,18 +29,24 @@ const MCP_INVOCATION_KEYS = [
  * a display string.
  */
 export function acpToolCallName(rawInput: unknown, title: string): string {
+  return mcpInvocationName(rawInput) ?? title;
+}
+
+/** The MCP tool a call's arguments name as `{ server, tool }`, spelled as MCP exposes it. */
+export function mcpInvocationName(rawInput: unknown): string | undefined {
   const input = asOptionalRecord(rawInput);
-  if (input) {
-    const inputKeys = Object.keys(input);
-    for (const keys of MCP_INVOCATION_KEYS) {
-      const [server, tool] = [input[keys[0]], input[keys[1]]];
-      const matches = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
-      if (matches && typeof server === "string" && typeof tool === "string") {
-        return mcpToolSpelling(server, tool);
-      }
+  if (!input) {
+    return undefined;
+  }
+  const inputKeys = Object.keys(input);
+  for (const keys of MCP_INVOCATION_KEYS) {
+    const [server, tool] = [input[keys[0]], input[keys[1]]];
+    const matches = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
+    if (matches && typeof server === "string" && typeof tool === "string") {
+      return mcpToolSpelling(server, tool);
     }
   }
-  return title;
+  return undefined;
 }
 
 /**
@@ -95,7 +102,7 @@ export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal
     if (!id) return;
     const previous = calls.get(id);
     if (previous?.terminal) return;
-    const terminal = isTerminalToolStatus(typeof chunk.metadata.status === "string" ? chunk.metadata.status : PENDING);
+    const terminal = isTerminalToolStatus(chunk.metadata.status);
     const local = previous?.local || (bandToolsAreLocal && namedBandTool(chunk) !== undefined);
     calls.set(id, { terminal, local });
     if (local) {
@@ -107,8 +114,11 @@ export function observeNativeToolCalls(native: NativeActivity, bandToolsAreLocal
   };
 }
 
-/** ACP titles can contain commands; only structured tool names or categories are public detail. */
+/**
+ * ACP titles can contain commands; only structured tool names or categories are public detail.
+ * Posted Band activity keeps this narrower rule; local observe uses `observedToolName`.
+ */
 function nativeToolName(chunk: CollectedChunk): string {
   const kind = typeof chunk.metadata.kind === "string" ? chunk.metadata.kind : "";
-  return acpToolCallName(chunk.metadata.raw_input, "") || kind;
+  return mcpInvocationName(chunk.metadata.raw_input) ?? kind;
 }

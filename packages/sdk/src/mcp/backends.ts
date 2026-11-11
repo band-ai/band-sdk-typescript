@@ -28,9 +28,11 @@ export interface CreateBandMcpBackendOptions {
   execute?: BuildRegistrationsOptions["execute"];
   kind: BandMcpBackendKind;
   enableMemoryTools: boolean;
+  enableTaskTools?: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
+   * Otherwise see `McpToolRegistration.execute` for what host tools need from it.
    */
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
@@ -42,6 +44,7 @@ export async function createBandMcpBackend(
 ): Promise<BandMcpBackend> {
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
+    enableTaskTools: options.enableTaskTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
   };
@@ -53,6 +56,7 @@ export async function createBandMcpBackend(
       getToolsForRoom: options.getToolsForRoom,
       multiRoom: options.multiRoom,
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       additionalTools: options.additionalTools,
     });
 
@@ -79,6 +83,7 @@ export async function createBandMcpBackend(
     const server = new BandMcpStdioServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
     });
@@ -102,6 +107,7 @@ export async function createBandMcpBackend(
     const server = new BandMcpSseServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
       authToken,
@@ -123,6 +129,7 @@ export async function createBandMcpBackend(
     execute: options.execute,
     tools: resolvedTools,
     enableMemoryTools: options.enableMemoryTools,
+    enableTaskTools: options.enableTaskTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
     authToken,
