@@ -2,7 +2,6 @@
  * A reply the agent posts through band_send_message is the turn's only reply:
  * the turn's final text, which only narrates that post, is not posted after it.
  */
-import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
@@ -13,16 +12,14 @@ import { perAdapter } from "../../toolkit/perAdapter";
 import { CAPABILITY, CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
 
-const REPLY_WORD = "pineapple";
-/** Asks for final text after the send, so every model leaves narration a double post would carry. */
-const REQUEST = `Reply with the single word: ${REPLY_WORD}. Send it with ${SEND_MESSAGE_TOOL_NAME}, then say in plain text that you sent it.`;
+import { TOOL_REPLY_REQUEST, TOOL_REPLY_WORD } from "../samples/toolReply";
 
 perAdapter(
   scenarioId(CATEGORY.behavior, "repliesOnceThroughSendTool"),
   async ({ agent, room }) => {
     const evidence = scenarioEvidence(room, agent);
     await evidence.run(async () => {
-      const sent = await Rooms.sendMention(room, agent, REQUEST);
+      const sent = await Rooms.sendMention(room, agent, TOOL_REPLY_REQUEST);
       const [reply, delivery] = await Promise.all([
         observeRoom(room).untilReply(agent), observeAgent(agent, room).untilProcessed(sent),
       ]);
@@ -30,10 +27,10 @@ perAdapter(
       const stored = await evidence.read();
       assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
       assertReplied(reply);
-      assertReplyContains(reply, REPLY_WORD);
+      assertReplyContains(reply, TOOL_REPLY_WORD);
       const recipientId = stored.messages.find((message) => message.id === sent.id)?.senderId;
       if (!recipientId) throw new Error("the request's stored sender is missing");
-      assertToolReply(stored.calls, stored.results, stored.replies, { marker: REPLY_WORD, senderId: agent.id, recipientId });
+      assertToolReply(stored.calls, stored.results, stored.replies, { marker: TOOL_REPLY_WORD, senderId: agent.id, recipientId });
     });
   },
   {
