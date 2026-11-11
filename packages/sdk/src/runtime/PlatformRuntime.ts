@@ -13,7 +13,8 @@ import {
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
 import { RuntimeStateError, ValidationError } from "../core/errors";
-import { DefaultPreprocessor, toPlatformMessage } from "./preprocessing/DefaultPreprocessor";
+import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
+import { toPlatformMessage } from "./formatters";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
 import type { RuntimeLifecycleState } from "./lifecycle";

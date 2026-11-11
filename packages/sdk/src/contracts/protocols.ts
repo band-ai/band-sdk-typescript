@@ -164,6 +164,28 @@ export interface ContactTools {
   respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult>;
 }
 
+export interface FetchRoomContextArgs {
+  /** `nextCursor` from the previous page; omit for the oldest page. */
+  cursor?: string;
+  /** Messages per page, at most `MAX_CURSOR_PAGE`; `DEFAULT_CONTEXT_PAGE` by default. */
+  limit?: number;
+}
+
+export interface RoomContextPage {
+  /** Oldest first. */
+  messages: PlatformMessageLike[];
+  /** Pass back as `cursor` for the next page; null once this page reaches the newest message. */
+  nextCursor: string | null;
+}
+
+export interface RoomContextTools {
+  /**
+   * One page of the agent's context in the room: its own messages of every type and the
+   * text messages that mention it, oldest first. Not the room's full history.
+   */
+  fetchRoomContext(args?: FetchRoomContextArgs): Promise<RoomContextPage>;
+}
+
 export interface TaskTools {
   getBoard(args?: GetBoardArgs): Promise<WireBoard>;
   setBoard(args: SetBoardArgs): Promise<WireBoard>;
@@ -291,7 +313,8 @@ export interface AdapterToolsProtocol
     Partial<PeerLookupTools>,
     Partial<ContactTools>,
     Partial<MemoryTools>,
-    Partial<TaskTools> {
+    Partial<TaskTools>,
+    Partial<RoomContextTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
 }

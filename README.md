@@ -76,6 +76,26 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 - **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
+### Reading the agent's room context
+
+`tools.fetchRoomContext({ cursor?, limit? })` returns one page of the agent's context in the room, oldest first, and a `nextCursor` for the next page (`null` once the page reaches the newest message). The context is the agent's own messages of every type and the text messages that mention it; it is not the room's full history, which the agent API does not serve. Pages hold `DEFAULT_CONTEXT_PAGE` messages by default and at most `MAX_CURSOR_PAGE`, both exported from `@band-ai/sdk/rest`. A REST client without `getChatContext` throws `UnsupportedFeatureError`.
+
+It is not a Band tool, so the model does not see it unless a host serves it. On a single-room MCP server, such as each ACP room's own, a host's own MCP tool in `additionalMcpTools` gets that room's tools as the second argument of `execute`; they carry the room's full authority, whatever Band tools the server enables. On a multi-room server `tools` is undefined:
+
+```ts
+const readContext: McpToolRegistration = {
+  name: "read_room_context",
+  description: "Read this room's messages that you sent or that mention you, oldest first.",
+  inputSchema: { type: "object", properties: { cursor: { type: "string" }, limit: { type: "integer" } }, required: [] },
+  execute: async (args, tools) => {
+    if (!tools?.fetchRoomContext) {
+      throw new UnsupportedFeatureError("Room context needs a single-room server");
+    }
+    return { content: [{ type: "text", text: JSON.stringify(await tools.fetchRoomContext(args)) }] };
+  },
+};
+```
+
 ### Observing an agent
 
 A process that hosts an agent can follow it locally with `agent.observe(listener)`, which returns a function that removes the listener. Nothing a listener receives is posted to a room, and observing does not change what the room sees.
