@@ -139,7 +139,6 @@ Add these as real scenarios when the SDK or platform exposes what they need — 
 | Id | Blocked on |
 | --- | --- |
 | `inspection.usage` | Per-turn token usage reported by the SDK (band-sdk-python usage smokes). |
-| `behavior.controlSignals` | User stop/play/interrupt on the platform and handling in the TS runtime (Python `test_next_actionable_semantics`). |
 
 ## Design values
 

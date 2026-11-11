@@ -27,6 +27,7 @@ import type {
   PeerRecord,
 } from "../src/contracts/dtos";
 import type {
+  ControlObserver,
   DropObserver,
   ReconnectObserver,
   ReconnectSnapshot,
@@ -323,6 +324,7 @@ export class FakeTransport implements StreamingTransport {
   public readonly observers = new Set<ReconnectObserver>();
   public readonly rejoinObservers = new Set<TopicRejoinObserver>();
   public readonly dropObservers = new Set<DropObserver>();
+  public readonly controlObservers = new Set<ControlObserver>();
   /** Every topic bound, in order; await it to act once a subscription is in place. */
   public readonly bound = new RecordLog<string>();
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
@@ -548,6 +550,18 @@ export class FakeTransport implements StreamingTransport {
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
     this.rejoinObservers.add(observer);
     return () => this.rejoinObservers.delete(observer);
+  }
+
+  public onControl(observer: ControlObserver): () => void {
+    this.controlObservers.add(observer);
+    return () => this.controlObservers.delete(observer);
+  }
+
+  /** Pushes an `agent.control` payload as Band does on the agent's control channel. */
+  public pushControl(payload: Record<string, unknown>): void {
+    for (const observer of [...this.controlObservers]) {
+      observer(payload);
+    }
   }
 
   /** Simulates one channel rejoining on a socket that never dropped. */

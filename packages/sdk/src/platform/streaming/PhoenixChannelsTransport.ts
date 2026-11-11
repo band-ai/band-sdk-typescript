@@ -24,6 +24,7 @@ import { ENDED_VERDICT, SessionRun } from "./sessionRun";
 import {
   isOptionalTopic,
   type JoinOptions,
+  type ControlObserver,
   type DropObserver,
   type ReconnectObserver,
   type ReconnectSnapshot,
@@ -33,6 +34,7 @@ import {
   type TopicRejoinObserver,
 } from "./transport";
 import { SessionPolicy, agentControlTopic } from "@band-ai/band-sdk-core";
+import { AGENT_CONTROL_EVENT } from "../control";
 
 /** How long a boot `connect()` waits for an attempt to succeed while Session keeps retrying. */
 export const BOOT_CONNECT_DEADLINE_MS = 300_000;
@@ -61,6 +63,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly reconnectObservers = new Set<ReconnectObserver>();
   private readonly topicRejoinObservers = new Set<TopicRejoinObserver>();
   private readonly dropObservers = new Set<DropObserver>();
+  private readonly controlObservers = new Set<ControlObserver>();
   private readonly generationTracker = new ReconnectGenerationTracker(
     (snapshot) => this.notifyReconnectObservers(snapshot),
     (generation, pendingTopics) =>
@@ -329,6 +332,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     return subscribe(this.dropObservers, observer);
   }
 
+  public onControl(observer: ControlObserver): () => void {
+    return subscribe(this.controlObservers, observer);
+  }
+
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
     return subscribe(this.topicRejoinObservers, observer);
   }
@@ -465,6 +472,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
             this.dropLiveConnection(reason);
             this.notifyDropped(reason);
           }
+        },
+        [AGENT_CONTROL_EVENT]: (payload) => {
+          notifyEach(this.controlObservers, payload, (error) => {
+            this.logger.error("Control observer failed", { error });
+          });
         },
       },
       { exemptFromBuffering: true },

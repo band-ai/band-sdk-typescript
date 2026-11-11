@@ -368,11 +368,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     })
   }
 
-  /** Spawns the room's ACP agent and completes its handshake now, rather than on the first turn. */
-  public async warm(): Promise<void> {
-    await this.ensureConnection()
-  }
-
   public async onMessage(
     message: PlatformMessage,
     tools: TurnTools,

@@ -3,7 +3,6 @@ import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../co
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
-import { roomIdOf } from "./rooms/subscriptions";
 import {
   parseSessionConfig,
   type AgentConfig,
@@ -22,22 +21,17 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
-import { asErrorMessage, turnFailureLabel } from "../core/coercion";
+import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
-import type { AgentEventListener } from "../contracts/events";
+import type { AgentEventListener, TurnStopMode } from "../contracts/events";
+import type { AgentControl, AgentControlMode } from "../platform/control";
+import { ControlDeduplicator, controlTargets } from "./control";
+import { untilStopped } from "../core/signals";
+import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
-
-export interface AllowRoomOptions {
-  /**
-   * Start the room's agent process before admitting the room, reporting
-   * `room.ready` or `room.failed`, rather than on its first message. Applies
-   * to a room the allow admits or that is already admitted.
-   */
-  warm?: boolean;
-}
 
 export interface PlatformRuntimeOptions {
   agentId: string;
@@ -79,16 +73,14 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   private readonly _onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
-  /** The host's `allowRoom`/`denyRoom` per room, each with the order it was made in; kept across restarts. */
-  private readonly roomDecisions = new Map<string, { allowed: boolean; seq: number }>();
-  private roomDecisionSeq = 0;
-  /** Rooms a warm `allowRoom` is starting the agent of before admitting them itself, with how many such calls are in flight. */
-  private readonly warmingRooms = new Map<string, number>();
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
   private readonly events: AgentEventHub;
-  /** Stops relaying link changes; held from start until the matching stop. */
+  /** Stops relaying link changes and control signals; held from start until the matching stop. */
   private stopObservingLink: (() => void) | null = null;
+  /** Applies Band's control signals one at a time, in arrival order. */
+  private controlLane: Promise<void> = Promise.resolve();
+  private readonly controlIds = new ControlDeduplicator();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
@@ -152,7 +144,14 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   private observeLink(): void {
-    this.stopObservingLink = this.link.onConnectionChange(this.events.emit);
+    const stopConnection = this.link.onConnectionChange(this.events.emit);
+    const stopControl = this.link.onControl((control) => this.queueControl(control));
+    const stopObservedStops = this.link.onExecutionStopped((roomId) => this.observeBandStop(roomId));
+    this.stopObservingLink = () => {
+      stopConnection();
+      stopControl();
+      stopObservedStops();
+    };
     // A borrowed link may already be up, and its connect() then reports nothing.
     if (this.link.isConnected()) {
       this.events.emit({ type: "link.connected", reconnected: false });
@@ -162,6 +161,95 @@ export class PlatformRuntime implements AsyncDisposable {
   private unobserveLink(): void {
     this.stopObservingLink?.();
     this.stopObservingLink = null;
+  }
+
+  private queueControl(control: AgentControl): void {
+    this.queueOnControlLane(() => this.applyControl(control));
+  }
+
+  /** Runs `apply` after every control change queued before it, so Band's signals apply in order. */
+  private queueOnControlLane(apply: () => Promise<void> | void): void {
+    this.controlLane = this.controlLane.then(apply).catch((error: unknown) => {
+      this.logger.error("Failed to apply a control signal", { error });
+    });
+  }
+
+  /**
+   * Band refused a request in `roomId` as stopped, so its stop push was missed
+   * or is still on its way: pause the room now, synchronously, so the turn that
+   * made the request is cut short before it settles its message, then cancel it.
+   */
+  private observeBandStop(roomId: string): void {
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    if (!runtime || !adapter || !runtime.pauseRoom(roomId, "band")) {
+      return;
+    }
+    this.logger.info("Band has stopped the agent in a room; pausing it", { roomId });
+    this.events.emit({ type: "room.paused", roomId, source: "band" });
+    this.queueOnControlLane(() => this.cancelAdapterTurn(adapter, roomId));
+  }
+
+  private resumeBandPause(roomId: string): void {
+    if (this.runtime?.resumeRoom(roomId, "band")) {
+      this.events.emit({ type: "room.resumed", roomId, source: "band" });
+    }
+  }
+
+  /**
+   * Applies one `agent.control` signal to the rooms it reaches. A signal that
+   * reaches no handled room is not remembered, so a repeat can still apply
+   * once the room is handled.
+   */
+  private async applyControl(control: AgentControl): Promise<void> {
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    const roomIds = runtime ? controlTargets(control, runtime.handledRoomIds()) : [];
+    if (!runtime || !adapter || roomIds.length === 0) {
+      this.logger.info("Control signal reached no handled room", { mode: control.mode, roomId: control.roomId, scope: control.scope });
+      return;
+    }
+    if (!this.controlIds.firstSighting(control)) {
+      this.logger.debug("Ignoring a repeated control signal", { correlationId: control.correlationId });
+      return;
+    }
+    this.logger.info("Applying control signal", {
+      mode: control.mode,
+      scope: control.scope,
+      rooms: roomIds.length,
+      correlationId: control.correlationId,
+      executionId: control.executionId,
+    });
+    for (const roomId of roomIds) {
+      await this.applyControlToRoom(runtime, adapter, roomId, control.mode);
+    }
+  }
+
+  private async applyControlToRoom(runtime: AgentRuntime, adapter: FrameworkAdapter, roomId: string, mode: AgentControlMode): Promise<void> {
+    switch (mode) {
+      case "stop":
+        if (runtime.pauseRoom(roomId, "band")) {
+          this.events.emit({ type: "room.paused", roomId, source: "band" });
+        }
+        // Also reaches work the adapter kept running after its handler returned.
+        await this.cancelAdapterTurn(adapter, roomId);
+        return;
+      case "play":
+        this.resumeBandPause(roomId);
+        return;
+      case "interrupt":
+        runtime.interruptTurn(roomId);
+        await this.cancelAdapterTurn(adapter, roomId);
+        return;
+    }
+  }
+
+  private async cancelAdapterTurn(adapter: FrameworkAdapter, roomId: string): Promise<void> {
+    try {
+      await adapter.cancelTurn?.(roomId);
+    } catch (error: unknown) {
+      this.logger.warn("Adapter failed to cancel a stopped turn", { roomId, error });
+    }
   }
 
   /** Current lifecycle state of this runtime. */
@@ -348,13 +436,14 @@ export class PlatformRuntime implements AsyncDisposable {
         onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
-        onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
+        onMissedPlay: (roomId) => this.queueOnControlLane(() => this.resumeBandPause(roomId)),
+        onExecute: (context, event, admitted, holdRoomUntil, stopped) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil, stopped),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
         onContactEvent: (event) => this.handleContactEvent(event),
         onParticipantAdded: this._onParticipantAdded,
         onParticipantRemoved: this._onParticipantRemoved,
-        roomFilter: (room) => this.admitsRoom(room),
+        roomFilter: this._roomFilter,
         contextFactory: this._contextFactory,
       });
 
@@ -469,136 +558,6 @@ export class PlatformRuntime implements AsyncDisposable {
     return failure;
   }
 
-  /**
-   * Whether the agent handles `room`: the host's latest `allowRoom`/`denyRoom`
-   * for it, else the `roomFilter` it was built with, else every room. A room
-   * whose warm `allowRoom` is still starting its agent is admitted only by
-   * that call, so no other path dispatches its messages before `room.ready`.
-   */
-  private admitsRoom(room: MetadataMap): boolean {
-    const roomId = roomIdOf(room);
-    if (roomId !== undefined && this.warmingRooms.has(roomId) && !this.isAdmitted(roomId)) {
-      return false;
-    }
-    const decision = roomId === undefined ? undefined : this.roomDecisions.get(roomId);
-    return decision ? decision.allowed : (this._roomFilter?.(room) ?? true);
-  }
-
-  private isAdmitted(roomId: string): boolean {
-    return this.runtime?.presence.roster.roomMembership(roomId) === "admitted";
-  }
-
-  private decideRoom(roomId: string, allowed: boolean): number {
-    this.roomDecisionSeq += 1;
-    this.roomDecisions.set(roomId, { allowed, seq: this.roomDecisionSeq });
-    return this.roomDecisionSeq;
-  }
-
-  /** Whether the allow or deny that made `seq` is still the room's latest decision on the runtime it was made on. */
-  private isCurrentDecision(runtime: AgentRuntime, roomId: string, seq: number): boolean {
-    return this.roomDecisions.get(roomId)?.seq === seq && this.runtime === runtime;
-  }
-
-  /**
-   * Handles `roomId` from now on, overriding `roomFilter` for it. While
-   * running, a room Band lists the agent in is admitted at once; otherwise
-   * it is admitted when Band adds the agent to it, or at the next start.
-   * `warm` applies to a room this call admits or that is already admitted:
-   * the room's agent starts first, and `room.ready` or `room.failed` is
-   * reported before the room's messages are handled.
-   * Resolves true when the room is admitted on return.
-   */
-  public async allowRoom(roomId: string, options: AllowRoomOptions = {}): Promise<boolean> {
-    const seq = this.decideRoom(roomId, true);
-    const runtime = this.runtime;
-    const adapter = this.activeAdapter;
-    if (!runtime || !adapter || !this.lifecycle.is("running")) {
-      return false;
-    }
-    // Already handled: admitting it again would report a second join.
-    if (this.isAdmitted(roomId)) {
-      if (options.warm) {
-        await this.warmRoom(adapter, runtime, roomId, seq);
-      }
-      return this.isAdmitted(roomId);
-    }
-    if (!options.warm) {
-      const payload = await runtime.presence.memberRoom(roomId);
-      return payload !== undefined && (await this.admitIfCurrent(runtime, roomId, seq, payload));
-    }
-    // From here until this call admits the room, no other path may: none of
-    // its messages runs before `room.ready`.
-    this.warmingRooms.set(roomId, (this.warmingRooms.get(roomId) ?? 0) + 1);
-    let payload: MetadataMap | undefined;
-    try {
-      payload = await runtime.presence.memberRoom(roomId);
-      if (payload !== undefined) {
-        await this.warmRoom(adapter, runtime, roomId, seq);
-      }
-    } finally {
-      const remaining = (this.warmingRooms.get(roomId) ?? 1) - 1;
-      if (remaining > 0) this.warmingRooms.set(roomId, remaining);
-      else this.warmingRooms.delete(roomId);
-    }
-    if (payload === undefined) {
-      return false;
-    }
-    const admitted = await this.admitIfCurrent(runtime, roomId, seq, payload);
-    // The warmed agent serves nobody unless a later allow now owns the room.
-    const decision = this.roomDecisions.get(roomId);
-    const laterAllow = decision?.allowed === true && decision.seq !== seq;
-    if (!admitted && !laterAllow && this.runtime === runtime) {
-      this.logger.debug("Releasing a warmed room agent that was not admitted", { roomId });
-      try {
-        await adapter.onCleanup(roomId);
-      } catch (error) {
-        this.logger.warn("Failed to release a warmed room agent", { roomId, error: asErrorMessage(error) });
-      }
-    }
-    return admitted;
-  }
-
-  /** Admits the room unless a later allow or deny for it, or a stop, superseded the call that made `seq`. */
-  private async admitIfCurrent(runtime: AgentRuntime, roomId: string, seq: number, payload: MetadataMap): Promise<boolean> {
-    if (!this.isCurrentDecision(runtime, roomId, seq)) {
-      return false;
-    }
-    return await runtime.presence.admitRoom(roomId, payload);
-  }
-
-  /**
-   * Stops handling `roomId`, overriding `roomFilter` for it, while the agent
-   * stays a member: an admitted room's topic is unsubscribed and its
-   * execution torn down, reporting `room.stopped`, and Band adding the agent
-   * to it again does not admit it. Resolves true when an admitted room was left.
-   */
-  public async denyRoom(roomId: string): Promise<boolean> {
-    this.decideRoom(roomId, false);
-    const runtime = this.runtime;
-    if (!runtime) {
-      return false;
-    }
-    return await runtime.presence.leaveRoom(roomId, "denied");
-  }
-
-  /**
-   * Starts the room's agent and reports `room.ready` unless a later allow or
-   * deny, or a stop, superseded the call that made `seq`. A start failure is
-   * the adapter's to report as `room.failed`; it alone knows whether a stop
-   * or cleanup ended the start on purpose.
-   */
-  private async warmRoom(adapter: FrameworkAdapter, runtime: AgentRuntime, roomId: string, seq: number): Promise<void> {
-    try {
-      await adapter.warmRoom?.(roomId);
-    } catch (error) {
-      this.logger.warn("Room agent did not start ahead of the room's messages", { roomId, error: asErrorMessage(error) });
-      return;
-    }
-    if (this.isCurrentDecision(runtime, roomId, seq)) {
-      this.events.emit({ type: "room.ready", roomId });
-    }
-  }
-
   public async runForever(): Promise<void> {
     if (!this.runtime) {
       throw new RuntimeStateError("Runtime not started");
@@ -640,10 +599,11 @@ export class PlatformRuntime implements AsyncDisposable {
     adapter: FrameworkAdapter,
     admitted: () => boolean,
     holdRoomUntil: (ended: Promise<void>) => void,
+    stopped: AbortSignal,
   ): Promise<void> {
-    if (!admitted()) return;
+    if (!admitted() || stopped.aborted) return;
     const input = await this.preprocessor.process(context, event, this._agentId);
-    if (!admitted()) return;
+    if (!admitted() || stopped.aborted) return;
     if (!input) {
       this.logger.debug("preprocessor returned no input", {
         roomId: context.roomId,
@@ -663,6 +623,10 @@ export class PlatformRuntime implements AsyncDisposable {
     }
 
     if (!admitted()) return;
+    if (stopped.aborted) {
+      await this.settleStoppedMessage(context, messageId, isSynthetic, stopped.reason as TurnStopMode);
+      return;
+    }
     const lease = roomId === this.contactHubRoomId ? undefined : context.openWorkingCycle(
       (working, options) => this.link.reportActivity(roomId, working, options),
     );
@@ -678,17 +642,41 @@ export class PlatformRuntime implements AsyncDisposable {
     let succeeded = true;
     let caughtError: unknown;
     let started = false;
+    let stopMode: TurnStopMode | null = null;
     try {
       await lease?.ready;
       if (!admitted()) return;
-      this.events.emit({ type: "turn.started", roomId, messageId });
-      started = true;
-      await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
+      if (!stopped.aborted) {
+        this.events.emit({ type: "turn.started", roomId, messageId });
+        started = true;
+        const tools = revokedOnStop(lease ? bindWorkingCycle(input.tools, lease) : input.tools, stopped);
+        const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
+        stopMode = await untilStopped<TurnStopMode>(
+          turn,
+          stopped,
+          (error) => this.logger.debug("A stopped turn failed after the runtime stopped waiting on it", { roomId, messageId, error }),
+        );
+        if (stopMode) {
+          // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
+          holdRoomUntil(turn.then(() => undefined, () => undefined));
+        }
+      }
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
       await lease?.end();
+    }
+    // A turn that finished before the stop landed settles as usual.
+    const cutShort = started ? stopMode : stopped.aborted ? (stopped.reason as TurnStopMode) : null;
+    if (cutShort) {
+      if (started) {
+        this.events.emit({ type: "turn.stopped", roomId, messageId, mode: cutShort });
+      }
+      if (admitted()) {
+        await this.settleStoppedMessage(context, messageId, isSynthetic, cutShort);
+      }
+      return;
     }
     if (started) {
       this.events.emit(succeeded
@@ -709,6 +697,18 @@ export class PlatformRuntime implements AsyncDisposable {
 
     if (!succeeded) {
       throw caughtError;
+    }
+  }
+
+  /** A stopped message is left for Band to serve again on resume; an interrupted one is consumed. */
+  private async settleStoppedMessage(context: ExecutionContext, messageId: string, isSynthetic: boolean, mode: TurnStopMode): Promise<void> {
+    const roomId = context.roomId;
+    this.logger.info("turn cut short", { roomId, messageId, mode });
+    if (!messageId || isSynthetic) return;
+    if (mode === "interrupt") {
+      await this.link.markProcessed(roomId, messageId, { bestEffort: true });
+    } else {
+      context.forgetMessage(messageId);
     }
   }
 

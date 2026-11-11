@@ -34,6 +34,18 @@ export class RuntimeStateError extends BandSdkError {
 }
 
 /**
+ * Band refused a message claim, acknowledgement or post because it has
+ * stopped the agent in the room (`agent.control` stop). It describes that
+ * request: the room may since have been played again.
+ */
+export class RoomExecutionStoppedError extends BandSdkError {
+  public constructor(public readonly roomId: string, cause?: unknown) {
+    super(`Band has stopped the agent in room ${roomId}`, cause);
+    this.name = "RoomExecutionStoppedError";
+  }
+}
+
+/**
  * A failure confined to the turn that raised it. `Execution` keeps the room's
  * loop — and every other room — running for these, where any other error
  * stops the whole runtime.
@@ -66,6 +78,8 @@ export function rethrowIfRecoverableTurnFailure(error: unknown): void {
   }
 }
 
+export const HTTP_NO_CONTENT = 204;
+export const HTTP_FORBIDDEN = 403;
 export const HTTP_NOT_FOUND = 404;
 export const HTTP_UNPROCESSABLE = 422;
 export const HTTP_TOO_MANY_REQUESTS = 429;

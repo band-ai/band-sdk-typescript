@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { RecoverableTurnError, RuntimeStateError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
@@ -817,4 +818,29 @@ describe("Execution bootstrap messages", () => {
     await bootstrapping;
     await expect(stopping).resolves.toBe(true);
   });
+
+  it("keeps a synthetic turn queued while the room is paused, since Band cannot serve it again, and runs it on resume", async () => {
+    const ran = createDeferred<void>();
+    const { execution, processed } = createExecution({ onExecute: async () => ran.resolve() });
+    onTestFinished(() => execution.stop(0).then(() => undefined));
+    const message = (id: string, senderType: string, senderId: string): PlatformEvent => ({
+      type: "message_created",
+      roomId: "room-1",
+      payload: {
+        id, content: id, sender_id: senderId, sender_type: senderType, sender_name: null,
+        message_type: "text", metadata: {}, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      },
+    });
+    execution.pause("host");
+
+    await execution.enqueue(message("live", "User", "user-1"));
+    await execution.enqueue(message("synthetic", SYNTHETIC_SENDER_TYPE, SYNTHETIC_CONTACT_EVENTS_SENDER_ID));
+    await execution.waitForIdle();
+    expect(processed).toEqual([]);
+
+    execution.resume("host");
+    await ran.promise;
+    expect(processed).toEqual(["synthetic"]);
+  });
 });
+

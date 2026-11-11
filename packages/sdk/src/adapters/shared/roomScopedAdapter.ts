@@ -13,8 +13,6 @@ const ADAPTER_STOPPED_ERROR = "Adapter is stopped; start it again before sending
 export type RoomEngine<H, TTools> = SimpleAdapter<H, TTools> & {
   onRuntimeStop(): Promise<void>;
   isControlMessage?(message: PlatformMessageLike, roomId: string): boolean;
-  /** Starts the room's agent process now rather than on its first message. */
-  warm?(): Promise<void>;
 };
 
 export interface RoomScopedAdapterOptions<H> extends RoomWorkspaceOptions {
@@ -91,15 +89,6 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
   /** The room's engine, or undefined while the room has none. */
   protected roomEngine(roomId: string): E | undefined {
     return this.rooms.get(roomId)?.engine;
-  }
-
-  /**
-   * Builds and starts the room's engine now, rather than on the room's first
-   * message; a failure is reported as `room.failed` here, as it would be then.
-   */
-  public async warmRoom(roomId: string): Promise<void> {
-    const engine = await this.engineFor(roomId);
-    await engine.warm?.();
   }
 
   /** Stops the room's engine without waiting for its process to exit. */

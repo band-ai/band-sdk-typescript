@@ -14,6 +14,7 @@ import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage }
 import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
+import { RoomExecutionStoppedError } from "../../../src/core/errors";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import type { SessionConfig } from "../../../src/runtime/types";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
@@ -189,18 +190,38 @@ export class RecordingRestApi extends FakeRestApi {
       throw new Band.NotFoundError({ error: { code: "not_found", message: "No active execution", request_id: randomUUID() } });
     }
     this.workingReports.record({ roomId, working });
-    return { working };
+    // Band echoes a working report as not working for a room it stopped the agent in.
+    return { working: working && !this.stoppedRooms.has(roomId) };
   }
 
-  /** The oldest message in the room not yet settled, as `/messages/next` serves it. */
+  /** Serves messages claimed and never settled to `listMessages({ status: "processing" })`, as Band does. */
+  public serveStaleProcessing = false;
+
+  public override async listMessages(request: Parameters<NonNullable<RestApi["listMessages"]>>[0]): Promise<PaginatedResponse<PlatformChatMessage>> {
+    if (!this.serveStaleProcessing || request.status !== "processing") {
+      return { data: [] };
+    }
+    const claimed = new Set(this.processing.entries);
+    return { data: this.unsettledIn(request.chatId).filter((message) => claimed.has(message.id)) };
+  }
+
+  /** Rooms Band has stopped the agent in: their `/messages/next` serves nothing until a play. */
+  public readonly stoppedRooms = new Set<string>();
+
+  /** The oldest message in the room not yet settled, as `/messages/next` serves it; nothing in a stopped room. */
   public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
-    const pending = this.unsettledIn(request.chatId)[0];
+    const pending = this.stoppedRooms.has(request.chatId) ? undefined : this.unsettledIn(request.chatId)[0];
     await this.nextMessageHolds.pass(request.chatId);
     return pending ?? null;
   }
 
   private unsettledIn(roomId: string): PlatformChatMessage[] {
     return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
+  }
+
+  /** Every room the agent is in. */
+  public roomIds(): string[] {
+    return [...this.rooms.keys()];
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
@@ -298,6 +319,7 @@ export class RecordingRestApi extends FakeRestApi {
     assertMentioned(message.mentions);
     this.assertDistinctMentions(roomId, posted);
     await this.messageHolds.pass(roomId, message.content);
+    this.refuseWhileStopped(roomId);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -306,6 +328,7 @@ export class RecordingRestApi extends FakeRestApi {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
     await this.eventHolds.pass(roomId, event.content);
+    this.refuseWhileStopped(roomId);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -374,19 +397,29 @@ export class RecordingRestApi extends FakeRestApi {
     }
   }
 
-  public override async markMessageProcessing(_roomId: string, messageId: string) {
+  public override async markMessageProcessing(roomId: string, messageId: string) {
     this.processing.record(messageId);
     await this.processingHolds.pass(messageId);
+    this.refuseWhileStopped(roomId);
     return {};
   }
 
-  public override async markMessageProcessed(_roomId: string, messageId: string) {
+  public override async markMessageProcessed(roomId: string, messageId: string) {
     await this.processedHolds.pass(messageId);
+    this.refuseWhileStopped(roomId);
     return this.settle(messageId, "processed");
   }
 
-  public override async markMessageFailed(_roomId: string, messageId: string, error: string) {
+  public override async markMessageFailed(roomId: string, messageId: string, error: string) {
+    this.refuseWhileStopped(roomId);
     return this.settle(messageId, "failed", error);
+  }
+
+  /** Band refuses an agent's claims, acknowledgements and posts in a room it stopped the agent in. */
+  private refuseWhileStopped(roomId: string): void {
+    if (this.stoppedRooms.has(roomId)) {
+      throw new RoomExecutionStoppedError(roomId);
+    }
   }
 
   /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
@@ -617,6 +650,30 @@ export class BandPlatform implements AsyncDisposable {
     this.rest.addRoom(roomId, participants);
     await this.announce(roomId);
     return new BandRoom(roomId, this);
+  }
+
+  /**
+   * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
+   * its rooms for null, as its `agent.control` push does; a stopped room's
+   * `/messages/next` serves nothing until a play, as on Band. With
+   * `delivered: false` the agent misses the push. Returns its correlation id.
+   */
+  public control(
+    mode: "stop" | "play" | "interrupt",
+    roomId: string | null,
+    options: { delivered?: boolean; correlationId?: string } = {},
+  ): string {
+    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+      if (mode === "stop") this.rest.stoppedRooms.add(room);
+      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    }
+    const correlationId = options.correlationId ?? randomUUID();
+    if (options.delivered !== false) {
+      this.transport.pushControl({
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+      });
+    }
+    return correlationId;
   }
 
   /** A room the agent created, as `band_create_chatroom` reported it. */

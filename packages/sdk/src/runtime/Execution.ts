@@ -16,13 +16,23 @@ import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 import { createDeferred, type Deferred } from "../core/deferred";
 import { turnFailureLabel } from "../core/coercion";
+import type { RoomPauseSource, TurnStopMode } from "../contracts/events";
+import { isSyntheticTurn } from "../contracts/protocols";
+import { DEFAULT_STOPPED_RESYNC_SECONDS } from "./types";
+import { MS_PER_SECOND } from "../core/deadline";
 
-/** `holdRoomUntil` keeps the room's other work queued until a turn that outlives the handler ends. */
+/**
+ * `holdRoomUntil` keeps the room's other work queued until a turn that
+ * outlives the handler ends. `stopped` aborts, with a {@link TurnStopMode} as
+ * its reason, when a pause or an interrupt cuts the turn short; the handler
+ * stops waiting on the turn then.
+ */
 export type ExecutionHandler = (
   context: ExecutionContext,
   event: PlatformEvent,
   admitted: () => boolean,
   holdRoomUntil: (ended: Promise<void>) => void,
+  stopped: AbortSignal,
 ) => Promise<void>;
 
 interface ExecutionOptions {
@@ -33,6 +43,12 @@ interface ExecutionOptions {
   /** Whether a message answers what a held turn waits on, so it runs during the hold. */
   isControlEvent?: (event: PlatformEvent) => boolean;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
+  /** Sources already pausing the room, so a new execution starts paused and skips its catch-up. */
+  pausedBy?: Iterable<RoomPauseSource>;
+  /** Band serves this stopped room again: its play was missed, so the owner of the pause should lift Band's. */
+  onMissedPlay?: () => void;
+  /** How often a room Band stopped checks whether Band serves it again. */
+  stoppedProbeIntervalMs?: number;
   logger?: Logger;
 }
 
@@ -45,6 +61,14 @@ interface QueuedEvent {
   bootstrap?: Deferred<Error | null>;
   /** A reconnect's catch-up, deferred until the hold ends. */
   afterHold?: boolean;
+}
+
+/** Queued when a room resumes, to catch up on what Band kept for it as a reconnect would. */
+const CATCH_UP_EVENT: PlatformEvent = { type: "reconnected", roomId: null, payload: {} };
+
+/** A turn the runtime made itself (a contact hub event), which Band does not hold. */
+function isSyntheticEvent(event: Extract<PlatformEvent, { type: "message_created" }>): boolean {
+  return isSyntheticTurn({ senderType: event.payload.sender_type, senderId: event.payload.sender_id });
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -75,6 +99,10 @@ export class Execution {
   private readonly onExecute: ExecutionHandler;
   private readonly isControlEvent: (event: PlatformEvent) => boolean;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
+  private readonly onMissedPlay?: () => void;
+  private readonly stoppedProbeIntervalMs: number;
+  /** While Band has the room stopped, schedules the next check for a missed play. */
+  private stoppedProbe: ReturnType<typeof setTimeout> | null = null;
   private readonly logger: Logger;
   private readonly eventQueue: QueuedEvent[] = [];
   private readonly arrivals: Array<() => void> = [];
@@ -87,6 +115,10 @@ export class Execution {
   private inFlight = 0;
   /** While set, a turn that outlived its handler still runs: only its decision replies run. */
   private hold: Promise<void> | null = null;
+  /** While any source holds the room, no turn starts; Band keeps its messages until the room resumes. */
+  private readonly pausedBy: Set<RoomPauseSource>;
+  /** Aborts the turn running now, if any, to stop or interrupt it. */
+  private runningTurn: AbortController | null = null;
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
    * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
@@ -103,6 +135,9 @@ export class Execution {
     this.isControlEvent = options.isControlEvent ?? (() => false);
     this.onFailure = options.onFailure;
     this.logger = resolveLogger(options.logger);
+    this.pausedBy = new Set(options.pausedBy);
+    this.onMissedPlay = options.onMissedPlay;
+    this.stoppedProbeIntervalMs = options.stoppedProbeIntervalMs ?? DEFAULT_STOPPED_RESYNC_SECONDS * MS_PER_SECOND;
     this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
       owner: "Execution",
       logContext: { roomId: this.roomId },
@@ -117,6 +152,7 @@ export class Execution {
       },
     });
     this.processTask = this.runProcessLoop();
+    if (this.pausedBy.has("band")) this.scheduleStoppedProbe();
     // A non-graceful stop deliberately detaches the loop, so keep its outcome
     // observed here; real callers still see it via waitUntilStopped()/stop().
     void this.processTask.catch(() => undefined);
@@ -136,6 +172,14 @@ export class Execution {
   }
 
   public async enqueue(event: PlatformEvent): Promise<void> {
+    if (event.type === "message_created" && this.isPaused() && !isSyntheticEvent(event)) {
+      // Left on Band, which serves it again once the room resumes. A synthetic
+      // turn exists only here, so it waits in the queue instead.
+      this.logger.debug("paused room leaves a live message for later", { roomId: this.roomId, messageId: event.payload.id });
+      // A message Band delivers may mean Band played the room and the push was missed.
+      this.probeSoon();
+      return;
+    }
     let syncBoundary: SyncBoundary | null = null;
     if (event.type === "reconnected") {
       syncBoundary = this.syncBoundaries.beginBoundary();
@@ -151,6 +195,100 @@ export class Execution {
     this.push({ event: toMessageEvent(message), syncBoundary: null, bootstrap });
     const dropped = await bootstrap.promise;
     if (dropped) throw dropped;
+  }
+
+  /**
+   * Pauses the room for `source`. The first source to pause it stops the
+   * running turn, whose message Band serves again once the room resumes.
+   * Returns whether `source` was not already pausing it.
+   */
+  public pause(source: RoomPauseSource): boolean {
+    if (this.pausedBy.has(source)) {
+      return false;
+    }
+    this.pausedBy.add(source);
+    if (source === "band") this.scheduleStoppedProbe();
+    const stoppedTurn = this.pausedBy.size === 1 && this.stopRunningTurn("stop");
+    this.logger.info("room paused", { roomId: this.roomId, source, stoppedTurn });
+    this.notifyIfIdle();
+    return true;
+  }
+
+  /**
+   * Lifts `source`'s pause. Once no source pauses the room it catches up on
+   * what Band kept for it, the stopped turn's message first. Returns whether
+   * `source` was pausing the room.
+   */
+  public resume(source: RoomPauseSource): boolean {
+    if (!this.pausedBy.delete(source)) {
+      return false;
+    }
+    if (source === "band") this.clearStoppedProbe();
+    this.logger.info("room resumed", { roomId: this.roomId, source, stillPausedBy: [...this.pausedBy] });
+    if (!this.isPaused() && this.isActive()) {
+      // After any hold: a stopped turn the adapter could not cancel may still be running.
+      this.push({ event: CATCH_UP_EVENT, syncBoundary: this.syncBoundaries.beginBoundary(), afterHold: true });
+    }
+    return true;
+  }
+
+  /** Ends the running turn and consumes its message; false when no turn is running. */
+  public interrupt(): boolean {
+    return this.stopRunningTurn("interrupt");
+  }
+
+  public isPaused(): boolean {
+    return this.pausedBy.size > 0;
+  }
+
+  /** Queues one check for a missed play now, unless one is already waiting. */
+  private probeSoon(): void {
+    if (!this.pausedBy.has("band") || !this.isActive()) return;
+    if (this.eventQueue.some((queued) => queued.event === CATCH_UP_EVENT && !queued.afterHold)) return;
+    this.push({ event: CATCH_UP_EVENT, syncBoundary: null });
+  }
+
+  /**
+   * Checks for a missed play after the interval, through the queue like a
+   * reconnect's catch-up; the check schedules the next one while Band still
+   * has the room stopped.
+   */
+  private scheduleStoppedProbe(): void {
+    this.clearStoppedProbe();
+    if (!this.isActive()) return;
+    this.stoppedProbe = setTimeout(() => {
+      this.stoppedProbe = null;
+      this.probeSoon();
+    }, this.stoppedProbeIntervalMs);
+    this.stoppedProbe.unref?.();
+  }
+
+  private clearStoppedProbe(): void {
+    if (this.stoppedProbe !== null) {
+      clearTimeout(this.stoppedProbe);
+      this.stoppedProbe = null;
+    }
+  }
+
+  private stopRunningTurn(mode: TurnStopMode): boolean {
+    const turn = this.runningTurn;
+    if (!turn || turn.signal.aborted) {
+      return false;
+    }
+    turn.abort(mode);
+    return true;
+  }
+
+  /** Runs `onExecute` for one turn that a pause or interrupt can cut short; resolves how it was, if it was. */
+  private async runTurn(event: PlatformEvent): Promise<TurnStopMode | null> {
+    const turn = new AbortController();
+    this.runningTurn = turn;
+    try {
+      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended), turn.signal);
+    } finally {
+      if (this.runningTurn === turn) this.runningTurn = null;
+    }
+    return turn.signal.aborted ? (turn.signal.reason as TurnStopMode) : null;
   }
 
   private push(queued: QueuedEvent): void {
@@ -242,6 +380,7 @@ export class Execution {
     // itself reporting "stopped": enqueue() must reject from this point on
     // even though the drain below hasn't finished yet.
     this.closed = true;
+    this.clearStoppedProbe();
     this.wake();
 
     if (graceful || timeoutMs === undefined) {
@@ -274,6 +413,7 @@ export class Execution {
       await this.processLoop();
     } catch (error) {
       this.closed = true;
+      this.clearStoppedProbe();
       this.dropQueued();
       await this.context.closeWorkingState();
       this.markFailed(error, "process-loop-failed");
@@ -282,8 +422,13 @@ export class Execution {
   }
 
   private async processLoop(): Promise<void> {
-    await this.recoverStaleProcessingMessages();
-    await this.synchronizeWithNext(this.syncBoundaries.initial);
+    if (this.isPaused()) {
+      // Resuming catches up, the stale processing messages included: Band serves those through /next too.
+      this.syncBoundaries.completeBoundary(this.syncBoundaries.initial);
+    } else {
+      await this.recoverStaleProcessingMessages();
+      await this.synchronizeWithNext(this.syncBoundaries.initial);
+    }
 
     while (this.isActive()) {
       const queued = await this.nextQueuedEvent();
@@ -331,6 +476,7 @@ export class Execution {
 
   /** Whether `queued` may run now: anything without a hold; during one, controls and live reconnects. */
   private mayRun(queued: QueuedEvent): boolean {
+    if (this.isPaused()) return queued.event.type === "reconnected" && !queued.afterHold;
     if (!this.hold) return true;
     if (queued.event.type === "reconnected") return !queued.afterHold;
     if (queued.control === undefined) {
@@ -352,6 +498,12 @@ export class Execution {
    * held turn ends, by its ask's own expiry at the latest.
    */
   private async catchUp(queued: QueuedEvent): Promise<void> {
+    if (this.isPaused()) {
+      this.syncBoundaries.completeBoundary(queued.syncBoundary ?? { messageId: null });
+      await this.probeForMissedPlay();
+      this.notifyIfIdle();
+      return;
+    }
     // Busy for the whole sweep, so a stop does not count the room idle between its messages.
     this.inFlight += 1;
     try {
@@ -362,10 +514,32 @@ export class Execution {
     }
   }
 
+  /**
+   * Band serves a stopped room nothing from /next, so a message there after a
+   * reconnect means a play arrived while the socket was down: Band's pause is over.
+   */
+  private async probeForMissedPlay(): Promise<void> {
+    if (!this.pausedBy.has("band")) return;
+    let next: PlatformMessage | null;
+    try {
+      next = await this.link.getNextMessage(this.roomId);
+    } catch (error: unknown) {
+      this.logger.warn("Failed to probe a stopped room for a missed play", { roomId: this.roomId, error });
+      if (this.stoppedProbe === null) this.scheduleStoppedProbe();
+      return;
+    }
+    if (next && this.pausedBy.has("band")) {
+      this.logger.info("stopped room is served again; its play was missed", { roomId: this.roomId, messageId: next.id });
+      this.onMissedPlay?.();
+    } else if (this.pausedBy.has("band") && this.stoppedProbe === null) {
+      this.scheduleStoppedProbe();
+    }
+  }
+
   /** Leaves the rest of a catch-up for once the hold ends, ahead of the work waiting on it. */
   private deferCatchUp(): void {
     if (!this.eventQueue.some((entry) => entry.afterHold)) {
-      this.eventQueue.unshift({ event: { type: "reconnected", roomId: null, payload: {} }, syncBoundary: null, afterHold: true });
+      this.eventQueue.unshift({ event: CATCH_UP_EVENT, syncBoundary: null, afterHold: true });
     }
   }
 
@@ -382,8 +556,10 @@ export class Execution {
    * anchored, and later catch-ups skip it.
    */
   private async runOnce(event: PlatformEvent, messageId: string): Promise<void> {
-    await this.executeSyncMessage(event, messageId);
-    this.syncBoundaries.recordExecuted(messageId);
+    // A stopped message is Band's to serve again, so it is not recorded as run.
+    if ((await this.executeSyncMessage(event, messageId)) !== "stop") {
+      this.syncBoundaries.recordExecuted(messageId);
+    }
   }
 
   private async recoverStaleProcessingMessages(): Promise<void> {
@@ -408,7 +584,7 @@ export class Execution {
 
     for (const message of staleMessages) {
       // A recovered turn that is handed back holds the room; the catch-up serves the rest.
-      if (!this.isActive() || this.hold) {
+      if (!this.isActive() || this.hold || this.isPaused()) {
         break;
       }
 
@@ -425,15 +601,16 @@ export class Execution {
   }
 
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
-    while (this.isActive()) {
+    // A pause ends the sweep; resuming starts a new one.
+    while (this.isActive() && !this.isPaused()) {
       // A message this sweep ran handed its turn back: the rest waits like any other work.
       if (this.hold) {
         this.deferCatchUp();
         break;
       }
       const nextMessage = await this.link.getNextMessage(this.roomId);
-      // A forced stop can close the execution while the backlog read is in flight.
-      if (!this.isActive()) {
+      // A forced stop can close the execution, or a pause hold the room, while the backlog read is in flight.
+      if (!this.isActive() || this.isPaused()) {
         break;
       }
       this.logger.debug("Sync scan read /messages/next", {
@@ -470,7 +647,8 @@ export class Execution {
     this.notifyIfIdle();
   }
 
-  private async executeSyncMessage(event: PlatformEvent, messageId: string): Promise<void> {
+  /** Runs one backlog message; resolves how a pause or interrupt cut it short, if one did. */
+  private async executeSyncMessage(event: PlatformEvent, messageId: string): Promise<TurnStopMode | null> {
     if (this.retryTracker.isPermanentlyFailed(messageId) || this.retryTracker.recordAttempt(messageId)[1]) {
       this.logger.error("Message exceeded max retries during sync, giving up on it", {
         roomId: this.roomId,
@@ -478,25 +656,32 @@ export class Execution {
         maxRetries: this.retryTracker.maxRetries,
       });
       await this.giveUp(messageId);
-      return;
+      return null;
     }
 
     this.inFlight += 1;
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended));
-      this.retryTracker.markSuccess(messageId);
+      const stopped = await this.runTurn(event);
+      if (stopped === "stop") {
+        // Our own pause cut it short; that is no attempt against its retries.
+        this.retryTracker.discardAttempt(messageId);
+      } else {
+        this.retryTracker.markSuccess(messageId);
+      }
+      return stopped;
     } catch (error: unknown) {
       if (error instanceof RecoverableTurnError) {
         this.warnTurnFailed(error, { messageId });
-        return;
+        return null;
       }
       this.logger.error("Sync message execution failed", {
         roomId: this.roomId,
         messageId,
         error: turnFailureLabel(error),
       });
+      return null;
     } finally {
       this.inFlight -= 1;
       this.context.setState("idle");
@@ -521,7 +706,7 @@ export class Execution {
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended));
+      await this.runTurn(event);
     } catch (error: unknown) {
       // Scoped to the turn that raised it: `PlatformRuntime` has already
       // marked the message failed, and the queue below is every *other*

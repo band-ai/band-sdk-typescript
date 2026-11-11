@@ -23,8 +23,8 @@ interface RoomPresenceOptions {
 }
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
-/** Why a room's handling ended: membership lost, the agent stopped, or the host denied the room. */
-type RoomLeaveReason = "removed" | "stopped" | "denied";
+/** `removed` when the agent lost the room's membership; `stopped` when presence stopped tracking it. */
+type RoomLeaveReason = "removed" | "stopped";
 type RoomPresenceLeaveHandler = (roomId: string, reason: RoomLeaveReason) => Promise<void>;
 type RoomEvent = MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent;
 type RoomPresenceEventHandler = (roomId: string, event: RoomEvent) => Promise<void>;
@@ -299,7 +299,7 @@ export class RoomPresence implements AsyncDisposable {
     if (!roomId) {
       return;
     }
-    if (!this.admits(payload)) {
+    if (this.roomFilter && !this.roomFilter(payload)) {
       return;
     }
     await this.admitRoom(roomId, payload);
@@ -310,42 +310,12 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
 
-    if (!(await this.leaveRoom(roomId, "removed"))) {
-      this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
-    }
-  }
-
-  /**
-   * Stops handling `roomId`: unsubscribes its
-   * topic, drops it from the roster (an admission still in flight goes stale
-   * and releases its own subscription), and tears its execution down.
-   * Resolves false when the room was not tracked.
-   */
-  public async leaveRoom(roomId: string, reason: RoomLeaveReason): Promise<boolean> {
     await this.leaveRoomTracking(roomId);
     if (!this.roster.recordRoomRemoved(roomId)) {
-      return false;
+      this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
+      return;
     }
-    await this.onRoomLeft?.(roomId, reason);
-    return true;
-  }
-
-  /**
-   * The room as Band lists it among the agent's rooms, or undefined when the
-   * agent is not in it. Read from the agent's room listing, as hydration is,
-   * so `roomFilter` sees the same payload and membership is what Band lists.
-   */
-  public async memberRoom(roomId: string): Promise<MetadataMap | undefined> {
-    const rooms = await listExistingRooms({
-      link: this.link,
-      roomFilter: (room) => room.id === roomId,
-      requestOptions: DEFAULT_REQUEST_OPTIONS,
-    });
-    return rooms.get(roomId);
-  }
-
-  private admits(room: MetadataMap): boolean {
-    return this.roomFilter?.(room) ?? true;
+    await this.onRoomLeft?.(roomId, "removed");
   }
 
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
@@ -366,9 +336,9 @@ export class RoomPresence implements AsyncDisposable {
     const [, , accepted] = await Promise.all([
       this.subscribeAgentRoomsChannel("reconnect"),
       this.subscribeContacts("reconnect"),
-      // Filtered when reconciled, not when listed, as the filter can change meanwhile.
       listExistingRooms({
         link: this.link,
+        roomFilter: this.roomFilter,
         requestOptions: DEFAULT_REQUEST_OPTIONS,
       }).catch((error: unknown): null => {
         this.logger.warn("RoomPresence failed to fetch room snapshot after reconnect", { error });
@@ -389,11 +359,8 @@ export class RoomPresence implements AsyncDisposable {
 
   private async reconcileRoomsWithSnapshot(accepted: Map<string, MetadataMap>): Promise<void> {
     const acceptedIds = this.autoSubscribeExistingRooms
-      ? [...accepted].filter(([, payload]) => this.admits(payload)).map(([roomId]) => roomId)
-      : this.roster.trackedRoomIds().filter((roomId) => {
-          const payload = accepted.get(roomId);
-          return payload !== undefined && this.admits(payload);
-        });
+      ? [...accepted.keys()]
+      : this.roster.trackedRoomIds().filter((roomId) => accepted.has(roomId));
 
     const reconciliation = this.roster.reconcile(acceptedIds);
 
@@ -439,15 +406,12 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   private async subscribeExistingRooms(): Promise<void> {
-    // Filtered per room as it is admitted, not when listed: rooms are admitted
-    // one at a time, and the filter can change meanwhile (a host's allow or deny).
     await hydrateExistingRooms({
       link: this.link,
+      roomFilter: this.roomFilter,
       requestOptions: DEFAULT_REQUEST_OPTIONS,
       onRoom: async (roomId, payload) => {
-        if (this.admits(payload)) {
-          await this.admitRoom(roomId, payload);
-        }
+        await this.admitRoom(roomId, payload);
       },
       onError: (error) => {
         this.logger.warn("RoomPresence failed to subscribe existing rooms", { error });

@@ -26,6 +26,7 @@ export const MAX_CONTEXT_MESSAGES = 100;
 export const DEFAULT_MAX_MESSAGE_RETRIES = 1;
 
 export const WORKING_STATE_TTL_SECONDS = 10;
+export const DEFAULT_STOPPED_RESYNC_SECONDS = 60;
 
 // Range checks apply only when reporting is enabled; dormant numeric settings are preserved.
 const workingTiming = z.custom<number>((value) => typeof value === "number", "Expected a number");
@@ -51,6 +52,11 @@ export const sessionConfigSchema = z.object({
     .max(MAX_MESSAGE_RETRIES)
     .default(DEFAULT_MAX_MESSAGE_RETRIES),
   enableContextHydration: z.boolean().default(true),
+  /**
+   * How often a room Band has stopped checks `/messages/next`, which Band
+   * keeps empty while it is stopped, to find a play whose push was missed.
+   */
+  stoppedResyncSeconds: z.number().positive().finite().default(DEFAULT_STOPPED_RESYNC_SECONDS),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
   const cadence = config.workingKeepAliveSeconds;

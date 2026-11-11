@@ -384,13 +384,6 @@ export interface FrameworkAdapter {
    */
   cancelTurn?(roomId: string): Promise<boolean>;
   /**
-   * Starts the room's own agent ahead of the room's first message, for
-   * `agent.rooms.allow(roomId, { warm: true })`. Rejects when it cannot
-   * start, after reporting `room.failed` itself, unless a stop or cleanup
-   * ended the start on purpose; the runtime only logs the rejection.
-   */
-  warmRoom?(roomId: string): Promise<void>;
-  /**
    * Hands the adapter the sink for what only it can see — its agent's
    * thoughts, tool calls, approvals, and room process failures — before
    * `onStarted`. The sink is local: nothing reported through it is posted.
