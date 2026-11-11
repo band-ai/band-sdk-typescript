@@ -155,7 +155,7 @@ describe("agent.control from Band", () => {
 
   it("stops and plays every room for an agent-wide signal, and only the named room for a room signal", async () => {
     const { adapter, handled, release } = firstTurnHangs();
-    const { platform, roomA, roomB, next } = await startAgent(adapter);
+    const { platform, roomA, roomB, next, of } = await startAgent(adapter);
     // Uses up the handler's one hanging turn, so later turns settle.
     await roomA.say("owner", "warm-up");
     await handled.until(() => handled.entries.length === 1);
@@ -171,6 +171,8 @@ describe("agent.control from Band", () => {
 
     expect((await roomA.sayAndSettle("owner", "runs")).outcome).toBe("processed");
     expect(roomB.outcomes(held)).toEqual([]);
+    // The room-scoped play reached A only: the runtime still holds B paused.
+    expect(of(ROOM_B).filter((type) => type === "room.paused" || type === "room.resumed")).toEqual(["room.paused"]);
     platform.control("play", null);
     expect(await roomB.outcome(held)).toBe("processed");
   });
@@ -878,5 +880,35 @@ describe("agent.control from Band", () => {
     await expect(agent.stop()).resolves.toBe(true);
     expect(handled.entries).toEqual([first]);
     expect(roomA.outcomes(second)).toEqual([]);
+  });
+  it.each([
+    ["missed", false],
+    ["delivered", true],
+  ] as const)("keeps a newer Band stop when a missed-play check answered before it returns, with the play push %s", async (_label, playDelivered) => {
+    const { adapter, handled } = settlingAdapter();
+    const { platform, roomA, next, of } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    // Band plays the room, and answers the check a delivered message starts while it plays.
+    platform.control("play", ROOM_A, { delivered: false });
+    const check = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    await roomA.say("owner", "while Band plays the room");
+    await check.sending;
+    if (playDelivered) {
+      platform.control("play", ROOM_A, { delivered: true });
+      await next(is("room.resumed", ROOM_A));
+    }
+    // Band stops the room again before the check's answer arrives.
+    const before = of(ROOM_A).length;
+    platform.control("stop", ROOM_A);
+    if (playDelivered) await next(is("room.paused", ROOM_A), before);
+    // The next /next read: a check the next message starts while the room stays paused.
+    const later = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    check.release();
+    await roomA.say("owner", "after Band stopped it again");
+    await later.sending;
+
+    expect(of(ROOM_A).at(-1)).toBe("room.paused");
+    expect(handled.entries).toEqual([]);
   });
 });

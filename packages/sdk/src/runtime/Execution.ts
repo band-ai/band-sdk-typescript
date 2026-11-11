@@ -53,8 +53,9 @@ interface ExecutionOptions {
   /**
    * The room's pause record, shared with its owner and with every later
    * execution of the room: sources already in it start this one paused, and
-   * its catch-up is skipped. Updated only through `pause`/`resume` while
-   * this execution runs.
+   * instead of its start-up catch-up it checks `/next` for a play Band sent
+   * while no execution ran. Updated only through `pause`/`resume` while this
+   * execution runs.
    */
   pausedBy?: Set<RoomPauseSource>;
   /** Band serves this stopped room again: its play was missed, so the owner of the pause should lift Band's. */
@@ -115,6 +116,8 @@ export class Execution {
   private readonly stoppedProbeIntervalMs: number;
   /** While Band has the room stopped, schedules the next check for a missed play. */
   private stoppedProbe: ReturnType<typeof setTimeout> | null = null;
+  /** Counts every Band stop this execution hears of, recorded or not, so a check answered before one cannot lift it. */
+  private bandStops = 0;
   private readonly logger: Logger;
   private readonly eventQueue: QueuedEvent[] = [];
   private readonly arrivals: Array<() => void> = [];
@@ -164,7 +167,6 @@ export class Execution {
       },
     });
     this.processTask = this.runProcessLoop();
-    if (this.isBandStopped()) this.scheduleStoppedProbe();
     // A non-graceful stop deliberately detaches the loop, so keep its outcome
     // observed here; real callers still see it via waitUntilStopped()/stop().
     void this.processTask.catch(() => undefined);
@@ -216,6 +218,7 @@ export class Execution {
    * Returns whether `source` was not already pausing it.
    */
   public pause(source: RoomPauseSource): boolean {
+    if (source === "band") this.bandStops += 1;
     if (this.pausedBy.has(source)) {
       return false;
     }
@@ -576,6 +579,7 @@ export class Execution {
    */
   private async probeForMissedPlay(): Promise<void> {
     if (!this.isBandStopped()) return;
+    const stopsBefore = this.bandStops;
     let next: PlatformMessage | null;
     try {
       next = await this.link.getNextMessage(this.roomId);
@@ -584,7 +588,8 @@ export class Execution {
       this.ensureStoppedProbe();
       return;
     }
-    if (next && this.isBandStopped()) {
+    // A stop heard while the read was in flight is newer than Band's answer.
+    if (next && this.isBandStopped() && this.bandStops === stopsBefore) {
       this.logger.info("stopped room is served again; its play was missed", { roomId: this.roomId, messageId: next.id });
       this.onMissedPlay?.();
     } else {
