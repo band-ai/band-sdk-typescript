@@ -104,7 +104,6 @@ describe("AgentTools.fetchRoomContext over Band's agent context endpoint", () =>
 describe("where a context page ends", () => {
   it.each([
     { name: "no more after a cursor", metadata: { has_more: false, next_cursor: "c2" }, next: null, truncated: false },
-    { name: "more but an empty cursor", metadata: { has_more: true, next_cursor: "" }, next: null, truncated: true },
     { name: "no metadata", metadata: undefined, next: null, truncated: false },
     { name: "more and a cursor", metadata: { has_more: true, next_cursor: "c2" }, next: "c2", truncated: false },
   ])("$name: the page reader and the tail walk agree", async ({ metadata, next, truncated }) => {
@@ -118,6 +117,14 @@ describe("where a context page ends", () => {
     }, { keep: 1 });
     expect(cursors, "the walk follows exactly the cursor the page reader hands back").toEqual(next === null ? [undefined] : [undefined, next]);
     expect(tail.truncated).toBe(truncated);
+  });
+
+  it("refuses a page that has more but no cursor, which the tail walk reports as truncated", async () => {
+    const metadata = { has_more: true, next_cursor: "" };
+    await expect(fetchContextPage(new OnePageContextApi(metadata), ROOM)).rejects.toBeInstanceOf(ValidationError);
+
+    const tail = await fetchCursorTail(async () => ({ data: [], metadata }), { keep: 1 });
+    expect(tail.truncated).toBe(true);
   });
 });
 
@@ -173,7 +180,8 @@ describe("room context in an ACP room", () => {
     const platform = await BandPlatform.start(adapter, [person("owner")]);
     onTestFinished(() => platform[Symbol.asyncDispose]());
     const room = await platform.room(ROOM);
-    platform.rest.remember(ROOM, record("asked", { content: "what changed?" }));
+    const mention = { id: AGENT_ID, handle: "agent", name: "Agent" };
+    platform.rest.remember(ROOM, record("asked", { content: `@[[${AGENT_ID}]] what changed?`, metadata: { mentions: [mention] } }));
     platform.rest.remember(ROOM, record("thought", { sender_id: AGENT_ID, sender_type: "Agent", message_type: "thought", content: "checking" }));
 
     const message = await room.say("owner", "summarize the room");
@@ -181,6 +189,7 @@ describe("room context in an ACP room", () => {
 
     expect(pages.map(ids)).toEqual([["asked", "thought"], [message]]);
     expect(pages.map((page) => page.nextCursor)).toEqual(["2", null]);
+    expect(pages[0]!.messages[0]).toMatchObject({ senderId: "owner", content: "@agent what changed?" });
     expect(pages[0]!.messages[1]).toMatchObject({ senderId: AGENT_ID, messageType: "thought", content: "checking" });
     expect(pages[1]!.messages[0]).toMatchObject({ senderId: "owner", content: "summarize the room" });
   });

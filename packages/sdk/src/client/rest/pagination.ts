@@ -254,6 +254,8 @@ function assertCursorLimit(limit: number): void {
  * One cursor page of the agent's context in a room, oldest first: its own messages of every
  * type and the text messages that mention it, not the room's full history. Pass `nextCursor`
  * back for the following page; it is null once the page reaches the newest message.
+ * Throws `ValidationError` when Band reports more without a cursor, since a null
+ * `nextCursor` would then wrongly claim the newest message was reached.
  */
 export async function fetchContextPage(
   rest: ContextRestApi,
@@ -267,7 +269,11 @@ export async function fetchContextPage(
     throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.getChatContext);
   }
   const { data, metadata } = await getChatContext({ chatId, cursor, limit }, options);
-  return { messages: data, nextCursor: nextCursorOf(metadata) };
+  const nextCursor = nextCursorOf(metadata);
+  if (nextCursor === null && metadata?.has_more === true) {
+    throw new ValidationError("Band reported more context without a cursor");
+  }
+  return { messages: data, nextCursor };
 }
 
 const TEXT_MESSAGE: ChatMessageType = "text";

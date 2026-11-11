@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
-import { Band } from "@band-ai/rest-client";
+import { Band, BandError } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
@@ -358,7 +358,8 @@ export class RecordingRestApi extends FakeRestApi {
     const start = cursor === undefined ? 0 : Number(cursor);
     // Band refuses a cursor it never handed out rather than restarting the walk.
     if ((cursor !== undefined && !/^[1-9]\d*$/.test(cursor)) || start > conversation.length) {
-      throw new Band.BadRequestError({ error: { code: "invalid_cursor", message: "Invalid cursor", request_id: randomUUID() } });
+      // The generated client maps no 400 here, so a real rejection is a plain BandError.
+      throw new BandError({ statusCode: 400, body: { error: { code: "invalid_cursor", message: "Invalid cursor", request_id: randomUUID() } } });
     }
     const end = start + limit;
     const hasMore = end < conversation.length;
