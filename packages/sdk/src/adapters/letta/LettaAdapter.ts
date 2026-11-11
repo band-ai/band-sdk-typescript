@@ -288,11 +288,14 @@ export class LettaAdapter extends SimpleAdapter<
   private readonly roomAbortControllers = new Map<string, AbortController>();
   private readonly roomBootstrapFailures = new Map<string, number>();
 
+  private readonly lettaHistoryConverter: LettaHistoryConverter;
+
   public constructor(options: LettaAdapterOptions = {}) {
-    super({
-      historyConverter:
-        options.historyConverter ?? new LettaHistoryConverter(),
-    });
+    const historyConverter =
+      options.historyConverter ?? new LettaHistoryConverter();
+    super({ historyConverter });
+
+    this.lettaHistoryConverter = historyConverter;
 
     this.model = options.model ?? DEFAULT_MODEL;
     this.lettaApiKey = options.lettaApiKey;
@@ -337,6 +340,7 @@ export class LettaAdapter extends SimpleAdapter<
     agentDescription: string,
   ): Promise<void> {
     await super.onStarted(agentName, agentDescription);
+    this.lettaHistoryConverter.setAgentName(agentName);
 
     this.systemPrompt =
       this.systemPromptOverride ??
