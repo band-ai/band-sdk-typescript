@@ -61,6 +61,26 @@ describe("DefaultPreprocessor", () => {
     expect(input?.isSessionBootstrap).toBe(true);
   });
 
+  it("prepares a turn given back after it was cut short as it first was, its notices included", async () => {
+    const context = makeContext();
+    const preprocessor = new DefaultPreprocessor();
+    context.addParticipant({ id: "peer", name: "Weather Agent", type: "Agent", handle: "weather-agent" });
+    context.injectSystemMessage("[Contacts]: Alice is now a contact");
+    const first = await preprocessor.process(context, makeEvent(), "a1");
+    expect(first).toMatchObject({ isSessionBootstrap: true, contactsMessage: "[Contacts]: Alice is now a contact" });
+    expect(first?.participantsMessage).toContain("Weather Agent joined the room.");
+
+    context.returnTurnPreparation(first!);
+    context.forgetMessage("m1");
+    const replayed = await preprocessor.process(context, makeEvent(), "a1");
+
+    expect(replayed).toMatchObject({
+      isSessionBootstrap: true,
+      participantsMessage: first?.participantsMessage,
+      contactsMessage: first?.contactsMessage,
+    });
+  });
+
   describe("mention tokens", () => {
     const mentioning = (id: string, content: string, mentions: MentionPayload[]) => {
       const event = makeEvent();

@@ -56,6 +56,16 @@ export interface PlatformRuntimeOptions {
   };
 }
 
+/**
+ * A turn's message as settling sees it: Band holds and settles it (`settles`),
+ * or the runtime made it itself (`synthetic`) and only the room holds it.
+ */
+interface TurnMessage {
+  id: string;
+  settles: boolean;
+  synthetic: boolean;
+}
+
 export class PlatformRuntime implements AsyncDisposable {
   private readonly _agentId: string;
   private readonly _apiKey: string;
@@ -79,8 +89,6 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly events: AgentEventHub;
   /** Stops relaying link changes and control signals; held from start until the matching stop. */
   private stopObservingLink: (() => void) | null = null;
-  /** Applies Band's control signals one at a time, in arrival order. */
-  private controlLane: Promise<void> = Promise.resolve();
   private readonly controlIds = new ControlDeduplicator();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
@@ -146,7 +154,7 @@ export class PlatformRuntime implements AsyncDisposable {
 
   private observeLink(): void {
     const stopConnection = this.link.onConnectionChange(this.events.emit);
-    const stopControl = this.link.onControl((control) => this.queueOnControlLane(() => this.applyControl(control)));
+    const stopControl = this.link.onControl((control) => this.applyControl(control));
     const stopObservedStops = this.link.onExecutionStopped((roomId) => this.observeBandStop(roomId));
     this.stopObservingLink = () => {
       stopConnection();
@@ -164,13 +172,6 @@ export class PlatformRuntime implements AsyncDisposable {
     this.stopObservingLink = null;
   }
 
-  /** Runs `apply` after every control change queued before it, so Band's signals apply in order. */
-  private queueOnControlLane(apply: () => Promise<void> | void): void {
-    this.controlLane = this.controlLane.then(apply).catch((error: unknown) => {
-      this.logger.error("Failed to apply a control signal", { error });
-    });
-  }
-
   /**
    * Band refused a request in `roomId` as stopped, so its stop push was missed
    * or is still on its way: pause the room now, synchronously, so the turn that
@@ -183,7 +184,7 @@ export class PlatformRuntime implements AsyncDisposable {
       return;
     }
     this.logger.info("Band has stopped the agent in a room; pausing it", { roomId });
-    this.queueOnControlLane(() => this.cancelAdapterTurn(adapter, roomId));
+    this.cancelAdapterTurn(adapter, roomId);
   }
 
   /** Pauses `roomId` for Band, reporting it; false when Band's pause already held it. */
@@ -202,11 +203,12 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * Applies one `agent.control` signal to the rooms it reaches. A signal that
-   * reaches no handled room is not remembered, so a repeat can still apply
-   * once the room is handled.
+   * Applies one `agent.control` signal to the rooms it reaches, all at once,
+   * so signals apply in arrival order and only to rooms still handled. A
+   * signal that reaches no handled room is not remembered, so a repeat can
+   * still apply once the room is handled.
    */
-  private async applyControl(control: AgentControl): Promise<void> {
+  private applyControl(control: AgentControl): void {
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
     const roomIds = runtime ? controlTargets(control, runtime.handledRoomIds()) : [];
@@ -226,16 +228,16 @@ export class PlatformRuntime implements AsyncDisposable {
       executionId: control.executionId,
     });
     for (const roomId of roomIds) {
-      await this.applyControlToRoom(runtime, adapter, roomId, control.mode);
+      this.applyControlToRoom(runtime, adapter, roomId, control.mode);
     }
   }
 
-  private async applyControlToRoom(runtime: AgentRuntime, adapter: FrameworkAdapter, roomId: string, mode: AgentControlMode): Promise<void> {
+  private applyControlToRoom(runtime: AgentRuntime, adapter: FrameworkAdapter, roomId: string, mode: AgentControlMode): void {
     switch (mode) {
       case "stop":
         this.pauseForBand(runtime, roomId);
         // Also reaches work the adapter kept running after its handler returned.
-        await this.cancelAdapterTurn(adapter, roomId);
+        this.cancelAdapterTurn(adapter, roomId);
         return;
       case "play":
         this.resumeBandPause(roomId);
@@ -244,17 +246,21 @@ export class PlatformRuntime implements AsyncDisposable {
         if (!runtime.interruptTurn(roomId)) {
           this.logger.debug("Interrupt found no running turn in the room", { roomId });
         }
-        await this.cancelAdapterTurn(adapter, roomId);
+        this.cancelAdapterTurn(adapter, roomId);
         return;
     }
   }
 
-  private async cancelAdapterTurn(adapter: FrameworkAdapter, roomId: string): Promise<void> {
-    try {
-      await adapter.cancelTurn?.(roomId);
-    } catch (error: unknown) {
-      this.logger.warn("Adapter failed to cancel a stopped turn", { roomId, error });
-    }
+  /**
+   * Asks the adapter to cancel the room's turn without waiting on it: a cancel
+   * is third-party work that may never settle, and no later signal waits on it.
+   */
+  private cancelAdapterTurn(adapter: FrameworkAdapter, roomId: string): void {
+    void Promise.resolve()
+      .then(() => adapter.cancelTurn?.(roomId))
+      .catch((error: unknown) => {
+        this.logger.warn("Adapter failed to cancel a stopped turn", { roomId, error });
+      });
   }
 
   /** Current lifecycle state of this runtime. */
@@ -441,7 +447,7 @@ export class PlatformRuntime implements AsyncDisposable {
         onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
-        onMissedPlay: (roomId) => this.queueOnControlLane(() => this.resumeBandPause(roomId)),
+        onMissedPlay: (roomId) => this.resumeBandPause(roomId),
         onBandStopCleared: (roomId) => this.events.emit({ type: "room.resumed", roomId, source: "band" }),
         onExecute: (context, event, admitted, holdRoomUntil, stopped) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil, stopped),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
@@ -606,40 +612,38 @@ export class PlatformRuntime implements AsyncDisposable {
     admitted: () => boolean,
     holdRoomUntil: (ended: Promise<void>) => void,
     stopped: AbortSignal,
-  ): Promise<void> {
-    if (!admitted() || stopped.aborted) return;
+  ): Promise<boolean> {
+    if (!admitted() || stopped.aborted) return false;
     const input = await this.preprocessor.process(context, event, this._agentId);
-    if (!admitted()) return;
+    if (!admitted()) return false;
     if (!input) {
       this.logger.debug("preprocessor returned no input", {
         roomId: context.roomId,
         eventType: event.type,
         messageId: messageIdOf(event),
       });
-      return;
+      return false;
     }
 
     const messageId = String(input.message.id ?? "");
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
+    const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
     const messageMarkOptions = { bestEffort: true } as const;
-    const settles = Boolean(messageId) && !isSynthetic;
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
     if (stoppedWhilePreparing) {
-      await this.settleUnstartedTurn(context, input, settles, stoppedWhilePreparing, false);
-      return;
+      return await this.settleUnstartedTurn(context, input, message, stoppedWhilePreparing, false);
     }
 
-    if (settles) {
+    if (message.settles) {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
     }
 
-    if (!admitted()) return;
+    if (!admitted()) return false;
     const stoppedBeforeStart = stopModeOf(stopped);
     if (stoppedBeforeStart) {
-      await this.settleUnstartedTurn(context, input, settles, stoppedBeforeStart, true);
-      return;
+      return await this.settleUnstartedTurn(context, input, message, stoppedBeforeStart, true);
     }
     const lease = roomId === this.contactHubRoomId ? undefined : context.openWorkingCycle(
       (working, options) => this.link.reportActivity(roomId, working, options),
@@ -659,7 +663,7 @@ export class PlatformRuntime implements AsyncDisposable {
     let stopMode: TurnStopMode | null = null;
     try {
       await lease?.ready;
-      if (!admitted()) return;
+      if (!admitted()) return false;
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
@@ -684,28 +688,20 @@ export class PlatformRuntime implements AsyncDisposable {
     }
     if (!started) {
       const stoppedAtStart = stopModeOf(stopped);
-      if (stoppedAtStart && admitted()) {
-        await this.settleUnstartedTurn(context, input, settles, stoppedAtStart, true);
-      }
-      return;
+      return stoppedAtStart !== null && admitted() && await this.settleUnstartedTurn(context, input, message, stoppedAtStart, true);
     }
     // A turn that finished before the stop landed settles as usual.
     if (stopMode) {
       this.events.emit({ type: "turn.stopped", roomId, messageId, mode: stopMode });
-      if (admitted()) {
-        await this.settleCutShortMessage(context, messageId, settles, stopMode);
-      }
-      return;
+      return admitted() && await this.settleCutShortMessage(context, message, stopMode);
     }
-    if (started) {
-      this.events.emit(succeeded
-        ? { type: "turn.completed", roomId, messageId }
-        : { type: "turn.failed", roomId, messageId, error: turnFailureLabel(caughtError) });
-    }
-    if (!admitted()) return;
+    this.events.emit(succeeded
+      ? { type: "turn.completed", roomId, messageId }
+      : { type: "turn.failed", roomId, messageId, error: turnFailureLabel(caughtError) });
+    if (!admitted()) return false;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
 
-    if (messageId && !isSynthetic) {
+    if (message.settles) {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
         await this.link.markProcessed(roomId, messageId, messageMarkOptions);
@@ -717,21 +713,25 @@ export class PlatformRuntime implements AsyncDisposable {
     if (!succeeded) {
       throw caughtError;
     }
+    return false;
   }
 
   /**
-   * A cut-short turn's message: a stopped one is forgotten here and left
-   * `processing` for Band to serve again on resume; an interrupted one is
-   * consumed.
+   * A cut-short turn's message. A stopped one is forgotten, so it runs again
+   * once the room resumes: Band serves its own message again, left
+   * `processing`, and a synthetic one only this room holds is run again by
+   * the room, which the `true` result asks for. An interrupted one is consumed.
    */
-  private async settleCutShortMessage(context: ExecutionContext, messageId: string, settles: boolean, mode: TurnStopMode): Promise<void> {
-    this.logger.info("turn cut short", { roomId: context.roomId, messageId, mode });
-    if (!settles) return;
-    if (mode === "interrupt") {
-      await this.link.markProcessed(context.roomId, messageId, { bestEffort: true });
-    } else {
-      context.forgetMessage(messageId);
+  private async settleCutShortMessage(context: ExecutionContext, message: TurnMessage, mode: TurnStopMode): Promise<boolean> {
+    this.logger.info("turn cut short", { roomId: context.roomId, messageId: message.id, mode });
+    if (mode === "stop") {
+      if (message.id) context.forgetMessage(message.id);
+      return message.synthetic;
     }
+    if (message.settles) {
+      await this.link.markProcessed(context.roomId, message.id, { bestEffort: true });
+    }
+    return false;
   }
 
   /**
@@ -742,16 +742,15 @@ export class PlatformRuntime implements AsyncDisposable {
   private async settleUnstartedTurn(
     context: ExecutionContext,
     input: FrameworkAdapterInput,
-    settles: boolean,
+    message: TurnMessage,
     mode: TurnStopMode,
     claimed: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     context.returnTurnPreparation(input);
-    const messageId = String(input.message.id ?? "");
-    if (mode === "interrupt" && settles && !claimed) {
-      await this.link.markProcessing(context.roomId, messageId, { bestEffort: true });
+    if (mode === "interrupt" && message.settles && !claimed) {
+      await this.link.markProcessing(context.roomId, message.id, { bestEffort: true });
     }
-    await this.settleCutShortMessage(context, messageId, settles, mode);
+    return await this.settleCutShortMessage(context, message, mode);
   }
 
   private async handleContactEvent(event: ContactEvent): Promise<void> {

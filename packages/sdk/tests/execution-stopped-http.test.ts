@@ -39,6 +39,17 @@ describe("Band refusing writes in a room it stopped the agent in, over HTTP", ()
     expect((refused as RoomExecutionStoppedError).roomId).toBe(ROOM);
   });
 
+  it("recognizes Band's stopped refusal sent as plain text, whatever its case", async () => {
+    await using peer = await activityPeer(({ response }) => {
+      response.writeHead(403, { "content-type": "text/plain" });
+      response.end("Agent Execution Is Stopped in this room");
+    });
+
+    const refused = await peer.rest.createChatMessage(ROOM, { content: "hi", mentions: [{ id: "user-1" }] }).catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(RoomExecutionStoppedError);
+  });
+
   it("leaves a claim Band accepts, and a post it forbids for another reason, as they were", async () => {
     await using peer = await activityPeer(({ request, response }) => {
       if (request.url?.endsWith("/processing")) return json(response, { data: { id: MESSAGE } });

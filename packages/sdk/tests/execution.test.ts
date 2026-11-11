@@ -862,4 +862,3 @@ describe("Execution bootstrap messages", () => {
     expect(execution.isPaused()).toBe(false);
   });
 });
-

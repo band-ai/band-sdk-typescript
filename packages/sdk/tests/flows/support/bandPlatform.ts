@@ -150,6 +150,8 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a room's history read, as a session's first turn hydrates it. */
+  public readonly contextHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
   public readonly participantHolds = new CallHolds<[roomId: string]>();
   /** Holds `getAgentMe`, as a slow platform answers it. */
@@ -378,6 +380,7 @@ export class RecordingRestApi extends FakeRestApi {
    * at a time: what people said and what the agent posted.
    */
   public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
+    await this.contextHolds.pass(chatId);
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
     // Band refuses a cursor it never handed out rather than restarting the walk.

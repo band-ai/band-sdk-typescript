@@ -25,7 +25,9 @@ import { MS_PER_SECOND } from "../core/deadline";
  * `holdRoomUntil` keeps the room's other work queued until a turn that
  * outlives the handler ends. `stopped` aborts, with a {@link TurnStopMode} as
  * its reason, when a pause or an interrupt cuts the turn short; the handler
- * stops waiting on the turn then.
+ * stops waiting on the turn then. It resolves `true` when a stop cut the turn
+ * short and only this room holds its event (a synthetic turn, which Band
+ * cannot serve again), so the room runs that event again once it resumes.
  */
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -33,7 +35,7 @@ export type ExecutionHandler = (
   admitted: () => boolean,
   holdRoomUntil: (ended: Promise<void>) => void,
   stopped: AbortSignal,
-) => Promise<void>;
+) => Promise<boolean | void>;
 
 /** How a turn's `stopped` signal cut it short, or null while it has not. */
 export function stopModeOf(stopped: AbortSignal): TurnStopMode | null {
@@ -307,10 +309,15 @@ export class Execution {
   private async runTurn(event: PlatformEvent): Promise<TurnStopMode | null> {
     const turn = new AbortController();
     this.runningTurn = turn;
+    let runAgain: boolean | void;
     try {
-      await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended), turn.signal);
+      runAgain = await this.onExecute(this.context, event, () => this.isActive(), (ended) => this.holdRoomUntil(ended), turn.signal);
     } finally {
       if (this.runningTurn === turn) this.runningTurn = null;
+    }
+    if (runAgain === true && this.isActive()) {
+      // First in line, as Band serves a stopped message first on resume.
+      this.eventQueue.unshift({ event, syncBoundary: null });
     }
     return stopModeOf(turn.signal);
   }

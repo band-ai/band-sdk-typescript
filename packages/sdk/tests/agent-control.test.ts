@@ -1,4 +1,5 @@
 import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
+import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
@@ -7,7 +8,7 @@ import { Agent } from "../src/agent/Agent";
 import type { AgentEvent } from "../src/contracts/events";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { BandLink } from "../src/platform/BandLink";
-import type { SessionConfig } from "../src/runtime/types";
+import type { ContactEventConfig, SessionConfig } from "../src/runtime/types";
 import { createDeferred } from "../src/core/deferred";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
@@ -37,9 +38,6 @@ function firstTurnHangs() {
   return { adapter: new GenericAdapter(handler), handled, ended, release: released.resolve };
 }
 
-/** Lets every queued microtask and I/O callback run: the in-process platform answers on microtasks. */
-const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
-
 /** A handler that settles every turn at once, recording it. */
 function settlingAdapter() {
   const handled = new RecordLog<{ roomId: string; messageId: string }>();
@@ -51,13 +49,13 @@ function settlingAdapter() {
 }
 
 /** An agent on `platform`, not yet started, recording what it reports and stopped when the test ends. */
-function createAgent(platform: BandPlatform, adapter: FrameworkAdapter, sessionConfig?: SessionConfig) {
+function createAgent(platform: BandPlatform, adapter: FrameworkAdapter, options: { sessionConfig?: SessionConfig; contactConfig?: ContactEventConfig } = {}) {
   const agent = Agent.create({
     adapter,
     agentId: AGENT_ID,
     apiKey: AGENT_API_KEY,
     link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
-    sessionConfig,
+    ...options,
   });
   const events = new RecordLog<AgentEvent>();
   agent.observe((event) => {
@@ -70,11 +68,11 @@ function createAgent(platform: BandPlatform, adapter: FrameworkAdapter, sessionC
 }
 
 /** A started agent on a platform that has it in rooms A and B. */
-async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConfig) {
+async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConfig, contactConfig?: ContactEventConfig) {
   const platform = BandPlatform.host([person("owner")]);
   const roomA = await platform.room(ROOM_A);
   const roomB = await platform.room(ROOM_B);
-  const { agent, events } = createAgent(platform, adapter, sessionConfig);
+  const { agent, events } = createAgent(platform, adapter, { sessionConfig, contactConfig });
   await agent.start();
   /** Resolves with the next event at or after `from` that matches. */
   const next = (matches: (event: AgentEvent) => boolean, from = 0) => events.next(matches, from);
@@ -85,6 +83,11 @@ async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConf
 
 const is = <T extends AgentEvent["type"]>(type: T, roomId: string) =>
   (event: AgentEvent): event is Extract<AgentEvent, { type: T }> => event.type === type && "roomId" in event && event.roomId === roomId;
+
+/** A contact request as Band pushes it on the agent's contacts channel. */
+const contactRequest = (id: string, from: string) => ({
+  id, from_handle: from, from_name: from, message: "Hello", status: "pending", inserted_at: new Date().toISOString(),
+});
 
 describe("agent.control from Band", () => {
   it("stops a room's running turn, leaves its message for Band, and replays it on play once the cut-short turn ends", async () => {
@@ -101,17 +104,11 @@ describe("agent.control from Band", () => {
 
     // The adapter could not cancel the cut-short turn, so the replay's catch-up waits for it.
     const catchUp = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
-    let caughtUp = false;
-    void catchUp.sending.then(() => {
-      caughtUp = true;
-    });
+    const endedWhenCaughtUp = catchUp.sending.then(() => [...ended.entries]);
     platform.control("play", ROOM_A);
     await next(is("room.resumed", ROOM_A));
-    await drain();
-    expect(caughtUp).toBe(false);
     release();
-    await catchUp.sending;
-    expect(ended.entries).toEqual([first]);
+    expect(await endedWhenCaughtUp).toEqual([first]);
     catchUp.release();
 
     expect(await roomA.outcome(first)).toBe("processed");
@@ -474,27 +471,15 @@ describe("agent.control from Band", () => {
     });
     const { platform, roomA, next } = await startAgent(adapter);
     // A session's first turn hydrates its history before the adapter sees it.
-    const hydrating = createDeferred();
-    const hydrated = createDeferred();
-    onTestFinished(() => hydrated.resolve());
-    const getChatContext = platform.rest.getChatContext.bind(platform.rest);
-    let held = false;
-    platform.rest.getChatContext = async (request) => {
-      if (!held) {
-        held = true;
-        hydrating.resolve();
-        await hydrated.promise;
-      }
-      return await getChatContext(request);
-    };
+    const hydration = platform.rest.contextHolds.hold((roomId) => roomId === ROOM_A);
     const first = await roomA.say("owner", "first");
-    await hydrating.promise;
+    await hydration.sending;
 
     platform.control(mode, ROOM_A);
     // Signals apply in order, so once B's later stop applied, A's signal has too.
     platform.control("stop", ROOM_B);
     await next(is("room.paused", ROOM_B));
-    hydrated.resolve();
+    hydration.release();
     if (mode === "stop") {
       platform.control("play", ROOM_A);
     }
@@ -538,5 +523,109 @@ describe("agent.control from Band", () => {
     platform.control("stop", "room-c", { correlationId: stop });
 
     await next(is("room.paused", "room-c"));
+  });
+  it("runs again a contact hub turn a stop cut short once the room is played, since Band holds no copy of it", async () => {
+    const { adapter, handled, ended, release } = firstTurnHangs();
+    const { platform, next } = await startAgent(adapter, undefined, { strategy: "hub_room", hubTaskId: "contacts" });
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_request_received", contactRequest("request-1", "alice"));
+    const started = await next((event) => event.type === "turn.started");
+    if (started.type !== "turn.started") throw new Error("expected the hub turn to start");
+    const { roomId: hub, messageId } = started;
+
+    platform.control("stop", hub);
+    await next(is("turn.stopped", hub));
+    release();
+    await ended.until(() => ended.entries.length === 1);
+    platform.control("play", hub);
+
+    await ended.until(() => ended.entries.length === 2);
+    expect(handled.entries).toEqual([{ roomId: hub, messageId }, { roomId: hub, messageId }]);
+  });
+
+  it("applies an agent-wide stop to every room at once, and later signals, while the adapter's cancel never settles", async () => {
+    const settling = settlingAdapter();
+    const { handled } = settling;
+    const cancels = new RecordLog<string>();
+    const adapter = Object.assign(settling.adapter, {
+      // A cancel stuck on a wedged backend.
+      cancelTurn: async (roomId: string): Promise<boolean> => {
+        cancels.record(roomId);
+        return await new Promise<boolean>(() => undefined);
+      },
+    });
+    const { platform, roomA, roomB, next, of } = await startAgent(adapter);
+
+    platform.control("stop", null);
+    await next(is("room.paused", ROOM_B));
+    await roomB.remove();
+    await next(is("room.left", ROOM_B));
+    platform.control("play", ROOM_A);
+    await next(is("room.resumed", ROOM_A));
+
+    expect((await roomA.sayAndSettle("owner", "after the play")).outcome).toBe("processed");
+    expect(handled.entries.map((turn) => turn.roomId)).toEqual([ROOM_A]);
+    await cancels.until(() => cancels.entries.length === 2);
+    expect(cancels.entries).toEqual([ROOM_A, ROOM_B]);
+    // Band's pause went with the membership, and nothing paused the room after it was left.
+    expect(of(ROOM_B)).toEqual(["room.joined", "room.paused", "room.stopped", "room.resumed", "room.left"]);
+  });
+
+  it("keeps checking a stopped room after a check fails, and finds the missed play on the next one", async () => {
+    const { adapter } = settlingAdapter();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { platform, roomA, next } = await startAgent(adapter, { stoppedResyncSeconds: 30 });
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    // The check the delivered message starts, while Band still has the room stopped.
+    const deliveredCheck = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    const waiting = await roomA.say("owner", "while stopped");
+    await deliveredCheck.sending;
+    deliveredCheck.release();
+    platform.control("play", ROOM_A, { delivered: false });
+    const failedCheck = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A, { error: new Error("Band unavailable") });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await failedCheck.sending;
+    failedCheck.release();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await next(is("room.resumed", ROOM_A));
+    vi.useRealTimers();
+    expect(await roomA.outcome(waiting)).toBe("processed");
+  });
+
+  it.each(["stop", "interrupt"] as const)("reports a turn %s cut short as stopped, not failed, when it fails after the runtime stopped waiting on it", async (mode) => {
+    const handled = new RecordLog<string>();
+    const failed = new RecordLog<string>();
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
+    const adapter = new GenericAdapter(async ({ message, tools }) => {
+      handled.record(message.id);
+      if (handled.entries.length === 1) {
+        await released.promise;
+        failed.record(message.id);
+        throw new Error("provider failed after the stop");
+      }
+      tools.turn.settle();
+    });
+    const { platform, roomA, next, of } = await startAgent(adapter);
+    const first = await roomA.say("owner", "first");
+    await handled.until(() => handled.entries.length === 1);
+
+    platform.control(mode, ROOM_A);
+    await next(is("turn.stopped", ROOM_A));
+    released.resolve();
+    await failed.until(() => failed.entries.length === 1);
+    if (mode === "stop") {
+      platform.control("play", ROOM_A);
+    }
+
+    // Interrupted, it is consumed; stopped, it runs again once played.
+    expect(await roomA.outcome(first)).toBe("processed");
+    expect(handled.entries).toEqual(mode === "stop" ? [first, first] : [first]);
+    expect(of(ROOM_A)).not.toContain("turn.failed");
   });
 });
