@@ -25,10 +25,13 @@ export interface McpToolRegistration {
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
   /**
-   * `tools` is the tools of the room the call belongs to (see
-   * {@link scopeHostTools} for room-scoped servers), or undefined on a server
-   * built without any. They carry the room's full authority (sending,
+   * `tools` is the tools of the room the call belongs to, or undefined on a
+   * server built without any. They carry the room's full authority (sending,
    * participants, contacts, memory), whatever tools the server itself enables.
+   *
+   * On a room-scoped server, a tool receives them only by declaring `room_id`,
+   * and keeps them only while the server's room resolver still returns that
+   * same instance, so a resolver must return one instance per room turn.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -172,8 +175,8 @@ export function buildRoomScopedRegistrations(
 /**
  * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
  * has it advertised as required and runs with the tools of the room its call
- * names, for as long as `resolver` still returns those same tools, so it must
- * return one instance per room turn; a call naming no known room is refused
+ * names, for as long as `resolver` still returns those same tools (see
+ * {@link McpToolRegistration.execute}); a call naming no known room is refused
  * without running it. One that declares none still runs, with tools that throw
  * a clear error on use, since its call cannot say which room it means.
  */

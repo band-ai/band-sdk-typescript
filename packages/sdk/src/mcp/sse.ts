@@ -12,7 +12,7 @@ import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
-  /** Single tools instance or a room resolver, which must meet `scopeHostTools`'s needs. */
+  /** Single tools instance or a room resolver, as `McpToolRegistration.execute` describes. */
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   port?: number;

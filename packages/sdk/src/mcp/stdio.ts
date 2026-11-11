@@ -40,7 +40,7 @@ export interface McpResourceSource {
 }
 
 export interface BandMcpStdioServerOptions {
-  /** Without it, the server lists only `additionalTools`; a resolver must meet `scopeHostTools`'s needs. */
+  /** Without it, the server lists only `additionalTools`. A room resolver must behave as `McpToolRegistration.execute` describes. */
   tools?: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
@@ -59,7 +59,7 @@ export interface BandMcpStdioServerOptions {
 export class BandMcpStdioServer {
   private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
-  private readonly bindHostTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
+  private readonly bindAddedTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
   private session: StdioSession | null = null;
 
   public constructor(options: BandMcpStdioServerOptions) {
@@ -76,13 +76,13 @@ export class BandMcpStdioServer {
     const { tools } = options;
     if (!tools) {
       this.registrations = [...(options.additionalTools ?? [])];
-      this.bindHostTools = (hostTools) => hostTools;
+      this.bindAddedTools = (hostTools) => hostTools;
     } else if (typeof tools === "function") {
       this.registrations = buildRoomScopedRegistrations(tools, regOptions);
-      this.bindHostTools = (hostTools) => scopeHostTools(hostTools, tools);
+      this.bindAddedTools = (hostTools) => scopeHostTools(hostTools, tools);
     } else {
       this.registrations = buildSingleContextRegistrations(tools, regOptions);
-      this.bindHostTools = (hostTools) => bindHostTools(hostTools, tools);
+      this.bindAddedTools = (hostTools) => bindHostTools(hostTools, tools);
     }
   }
 
@@ -124,7 +124,7 @@ export class BandMcpStdioServer {
    * `tools/list_changed`; a name already registered rejects the whole batch.
    */
   public addTools(registrations: McpToolRegistration[]): Promise<void> {
-    return this.whenRunning((session) => session.register(this.bindHostTools(registrations)));
+    return this.whenRunning((session) => session.register(this.bindAddedTools(registrations)));
   }
 
   /**
