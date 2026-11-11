@@ -439,9 +439,14 @@ export class AgentRuntime {
     return this.executions.get(roomId)?.interrupt() ?? false;
   }
 
-  /** The rooms this runtime is handling now, which an agent-wide control signal reaches. */
+  /**
+   * The rooms Band's control signals reach: those this runtime is handling
+   * now, and those Band's stop still holds while their session is reset, so
+   * a play meanwhile is not lost.
+   */
   public handledRoomIds(): string[] {
-    return [...this.executions.keys()];
+    const held = [...this.roomPauses].filter(([roomId, sources]) => sources.has("band") && !this.executions.has(roomId));
+    return [...this.executions.keys(), ...held.map(([roomId]) => roomId)];
   }
 
   private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {

@@ -10,6 +10,7 @@ import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { BandLink } from "../src/platform/BandLink";
 import type { ContactEventConfig, SessionConfig } from "../src/runtime/types";
 import { createDeferred } from "../src/core/deferred";
+import { RuntimeStateError } from "../src/core/errors";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { RecordLog, tmpRoot } from "./testUtils";
@@ -627,5 +628,106 @@ describe("agent.control from Band", () => {
     expect(await roomA.outcome(first)).toBe("processed");
     expect(handled.entries).toEqual(mode === "stop" ? [first, first] : [first]);
     expect(of(ROOM_A)).not.toContain("turn.failed");
+  });
+  it("settles a message it gave up on once Band plays the room that refused the give-up, and runs what Band kept meanwhile", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    const roomA = await platform.room(ROOM_A);
+    const handled = new RecordLog<string>();
+    const adapter = new GenericAdapter(async ({ message, tools }) => {
+      handled.record(message.id);
+      if (handled.entries.length === 1) throw new Error("provider down");
+      tools.turn.settle();
+    });
+    // A backlog message the start-up catch-up runs; it fails, and Band keeps serving it.
+    const failing = roomA.postBeforeConnect("owner", "fails");
+    const served = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    const { agent, events } = createAgent(platform, adapter);
+    const starting = agent.start();
+    await served.sending;
+    served.release();
+    // The catch-up's next read serves the failed message again, to be given up on.
+    const servedAgain = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    await servedAgain.sending;
+    // Band stops the room just then, and its push is missed: the give-up's claim is refused.
+    platform.control("stop", ROOM_A, { delivered: false });
+    servedAgain.release();
+    await starting;
+    await events.next(is("room.paused", ROOM_A));
+    const kept = await roomA.say("owner", "while stopped");
+
+    platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(kept)).toBe("processed");
+    expect(roomA.outcomes(failing)).toEqual(["failed", "processed"]);
+    expect(handled.entries).toEqual([failing, kept]);
+  });
+
+  it("applies a play that lands while a stopped room's session is reset, so its next turn runs at once", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const { agent, platform, roomA, next, of } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await agent.resetRoomSession(ROOM_A);
+    await next(is("room.stopped", ROOM_A));
+
+    platform.control("play", ROOM_A);
+    await next(is("room.resumed", ROOM_A));
+    expect(of(ROOM_A)).toEqual(["room.joined", "room.paused", "room.stopped", "room.resumed"]);
+
+    // As the Linear bridge hands a reset room its next message.
+    const id = roomA.postBeforeConnect("owner", "after the play");
+    await agent.bootstrapRoomMessage(ROOM_A, {
+      id, roomId: ROOM_A, content: "after the play", senderId: "owner", senderType: "User", senderName: "owner",
+      messageType: "text", metadata: {}, createdAt: new Date(),
+    });
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([id]);
+  });
+
+  it("replies once to a turn whose processed mark Band refused as stopped, settling it on play", async () => {
+    const replying = new GenericAdapter(async ({ message, tools }) => {
+      await tools.sendMessage(`reply to ${message.content}`, ["owner"]);
+    });
+    const { platform, roomA, next } = await startAgent(replying);
+    const held = roomA.holdNextProcessed();
+    const first = await roomA.say("owner", "first");
+    await held.sending;
+    // The stop's push is missed: Band refuses the processed mark instead.
+    platform.control("stop", ROOM_A, { delivered: false });
+    held.release();
+    await next(is("room.paused", ROOM_A));
+
+    platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(first)).toBe("processed");
+    expect((await roomA.sayAndSettle("owner", "after")).outcome).toBe("processed");
+    expect(roomA.messages.map((posted) => posted.content)).toEqual(["reply to first", "reply to after"]);
+  });
+
+  it("rejects, not throws, a call a cut-short turn makes to a revoked tool, and still describes its tools", async () => {
+    const outcomes = new RecordLog<string>();
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
+    // A plain adapter, with no SimpleAdapter wrapping its tools.
+    const adapter: FrameworkAdapter = {
+      onStarted: async () => undefined,
+      onCleanup: async () => undefined,
+      onEvent: async ({ tools }) => {
+        await released.promise;
+        outcomes.record(`schemas: ${tools.getOpenAIToolSchemas().length > 0}`);
+        await tools.sendNotice("late notice").then(
+          () => outcomes.record("posted"),
+          (error: unknown) => outcomes.record(error instanceof RuntimeStateError ? "rejected" : "failed"),
+        );
+      },
+    };
+    const { platform, roomA, next } = await startAgent(adapter);
+    await roomA.say("owner", "first");
+    await next(is("turn.started", ROOM_A));
+    platform.control("interrupt", ROOM_A);
+    await next(is("turn.stopped", ROOM_A));
+    released.resolve();
+
+    await outcomes.until(() => outcomes.entries.length === 2);
+    expect(outcomes.entries).toEqual(["schemas: true", "rejected"]);
+    expect(roomA.messages).toEqual([]);
   });
 });

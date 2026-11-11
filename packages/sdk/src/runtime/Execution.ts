@@ -1,4 +1,4 @@
-import { RecoverableTurnError, RuntimeStateError } from "../core/errors";
+import { RecoverableTurnError, RoomExecutionStoppedError, RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { resolveLogger } from "../core/logger";
 import type { BandLink } from "../platform/BandLink";
@@ -184,6 +184,7 @@ export class Execution {
   }
 
   public async enqueue(event: PlatformEvent): Promise<void> {
+    this.assertAccepting();
     if (event.type === "message_created" && this.isPaused() && !isSyntheticEvent(event)) {
       // Left on Band, which serves it again once the room resumes. A synthetic
       // turn exists only here, so it waits in the queue instead.
@@ -323,6 +324,18 @@ export class Execution {
   }
 
   private push(queued: QueuedEvent): void {
+    this.assertAccepting();
+    this.eventQueue.push(queued);
+    this.wake();
+    this.logger.debug("event queued for room", {
+      roomId: this.roomId,
+      eventType: queued.event.type,
+      messageId: messageIdOf(queued.event),
+    });
+  }
+
+  /** Refuses new work once the execution has ended or is stopping. */
+  private assertAccepting(): void {
     if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
       // `closed` can be true slightly ahead of `status` reaching "stopped" (see
       // runStop): the queue stops accepting before the final drain it is
@@ -332,14 +345,6 @@ export class Execution {
         `Execution for room ${this.roomId} has already ended or is stopping (status: ${this.lifecycle.state.status}); enqueue() is a no-op after stop()`,
       );
     }
-
-    this.eventQueue.push(queued);
-    this.wake();
-    this.logger.debug("event queued for room", {
-      roomId: this.roomId,
-      eventType: queued.event.type,
-      messageId: messageIdOf(queued.event),
-    });
   }
 
   /** Nothing in flight and nothing that may run now; work waiting on a hold does not count. */
@@ -829,14 +834,22 @@ export class Execution {
     }
   }
 
-  /** Band has no give-up state: a message leaves /next only once claimed and marked processed. */
+  /**
+   * Band has no give-up state: a message leaves /next only once claimed and
+   * marked processed. One Band refuses as stopped is not given up on yet: Band
+   * serves it again on play, and the catch-up then gives up on it again.
+   */
   private async giveUp(messageId: string): Promise<void> {
-    this.retryTracker.markPermanentlyFailed(messageId);
     try {
       await this.link.markProcessing(this.roomId, messageId);
       await this.link.markProcessed(this.roomId, messageId);
     } catch (error: unknown) {
+      if (error instanceof RoomExecutionStoppedError) {
+        this.logger.info("Band refused to settle a given-up message while stopped; settling it on play", { roomId: this.roomId, messageId });
+        return;
+      }
       this.logger.warn("Failed to settle a given-up message", { roomId: this.roomId, messageId, error });
     }
+    this.retryTracker.markPermanentlyFailed(messageId);
   }
 }

@@ -6,9 +6,13 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
   return forwardTools(() => tools, overrides);
 }
 
-/** `tools`, running `beforeCall` before each of its methods; it may throw to refuse the call. */
-export function guardedTools<T extends object>(tools: T, beforeCall: () => void): T {
-  return forward(() => tools, {}, beforeCall);
+/**
+ * `tools`, asking `refusal` before each method call. A call it refuses
+ * returns a promise rejected with its error, as an async tool fails; one it
+ * lets through runs as usual.
+ */
+export function guardedTools<T extends object>(tools: T, refusal: (key: PropertyKey) => Error | null): T {
+  return forward(() => tools, {}, refusal);
 }
 
 /**
@@ -20,7 +24,7 @@ export function forwardTools<T extends object>(resolve: () => T, overrides: Part
   return forward(resolve, overrides);
 }
 
-function forward<T extends object>(resolve: () => T, overrides: Partial<T>, beforeCall?: () => void): T {
+function forward<T extends object>(resolve: () => T, overrides: Partial<T>, refusal?: (key: PropertyKey) => Error | null): T {
   return new Proxy({} as T, {
     has(_target, key) {
       return Object.hasOwn(overrides, key) || Reflect.has(resolve(), key);
@@ -35,10 +39,10 @@ function forward<T extends object>(resolve: () => T, overrides: Partial<T>, befo
         return value;
       }
       const bound = value.bind(tools) as (...args: unknown[]) => unknown;
-      return beforeCall
+      return refusal
         ? (...args: unknown[]): unknown => {
-          beforeCall();
-          return bound(...args);
+          const refused = refusal(key);
+          return refused ? Promise.reject(refused) : bound(...args);
         }
         : bound;
     },

@@ -837,17 +837,18 @@ describe("Execution bootstrap messages", () => {
 
   it("runs a room only once every pause source has lifted its pause, and catches up then", async () => {
     let reads = 0;
+    let startupReads: number | null = null;
     const caughtUp = createDeferred<void>();
     const { execution } = createExecution({
       getNextMessage: async () => {
         reads += 1;
-        if (reads > 1) caughtUp.resolve();
+        if (startupReads !== null && reads > startupReads) caughtUp.resolve();
         return null;
       },
     });
     onTestFinished(() => execution.stop(0).then(() => undefined));
     await execution.waitForIdle();
-    const startupReads = reads;
+    startupReads = reads;
 
     expect(execution.pause("host")).toBe(true);
     expect(execution.pause("band")).toBe(true);
@@ -860,5 +861,13 @@ describe("Execution bootstrap messages", () => {
     expect(execution.resume("host")).toBe(true);
     await caughtUp.promise;
     expect(execution.isPaused()).toBe(false);
+  });
+
+  it("refuses a message enqueued after stop, paused or not", async () => {
+    const { execution } = createExecution();
+    execution.pause("band");
+    await execution.stop(0);
+
+    await expect(execution.enqueue(makeEvent("late"))).rejects.toThrow(RuntimeStateError);
   });
 });

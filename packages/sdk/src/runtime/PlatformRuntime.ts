@@ -56,6 +56,9 @@ export interface PlatformRuntimeOptions {
   };
 }
 
+/** A turn's claim and acknowledgements: a failed mark is logged, never the turn's failure. */
+const TURN_MARK = { bestEffort: true } as const;
+
 /**
  * A turn's message as settling sees it: Band holds and settles it (`settles`),
  * or the runtime made it itself (`synthetic`) and only the room holds it.
@@ -196,9 +199,13 @@ export class PlatformRuntime implements AsyncDisposable {
     return true;
   }
 
+  private reportBandResumed(roomId: string): void {
+    this.events.emit({ type: "room.resumed", roomId, source: "band" });
+  }
+
   private resumeBandPause(roomId: string): void {
     if (this.runtime?.resumeRoom(roomId, "band")) {
-      this.events.emit({ type: "room.resumed", roomId, source: "band" });
+      this.reportBandResumed(roomId);
     }
   }
 
@@ -448,7 +455,7 @@ export class PlatformRuntime implements AsyncDisposable {
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
         onMissedPlay: (roomId) => this.resumeBandPause(roomId),
-        onBandStopCleared: (roomId) => this.events.emit({ type: "room.resumed", roomId, source: "band" }),
+        onBandStopCleared: (roomId) => this.reportBandResumed(roomId),
         onExecute: (context, event, admitted, holdRoomUntil, stopped) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil, stopped),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
@@ -629,7 +636,6 @@ export class PlatformRuntime implements AsyncDisposable {
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
     const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
-    const messageMarkOptions = { bestEffort: true } as const;
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
     if (stoppedWhilePreparing) {
@@ -637,7 +643,7 @@ export class PlatformRuntime implements AsyncDisposable {
     }
 
     if (message.settles) {
-      await this.link.markProcessing(roomId, messageId, messageMarkOptions);
+      await this.link.markProcessing(roomId, messageId, TURN_MARK);
     }
 
     if (!admitted()) return false;
@@ -704,9 +710,9 @@ export class PlatformRuntime implements AsyncDisposable {
     if (message.settles) {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
-        await this.link.markProcessed(roomId, messageId, messageMarkOptions);
+        await this.link.markProcessed(roomId, messageId, TURN_MARK);
       } else {
-        await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), messageMarkOptions);
+        await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), TURN_MARK);
       }
     }
 
@@ -729,7 +735,7 @@ export class PlatformRuntime implements AsyncDisposable {
       return message.synthetic;
     }
     if (message.settles) {
-      await this.link.markProcessed(context.roomId, message.id, { bestEffort: true });
+      await this.link.markProcessed(context.roomId, message.id, TURN_MARK);
     }
     return false;
   }
@@ -748,7 +754,7 @@ export class PlatformRuntime implements AsyncDisposable {
   ): Promise<boolean> {
     context.returnTurnPreparation(input);
     if (mode === "interrupt" && message.settles && !claimed) {
-      await this.link.markProcessing(context.roomId, message.id, { bestEffort: true });
+      await this.link.markProcessing(context.roomId, message.id, TURN_MARK);
     }
     return await this.settleCutShortMessage(context, message, mode);
   }
