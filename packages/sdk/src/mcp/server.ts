@@ -14,7 +14,7 @@ import { isAuthorizedRequest } from "./auth";
 export interface BandMcpServerOptions {
   /** @internal */
   execute?: BuildRegistrationsOptions["execute"];
-  /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
+  /** Single tools instance (no room scoping) or a room resolver, which must meet `scopeHostTools`'s needs. */
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   /** Server name advertised to MCP clients. */
   name?: string;

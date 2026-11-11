@@ -172,10 +172,10 @@ export function buildRoomScopedRegistrations(
 /**
  * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
  * has it advertised as required and runs with the tools of the room its call
- * names, for as long as the room still resolves to those same tools; a call
- * naming no known room is refused without running it. One that
- * declares none still runs, with tools that throw a clear error on use, since
- * its call cannot say which room it means.
+ * names, for as long as `resolver` still returns those same tools, so it must
+ * return one instance per room turn; a call naming no known room is refused
+ * without running it. One that declares none still runs, with tools that throw
+ * a clear error on use, since its call cannot say which room it means.
  */
 export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolResolver): McpToolRegistration[] {
   return hostTools.map((tool) => {
@@ -189,6 +189,11 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
         inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver))),
     };
   });
+}
+
+/** Host tools for a single-room server, each run with that room's `tools`. */
+export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterToolsProtocol): McpToolRegistration[] {
+  return hostTools.map((tool) => bindHostTool(tool, tools));
 }
 
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
@@ -232,7 +237,7 @@ export function buildSingleContextRegistrations(
   const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools.map((tool) => bindHostTool(tool, tools)));
+    registrations.push(...bindHostTools(options.additionalTools, tools));
   }
 
   return wrapExecution(registrations, options.execute);

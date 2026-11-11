@@ -18,9 +18,11 @@ import type {
   McpToolRegistration,
 } from "./registrations";
 import {
+  bindHostTools,
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   registerTools,
+  scopeHostTools,
 } from "./registrations";
 import { ToolsListedTransport } from "./toolsListedTransport";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
@@ -38,7 +40,7 @@ export interface McpResourceSource {
 }
 
 export interface BandMcpStdioServerOptions {
-  /** Without it, the server lists only `additionalTools`. */
+  /** Without it, the server lists only `additionalTools`; a resolver must meet `scopeHostTools`'s needs. */
   tools?: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
@@ -57,6 +59,7 @@ export interface BandMcpStdioServerOptions {
 export class BandMcpStdioServer {
   private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
+  private readonly bindHostTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
   private session: StdioSession | null = null;
 
   public constructor(options: BandMcpStdioServerOptions) {
@@ -70,12 +73,16 @@ export class BandMcpStdioServer {
       roomlessTools: options.roomlessTools,
     };
 
-    if (!options.tools) {
+    const { tools } = options;
+    if (!tools) {
       this.registrations = [...(options.additionalTools ?? [])];
-    } else if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions);
+      this.bindHostTools = (hostTools) => hostTools;
+    } else if (typeof tools === "function") {
+      this.registrations = buildRoomScopedRegistrations(tools, regOptions);
+      this.bindHostTools = (hostTools) => scopeHostTools(hostTools, tools);
     } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions);
+      this.registrations = buildSingleContextRegistrations(tools, regOptions);
+      this.bindHostTools = (hostTools) => bindHostTools(hostTools, tools);
     }
   }
 
@@ -112,9 +119,12 @@ export class BandMcpStdioServer {
     return this.whenRunning((session) => session.mcpServer.server.notification({ method, params }));
   }
 
-  /** Registers the batch, sending one `tools/list_changed`; a name already registered rejects the whole batch. */
+  /**
+   * Registers the batch, bound to the server's tools like `additionalTools`, sending one
+   * `tools/list_changed`; a name already registered rejects the whole batch.
+   */
   public addTools(registrations: McpToolRegistration[]): Promise<void> {
-    return this.whenRunning((session) => session.register(registrations));
+    return this.whenRunning((session) => session.register(this.bindHostTools(registrations)));
   }
 
   /**

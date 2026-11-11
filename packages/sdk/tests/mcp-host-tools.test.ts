@@ -1,12 +1,15 @@
 import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { PassThrough } from "node:stream";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import type { McpToolRegistration } from "../src/mcp/registrations";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { BandMcpStdioServer } from "../src/mcp/stdio";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { createDeferred } from "../src/core/deferred";
@@ -97,7 +100,8 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
         return { content: [{ type: "text", text: "done" }] };
       },
     };
-    const rooms: Record<string, FakeTools> = { [ROOM]: trackTurn(new FakeTools()) };
+    const firstTurn = trackTurn(new FakeTools());
+    const rooms: Record<string, FakeTools> = { [ROOM]: firstTurn };
     const client = await bridgeClient([slowMark], rooms);
 
     const call = client.callTool({ name: "slow_mark", arguments: { room_id: ROOM, marker: "late" } });
@@ -108,7 +112,28 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     await call;
 
     expect(await late.promise).toBeInstanceOf(UnsupportedFeatureError);
+    expect(firstTurn.events).toEqual([]);
     expect(nextTurn.events).toEqual([]);
+  });
+
+  it("scopes a host tool added after start the same way on a room-scoped stdio server", async () => {
+    const rooms: Record<string, FakeTools> = { [ROOM]: new FakeTools() };
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const server = new BandMcpStdioServer({ tools: (roomId) => rooms[roomId], enableMemoryTools: false, stdin, stdout });
+    await server.start();
+    onTestFinished(() => server.stop());
+    const client = new McpClient({ name: "host-tool-probe", version: "1.0.0" });
+    await client.connect(new StdioServerTransport(stdout, stdin));
+    onTestFinished(() => client.close());
+
+    await server.addTools([markRoom]);
+    const known = await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "added" } });
+    const unknown = await client.callTool({ name: "mark_room", arguments: { room_id: "room-9", marker: "lost" } });
+
+    expect(isError(known)).toBe(false);
+    expect(rooms[ROOM].events.map((event) => event.content)).toEqual(["marker: added"]);
+    expect(textOf(unknown)).toBe("No tool context found for room_id room-9");
   });
 
   it("on a single-room server, such as an ACP room's own", async () => {

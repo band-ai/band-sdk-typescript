@@ -32,8 +32,7 @@ export interface CreateBandMcpBackendOptions {
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
-   * Otherwise return one instance per room turn: a host tool's call stops reaching
-   * its room's tools once this returns a different one.
+   * Otherwise see `scopeHostTools` for what host tools need from it.
    */
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
