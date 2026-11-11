@@ -77,6 +77,8 @@ describe("agent.rooms", () => {
     const { agent, roomA, roomB, subscribed, of } = await startAgent(adapter);
 
     await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
+    // A repeat changes nothing: one pause reported, the turn not cancelled again.
+    await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(false);
     const held = await roomB.say("owner", "while denied");
     // Room events run in order, so once A's later turn settles, B's message was handled.
     expect((await roomA.sayAndSettle("owner", "still running")).outcome).toBe("processed");
@@ -129,9 +131,13 @@ describe("agent.rooms", () => {
 
     await expect(agent.rooms.deny(ROOM_A)).resolves.toBe(false);
     await agent.start();
+    // A graceful stop waits until the room is idle: an unpaused room would have run its backlog by then.
+    await expect(agent.stop()).resolves.toBe(true);
     expect(turns.entries).toEqual([]);
-    expect(of(ROOM_A)).toEqual(["room.paused", "room.joined"]);
+    expect(roomA.outcomes(waiting)).toEqual([]);
+    expect(of(ROOM_A)).toEqual(["room.paused", "room.joined", "room.stopped"]);
 
+    await agent.start();
     await agent.rooms.allow(ROOM_A);
     expect(await roomA.outcome(waiting)).toBe("processed");
   });
@@ -154,10 +160,12 @@ describe("agent.rooms", () => {
 
   it("keeps Band's stop and the host's deny apart: the room runs only once both are lifted", async () => {
     const { adapter, turns } = turnRecorder();
-    const { agent, platform, roomA, reported } = await startAgent(adapter);
+    const { agent, platform, roomA, events, reported } = await startAgent(adapter);
     await agent.rooms.deny(ROOM_A);
+    // From here, so the host's own pause, reported already, does not count as Band's.
+    const beforeStop = events.entries.length;
     platform.control("stop", ROOM_A);
-    await reported("room.paused", ROOM_A);
+    await reported("room.paused", ROOM_A, beforeStop);
     const held = await roomA.say("owner", "while paused twice");
 
     await agent.rooms.allow(ROOM_A);
@@ -191,14 +199,14 @@ describe("agent.rooms", () => {
   it("admits a member room allowed while start is joining the rooms before it", async () => {
     const { adapter } = turnRecorder();
     const platform = BandPlatform.host([person("owner")]);
-    await platform.room(ROOM_A);
+    const roomA = await platform.room(ROOM_A);
     await platform.room(ROOM_B);
     const { agent, subscribed } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
-    const releaseA = platform.transport.gateJoin(chatRoomTopic(ROOM_A));
+    const releaseA = roomA.holdJoin();
 
     const starting = agent.start();
     // Rooms are listed, then joined one at a time: B was already passed over while A's join is held.
-    await vi.waitFor(() => expect(platform.transport.joinCalls).toContain(chatRoomTopic(ROOM_A)));
+    await platform.transport.joining.next((topic) => topic === chatRoomTopic(ROOM_A));
     await expect(agent.rooms.allow(ROOM_B)).resolves.toBe(false);
     releaseA();
     await starting;
@@ -230,5 +238,52 @@ describe("agent.rooms", () => {
     await agent.rooms.allow(ROOM_A);
     expect(await roomA.outcome(held)).toBe("processed");
     expect(turns.entries).toHaveLength(2);
+  });
+  it("starts despite a room listing that fails, and admits an allowed room once Band adds the agent", async () => {
+    const { adapter } = turnRecorder();
+    const platform = BandPlatform.host([person("owner")]);
+    await platform.room(ROOM_A);
+    const { agent, subscribed } = createAgent(adapter, platform);
+    await expect(agent.rooms.allow("room-c")).resolves.toBe(false);
+    platform.rest.listChats = async () => {
+      throw new Error("Band is unavailable");
+    };
+
+    await agent.start();
+
+    expect(agent.isRunning).toBe(true);
+    await platform.room("room-c");
+    await platform.transport.bound.until(() => subscribed("room-c"));
+  });
+
+  it("does not admit an allowed room into an agent stopped while it was listing the rooms", async () => {
+    const { adapter } = turnRecorder();
+    const { agent, platform, subscribed, of } = await startAgent(adapter, [ROOM_A]);
+    const listing = platform.rest.listHolds.hold(() => true);
+    const allowing = agent.rooms.allow(ROOM_B);
+    await listing.sending;
+
+    await agent.stop();
+    listing.release();
+
+    await expect(allowing).resolves.toBe(false);
+    expect(subscribed(ROOM_B)).toBe(false);
+    expect(of(ROOM_B)).toEqual([]);
+  });
+
+  it("replays what Band kept for a denied room reset meanwhile on the room's next message after it is allowed", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, roomA, roomB } = await startAgent(adapter);
+    await agent.rooms.deny(ROOM_A);
+    const held = await roomA.say("owner", "while denied");
+    expect((await roomB.sayAndSettle("owner", "still running")).outcome).toBe("processed");
+    await agent.resetRoomSession(ROOM_A);
+
+    await expect(agent.rooms.allow(ROOM_A)).resolves.toBe(true);
+    const next = await roomA.say("owner", "after the allow");
+
+    expect(await roomA.outcome(held)).toBe("processed");
+    expect(await roomA.outcome(next)).toBe("processed");
+    expect(turns.entries).toHaveLength(3);
   });
 });

@@ -14,7 +14,7 @@ import {
 } from "./types";
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
-import { RuntimeStateError, ValidationError } from "../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { toPlatformMessage } from "./formatters";
 import { ContactEventHandler } from "./ContactEventHandler";
@@ -286,8 +286,10 @@ export class PlatformRuntime implements AsyncDisposable {
    * Lets the agent handle `roomId` again, for the host: lifts the pause
    * `denyRoom` put on it, and admits it even where `roomFilter` declines it,
    * at once if Band lists the agent in it, otherwise when Band adds the agent.
-   * A pause Band put on the room stays until Band plays it. Kept across
-   * restarts of this runtime. Resolves true when the room is admitted on return.
+   * A pause Band put on the room stays until Band plays it. A room whose
+   * session a reset replaced replays what Band kept on its next message, as a
+   * play does. Kept across restarts of this runtime. Resolves true when the
+   * room is admitted on return.
    */
   public async allowRoom(roomId: string): Promise<boolean> {
     this.allowedRooms.add(roomId);
@@ -301,7 +303,7 @@ export class PlatformRuntime implements AsyncDisposable {
       return false;
     }
     await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
-    return isAdmitted(runtime, roomId);
+    return runtime.presence.isAdmitted(roomId);
   }
 
   /**
@@ -327,16 +329,28 @@ export class PlatformRuntime implements AsyncDisposable {
     if (adapter) {
       this.cancelAdapterTurn(adapter, roomId);
     }
-    return isAdmitted(runtime, roomId);
+    return runtime.presence.isAdmitted(roomId);
   }
 
-  /** Admits each of `roomIds` the agent is a member of and still allowed in, unless it is already handled. */
+  /**
+   * Admits each of `roomIds` the agent is a member of and still allowed in,
+   * unless it is already handled. Best-effort, as start-up's own listing is:
+   * a room it cannot list now is admitted when Band adds the agent to it.
+   */
   private async admitAllowedMemberRooms(runtime: AgentRuntime, roomIds: ReadonlySet<string>): Promise<void> {
-    const pending = new Set([...roomIds].filter((roomId) => !isAdmitted(runtime, roomId)));
+    const pending = new Set([...roomIds].filter((roomId) => !runtime.presence.isAdmitted(roomId)));
     if (pending.size === 0) {
       return;
     }
-    const members = await runtime.presence.memberRooms(pending);
+    let members: Map<string, MetadataMap>;
+    try {
+      members = await runtime.presence.memberRooms(pending);
+    } catch (error: unknown) {
+      if (!(error instanceof UnsupportedFeatureError)) {
+        this.logger.warn("Failed to list the rooms the host allowed; admitting them when Band adds the agent", { rooms: pending.size, error });
+      }
+      return;
+    }
     for (const [roomId, payload] of members) {
       // A stop since the listing owns the room now.
       if (this.runtime !== runtime) {
@@ -848,6 +862,3 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 }
 
-function isAdmitted(runtime: AgentRuntime, roomId: string): boolean {
-  return runtime.presence.roster.roomMembership(roomId) === "admitted";
-}

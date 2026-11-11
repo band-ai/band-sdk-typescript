@@ -44,14 +44,9 @@ export class Agent {
   private shutdownTimeoutMs: number | null = 30_000;
 
   /**
-   * Which rooms the agent takes turns in, for the process hosting it.
-   * `deny(roomId)` pauses the room (source `host`): its running turn is cut
-   * short, its messages stay on Band, and it stays subscribed with its
-   * session kept. `allow(roomId)` lifts that pause, replaying what Band kept,
-   * and admits the room even where `roomFilter` declines it. A pause Band
-   * puts on a room is separate and lasts until Band plays it. Decisions last
-   * as long as this `Agent`, across `stop()`/`start()`, and may be made before
-   * `start()`; Band is not told of them.
+   * Which rooms the agent takes turns in, for the process hosting it: see
+   * {@link AgentRooms}. Decisions last as long as this `Agent`, across
+   * `stop()`/`start()`, and may be made before `start()`.
    */
   public readonly rooms: AgentRooms;
 

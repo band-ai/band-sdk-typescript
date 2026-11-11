@@ -168,8 +168,13 @@ export class RecordingRestApi extends FakeRestApi {
     return super.getAgentMe(options);
   }
 
+  /** Holds a room listing in flight; with `error`, Band then fails it. */
+  public readonly listHolds = new CallHolds<[]>();
+
   /** Every room on one page. */
   public override async listChats(): Promise<PaginatedResponse> {
+    // Awaited only when held: start-up's listing is timing other tests observe.
+    if (this.listHolds.isHolding()) await this.listHolds.pass();
     return { data: [...this.rooms].map(([roomId, room]) => roomPayload(roomId, "active", room.updatedAt, room.title)), metadata: { page: 1, totalPages: 1 } };
   }
 

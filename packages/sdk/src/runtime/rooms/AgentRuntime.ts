@@ -492,7 +492,7 @@ export class AgentRuntime {
 
   /** Reports `execution` as handling `roomId` once the room is admitted; unadmitted rooms are not news. */
   private announceExecution(roomId: string, execution: Execution): void {
-    if (this.announced.has(execution) || this.presence.roster.roomMembership(roomId) !== "admitted") {
+    if (this.announced.has(execution) || !this.presence.isAdmitted(roomId)) {
       return;
     }
     this.announced.add(execution);
