@@ -382,6 +382,22 @@ describe("agent.control from Band", () => {
     expect(stopped.entries).toEqual([ROOM_A]);
   });
 
+  it("cuts a long turn short when its keep-alive report is echoed as not working, the only sign of a missed stop for a turn that writes nothing", async () => {
+    const { adapter, handled, release } = firstTurnHangs();
+    const { platform, roomA, next } = await startAgent(adapter, { workingKeepAliveSeconds: 0.02, workingRequestTimeoutSeconds: 0.01 });
+    const first = await roomA.say("owner", "first");
+    await handled.until(() => handled.entries.length === 1);
+
+    platform.control("stop", ROOM_A, { delivered: false });
+    expect(await next(is("turn.stopped", ROOM_A))).toMatchObject({ messageId: first, mode: "stop" });
+    expect(roomA.outcomes(first)).toEqual([]);
+    release();
+    platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(first)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([first, first]);
+  });
+
   it("refuses the tools of an interrupted turn the adapter could not cancel, so its late reply never posts", async () => {
     const released = createDeferred();
     onTestFinished(() => released.resolve());
@@ -525,6 +541,7 @@ describe("agent.control from Band", () => {
 
     await next(is("room.paused", "room-c"));
   });
+
   it("runs again a contact hub turn a stop cut short once the room is played, since Band holds no copy of it", async () => {
     const { adapter, handled, ended, release } = firstTurnHangs();
     const { platform, next } = await startAgent(adapter, undefined, { strategy: "hub_room", hubTaskId: "contacts" });
@@ -629,6 +646,7 @@ describe("agent.control from Band", () => {
     expect(handled.entries).toEqual(mode === "stop" ? [first, first] : [first]);
     expect(of(ROOM_A)).not.toContain("turn.failed");
   });
+
   it("settles a message it gave up on once Band plays the room that refused the give-up, and runs what Band kept meanwhile", async () => {
     const platform = BandPlatform.host([person("owner")]);
     const roomA = await platform.room(ROOM_A);
@@ -671,7 +689,8 @@ describe("agent.control from Band", () => {
 
     platform.control("play", ROOM_A);
     await next(is("room.resumed", ROOM_A));
-    expect(of(ROOM_A)).toEqual(["room.joined", "room.paused", "room.stopped", "room.resumed"]);
+    // The play gives the reset room its execution again, which catches it up.
+    expect(of(ROOM_A)).toEqual(["room.joined", "room.paused", "room.stopped", "room.joined", "room.resumed"]);
 
     // As the Linear bridge hands a reset room its next message.
     const id = roomA.postBeforeConnect("owner", "after the play");
@@ -729,5 +748,36 @@ describe("agent.control from Band", () => {
     await outcomes.until(() => outcomes.entries.length === 2);
     expect(outcomes.entries).toEqual(["schemas: true", "rejected"]);
     expect(roomA.messages).toEqual([]);
+  });
+
+  it("catches a room up on play even when this run never saw Band stop it", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const platform = BandPlatform.host([person("owner")]);
+    const roomA = await platform.room(ROOM_A);
+    // An earlier run saw the stop; Band kept what arrived meanwhile.
+    platform.control("stop", ROOM_A, { delivered: false });
+    const kept = roomA.postBeforeConnect("owner", "sent while the room was stopped");
+    const { agent } = createAgent(platform, adapter);
+    await agent.start();
+    expect(handled.entries).toEqual([]);
+
+    platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(kept)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([kept]);
+  });
+
+  it("catches a stopped room up on play after its session was reset, with no later event to wake it", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const { agent, platform, roomA, next } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    const kept = await roomA.say("owner", "kept while stopped");
+    await agent.resetRoomSession(ROOM_A);
+
+    platform.control("play", ROOM_A);
+
+    expect(await roomA.outcome(kept)).toBe("processed");
+    expect(handled.entries.map((turn) => turn.messageId)).toEqual([kept]);
   });
 });

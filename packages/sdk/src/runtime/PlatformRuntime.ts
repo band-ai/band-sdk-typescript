@@ -247,7 +247,9 @@ export class PlatformRuntime implements AsyncDisposable {
         this.cancelAdapterTurn(adapter, roomId);
         return;
       case "play":
-        this.resumeBandPause(roomId);
+        if (runtime.playRoom(roomId)) {
+          this.reportBandResumed(roomId);
+        }
         return;
       case "interrupt":
         if (!runtime.interruptTurn(roomId)) {

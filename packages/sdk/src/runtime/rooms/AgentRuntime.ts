@@ -424,6 +424,23 @@ export class AgentRuntime {
     return execution ? execution.resume(source) : (this.roomPauses.get(roomId)?.delete(source) ?? false);
   }
 
+  /**
+   * Band played `roomId`: see `Execution.play`. A room whose session was
+   * reset while Band held it gets its execution now, whose start-up sweep
+   * catches it up. Returns whether Band's pause was recorded.
+   */
+  public playRoom(roomId: string): boolean {
+    const execution = this.executions.get(roomId);
+    if (execution) {
+      return execution.play();
+    }
+    const lifted = this.roomPauses.get(roomId)?.delete("band") ?? false;
+    if (lifted && this.lifecycle.is("running") && this.presence.roster.roomMembership(roomId) === "admitted") {
+      this.getOrCreateExecution(roomId);
+    }
+    return lifted;
+  }
+
   /** The room's pause record, which each of its executions shares. */
   private pausesOf(roomId: string): Set<RoomPauseSource> {
     let sources = this.roomPauses.get(roomId);

@@ -249,6 +249,23 @@ export class Execution {
     return true;
   }
 
+  /**
+   * Band played the room: lifts Band's pause, and once no source pauses the
+   * room catches it up on what Band kept, even when this run never saw the
+   * stop (it came before start, or its push and refusals were missed).
+   * Returns whether Band's pause was recorded.
+   */
+  public play(): boolean {
+    if (this.resume("band")) {
+      return true;
+    }
+    if (!this.isPaused() && this.isActive()) {
+      this.deferCatchUp();
+      this.wake();
+    }
+    return false;
+  }
+
   /** Ends the running turn and consumes its message; false when no turn is running. */
   public interrupt(): boolean {
     return this.stopRunningTurn("interrupt");

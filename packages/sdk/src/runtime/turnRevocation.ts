@@ -2,12 +2,16 @@ import type { ToolSchemaProvider } from "../contracts/protocols";
 import { RuntimeStateError } from "../core/errors";
 import { guardedTools } from "../core/overrideTools";
 
-/** Tool members that only describe the tools and reach nothing, so a cut-short turn may still read them. */
-const DESCRIBING_TOOLS: ReadonlySet<PropertyKey> = new Set<keyof ToolSchemaProvider>([
-  "getToolSchemas",
-  "getAnthropicToolSchemas",
-  "getOpenAIToolSchemas",
-]);
+/**
+ * Tool members that only describe the tools and reach nothing, so a cut-short
+ * turn may still read them. Keyed by the whole interface, so a new describing
+ * member fails typecheck until it is listed here.
+ */
+const DESCRIBING_TOOLS: ReadonlySet<PropertyKey> = new Set(Object.keys({
+  getToolSchemas: true,
+  getAnthropicToolSchemas: true,
+  getOpenAIToolSchemas: true,
+} satisfies Record<keyof ToolSchemaProvider, true>));
 
 /**
  * `tools`, refusing every call that acts once `stopped` aborts, with a
