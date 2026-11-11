@@ -5,8 +5,13 @@ import {
   isFailedToolOutput,
   type AdapterToolsProtocol,
 } from "../../contracts/protocols";
-import type { MentionInput, MetadataMap } from "../../contracts/dtos";
-import { NO_REPLY_TOOL_NAME, OPERATION_ID_ARG, SEND_MESSAGE_TOOL_NAME } from "../../contracts/toolSchemas";
+import type { MentionInput, MetadataMap, ToolSchemaRecord } from "../../contracts/dtos";
+import {
+  NO_REPLY_TOOL_NAME,
+  OPERATION_ID_ARG,
+  OPERATION_ID_PROPERTY,
+  SEND_MESSAGE_TOOL_NAME,
+} from "../../contracts/toolSchemas";
 import { overrideTools } from "../../core/overrideTools";
 import type { ReplyIdentity, ReplyTool, RoomJournal } from "./TurnJournal";
 
@@ -31,6 +36,30 @@ export function replyDigest(tool: ReplyTool, payload: unknown): string {
   return createHash("sha256").update(JSON.stringify([tool, canonical(payload)]), "utf8").digest("hex");
 }
 
+function isReplyTool(name: unknown): name is ReplyTool {
+  return name === SEND_MESSAGE_TOOL_NAME || name === NO_REPLY_TOOL_NAME;
+}
+
+function withOperationIdProperty(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return schema;
+  const { properties } = schema as { properties?: Record<string, unknown> };
+  return { ...schema, properties: { ...properties, [OPERATION_ID_ARG]: OPERATION_ID_PROPERTY } };
+}
+
+/** `records` with `operation_id` added to the reply tools, in either schema format. */
+function advertiseOperationId(records: ToolSchemaRecord[]): ToolSchemaRecord[] {
+  return records.map((record) => {
+    if (isReplyTool(record.name)) {
+      return { ...record, input_schema: withOperationIdProperty(record.input_schema) };
+    }
+    const fn = record.function as { name?: unknown; parameters?: unknown } | undefined;
+    if (fn && isReplyTool(fn.name)) {
+      return { ...record, function: { ...fn, parameters: withOperationIdProperty(fn.parameters) } };
+    }
+    return record;
+  });
+}
+
 function withoutOperationId(args: MetadataMap): MetadataMap {
   const { [OPERATION_ID_ARG]: _operationId, ...rest } = args;
   return rest;
@@ -52,7 +81,9 @@ function invalidOperationId(tool: ReplyTool) {
  * automatic reply takes) records its intent before posting and its outcome
  * after, and every `band_no_reply` records the decline. A reply carrying an
  * `operation_id` the room already recorded returns that reply's result
- * without posting, or is refused when its arguments differ.
+ * without posting, or is refused when its arguments differ. The tools'
+ * schemas advertise `operation_id` on the reply tools, since only here does
+ * it dedupe anything.
  */
 export function journalingTools<T extends AdapterToolsProtocol>(tools: T, journal: RoomJournal, messageId: string): T {
   const sendMessage = tools.sendMessage.bind(tools);
@@ -120,13 +151,19 @@ export function journalingTools<T extends AdapterToolsProtocol>(tools: T, journa
   };
 
   return overrideTools(tools, {
+    getToolSchemas: (format: "openai" | "anthropic", options?: { includeMemory?: boolean }) =>
+      advertiseOperationId(tools.getToolSchemas(format, options)),
+    getAnthropicToolSchemas: (options?: { includeMemory?: boolean }) =>
+      advertiseOperationId(tools.getAnthropicToolSchemas(options)),
+    getOpenAIToolSchemas: (options?: { includeMemory?: boolean }) =>
+      advertiseOperationId(tools.getOpenAIToolSchemas(options)),
     sendMessage: (content: string, mentions?: MentionInput) =>
       post(
         { tool: SEND_MESSAGE_TOOL_NAME, digest: replyDigest(SEND_MESSAGE_TOOL_NAME, { content, mentions: mentions ?? [] }) },
         () => sendMessage(content, mentions),
       ),
     executeToolCall: (toolName: string, args: MetadataMap) =>
-      toolName === SEND_MESSAGE_TOOL_NAME || toolName === NO_REPLY_TOOL_NAME
+      isReplyTool(toolName)
         ? reply(toolName, args ?? {})
         : executeToolCall(toolName, args),
   } as Partial<T>);

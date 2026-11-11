@@ -5,11 +5,12 @@ import { describe, expect, it } from "vitest";
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import type { AgentEvent } from "../src/contracts/events";
 import { isFailedToolOutput } from "../src/contracts/protocols";
+import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
 import { PlatformRuntime } from "../src/runtime";
 import { TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { tmpRoot } from "./testUtils";
+import { RecordLog, tmpRoot } from "./testUtils";
 
 const OWNER = "owner";
 const ROOM = "room-1";
@@ -17,19 +18,19 @@ const MENTION = `@[[${AGENT_ID}]]`;
 
 type Handler = GenericAdapterHandler;
 
-/** One process of the agent: a runtime on `platform` journaling to `journalDir`. */
-async function startProcess(platform: BandPlatform, journalDir: string, handler: Handler) {
+/** One process of the agent: a runtime on `platform` journaling to `journalDir`, or not journaling without one. */
+async function startProcess(platform: BandPlatform, journalDir: string | undefined, handler: Handler) {
   const handled: string[] = [];
-  const events: AgentEvent[] = [];
+  const events = new RecordLog<AgentEvent>();
   const runtime = new PlatformRuntime({
     agentId: AGENT_ID,
     apiKey: AGENT_API_KEY,
     linkOptions: platform.link,
     agentConfig: { autoSubscribeExistingRooms: true },
-    sessionConfig: { journalDir },
+    sessionConfig: journalDir === undefined ? {} : { journalDir },
   });
   runtime.observe((event) => {
-    events.push(event);
+    events.record(event);
   });
   await runtime.start(
     new GenericAdapter(async (args) => {
@@ -136,7 +137,7 @@ describe("the turn journal across a restart", () => {
     await second.runtime.stop();
   });
 
-  it("dispatches nothing for an inbound whose turn ended before a restart", async () => {
+  it("dispatches nothing for an inbound whose turn ended before a restart, and still bootstraps the next turn", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -146,13 +147,19 @@ describe("the turn journal across a restart", () => {
     await (await ended.room(ROOM)).turnDone(inbound);
     await ended.close();
 
-    const { runtime, handled } = await startProcess(platform, journalDir, async ({ tools }) => {
+    const bootstraps: boolean[] = [];
+    const { runtime, handled } = await startProcess(platform, journalDir, async ({ tools, isSessionBootstrap }) => {
+      bootstraps.push(isSessionBootstrap);
       await tools.sendMessage("answered", ["@owner"]);
     });
 
     expect(await room.outcome(inbound)).toBe("processed");
     expect(handled).toEqual([]);
     expect(room.posted).toEqual([]);
+    // The skipped inbound did not use up the session's first turn: the next one still bootstraps it.
+    const next = await room.say(OWNER, `${MENTION} again`);
+    expect(await room.outcome(next)).toBe("processed");
+    expect(bootstraps).toEqual([true]);
     await runtime.stop();
   });
 
@@ -186,7 +193,7 @@ describe("the turn journal across a restart", () => {
     const second = await startProcess(platform, journalDir, answer);
 
     expect(await room.outcome(inbound)).toBe("processed");
-    expect(second.events.filter((event) => event.type === "delivery.unrecorded")).toEqual([
+    expect(second.events.entries.filter((event) => event.type === "delivery.unrecorded")).toEqual([
       { type: "delivery.unrecorded", roomId: ROOM, messageId: inbound, operationId: "op-1" },
     ]);
     // The documented bound: the inbound is answered again, and the possible duplicate is reported.
@@ -217,7 +224,7 @@ describe("the turn journal across a restart", () => {
 
     expect(await room.outcome(inbound)).toBe("processed");
     expect(handled).toEqual([inbound]);
-    expect(events.filter((event) => event.type === "delivery.unrecorded")).toEqual([
+    expect(events.entries.filter((event) => event.type === "delivery.unrecorded")).toEqual([
       { type: "delivery.unrecorded", roomId: ROOM, messageId: inbound, operationId: "op-1" },
     ]);
     expect(await journalLines(journalDir)).toContain("delivery.unrecorded");
@@ -292,5 +299,122 @@ describe("operation_id", () => {
     expect(results[0]).toMatchObject({ ok: false });
     expect(room.messages).toEqual([]);
     await runtime.stop();
+  });
+});
+
+const isStopped = (event: AgentEvent) => event.type === "turn.stopped";
+
+/** A handler whose first turn posts `partial` and works until released; later turns answer at once. */
+function firstTurnRepliesThenHangs() {
+  const released = createDeferred();
+  let turns = 0;
+  const handler: Handler = async ({ tools }) => {
+    turns += 1;
+    if (turns === 1) {
+      await tools.sendMessage("partial", ["@owner"]);
+      await released.promise;
+      return;
+    }
+    await tools.sendMessage("answered", ["@owner"]);
+  };
+  return { handler, release: () => released.resolve() };
+}
+
+describe("the turn journal when Band runs a message again", () => {
+  it("runs a message again after a restart when its turn replied and then failed, as without the journal", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
+    // The process dies after marking the turn failed, before it gives up on the message.
+    const giveUp = platform.rest.processedHolds.hold((messageId) => messageId === inbound);
+    const first = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("partial", ["@owner"]);
+      throw new Error("the model call failed");
+    });
+    expect(await room.outcome(inbound)).toBe("failed");
+    await giveUp.sending;
+    await first.runtime.stop(50);
+    expect(await journalLines(journalDir)).toEqual(["reply.intent", "reply.posted", "turn.retried"]);
+
+    // Band still serves the failed message; the next process answers it.
+    const second = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]);
+    });
+
+    await platform.rest.settled.next((settled) => settled.messageId === inbound && settled.outcome === "processed");
+    expect(room.outcomes(inbound)).toEqual(["failed", "processed"]);
+    expect(second.handled).toEqual([inbound]);
+    expect(room.messages.map((posted) => posted.content)).toEqual(["partial", "answered"]);
+    await second.runtime.stop();
+  });
+
+  it("runs a stopped turn's message again on play, though the stopped turn had replied", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const { handler, release } = firstTurnRepliesThenHangs();
+    const { runtime, handled, events } = await startProcess(platform, tmpRoot(), handler);
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await room.until(() => room.messages.length === 1);
+
+    platform.control("stop", ROOM);
+    await events.next(isStopped);
+    release();
+    platform.control("play", ROOM);
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(handled).toEqual([inbound, inbound]);
+    expect(room.messages.map((posted) => posted.content)).toEqual(["partial", "answered"]);
+    await runtime.stop();
+  });
+
+  it("records an interrupted turn as done before its message is consumed, so a restart does not run it", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const { handler, release } = firstTurnRepliesThenHangs();
+    const { runtime, events } = await startProcess(platform, journalDir, handler);
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await room.until(() => room.messages.length === 1);
+    const mark = room.holdNextProcessed();
+
+    platform.control("interrupt", ROOM);
+    await mark.sending;
+
+    expect(await journalLines(journalDir)).toEqual(["reply.intent", "reply.posted", "turn.done"]);
+    mark.release();
+    expect(await room.outcome(inbound)).toBe("processed");
+    await events.next(isStopped);
+    release();
+    await runtime.stop();
+  });
+});
+
+describe("advertising operation_id", () => {
+  async function schemasSeen(journalDir: string | undefined) {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const seen: Record<string, unknown>[] = [];
+    const { runtime } = await startProcess(platform, journalDir, async ({ tools }) => {
+      seen.push(...tools.getAnthropicToolSchemas(), ...tools.getOpenAIToolSchemas());
+      tools.turn.settle();
+    });
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} hi`))).toBe("processed");
+    await runtime.stop();
+    const properties = (name: string) => seen
+      .filter((schema) => schema.name === name || (schema.function as { name?: string } | undefined)?.name === name)
+      .map((schema) => Object.keys(((schema.input_schema ?? (schema.function as { parameters: unknown }).parameters) as { properties: object }).properties));
+    return { send: properties("band_send_message"), noReply: properties("band_no_reply"), event: properties("band_send_event") };
+  }
+
+  it("offers operation_id on the reply tools, in both schema formats, only to a journaled turn", async () => {
+    const journaled = await schemasSeen(tmpRoot());
+    expect(journaled.send).toEqual([expect.arrayContaining(["content", "mentions", "operation_id"]), expect.arrayContaining(["operation_id"])]);
+    expect(journaled.noReply).toEqual([expect.arrayContaining(["operation_id"]), expect.arrayContaining(["operation_id"])]);
+    expect(journaled.event.flat()).not.toContain("operation_id");
+
+    const plain = await schemasSeen(undefined);
+    expect(plain.send).toHaveLength(2);
+    expect([...plain.send, ...plain.noReply].flat()).not.toContain("operation_id");
   });
 });

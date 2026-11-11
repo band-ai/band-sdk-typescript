@@ -2,6 +2,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { RuntimeStateError } from "../src/core/errors";
 import { TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { tmpRoot } from "./testUtils";
 
@@ -64,6 +65,38 @@ describe("TurnJournal", () => {
     expect(reopened.inbound("m1").done).toBe(true);
     await reopened.turnDone("m2");
     expect((await new TurnJournal(dir).room(ROOM)).inbound("m2").done).toBe(true);
+  });
+
+  it("forgets what a retried inbound's turn answered, including a reply of that turn that lands after the retry", async () => {
+    const dir = tmpRoot();
+    const journal = await new TurnJournal(dir).room(ROOM);
+    const posted = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1" });
+    await journal.replyPosted(posted, { ok: true });
+    const inFlight = await journal.beginReply("m1", { tool: "band_send_message", digest: "d2" });
+
+    await journal.turnRetried("m1");
+    await journal.replyPosted(inFlight, { ok: true });
+
+    const expected = { answered: false, done: false, unrecorded: [] };
+    expect(journal.inbound("m1")).toEqual(expected);
+    expect((await new TurnJournal(dir).room(ROOM)).inbound("m1")).toEqual(expected);
+  });
+
+  it("closes a released room, refusing its later writes, and reopens it with every record it wrote", async () => {
+    const journals = new TurnJournal(tmpRoot());
+    const released = await journals.room(ROOM);
+    const writing = released.turnDone("m1");
+
+    const releasing = journals.release(ROOM);
+    const reopened = journals.room(ROOM);
+    await writing;
+    await releasing;
+
+    await expect(released.turnDone("m2")).rejects.toBeInstanceOf(RuntimeStateError);
+    expect(await reopened).not.toBe(released);
+    expect((await reopened).inbound("m1").done).toBe(true);
+    expect((await reopened).inbound("m2").done).toBe(false);
+    await journals.close();
   });
 
   it("keeps rooms apart", async () => {

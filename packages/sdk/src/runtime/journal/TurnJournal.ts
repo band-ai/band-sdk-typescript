@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+import { RuntimeStateError } from "../../core/errors";
+
 /** The Band tools whose landing answers an inbound turn. */
 export type ReplyTool = "band_send_message" | "band_no_reply";
 
@@ -20,7 +22,7 @@ export interface PendingReply extends ReplyIdentity {
 
 /** What the journal knows of one inbound message's turn. */
 export interface InboundState {
-  /** A reply posted or a decline landed for it. */
+  /** A reply posted or a decline landed for it since its last retry. */
   answered: boolean;
   /** Its turn ended and the inbound is about to be, or was, marked processed. */
   done: boolean;
@@ -41,7 +43,8 @@ type JournalRecord =
   | { t: "reply.failed"; id: string }
   | ({ t: "reply.declined"; messageId: string; result: unknown } & ReplyIdentity)
   | { t: "delivery.unrecorded"; id: string }
-  | { t: "turn.done"; messageId: string };
+  | { t: "turn.done"; messageId: string }
+  | { t: "turn.retried"; messageId: string };
 
 interface InboundIndex {
   answered: boolean;
@@ -55,13 +58,17 @@ interface InboundIndex {
  */
 export class TurnJournal {
   private readonly rooms = new Map<string, Promise<RoomJournal>>();
+  /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
+  private readonly releasing = new Map<string, Promise<void>>();
 
   public constructor(private readonly dir: string) {}
 
   public room(roomId: string): Promise<RoomJournal> {
     let journal = this.rooms.get(roomId);
     if (!journal) {
-      journal = RoomJournal.open(path.join(this.dir, `${encodeURIComponent(roomId)}.jsonl`));
+      const file = path.join(this.dir, `${encodeURIComponent(roomId)}.jsonl`);
+      const released = this.releasing.get(roomId) ?? Promise.resolve();
+      journal = released.then(() => RoomJournal.open(file));
       this.rooms.set(roomId, journal);
       journal.catch(() => {
         if (this.rooms.get(roomId) === journal) this.rooms.delete(roomId);
@@ -70,11 +77,27 @@ export class TurnJournal {
     return journal;
   }
 
+  /** Closes `roomId`'s journal once its handling stopped; it reopens on the room's next turn. */
+  public release(roomId: string): Promise<void> {
+    const journal = this.rooms.get(roomId);
+    if (!journal) return this.releasing.get(roomId) ?? Promise.resolve();
+    this.rooms.delete(roomId);
+    const closing = closeRoom(journal).finally(() => {
+      if (this.releasing.get(roomId) === closing) this.releasing.delete(roomId);
+    });
+    this.releasing.set(roomId, closing);
+    return closing;
+  }
+
   public async close(): Promise<void> {
     const rooms = [...this.rooms.values()];
     this.rooms.clear();
-    await Promise.all(rooms.map(async (room) => (await room.catch(() => null))?.close()));
+    await Promise.all([...rooms.map(closeRoom), ...this.releasing.values()]);
   }
+}
+
+async function closeRoom(journal: Promise<RoomJournal>): Promise<void> {
+  await (await journal.catch(() => null))?.close();
 }
 
 /**
@@ -90,6 +113,7 @@ export class RoomJournal {
   private readonly operations = new Map<string, RecordedOperation>();
   private writes: Promise<void> = Promise.resolve();
   private separate: boolean;
+  private closed = false;
 
   private constructor(private readonly handle: FileHandle, text: string) {
     const lines = text.split("\n");
@@ -164,12 +188,26 @@ export class RoomJournal {
     await this.append({ t: "turn.done", messageId });
   }
 
+  /**
+   * Records that the inbound runs again, failed or stopped: what its turn
+   * answered so far no longer answers it, and a reply of that turn still in
+   * flight no longer counts.
+   */
+  public async turnRetried(messageId: string): Promise<void> {
+    await this.append({ t: "turn.retried", messageId });
+  }
+
   public async close(): Promise<void> {
-    await this.writes.catch(() => undefined);
+    if (this.closed) return;
+    this.closed = true;
+    await this.writes;
     await this.handle.close();
   }
 
   private append(record: JournalRecord): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new RuntimeStateError("The room's turn journal is closed; its handling stopped"));
+    }
     const write = this.writes.then(async () => {
       const line = `${this.separate ? "\n" : ""}${JSON.stringify(record)}\n`;
       await this.handle.appendFile(line, "utf8");
@@ -221,6 +259,13 @@ export class RoomJournal {
       case "turn.done":
         this.indexFor(record.messageId).done = true;
         return;
+      case "turn.retried": {
+        const index = this.indexFor(record.messageId);
+        index.answered = false;
+        for (const id of index.pending.keys()) this.pendingById.delete(id);
+        index.pending.clear();
+        return;
+      }
     }
   }
 
