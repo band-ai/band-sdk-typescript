@@ -19,6 +19,7 @@ import { RecordLog } from "../../../testUtils";
 import { Agents, type RunningAgent } from "../../toolkit/agents";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
+import { warnTeardown } from "../../toolkit/liveRun";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { AGENT_CONTROL, Rooms } from "../../toolkit/rooms";
 
@@ -91,7 +92,7 @@ describe(SCENARIO, () => {
     await using running = await Agents.runAs(identity, adapter, { sessionConfig: { stoppedResyncSeconds: STOPPED_RESYNC_SECONDS } });
     const events = recordEvents(running);
     const delivery = observeAgent(identity, room);
-    onTestFinished(() => Rooms.controlAgents(room, AGENT_CONTROL.play).catch(() => undefined));
+    onTestFinished(() => Rooms.controlAgents(room, AGENT_CONTROL.play).catch(warnTeardown(`play the agents in room ${room.id}`)));
 
     await Rooms.controlAgents(room, AGENT_CONTROL.stop);
     const sent = await Rooms.sendMention(room, identity, "Sent while the room is stopped.");

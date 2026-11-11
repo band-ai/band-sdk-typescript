@@ -74,8 +74,6 @@ export class AgentRuntime {
   private readonly executions = new Map<string, Execution>();
   /** Who pauses each room, kept across its executions, so a reset or rejoin starts paused. */
   private readonly roomPauses = new Map<string, Set<RoomPauseSource>>();
-  /** Rooms Band played while a reset held them, which their next execution catches up. */
-  private readonly owedCatchUps = new Set<string>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   /** Executions reported through `onRoomAdmitted`, so each start and stop is reported once. */
   private readonly announced = new WeakSet<Execution>();
@@ -427,33 +425,15 @@ export class AgentRuntime {
   }
 
   /**
-   * Band played `roomId`: see `Execution.play`. A room whose execution is
-   * not running, because a reset is stopping it or has evicted it, owes a
-   * catch-up instead: its next execution, created as soon as no reset holds
-   * the room, runs what Band kept in its start-up sweep. Returns whether
-   * Band's pause was recorded.
+   * Band played `roomId`: see `Execution.play`. Only a running execution
+   * takes it, as in the Python SDK. A play while a reset is stopping or has
+   * evicted the room's execution leaves Band's pause recorded, and the
+   * room's next execution, which starts paused, checks `/next` at once,
+   * finds the play and catches up. Returns whether Band's pause was lifted.
    */
   public playRoom(roomId: string): boolean {
     const execution = this.executions.get(roomId);
-    if (execution?.state.status === "running") {
-      return execution.play();
-    }
-    const lifted = this.roomPauses.get(roomId)?.delete("band") ?? false;
-    this.owedCatchUps.add(roomId);
-    if (!execution) {
-      this.settleOwedCatchUp(roomId);
-    }
-    return lifted;
-  }
-
-  /** Gives a room owed a catch-up its execution, if it is still admitted and none is running. */
-  private settleOwedCatchUp(roomId: string): void {
-    if (!this.owedCatchUps.delete(roomId)) {
-      return;
-    }
-    if (this.lifecycle.is("running") && !this.executions.has(roomId) && this.presence.roster.roomMembership(roomId) === "admitted") {
-      this.getOrCreateExecution(roomId);
-    }
+    return execution?.state.status === "running" ? execution.play() : false;
   }
 
   /** The room's pause record, which each of its executions shares. */
@@ -471,14 +451,9 @@ export class AgentRuntime {
     return this.executions.get(roomId)?.interrupt() ?? false;
   }
 
-  /**
-   * The rooms Band's control signals reach: those this runtime is handling
-   * now, and those Band's stop still holds while their session is reset, so
-   * a play meanwhile is not lost.
-   */
+  /** The rooms this runtime is handling now, which an agent-wide control signal reaches. */
   public handledRoomIds(): string[] {
-    const held = [...this.roomPauses].filter(([roomId, sources]) => sources.has("band") && !this.executions.has(roomId));
-    return [...this.executions.keys(), ...held.map(([roomId]) => roomId)];
+    return [...this.executions.keys()];
   }
 
   private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
@@ -496,8 +471,6 @@ export class AgentRuntime {
     this.evictExecution(roomId, execution);
     this.contexts.delete(roomId);
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
-    // After the adapter let go of the old session, so the new one starts clean.
-    this.settleOwedCatchUp(roomId);
 
     if (errors.length > 0) {
       throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");

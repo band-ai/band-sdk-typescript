@@ -150,6 +150,8 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a working report in flight, as a turn's first report is before the turn starts. */
+  public readonly activityHolds = new CallHolds<[roomId: string, working: boolean]>();
   /** Holds a room's history read, as a session's first turn hydrates it. */
   public readonly contextHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
@@ -188,6 +190,8 @@ export class RecordingRestApi extends FakeRestApi {
 
   public async reportActivity(roomId: string, working: boolean) {
     this.assertMember(roomId, "reportActivity");
+    // Awaited only when held: the turn's working reports are timing other tests observe.
+    if (this.activityHolds.isHolding(roomId, working)) await this.activityHolds.pass(roomId, working);
     if (this.refuseActivity) {
       this.refusedReports.record({ roomId, working });
       throw new Band.NotFoundError({ error: { code: "not_found", message: "No active execution", request_id: randomUUID() } });

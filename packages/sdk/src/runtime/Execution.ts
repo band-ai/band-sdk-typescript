@@ -478,6 +478,9 @@ export class Execution {
     if (this.isPaused()) {
       // Resuming catches up, the stale processing messages included: Band serves those through /next too.
       this.syncBoundaries.completeBoundary(this.syncBoundaries.initial);
+      // Band may have played the room while no execution of it ran (a reset): check now, not on the interval.
+      this.probeSoon();
+      this.ensureStoppedProbe();
     } else {
       await this.recoverStaleProcessingMessages();
       await this.synchronizeWithNext(this.syncBoundaries.initial);
