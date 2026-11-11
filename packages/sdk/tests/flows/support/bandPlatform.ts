@@ -150,6 +150,9 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a room listing in flight; with `error`, Band then fails it. */
+  public readonly listHolds = new CallHolds<[]>();
+
   /** Holds a working report in flight, as a turn's first report is before the turn starts. */
   public readonly activityHolds = new CallHolds<[roomId: string, working: boolean]>();
   /** Holds a room's history read, as a session's first turn hydrates it. */
@@ -167,9 +170,6 @@ export class RecordingRestApi extends FakeRestApi {
     await this.agentMeHolds.pass();
     return super.getAgentMe(options);
   }
-
-  /** Holds a room listing in flight; with `error`, Band then fails it. */
-  public readonly listHolds = new CallHolds<[]>();
 
   /** Every room on one page. */
   public override async listChats(): Promise<PaginatedResponse> {

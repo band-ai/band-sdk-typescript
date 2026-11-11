@@ -303,7 +303,8 @@ export class PlatformRuntime implements AsyncDisposable {
       return false;
     }
     await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
-    return runtime.presence.isAdmitted(roomId);
+    // A stop since owns the room, whatever its join did.
+    return this.runtime === runtime && runtime.presence.isAdmitted(roomId);
   }
 
   /**
@@ -347,7 +348,7 @@ export class PlatformRuntime implements AsyncDisposable {
       members = await runtime.presence.memberRooms(pending);
     } catch (error: unknown) {
       if (!(error instanceof UnsupportedFeatureError)) {
-        this.logger.warn("Failed to list the rooms the host allowed; admitting them when Band adds the agent", { rooms: pending.size, error });
+        this.logger.warn("Failed to list the rooms the host allowed; admitting them on the next reconnect, restart or allow, or when Band adds the agent", { rooms: pending.size, error });
       }
       return;
     }
@@ -861,4 +862,3 @@ export class PlatformRuntime implements AsyncDisposable {
     }
   }
 }
-

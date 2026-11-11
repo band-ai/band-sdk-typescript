@@ -1,5 +1,5 @@
 import { chatRoomTopic } from "@band-ai/band-sdk-core";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { Agent } from "../src/agent/Agent";
@@ -7,6 +7,7 @@ import type { MetadataMap } from "../src/contracts/dtos";
 import type { AgentEvent } from "../src/contracts/events";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { BandLink } from "../src/platform/BandLink";
+import { createDeferred } from "../src/core/deferred";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog } from "./testUtils";
 
@@ -239,12 +240,15 @@ describe("agent.rooms", () => {
     expect(await roomA.outcome(held)).toBe("processed");
     expect(turns.entries).toHaveLength(2);
   });
+
   it("starts despite a room listing that fails, and admits an allowed room once Band adds the agent", async () => {
     const { adapter } = turnRecorder();
     const platform = BandPlatform.host([person("owner")]);
     await platform.room(ROOM_A);
-    const { agent, subscribed } = createAgent(adapter, platform);
+    // The filter declines room-c, so only the allow admits it.
+    const { agent, subscribed } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
     await expect(agent.rooms.allow("room-c")).resolves.toBe(false);
+    // Both of start's listings fail: its own, and the one that admits the allowed rooms.
     platform.rest.listChats = async () => {
       throw new Error("Band is unavailable");
     };
@@ -285,5 +289,82 @@ describe("agent.rooms", () => {
     expect(await roomA.outcome(held)).toBe("processed");
     expect(await roomA.outcome(next)).toBe("processed");
     expect(turns.entries).toHaveLength(3);
+  });
+  it("resolves false, not rejecting, when allow's own listing fails, and admits the room on the next reconnect", async () => {
+    const { adapter } = turnRecorder();
+    const { agent, platform, subscribed } = await startAgent(adapter, [ROOM_A]);
+    platform.rest.listHolds.hold(() => true, { error: new Error("Band is unavailable") }).release();
+
+    await expect(agent.rooms.allow(ROOM_B)).resolves.toBe(false);
+    expect(subscribed(ROOM_B)).toBe(false);
+
+    await platform.transport.triggerReconnect({ generation: 1, joinedTopics: new Set(platform.transport.bound.entries) });
+    await platform.transport.bound.until(() => subscribed(ROOM_B));
+  });
+
+  it("keeps an allowed room the filter declines across a reconnect", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, platform, roomB, subscribed, of } = await startAgent(adapter, [ROOM_A]);
+    await agent.rooms.allow(ROOM_B);
+
+    await platform.transport.triggerReconnect({ generation: 1, joinedTopics: new Set(platform.transport.bound.entries) });
+
+    expect(subscribed(ROOM_B)).toBe(true);
+    expect((await roomB.sayAndSettle("owner", "after the reconnect")).outcome).toBe("processed");
+    expect(of(ROOM_B)).not.toContain("room.left");
+    expect(turns.entries).toHaveLength(1);
+  });
+
+  it("keeps the host's deny when Band plays a room it stopped first", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, platform, roomA, roomB, events, reported } = await startAgent(adapter);
+    const beforeStop = events.entries.length;
+    platform.control("stop", ROOM_A);
+    await reported("room.paused", ROOM_A, beforeStop);
+    await agent.rooms.deny(ROOM_A);
+    const held = await roomA.say("owner", "while paused twice");
+
+    platform.control("play", ROOM_A);
+    // Room events run in order, so once B's later turn settles, A's play and message were handled.
+    expect((await roomB.sayAndSettle("owner", "still running")).outcome).toBe("processed");
+    expect(roomA.outcomes(held)).toEqual([]);
+
+    await agent.rooms.allow(ROOM_A);
+    expect(await roomA.outcome(held)).toBe("processed");
+    expect(turns.entries).toHaveLength(2);
+  });
+
+  it("neither admits nor runs an allowed room whose join a stop overtook", async () => {
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
+    const turns = new RecordLog<string>();
+    const adapter = new GenericAdapter(async ({ roomId, tools }) => {
+      turns.record(roomId);
+      // A's turn holds A's graceful stop open while B's join lands.
+      if (roomId === ROOM_A) await released.promise;
+      tools.turn.settle();
+    });
+    const platform = BandPlatform.host([person("owner")]);
+    const roomA = await platform.room(ROOM_A);
+    const roomB = await platform.room(ROOM_B);
+    const backlog = roomB.postBeforeConnect("owner", "waiting in B");
+    const { agent, of } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
+    await agent.start();
+    await roomA.say("owner", "hold A");
+    await turns.until(() => turns.entries.length === 1);
+    const releaseJoinB = roomB.holdJoin();
+    const allowing = agent.rooms.allow(ROOM_B);
+    await platform.transport.joining.next((topic) => topic === chatRoomTopic(ROOM_B));
+
+    const stopping = agent.stop();
+    const reportedBeforeStop = of(ROOM_B).length;
+    releaseJoinB();
+    await expect(allowing).resolves.toBe(false);
+    released.resolve();
+    await stopping;
+
+    expect(of(ROOM_B).slice(reportedBeforeStop)).toEqual([]);
+    expect(turns.entries).toEqual([ROOM_A]);
+    expect(roomB.outcomes(backlog)).toEqual([]);
   });
 });
