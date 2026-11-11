@@ -1,55 +1,21 @@
-import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { BandLink } from "../src/platform/BandLink";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { bandMcpAgent } from "./support/inMemoryAcpAgent";
 import { tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
 const BOARD_TOOLS = ["band_get_board", "band_set_board"];
 
-/**
- * An ACP agent that, on each prompt, connects to the Band MCP server the
- * adapter offered its session and runs `script` against it.
- */
-function boardAgent(script: (band: McpClient) => Promise<void>) {
-  let access: { url: string; authorization: string } | undefined;
-  return inMemoryAgent((peer): AcpAgent => ({
-    initialize: async () => ({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } }),
-    authenticate: async () => ({}),
-    newSession: async ({ mcpServers }) => {
-      const band = mcpServers.find((server) => "url" in server);
-      const authorization = band && "headers" in band ? band.headers.find((header) => header.name === "Authorization")?.value : undefined;
-      access = band && authorization ? { url: band.url, authorization } : undefined;
-      return { sessionId: "session-1" };
-    },
-    cancel: async () => {},
-    prompt: async ({ sessionId }) => {
-      if (!access) throw new Error("The session was offered no Band MCP server");
-      const transport = new StreamableHTTPClientTransport(new URL(access.url), { requestInit: { headers: { authorization: access.authorization } } });
-      const band = new McpClient({ name: "board-agent", version: "1.0.0" });
-      await band.connect(transport);
-      try {
-        await script(band);
-      } finally {
-        await transport.close();
-      }
-      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } });
-      return { stopReason: "end_turn" };
-    },
-  }));
-}
-
 async function runTurn(enableTaskTools: boolean | undefined, script: (band: McpClient) => Promise<void>) {
   const adapter = new ACPClientAdapter({
     command: ["acp-fixture"],
     cwd: tmpRoot(),
-    connectionFactory: boardAgent(script),
+    connectionFactory: bandMcpAgent(script),
     ...(enableTaskTools === undefined ? {} : { enableTaskTools }),
   });
   // Band grants the board to an agent whose host asks for `tasks` and whose tenant has `ff_room_tasks`.

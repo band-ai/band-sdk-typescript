@@ -1,17 +1,16 @@
-import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { PassThrough } from "node:stream";
+
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import type { McpToolRegistration } from "../src/mcp/registrations";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
-import { BandMcpStdioServer } from "../src/mcp/stdio";
+import { BandMcpStdioServer, type BandMcpStdioServerOptions } from "../src/mcp/stdio";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
-import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { bandMcpAgent } from "./support/inMemoryAcpAgent";
 import { createDeferred } from "../src/core/deferred";
 import { UnsupportedFeatureError } from "../src/core/errors";
 import { trackTurn } from "../src/core/turn";
@@ -70,7 +69,7 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     expect(rooms[OTHER_ROOM].events.map((event) => event.content)).toEqual(["marker: second"]);
   });
 
-  it("advertises a declared room_id as required, once, on a room-scoped server", async () => {
+  it("advertises a declared room_id as required on a room-scoped server", async () => {
     const optionalRoom: McpToolRegistration = { ...markRoom, name: "mark_optional_room", inputSchema: { ...markRoom.inputSchema, required: ["marker"] } };
     const client = await bridgeClient([markRoom, optionalRoom], { [ROOM]: new FakeTools() });
 
@@ -116,16 +115,33 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     expect(nextTurn.events).toEqual([]);
   });
 
-  it("scopes a host tool added after start the same way on a room-scoped stdio server", async () => {
-    const rooms: Record<string, FakeTools> = { [ROOM]: new FakeTools() };
+  /** A running stdio server and its client; host tools join with `addTools` after start. */
+  async function stdioClient(tools: BandMcpStdioServerOptions["tools"]) {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
-    const server = new BandMcpStdioServer({ tools: (roomId) => rooms[roomId], enableMemoryTools: false, stdin, stdout });
+    const server = new BandMcpStdioServer({ tools, enableMemoryTools: false, stdin, stdout });
     await server.start();
     onTestFinished(() => server.stop());
     const client = new McpClient({ name: "host-tool-probe", version: "1.0.0" });
     await client.connect(new StdioServerTransport(stdout, stdin));
     onTestFinished(() => client.close());
+    return { server, client };
+  }
+
+  it("hands a host tool added after start its room's tools on a single-room stdio server", async () => {
+    const roomTools = new FakeTools();
+    const { server, client } = await stdioClient(roomTools);
+
+    await server.addTools([markUnnamedRoom]);
+    const result = await client.callTool({ name: "mark_unnamed_room", arguments: { marker: "added" } });
+
+    expect(isError(result)).toBe(false);
+    expect(roomTools.events.map((event) => event.content)).toEqual(["marker: added"]);
+  });
+
+  it("scopes a host tool added after start the same way on a room-scoped stdio server", async () => {
+    const rooms: Record<string, FakeTools> = { [ROOM]: new FakeTools() };
+    const { server, client } = await stdioClient((roomId) => rooms[roomId]);
 
     await server.addTools([markRoom]);
     const known = await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "added" } });
@@ -138,34 +154,13 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
 
   it("on a single-room server, such as an ACP room's own", async () => {
     let result: unknown;
-    let access: { url: string; authorization: string } | undefined;
     const adapter = new ACPClientAdapter({
       command: ["acp-fixture"],
       cwd: tmpRoot(),
       additionalMcpTools: [markRoom],
-      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } }),
-        authenticate: async () => ({}),
-        newSession: async ({ mcpServers }) => {
-          const band = mcpServers.find((server) => "url" in server);
-          const authorization = band && "headers" in band ? band.headers.find((header) => header.name === "Authorization")?.value : undefined;
-          access = band && authorization ? { url: band.url, authorization } : undefined;
-          return { sessionId: "session-1" };
-        },
-        cancel: async () => {},
-        prompt: async ({ sessionId }) => {
-          const transport = new StreamableHTTPClientTransport(new URL(access!.url), { requestInit: { headers: { authorization: access!.authorization } } });
-          const band = new McpClient({ name: "acp-agent", version: "1.0.0" });
-          await band.connect(transport);
-          try {
-            result = await band.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "acp" } });
-          } finally {
-            await transport.close();
-          }
-          await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } });
-          return { stopReason: "end_turn" };
-        },
-      })),
+      connectionFactory: bandMcpAgent(async (band) => {
+        result = await band.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "acp" } });
+      }),
     });
     const platform = await BandPlatform.start(adapter, [person("owner")]);
     onTestFinished(() => platform[Symbol.asyncDispose]());
