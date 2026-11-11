@@ -61,9 +61,10 @@ describe(SCENARIO, () => {
     const sent = await Rooms.sendMention(room, identity, "Hold until released, then finish without a reply.");
     await entered.promise;
     await Rooms.controlAgents(room, AGENT_CONTROL.stop);
-    // Pushed, or found when Band refuses the turn's acknowledgement once it finishes.
+    // Pushed, or found from the held turn's next working report, which Band echoes as not working.
+    // Either way the turn is cut short while still held, so its message is left for the replay.
+    await events.next(inRoom(room.id, "turn.stopped"));
     release.resolve();
-    await events.next(inRoom(room.id, "room.paused"));
     expect(delivery.status(sent)).not.toBe(DELIVERY_STATUS.processed);
 
     await Rooms.controlAgents(room, AGENT_CONTROL.play);
