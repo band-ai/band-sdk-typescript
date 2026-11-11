@@ -24,14 +24,10 @@ export interface McpToolRegistration {
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
   /**
-   * `tools` is the tools of the room a call belongs to, so a host's own tool
-   * can act on that room's turn. A single-room server (each ACP room's own,
-   * or a single-room SDK server) always passes its room's. A room-scoped
-   * server passes the room the call names in `room_id`, which the tool must
-   * declare to receive them; there, a tool that declares no `room_id` gets
-   * tools that throw on use, since the call cannot say which room it means.
-   * They carry the room's full authority (sending, participants, contacts,
-   * memory), whatever tools the server itself enables.
+   * `tools` is the tools of the room the call belongs to (see
+   * {@link scopeHostTools} for room-scoped servers). They carry the room's full
+   * authority (sending, participants, contacts, memory), whatever tools the
+   * server itself enables.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -109,11 +105,24 @@ export function scopeToRoom<T>(
   resolver: (roomId: string) => T | undefined,
   execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
 ): McpToolRegistration {
-  const { properties, required } = tool.inputSchema;
   return {
     ...tool,
-    inputSchema: { type: "object", properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY }, required: [...required, ROOM_ID_ARG] },
+    inputSchema: withRoomId(tool.inputSchema),
     execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
+  };
+}
+
+/** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
+export function declaresRoomId(properties: Record<string, unknown>): boolean {
+  return Object.hasOwn(properties, ROOM_ID_ARG);
+}
+
+/** `schema` with a required {@link ROOM_ID_ARG}, as every room-scoped call needs one. */
+function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputSchema {
+  return {
+    type: "object",
+    properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY },
+    required: [...required.filter((name) => name !== ROOM_ID_ARG), ROOM_ID_ARG],
   };
 }
 
@@ -157,17 +166,22 @@ export function buildRoomScopedRegistrations(
 
 /**
  * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
- * runs with the tools of the room its call names, and a call naming no known
- * room is refused without running it. One that declares none still runs, with
- * tools that throw a clear error on use rather than reading as undefined.
+ * has it advertised as required and runs with the tools of the room its call
+ * names; a call naming no known room is refused without running it. One that
+ * declares none still runs, with tools that throw a clear error on use, since
+ * its call cannot say which room it means.
  */
 export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolResolver): McpToolRegistration[] {
   return hostTools.map((tool) => {
-    if (!Object.hasOwn(tool.inputSchema.properties, ROOM_ID_ARG)) {
+    if (!declaresRoomId(tool.inputSchema.properties)) {
       const unscoped = roomlessHostTools(tool.name);
       return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, unscoped) };
     }
-    return { ...tool, execute: (args: Record<string, unknown>) => inRoom(args[ROOM_ID_ARG], resolver, (tools) => tool.execute(args, tools)) };
+    return {
+      ...tool,
+      inputSchema: withRoomId(tool.inputSchema),
+      execute: (args: Record<string, unknown>) => inRoom(args[ROOM_ID_ARG], resolver, (tools) => tool.execute(args, tools)),
+    };
   });
 }
 

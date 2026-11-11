@@ -1418,21 +1418,23 @@ describe("ClaudeSDKAdapter", () => {
       expect(execute).toHaveBeenCalledExactlyOnceWith({}, expect.anything());
     });
 
-    it("hands a host tool that names its room the turn's tools for that room", async () => {
+    it("hands a host tool the turn's tools for the room it names, and refuses another room", async () => {
       const tools = new FakeTools();
       let result: McpResult | undefined;
+      let otherRoom: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({
         additionalMcpTools: [{
           name: "mark_room",
           description: "Leave a marker event in this room.",
           inputSchema: { type: "object", properties: { room_id: { type: "string" } }, required: ["room_id"] },
-          execute: async (_args, roomTools) => {
-            await roomTools!.sendEvent("marker: claude", "thought");
+          execute: async (args, roomTools) => {
+            await roomTools!.sendEvent(`marker: ${String(args.room_id)}`, "thought");
             return { content: [{ type: "text", text: "marked" }] };
           },
         }],
         queryFn: async function* ({ options }) {
           result = await callMcpTool(options, "mark_room", { room_id: ROOM_ID });
+          otherRoom = await callMcpTool(options, "mark_room", { room_id: "other-room" });
           await callBandTool(options, NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
           yield success("") as never;
         },
@@ -1440,7 +1442,8 @@ describe("ClaudeSDKAdapter", () => {
       await adapter.onStarted("Agent", "desc");
       await adapter.onEvent(turnInput(tools, SENDER));
       expect(result?.isError).toBeUndefined();
-      expect(tools.events.map((event) => event.content)).toContain("marker: claude");
+      expect(otherRoom?.isError).toBe(true);
+      expect(tools.events.map((event) => event.content).filter((content) => content.startsWith("marker:"))).toEqual([`marker: ${ROOM_ID}`]);
     });
 
     it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {

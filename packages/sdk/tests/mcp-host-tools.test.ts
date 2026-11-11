@@ -12,6 +12,7 @@ import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { FakeTools, tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
+const OTHER_ROOM = "room-2";
 
 /** A host's own tool that acts on the room its call names, through the tools it is handed. */
 const markRoom: McpToolRegistration = {
@@ -38,8 +39,8 @@ const textOf = (result: unknown): string => {
 };
 const isError = (result: unknown): boolean => Boolean(result && typeof result === "object" && "isError" in result && result.isError);
 
-async function bridgeClient(additionalTools: McpToolRegistration[], roomTools: FakeTools) {
-  const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: (roomId) => (roomId === ROOM ? roomTools : undefined), additionalTools });
+async function bridgeClient(additionalTools: McpToolRegistration[], rooms: Record<string, FakeTools>) {
+  const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: (roomId) => rooms[roomId], additionalTools });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await bridge.serverConfig.instance.connect(serverTransport);
   const client = new McpClient({ name: "host-tool-probe", version: "1.0.0" });
@@ -49,14 +50,27 @@ async function bridgeClient(additionalTools: McpToolRegistration[], roomTools: F
 }
 
 describe("a host's MCP tool gets the room's tools on every server", () => {
-  it("on a room-scoped server, such as the Claude Agent SDK bridge", async () => {
-    const roomTools = new FakeTools();
-    const client = await bridgeClient([markRoom], roomTools);
+  it("on a room-scoped server, such as the Claude Agent SDK bridge, for the room each call names", async () => {
+    const rooms = { [ROOM]: new FakeTools(), [OTHER_ROOM]: new FakeTools() };
+    const client = await bridgeClient([markRoom], rooms);
 
-    const result = await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "bridge" } });
+    const results = [
+      await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "first" } }),
+      await client.callTool({ name: "mark_room", arguments: { room_id: OTHER_ROOM, marker: "second" } }),
+    ];
 
-    expect(isError(result)).toBe(false);
-    expect(roomTools.events.map((event) => event.content)).toEqual(["marker: bridge"]);
+    expect(results.map(isError)).toEqual([false, false]);
+    expect(rooms[ROOM].events.map((event) => event.content)).toEqual(["marker: first"]);
+    expect(rooms[OTHER_ROOM].events.map((event) => event.content)).toEqual(["marker: second"]);
+  });
+
+  it("advertises a declared room_id as required on a room-scoped server", async () => {
+    const optionalRoom: McpToolRegistration = { ...markRoom, inputSchema: { ...markRoom.inputSchema, required: ["marker"] } };
+    const client = await bridgeClient([optionalRoom], { [ROOM]: new FakeTools() });
+
+    const { tools } = await client.listTools();
+
+    expect(tools.find((tool) => tool.name === "mark_room")?.inputSchema.required).toContain("room_id");
   });
 
   it("on a single-room server, such as an ACP room's own", async () => {
@@ -100,11 +114,11 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
   });
 
   it.each([
-    { call: "names no room", args: { marker: "lost" }, error: "room_id" },
+    { call: "names an empty room", args: { room_id: " ", marker: "lost" }, error: "Missing required room_id" },
     { call: "names an unknown room", args: { room_id: "room-9", marker: "lost" }, error: "No tool context found for room_id room-9" },
   ])("refuses a call that $call, without running the tool", async ({ args, error }) => {
     const roomTools = new FakeTools();
-    const client = await bridgeClient([markRoom], roomTools);
+    const client = await bridgeClient([markRoom], { [ROOM]: roomTools });
 
     const result = await client.callTool({ name: "mark_room", arguments: args });
 
@@ -115,7 +129,7 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
 
   it("fails loudly when a tool that declares no room_id uses room tools on a room-scoped server", async () => {
     const roomTools = new FakeTools();
-    const client = await bridgeClient([markUnnamedRoom], roomTools);
+    const client = await bridgeClient([markUnnamedRoom], { [ROOM]: roomTools });
 
     const result = await client.callTool({ name: "mark_unnamed_room", arguments: { marker: "lost" } });
 
