@@ -9,6 +9,9 @@ import type { McpToolRegistration } from "../src/mcp/registrations";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { BandPlatform, person } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { createDeferred } from "../src/core/deferred";
+import { UnsupportedFeatureError } from "../src/core/errors";
+import { trackTurn } from "../src/core/turn";
 import { FakeTools, tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
@@ -64,13 +67,48 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     expect(rooms[OTHER_ROOM].events.map((event) => event.content)).toEqual(["marker: second"]);
   });
 
-  it("advertises a declared room_id as required on a room-scoped server", async () => {
-    const optionalRoom: McpToolRegistration = { ...markRoom, inputSchema: { ...markRoom.inputSchema, required: ["marker"] } };
-    const client = await bridgeClient([optionalRoom], { [ROOM]: new FakeTools() });
+  it("advertises a declared room_id as required, once, on a room-scoped server", async () => {
+    const optionalRoom: McpToolRegistration = { ...markRoom, name: "mark_optional_room", inputSchema: { ...markRoom.inputSchema, required: ["marker"] } };
+    const client = await bridgeClient([markRoom, optionalRoom], { [ROOM]: new FakeTools() });
 
     const { tools } = await client.listTools();
 
-    expect(tools.find((tool) => tool.name === "mark_room")?.inputSchema.required).toContain("room_id");
+    for (const name of ["mark_room", "mark_optional_room"]) {
+      expect([...(tools.find((tool) => tool.name === name)?.inputSchema.required ?? [])].sort()).toEqual(["marker", "room_id"]);
+    }
+  });
+
+  it("refuses room tools to a call that outlives its turn once the room moves to the next turn", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const late = createDeferred<unknown>();
+    const slowMark: McpToolRegistration = {
+      ...markRoom,
+      name: "slow_mark",
+      execute: async (args, tools) => {
+        entered.resolve();
+        await release.promise;
+        try {
+          await tools!.sendEvent(`marker: ${String(args.marker)}`, "thought");
+          late.resolve(null);
+        } catch (error) {
+          late.resolve(error);
+        }
+        return { content: [{ type: "text", text: "done" }] };
+      },
+    };
+    const rooms: Record<string, FakeTools> = { [ROOM]: trackTurn(new FakeTools()) };
+    const client = await bridgeClient([slowMark], rooms);
+
+    const call = client.callTool({ name: "slow_mark", arguments: { room_id: ROOM, marker: "late" } });
+    await entered.promise;
+    const nextTurn = trackTurn(new FakeTools());
+    rooms[ROOM] = nextTurn;
+    release.resolve();
+    await call;
+
+    expect(await late.promise).toBeInstanceOf(UnsupportedFeatureError);
+    expect(nextTurn.events).toEqual([]);
   });
 
   it("on a single-room server, such as an ACP room's own", async () => {
@@ -117,14 +155,15 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
     { call: "names an empty room", args: { room_id: " ", marker: "lost" }, error: "Missing required room_id" },
     { call: "names an unknown room", args: { room_id: "room-9", marker: "lost" }, error: "No tool context found for room_id room-9" },
   ])("refuses a call that $call, without running the tool", async ({ args, error }) => {
-    const roomTools = new FakeTools();
-    const client = await bridgeClient([markRoom], { [ROOM]: roomTools });
+    let runs = 0;
+    const countedMarkRoom: McpToolRegistration = { ...markRoom, execute: (toolArgs, tools) => { runs += 1; return markRoom.execute(toolArgs, tools); } };
+    const client = await bridgeClient([countedMarkRoom], { [ROOM]: new FakeTools() });
 
     const result = await client.callTool({ name: "mark_room", arguments: args });
 
     expect(isError(result)).toBe(true);
-    expect(textOf(result)).toContain(error);
-    expect(roomTools.events).toEqual([]);
+    expect(textOf(result)).toBe(error);
+    expect(runs).toBe(0);
   });
 
   it("runs a tool that declares no room_id and only passes its tools along", async () => {
@@ -134,14 +173,14 @@ describe("a host's MCP tool gets the room's tools on every server", () => {
       inputSchema: { type: "object", properties: {}, required: [] },
       execute: async (_args, tools) => {
         await Promise.resolve(tools);
-        return { content: [{ type: "text", text: "passed" }] };
+        return { content: [{ type: "text", text: `passed ${Object.prototype.toString.call(tools)}` }] };
       },
     };
     const client = await bridgeClient([passAlong], { [ROOM]: new FakeTools() });
 
     const result = await client.callTool({ name: "pass_along", arguments: {} });
 
-    expect(textOf(result)).toBe("passed");
+    expect(textOf(result)).toBe("passed [object Object]");
   });
 
   it("fails loudly when a tool that declares no room_id uses room tools on a room-scoped server", async () => {

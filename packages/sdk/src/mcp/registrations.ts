@@ -26,9 +26,9 @@ export interface McpToolRegistration {
   _meta?: Record<string, unknown>;
   /**
    * `tools` is the tools of the room the call belongs to (see
-   * {@link scopeHostTools} for room-scoped servers). They carry the room's full
-   * authority (sending, participants, contacts, memory), whatever tools the
-   * server itself enables.
+   * {@link scopeHostTools} for room-scoped servers), or undefined on a server
+   * built without any. They carry the room's full authority (sending,
+   * participants, contacts, memory), whatever tools the server itself enables.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -139,9 +139,13 @@ async function inRoom<T>(
   }
   const tools = resolver(roomId);
   if (!tools) {
-    return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
+    return errorResult(noToolContext(roomId));
   }
   return run(tools, roomId);
+}
+
+function noToolContext(roomId: string): string {
+  return `No tool context found for ${ROOM_ID_ARG} ${roomId}`;
 }
 
 /**
@@ -168,7 +172,8 @@ export function buildRoomScopedRegistrations(
 /**
  * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
  * has it advertised as required and runs with the tools of the room its call
- * names; a call naming no known room is refused without running it. One that
+ * names, for as long as the room still resolves to those same tools; a call
+ * naming no known room is refused without running it. One that
  * declares none still runs, with tools that throw a clear error on use, since
  * its call cannot say which room it means.
  */
@@ -181,7 +186,7 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
       execute: (args: Record<string, unknown>) =>
-        inRoom(args[ROOM_ID_ARG], resolver, (_tools, roomId) => tool.execute(args, liveRoomTools(roomId, resolver))),
+        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver))),
     };
   });
 }
@@ -190,13 +195,13 @@ function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): M
   return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) };
 }
 
-// Resolved on every access rather than once: a host tool can outlive its
-// turn, and once the room no longer resolves it must not act on it.
-function liveRoomTools(roomId: string, resolver: ToolResolver): AdapterToolsProtocol {
+// A host tool can outlive its turn, so each property access checks that the
+// room still resolves to the tools the call began with: gone, or replaced by a
+// newer turn's, they are refused rather than acting on the room.
+function whileCurrent(roomId: string, tools: AdapterToolsProtocol, resolver: ToolResolver): AdapterToolsProtocol {
   return forwardTools(() => {
-    const tools = resolver(roomId);
-    if (!tools) {
-      throw new UnsupportedFeatureError(`No tool context found for ${ROOM_ID_ARG} ${roomId}: its turn has ended`);
+    if (resolver(roomId) !== tools) {
+      throw new UnsupportedFeatureError(`${noToolContext(roomId)}: the call's tools are no longer current`);
     }
     return tools;
   });
