@@ -80,18 +80,19 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 
 `tools.fetchRoomContext({ cursor?, limit? })` returns one page of the agent's context in the room, oldest first, and a `nextCursor` for the next page (`null` once the page reaches the newest message). The context is the agent's own messages of every type and the text messages that mention it; it is not the room's full history, which the agent API does not serve. Pages hold `DEFAULT_CONTEXT_PAGE` messages by default and at most `MAX_CURSOR_PAGE`, both exported from `@band-ai/sdk/rest`. A REST client without `getChatContext` throws `UnsupportedFeatureError`.
 
-It is not a Band tool, so the model does not see it unless a host serves it. On a single-room MCP server, such as each ACP room's own, a host's own MCP tool in `additionalMcpTools` gets that room's tools as the second argument of `execute`; they carry the room's full authority, whatever Band tools the server enables. On a multi-room server `tools` is undefined:
+It is not a Band tool, so the model does not see it unless a host serves it. A host's own MCP tool (`additionalMcpTools`, or `additionalTools` on the MCP servers that serve rooms) gets the tools of the room its call belongs to as the second argument of `execute`; they carry the room's full authority, whatever Band tools the server enables. A single-room server, such as each ACP room's own, always passes its room's tools. A room-scoped server, such as the Claude Agent SDK bridge, passes the tools of the room the call names in `room_id`, so a tool that needs them declares `room_id`, which the server then advertises as required; a call naming no known room is refused without running the tool, a call that outlives its turn is refused its room's tools once the room resolves to another turn's or none, and a tool that declares no `room_id` gets tools that throw a clear error on use:
 
 ```ts
 const readContext: McpToolRegistration = {
   name: "read_room_context",
   description: "Read this room's messages that you sent or that mention you, oldest first.",
-  inputSchema: { type: "object", properties: { cursor: { type: "string" }, limit: { type: "integer" } }, required: [] },
-  execute: async (args, tools) => {
+  inputSchema: { type: "object", properties: { room_id: { type: "string" }, cursor: { type: "string" }, limit: { type: "integer" } }, required: ["room_id"] },
+  execute: async ({ cursor, limit }, tools) => {
     if (!tools?.fetchRoomContext) {
-      throw new UnsupportedFeatureError("Room context needs a single-room server");
+      throw new UnsupportedFeatureError("These room tools cannot read room context");
     }
-    return { content: [{ type: "text", text: JSON.stringify(await tools.fetchRoomContext(args)) }] };
+    const page = await tools.fetchRoomContext({ cursor: cursor as string | undefined, limit: limit as number | undefined });
+    return { content: [{ type: "text", text: JSON.stringify(page) }] };
   },
 };
 ```

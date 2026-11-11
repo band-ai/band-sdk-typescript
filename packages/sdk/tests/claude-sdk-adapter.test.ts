@@ -14,6 +14,7 @@ import {
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
+import { UnsupportedFeatureError } from "../src/core/errors";
 import { RestFacade } from "../src/client/rest/RestFacade";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
@@ -1415,7 +1416,76 @@ describe("ClaudeSDKAdapter", () => {
       await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
       expect(result?.content).toEqual([{ type: "text", text: "native result" }]);
       expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
-      expect(execute).toHaveBeenCalledExactlyOnceWith({});
+      expect(execute).toHaveBeenCalledExactlyOnceWith({}, expect.anything());
+    });
+
+    it("hands a host tool the turn's tools for the room it names, and refuses another room", async () => {
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
+      let otherRoom: McpResult | undefined;
+      const adapter = new ClaudeSDKAdapter({
+        additionalMcpTools: [{
+          name: "mark_room",
+          description: "Leave a marker event in this room.",
+          inputSchema: { type: "object", properties: { room_id: { type: "string" } }, required: ["room_id"] },
+          execute: async (args, roomTools) => {
+            await roomTools!.sendEvent(`marker: ${String(args.room_id)}`, "thought");
+            return { content: [{ type: "text", text: "marked" }] };
+          },
+        }],
+        queryFn: async function* ({ options }) {
+          result = await callMcpTool(options, "mark_room", { room_id: ROOM_ID });
+          otherRoom = await callMcpTool(options, "mark_room", { room_id: "other-room" });
+          await callBandTool(options, NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Agent", "desc");
+      await adapter.onEvent(turnInput(tools, SENDER));
+      expect(result?.isError).toBeUndefined();
+      expect(otherRoom?.isError).toBe(true);
+      expect(tools.events.map((event) => event.content).filter((content) => content.startsWith("marker:"))).toEqual([`marker: ${ROOM_ID}`]);
+    });
+
+    it("keeps a host tool that outlives its turn from writing into the room", async () => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const finished = createDeferred<unknown>();
+      const tools = trackTurn(new FakeTools());
+      const adapter = new ClaudeSDKAdapter({
+        additionalMcpTools: [{
+          name: "slow_mark",
+          description: "Leave a marker in this room after a slow lookup.",
+          inputSchema: { type: "object", properties: { room_id: { type: "string" } }, required: ["room_id"] },
+          execute: async (_args, roomTools) => {
+            entered.resolve();
+            await release.promise;
+            try {
+              await roomTools!.sendEvent("late marker", "thought");
+              finished.resolve(null);
+            } catch (error) {
+              finished.resolve(error);
+            }
+            return { content: [{ type: "text", text: "marked" }] };
+          },
+        }],
+        queryFn: async function* ({ options }) {
+          void callMcpTool(options, "slow_mark", { room_id: ROOM_ID }).catch(() => undefined);
+          const signal = options!.abortController!.signal;
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          throw Object.assign(new Error("Claude Code process aborted by user"), { name: "AbortError" });
+          yield undefined as never;
+        },
+      });
+      await adapter.onStarted("Agent", "desc");
+      const turn = startMessage(adapter, tools);
+      await entered.promise;
+      await adapter.onCleanup(ROOM_ID);
+      await turn;
+      release.resolve();
+
+      expect(await finished.promise).toBeInstanceOf(UnsupportedFeatureError);
+      expect(tools.events.map((event) => event.content)).not.toContain("late marker");
     });
 
     it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {

@@ -1,6 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
   isToolExecutorError,
@@ -24,9 +25,13 @@ export interface McpToolRegistration {
   /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
   _meta?: Record<string, unknown>;
   /**
-   * `tools` is the room's tools on a single-room server and undefined on a
-   * multi-room one. They carry the room's full authority (sending, participants,
-   * contacts, memory), whatever tools the server itself enables.
+   * `tools` is the tools of the room the call belongs to, or undefined on a
+   * server built without any. They carry the room's full authority (sending,
+   * participants, contacts, memory), whatever tools the server itself enables.
+   *
+   * On a room-scoped server, a tool receives them only by declaring `room_id`,
+   * and keeps them only while the server's room resolver still returns that
+   * same instance, so a resolver must return one instance per room turn.
    */
   execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
 }
@@ -104,22 +109,46 @@ export function scopeToRoom<T>(
   resolver: (roomId: string) => T | undefined,
   execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
 ): McpToolRegistration {
-  const { properties, required } = tool.inputSchema;
   return {
     ...tool,
-    inputSchema: { type: "object", properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY }, required: [...required, ROOM_ID_ARG] },
-    execute: async ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
-      const roomId = asNonEmptyString(roomIdArg);
-      if (!roomId) {
-        return errorResult(`Missing required ${ROOM_ID_ARG}`);
-      }
-      const tools = resolver(roomId);
-      if (!tools) {
-        return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
-      }
-      return execute(tools, args);
-    },
+    inputSchema: withRoomId(tool.inputSchema),
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
   };
+}
+
+/** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
+export function declaresRoomId(properties: Record<string, unknown>): boolean {
+  return Object.hasOwn(properties, ROOM_ID_ARG);
+}
+
+/** `schema` with a required {@link ROOM_ID_ARG}, as every room-scoped call needs one. */
+function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputSchema {
+  return {
+    type: "object",
+    properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY },
+    required: [...required.filter((name) => name !== ROOM_ID_ARG), ROOM_ID_ARG],
+  };
+}
+
+/** Runs `run` with the tools of the room `roomIdArg` names, refusing a call that names no known room. */
+async function inRoom<T>(
+  roomIdArg: unknown,
+  resolver: (roomId: string) => T | undefined,
+  run: (tools: T, roomId: string) => Promise<McpToolResult>,
+): Promise<McpToolResult> {
+  const roomId = asNonEmptyString(roomIdArg);
+  if (!roomId) {
+    return errorResult(`Missing required ${ROOM_ID_ARG}`);
+  }
+  const tools = resolver(roomId);
+  if (!tools) {
+    return errorResult(noToolContext(roomId));
+  }
+  return run(tools, roomId);
+}
+
+function noToolContext(roomId: string): string {
+  return `No tool context found for ${ROOM_ID_ARG} ${roomId}`;
 }
 
 /**
@@ -137,10 +166,68 @@ export function buildRoomScopedRegistrations(
       : scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools);
+    registrations.push(...scopeHostTools(options.additionalTools, resolver));
   }
 
   return wrapExecution(registrations, options.execute);
+}
+
+/**
+ * Host tools for a room-scoped server: one that declares {@link ROOM_ID_ARG}
+ * has it advertised as required and runs with the tools of the room its call
+ * names, for as long as `resolver` still returns those same tools (see
+ * {@link McpToolRegistration.execute}); a call naming no known room is refused
+ * without running it. One that declares none still runs, with tools that throw
+ * a clear error on use, since its call cannot say which room it means.
+ */
+export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolResolver): McpToolRegistration[] {
+  return hostTools.map((tool) => {
+    if (!declaresRoomId(tool.inputSchema.properties)) {
+      return bindHostTool(tool, roomlessHostTools(tool.name));
+    }
+    return {
+      ...tool,
+      inputSchema: withRoomId(tool.inputSchema),
+      execute: (args: Record<string, unknown>) =>
+        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver))),
+    };
+  });
+}
+
+/** Host tools for a single-room server, each run with that room's `tools`. */
+export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterToolsProtocol): McpToolRegistration[] {
+  return hostTools.map((tool) => bindHostTool(tool, tools));
+}
+
+function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
+  return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) };
+}
+
+// A host tool can outlive its turn, so each property access checks that the
+// room still resolves to the tools the call began with: gone, or replaced by a
+// newer turn's, they are refused rather than acting on the room.
+function whileCurrent(roomId: string, tools: AdapterToolsProtocol, resolver: ToolResolver): AdapterToolsProtocol {
+  return forwardTools(() => {
+    if (resolver(roomId) !== tools) {
+      throw new UnsupportedFeatureError(`${noToolContext(roomId)}: the call's tools are no longer current`);
+    }
+    return tools;
+  });
+}
+
+// Symbol keys and `then` read as absent, so awaiting or inspecting the value
+// does not throw; any other use names the fix.
+function roomlessHostTools(toolName: string): AdapterToolsProtocol {
+  return new Proxy({} as AdapterToolsProtocol, {
+    get(_target, key) {
+      if (typeof key === "symbol" || key === "then") {
+        return undefined;
+      }
+      throw new UnsupportedFeatureError(
+        `Host tool '${toolName}' runs on a room-scoped MCP server: declare ${ROOM_ID_ARG} in its inputSchema to receive the room's tools`,
+      );
+    },
+  });
 }
 
 /**
@@ -153,7 +240,7 @@ export function buildSingleContextRegistrations(
   const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
-    registrations.push(...options.additionalTools.map((tool) => ({ ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) })));
+    registrations.push(...bindHostTools(options.additionalTools, tools));
   }
 
   return wrapExecution(registrations, options.execute);

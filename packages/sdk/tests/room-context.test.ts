@@ -1,6 +1,4 @@
-import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
@@ -12,7 +10,7 @@ import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import type { McpToolRegistration } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { bandMcpAgent } from "./support/inMemoryAcpAgent";
 import { buildFakeRestAdapter } from "./support/fakeRestAdapter";
 import { FakeRestApi, tmpRoot } from "./testUtils";
 
@@ -147,35 +145,14 @@ describe("room context in an ACP room", () => {
       const [block] = Array.isArray(result.content) ? result.content : [];
       return JSON.parse(block?.type === "text" ? block.text : "null") as RoomContextPage;
     };
-    let access: { url: string; authorization: string } | undefined;
     const adapter = new ACPClientAdapter({
       command: ["acp-fixture"],
       cwd: tmpRoot(),
       additionalMcpTools: [readContext],
-      connectionFactory: inMemoryAgent((peer): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } }),
-        authenticate: async () => ({}),
-        newSession: async ({ mcpServers }) => {
-          const band = mcpServers.find((server) => "url" in server);
-          const authorization = band && "headers" in band ? band.headers.find((header) => header.name === "Authorization")?.value : undefined;
-          access = band && authorization ? { url: band.url, authorization } : undefined;
-          return { sessionId: "session-1" };
-        },
-        cancel: async () => {},
-        prompt: async ({ sessionId }) => {
-          const transport = new StreamableHTTPClientTransport(new URL(access!.url), { requestInit: { headers: { authorization: access!.authorization } } });
-          const band = new McpClient({ name: "context-agent", version: "1.0.0" });
-          await band.connect(transport);
-          try {
-            const first = await callReadContext(band, { limit: 2 });
-            pages.push(first, await callReadContext(band, { limit: 2, cursor: first.nextCursor }));
-          } finally {
-            await transport.close();
-          }
-          await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "read it" } } });
-          return { stopReason: "end_turn" };
-        },
-      })),
+      connectionFactory: bandMcpAgent(async (band) => {
+        const first = await callReadContext(band, { limit: 2 });
+        pages.push(first, await callReadContext(band, { limit: 2, cursor: first.nextCursor }));
+      }),
     });
     const platform = await BandPlatform.start(adapter, [person("owner")]);
     onTestFinished(() => platform[Symbol.asyncDispose]());
