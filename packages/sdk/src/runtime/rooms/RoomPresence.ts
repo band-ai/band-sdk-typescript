@@ -318,6 +318,15 @@ export class RoomPresence implements AsyncDisposable {
     await this.onRoomLeft?.(roomId, "removed");
   }
 
+  /** The rooms among `roomIds` that Band lists the agent in, as it lists them. */
+  public async memberRooms(roomIds: ReadonlySet<string>): Promise<Map<string, MetadataMap>> {
+    return await listExistingRooms({
+      link: this.link,
+      roomFilter: (room) => typeof room.id === "string" && roomIds.has(room.id),
+      requestOptions: DEFAULT_REQUEST_OPTIONS,
+    });
+  }
+
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
   private async leaveRoomTracking(roomId: string): Promise<void> {
     await this.unsubscribeRoom(roomId);

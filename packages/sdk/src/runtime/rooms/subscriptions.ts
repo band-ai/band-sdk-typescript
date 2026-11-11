@@ -14,6 +14,11 @@ export interface ExistingRoomsOptions extends ListExistingRoomsOptions {
   onError?: (error: unknown) => Promise<void> | void;
 }
 
+/** The room's id as Band lists it, or undefined when it has none. */
+export function roomIdOf(room: MetadataMap): string | undefined {
+  return typeof room.id === "string" ? room.id : undefined;
+}
+
 /**
  * The single accepted, filtered, deduplicated room snapshot: every other
  * caller that needs "the current room list" (startup hydration, reconnect
@@ -29,7 +34,7 @@ export async function listExistingRooms(
 
   const accepted = new Map<string, MetadataMap>();
   for (const room of rooms) {
-    const roomId = typeof room.id === "string" ? room.id : null;
+    const roomId = roomIdOf(room);
     if (!roomId) {
       continue;
     }
