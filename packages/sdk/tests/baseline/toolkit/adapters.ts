@@ -73,7 +73,7 @@ export function buildClaudeSdk({ prompt, workDir }: BuildOptions, options: Claud
 }
 
 /** OMP on the pinned Google model. */
-const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${DEFAULT_GEMINI_MODEL}`];
+export const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${DEFAULT_GEMINI_MODEL}`];
 
 /** OMP's state directory under the cell's working directory, where it also keeps its session transcripts. */
 export const OMP_STATE_DIR = ".omp-state";
