@@ -95,12 +95,13 @@ export abstract class RoomScopedAdapter<H, TTools extends MessagingTools, E exte
 
   /**
    * Builds and starts the room's engine now, rather than on the room's first
-   * message; a failure is reported as `room.failed`, as it would be then.
+   * message; a failure is reported as `room.failed` here, as it would be then.
    */
   public async warmRoom(roomId: string): Promise<void> {
     const engine = await this.engineFor(roomId);
     await engine.warm?.();
   }
+
   /** Stops the room's engine without waiting for its process to exit. */
   public override async onCleanup(roomId: string): Promise<void> {
     this.retireRoom(roomId, async (engine) => {

@@ -4,7 +4,9 @@ import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger } from "../core/logger";
-import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
+import { PlatformRuntime, type AllowRoomOptions, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
+
+export type { AllowRoomOptions };
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
@@ -18,11 +20,6 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   wsUrl?: string;
   restUrl?: string;
   shutdownTimeoutMs?: number | null;
-}
-
-export interface AllowRoomOptions {
-  /** Start the room's agent process now, reporting `room.ready` or `room.failed`, rather than on its first message. */
-  warm?: boolean;
 }
 
 /** {@link Agent.rooms}: the rooms an agent handles, changed while it runs. */
@@ -50,13 +47,14 @@ export class Agent {
    * Which rooms the agent handles, changed while it runs. A decision for a
    * room overrides the `roomFilter` the agent was created with, for that room.
    * - `allow(roomId, { warm })` admits a room Band lists the agent in, at
-   *   once; any other room when Band adds the agent to it. With `warm`, the
-   *   room's agent process starts first, and `room.ready` or `room.failed` is
-   *   reported before the room's messages are handled. Resolves true when the
-   *   room is admitted on return.
+   *   once; any other room when Band adds the agent to it. With `warm`, for a
+   *   room admitted by this call or already admitted, the room's agent process
+   *   starts first, and `room.ready` or `room.failed` is reported before the
+   *   room's messages are handled. Resolves true when the room is admitted on
+   *   return.
    * - `deny(roomId)` leaves an admitted room: its topic is unsubscribed and its
-   *   handling torn down, and it is not admitted again until allowed.
-   *   Resolves true when an admitted room was left.
+   *   handling torn down, reporting `room.stopped`, and it is not admitted
+   *   again until allowed. Resolves true when an admitted room was left.
    */
   public readonly rooms: AgentRooms;
 

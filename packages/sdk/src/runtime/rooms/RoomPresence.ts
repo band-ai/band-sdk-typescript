@@ -23,7 +23,6 @@ interface RoomPresenceOptions {
 }
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
-/** `removed` when the agent lost the room's membership; `stopped` when presence stopped tracking it. */
 /** Why a room's handling ended: membership lost, the agent stopped, or the host denied the room. */
 export type RoomLeaveReason = "removed" | "stopped" | "denied";
 type RoomPresenceLeaveHandler = (roomId: string, reason: RoomLeaveReason) => Promise<void>;
@@ -300,7 +299,7 @@ export class RoomPresence implements AsyncDisposable {
     if (!roomId) {
       return;
     }
-    if (this.roomFilter && !this.roomFilter(payload)) {
+    if (!this.admits(payload)) {
       return;
     }
     await this.admitRoom(roomId, payload);
@@ -339,6 +338,10 @@ export class RoomPresence implements AsyncDisposable {
       requestOptions: DEFAULT_REQUEST_OPTIONS,
     });
     return rooms.get(roomId);
+  }
+
+  private admits(room: MetadataMap): boolean {
+    return this.roomFilter?.(room) ?? true;
   }
 
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
@@ -381,8 +384,9 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   private async reconcileRoomsWithSnapshot(accepted: Map<string, MetadataMap>): Promise<void> {
+    // Filtered again: a room denied since the snapshot was listed stays out.
     const acceptedIds = this.autoSubscribeExistingRooms
-      ? [...accepted.keys()]
+      ? [...accepted].filter(([, payload]) => this.admits(payload)).map(([roomId]) => roomId)
       : this.roster.trackedRoomIds().filter((roomId) => accepted.has(roomId));
 
     const reconciliation = this.roster.reconcile(acceptedIds);
@@ -434,7 +438,10 @@ export class RoomPresence implements AsyncDisposable {
       roomFilter: this.roomFilter,
       requestOptions: DEFAULT_REQUEST_OPTIONS,
       onRoom: async (roomId, payload) => {
-        await this.admitRoom(roomId, payload);
+        // Rooms are admitted one at a time; one denied since the listing stays out.
+        if (this.admits(payload)) {
+          await this.admitRoom(roomId, payload);
+        }
       },
       onError: (error) => {
         this.logger.warn("RoomPresence failed to subscribe existing rooms", { error });

@@ -21,13 +21,22 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
-import { turnFailureLabel } from "../core/coercion";
+import { asErrorMessage, turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
 import type { AgentEventListener } from "../contracts/events";
 import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
+
+export interface AllowRoomOptions {
+  /**
+   * Start the room's agent process before admitting the room, reporting
+   * `room.ready` or `room.failed`, rather than on its first message. Applies
+   * to a room the allow admits or that is already admitted.
+   */
+  warm?: boolean;
+}
 
 export interface PlatformRuntimeOptions {
   agentId: string;
@@ -72,6 +81,8 @@ export class PlatformRuntime implements AsyncDisposable {
   /** The host's `allowRoom`/`denyRoom` per room, each with the order it was made in; kept across restarts. */
   private readonly roomDecisions = new Map<string, { allowed: boolean; seq: number }>();
   private roomDecisionSeq = 0;
+  /** Rooms a warm `allowRoom` is starting the agent of before admitting them itself, with how many such calls are in flight. */
+  private readonly warmingRooms = new Map<string, number>();
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
   private readonly events: AgentEventHub;
@@ -459,10 +470,16 @@ export class PlatformRuntime implements AsyncDisposable {
 
   /**
    * Whether the agent handles `room`: the host's latest `allowRoom`/`denyRoom`
-   * for it, else the `roomFilter` it was built with, else every room.
+   * for it, else the `roomFilter` it was built with, else every room. A room
+   * whose warm `allowRoom` is still starting its agent is admitted only by
+   * that call, so no other path dispatches its messages before `room.ready`.
    */
   private admitsRoom(room: MetadataMap): boolean {
-    const decision = typeof room.id === "string" ? this.roomDecisions.get(room.id) : undefined;
+    const roomId = typeof room.id === "string" ? room.id : undefined;
+    if (roomId !== undefined && this.warmingRooms.has(roomId)) {
+      return false;
+    }
+    const decision = roomId === undefined ? undefined : this.roomDecisions.get(roomId);
     return decision ? decision.allowed : (this._roomFilter?.(room) ?? true);
   }
 
@@ -476,11 +493,12 @@ export class PlatformRuntime implements AsyncDisposable {
    * Handles `roomId` from now on, overriding `roomFilter` for it. While
    * running, a room Band lists the agent in is admitted at once; otherwise
    * it is admitted when Band adds the agent to it, or at the next start.
-   * With `warm`, the room's agent starts first, and `room.ready` or
-   * `room.failed` is reported before the room's messages are handled.
+   * `warm` applies to a room this call admits or that is already admitted:
+   * the room's agent starts first, and `room.ready` or `room.failed` is
+   * reported before the room's messages are handled.
    * Resolves true when the room is admitted on return.
    */
-  public async allowRoom(roomId: string, options: { warm?: boolean } = {}): Promise<boolean> {
+  public async allowRoom(roomId: string, options: AllowRoomOptions = {}): Promise<boolean> {
     const seq = this.decideRoom(roomId, true);
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
@@ -498,10 +516,29 @@ export class PlatformRuntime implements AsyncDisposable {
     if (payload === undefined) {
       return false;
     }
-    if (options.warm) {
-      await this.warmRoom(adapter, roomId);
+    if (!options.warm) {
+      return await this.admitIfCurrent(runtime, roomId, seq, payload);
     }
-    // A later allow or deny for this room, or a stop, supersedes this one.
+    this.warmingRooms.set(roomId, (this.warmingRooms.get(roomId) ?? 0) + 1);
+    try {
+      await this.warmRoom(adapter, roomId);
+    } finally {
+      const remaining = (this.warmingRooms.get(roomId) ?? 1) - 1;
+      if (remaining > 0) this.warmingRooms.set(roomId, remaining);
+      else this.warmingRooms.delete(roomId);
+    }
+    const admitted = await this.admitIfCurrent(runtime, roomId, seq, payload);
+    // The warmed agent serves nobody unless a later allow now owns the room.
+    const decision = this.roomDecisions.get(roomId);
+    const laterAllow = decision?.allowed === true && decision.seq !== seq;
+    if (!admitted && !laterAllow && this.runtime === runtime) {
+      await adapter.onCleanup(roomId);
+    }
+    return admitted;
+  }
+
+  /** Admits the room unless a later allow or deny for it, or a stop, superseded the call that made `seq`. */
+  private async admitIfCurrent(runtime: AgentRuntime, roomId: string, seq: number, payload: MetadataMap): Promise<boolean> {
     if (this.roomDecisions.get(roomId)?.seq !== seq || this.runtime !== runtime) {
       return false;
     }
@@ -511,8 +548,8 @@ export class PlatformRuntime implements AsyncDisposable {
   /**
    * Stops handling `roomId`, overriding `roomFilter` for it, while the agent
    * stays a member: an admitted room's topic is unsubscribed and its
-   * execution torn down, and Band adding the agent to it again does not
-   * admit it. Resolves true when an admitted room was left.
+   * execution torn down, reporting `room.stopped`, and Band adding the agent
+   * to it again does not admit it. Resolves true when an admitted room was left.
    */
   public async denyRoom(roomId: string): Promise<boolean> {
     this.decideRoom(roomId, false);
@@ -523,26 +560,19 @@ export class PlatformRuntime implements AsyncDisposable {
     return await runtime.presence.leaveRoom(roomId, "denied");
   }
 
-  /** Starts the room's agent; reports `room.ready`, or `room.failed` once whether or not the adapter did. */
+  /**
+   * Starts the room's agent and reports `room.ready`. A start failure is the
+   * adapter's to report as `room.failed`; it alone knows whether a stop or
+   * cleanup ended the start on purpose.
+   */
   private async warmRoom(adapter: FrameworkAdapter, roomId: string): Promise<void> {
-    if (!adapter.warmRoom) {
-      this.events.emit({ type: "room.ready", roomId });
+    try {
+      await adapter.warmRoom?.(roomId);
+    } catch (error) {
+      this.logger.warn("Room agent did not start ahead of the room's messages", { roomId, error: asErrorMessage(error) });
       return;
     }
-    let reported = false;
-    const unobserve = this.events.observe((event) => {
-      if (event.type === "room.failed" && event.roomId === roomId) reported = true;
-    });
-    try {
-      await adapter.warmRoom(roomId);
-      this.events.emit({ type: "room.ready", roomId });
-    } catch (error) {
-      if (!reported) {
-        this.events.emit({ type: "room.failed", roomId, error: error instanceof Error ? error.message : String(error) });
-      }
-    } finally {
-      unobserve();
-    }
+    this.events.emit({ type: "room.ready", roomId });
   }
 
   public async runForever(): Promise<void> {

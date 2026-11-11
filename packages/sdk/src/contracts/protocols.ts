@@ -386,7 +386,8 @@ export interface FrameworkAdapter {
   /**
    * Starts the room's own agent ahead of the room's first message, for
    * `agent.rooms.allow(roomId, { warm: true })`. Rejects when it cannot
-   * start; the runtime then reports `room.failed` unless the adapter already did.
+   * start, after reporting `room.failed` itself, unless a stop or cleanup
+   * ended the start on purpose; the runtime only logs the rejection.
    */
   warmRoom?(roomId: string): Promise<void>;
   /**
