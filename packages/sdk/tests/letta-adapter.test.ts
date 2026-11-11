@@ -12,6 +12,7 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
+import { HistoryProvider } from "../src/runtime/types";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -712,6 +713,22 @@ describe("LettaAdapter", () => {
       "conversation history",
     );
     expect(tools.messages).toEqual(["Current response"]);
+  });
+
+  it("injects a peer agent's /context message on a cold boot as input, not as its own turn", async () => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(assistantResponse("Acknowledged history"), assistantResponse("NOTE1234"));
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("recaller", "Recalls notes");
+
+    // `/context` labels every agent sender assistant, the peer's message included.
+    const fromAgent = (sender: string, content: string) => ({ content, sender_name: sender, sender_type: "Agent", message_type: "text", role: "assistant" });
+    const context = new HistoryProvider([fromAgent("speaker", "@recaller NOTE1234"), fromAgent("recaller", "Noted.")]);
+    await adapter.onEvent(turnInput(new FakeTools(), makeMessage("What was the token?", "room-peer"), context));
+
+    const injected = client.messageCreateCalls[0].params.messages?.[0] as { content?: string } | undefined;
+    expect(injected?.content).toContain("[speaker]: @recaller NOTE1234");
+    expect(injected?.content).toContain("[recaller]: Noted.");
   });
 
   it("does not duplicate history injection on subsequent messages", async () => {
@@ -1981,7 +1998,9 @@ describe("LettaHistoryConverter", () => {
   const converter = new LettaHistoryConverter();
 
   it("converts basic user and assistant messages", () => {
-    const result = converter.convert([
+    const own = new LettaHistoryConverter();
+    own.setAgentName("Bot");
+    const result = own.convert([
       { content: "Hello", role: "user", sender_name: "Alice", sender_type: "User" },
       { content: "Hi!", role: "assistant", sender_name: "Bot", sender_type: "Agent" },
     ]);

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ParticipantRecord } from "../contracts/dtos";
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../core/deadline";
 import { ValidationError } from "../core/errors";
 import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../contracts/activity";
 import type {
@@ -26,6 +27,7 @@ export const MAX_CONTEXT_MESSAGES = 100;
 export const DEFAULT_MAX_MESSAGE_RETRIES = 1;
 
 export const WORKING_STATE_TTL_SECONDS = 10;
+export const DEFAULT_STOPPED_RESYNC_SECONDS = 60;
 
 // Range checks apply only when reporting is enabled; dormant numeric settings are preserved.
 const workingTiming = z.custom<number>((value) => typeof value === "number", "Expected a number");
@@ -51,6 +53,12 @@ export const sessionConfigSchema = z.object({
     .max(MAX_MESSAGE_RETRIES)
     .default(DEFAULT_MAX_MESSAGE_RETRIES),
   enableContextHydration: z.boolean().default(true),
+  /**
+   * How often a room Band has stopped checks `/messages/next`, which Band
+   * keeps empty while it is stopped, to find a play whose push was missed.
+   * Bounded by what `setTimeout` can wait, which fires at once past that.
+   */
+  stoppedResyncSeconds: z.number().positive().max(MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND).default(DEFAULT_STOPPED_RESYNC_SECONDS),
   /**
    * Directory for the durable turn journal. Set, each room keeps a record of
    * the replies its turns posted, so an inbound whose reply was recorded is

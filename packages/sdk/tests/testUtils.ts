@@ -14,6 +14,7 @@ import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, FAILURE_METADATA_
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { RuntimeStateError } from "../src/core/errors";
+import { Serializer } from "../src/core/singleFlight";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -26,6 +27,8 @@ import type {
   PeerRecord,
 } from "../src/contracts/dtos";
 import type {
+  ControlObserver,
+  DropObserver,
   ReconnectObserver,
   ReconnectSnapshot,
   StreamingTransport,
@@ -33,6 +36,7 @@ import type {
   TopicHandlers,
   TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
+import type { BandLink, LinkConnectionChange } from "../src/platform/BandLink";
 import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
 
 type SessionOutcome = Pick<StreamingTransport, "getDisconnectReason" | "getTerminalError" | "onTerminal">;
@@ -95,6 +99,13 @@ export class RecordLog<T> {
   }
 }
 
+/** Records every connection change `link` reports, in order. */
+export function recordConnectionChanges(link: BandLink): RecordLog<LinkConnectionChange> {
+  const changes = new RecordLog<LinkConnectionChange>();
+  link.onConnectionChange((change) => changes.record(change));
+  return changes;
+}
+
 /** The platform refuses a chat message that mentions nobody, so it never reaches the room. */
 export function assertMentioned<M extends readonly unknown[] | undefined>(mentions: M): asserts mentions is NonNullable<M> {
   if (!mentions?.length) {
@@ -127,7 +138,16 @@ export class CallHolds<A extends unknown[]> {
   public hold(matches: (...args: A) => boolean, options: { error?: Error } = {}): HeldCall<A> {
     const hold: Hold<A> = { matches, error: options.error, sending: createDeferred<A>(), released: createDeferred() };
     this.holds.push(hold);
-    return { sending: hold.sending.promise, release: () => hold.released.resolve() };
+    const release = () => hold.released.resolve();
+    // A failed assertion must not leave the held call parked, or teardown hangs
+    // waiting for a release that never comes.
+    onTestFinished(release);
+    return { sending: hold.sending.promise, release };
+  }
+
+  /** Whether a hold waits for this call; a fake whose timing others rely on awaits `pass` only then. */
+  public isHolding(...args: A): boolean {
+    return this.holds.some((candidate) => candidate.matches(...args));
   }
 
   public async pass(...args: A): Promise<void> {
@@ -308,6 +328,8 @@ export class FakeTransport implements StreamingTransport {
   /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
   public readonly observers = new Set<ReconnectObserver>();
   public readonly rejoinObservers = new Set<TopicRejoinObserver>();
+  public readonly dropObservers = new Set<DropObserver>();
+  public readonly controlObservers = new Set<ControlObserver>();
   /** Every topic bound, in order; await it to act once a subscription is in place. */
   public readonly bound = new RecordLog<string>();
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
@@ -326,6 +348,7 @@ export class FakeTransport implements StreamingTransport {
   private connectGate: Promise<void> = Promise.resolve();
   private releaseConnectGate: (() => void) | null = null;
   private connectError: unknown = null;
+  private readonly reconnectDeliveries = new Serializer();
 
   /** As the transport contract asks, an abort of `signal` rejects a connect still waiting. */
   public async connect(signal?: AbortSignal): Promise<void> {
@@ -524,9 +547,26 @@ export class FakeTransport implements StreamingTransport {
     return () => this.observers.delete(observer);
   }
 
+  public onDropped(observer: DropObserver): () => void {
+    this.dropObservers.add(observer);
+    return () => this.dropObservers.delete(observer);
+  }
+
   public onTopicRejoined(observer: TopicRejoinObserver): () => void {
     this.rejoinObservers.add(observer);
     return () => this.rejoinObservers.delete(observer);
+  }
+
+  public onControl(observer: ControlObserver): () => void {
+    this.controlObservers.add(observer);
+    return () => this.controlObservers.delete(observer);
+  }
+
+  /** Pushes an `agent.control` payload as Band does on the agent's control channel. */
+  public pushControl(payload: Record<string, unknown>): void {
+    for (const observer of [...this.controlObservers]) {
+      observer(payload);
+    }
   }
 
   /** Simulates one channel rejoining on a socket that never dropped. */
@@ -536,16 +576,41 @@ export class FakeTransport implements StreamingTransport {
     }
   }
 
-  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
-  public async triggerReconnect(
+  /** Simulates a live connection drop the transport will retry on its own. */
+  public triggerDrop(reason: WebSocketDisconnectReason = {
+    source: "websocket_close",
+    code: "websocket.closed",
+    message: "dropped",
+    retryable: true,
+    closeCode: 1006,
+    closeReason: null,
+  }): void {
+    this.connected = false;
+    this.disconnectReason = reason;
+    // Unisolated, unlike the real transport: a throwing drop observer is an SDK bug the test should fail on.
+    for (const observer of [...this.dropObservers]) {
+      observer(reason);
+    }
+  }
+
+  /**
+   * Simulates a settled transport-level reconnect for tests driving BandLink's observer(s).
+   * Like the real transport, deliveries run one at a time, so a reconnect queues behind
+   * a slower earlier one and its socket can drop before its observers start.
+   */
+  public triggerReconnect(
     snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
       Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
   ): Promise<void> {
+    this.connected = true;
     const full: ReconnectSnapshot = {
       ...snapshot,
       attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,
     };
-    await Promise.all([...this.observers].map((observer) => observer(full)));
+    const observers = [...this.observers];
+    return this.reconnectDeliveries.run(async () => {
+      await Promise.all(observers.map((observer) => observer(full)));
+    });
   }
 }
 

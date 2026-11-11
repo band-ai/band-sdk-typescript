@@ -7,13 +7,15 @@
 import { randomUUID } from "node:crypto";
 
 import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
-import { Band } from "@band-ai/rest-client";
+import { Band, BandError } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
 import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
+import { RoomExecutionStoppedError } from "../../../src/core/errors";
+import type { AgentControlMode } from "../../../src/platform/control";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import type { SessionConfig } from "../../../src/runtime/types";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
@@ -60,6 +62,8 @@ export interface AgentIdentityOptions {
 interface Settled {
   readonly messageId: string;
   readonly outcome: Outcome;
+  /** The label a failed mark carried. */
+  readonly error?: string;
 }
 
 type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
@@ -142,9 +146,14 @@ export class RecordingRestApi extends FakeRestApi {
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  public readonly eventHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a working report in flight, as a turn's first report is before the turn starts. */
+  public readonly activityHolds = new CallHolds<[roomId: string, working: boolean]>();
+  /** Holds a room's history read, as a session's first turn hydrates it. */
+  public readonly contextHolds = new CallHolds<[roomId: string]>();
   /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
   public readonly participantHolds = new CallHolds<[roomId: string]>();
   /** Holds `getAgentMe`, as a slow platform answers it. */
@@ -181,23 +190,45 @@ export class RecordingRestApi extends FakeRestApi {
 
   public async reportActivity(roomId: string, working: boolean) {
     this.assertMember(roomId, "reportActivity");
+    // Awaited only when held: the turn's working reports are timing other tests observe.
+    if (this.activityHolds.isHolding(roomId, working)) await this.activityHolds.pass(roomId, working);
     if (this.refuseActivity) {
       this.refusedReports.record({ roomId, working });
       throw new Band.NotFoundError({ error: { code: "not_found", message: "No active execution", request_id: randomUUID() } });
     }
     this.workingReports.record({ roomId, working });
-    return { working };
+    // Band echoes a working report as not working for a room it stopped the agent in.
+    return { working: working && !this.stoppedRooms.has(roomId) };
   }
 
-  /** The oldest message in the room not yet settled, as `/messages/next` serves it. */
+  /** Serves messages claimed and never settled to `listMessages({ status: "processing" })`, as Band does. */
+  public serveStaleProcessing = false;
+
+  public override async listMessages(request: Parameters<NonNullable<RestApi["listMessages"]>>[0]): Promise<PaginatedResponse<PlatformChatMessage>> {
+    if (!this.serveStaleProcessing || request.status !== "processing") {
+      return { data: [] };
+    }
+    const claimed = new Set(this.processing.entries);
+    return { data: this.unsettledIn(request.chatId).filter((message) => claimed.has(message.id)) };
+  }
+
+  /** Rooms Band has stopped the agent in: their `/messages/next` serves nothing until a play. */
+  public readonly stoppedRooms = new Set<string>();
+
+  /** The oldest message in the room not yet settled, as `/messages/next` serves it; nothing in a stopped room. */
   public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
-    const pending = this.unsettledIn(request.chatId)[0];
+    const pending = this.stoppedRooms.has(request.chatId) ? undefined : this.unsettledIn(request.chatId)[0];
     await this.nextMessageHolds.pass(request.chatId);
     return pending ?? null;
   }
 
   private unsettledIn(roomId: string): PlatformChatMessage[] {
     return this.unsettled.filter((entry) => entry.roomId === roomId && !this.isSettled(entry.item.id)).map((entry) => entry.item);
+  }
+
+  /** Every room the agent is in. */
+  public roomIds(): string[] {
+    return [...this.rooms.keys()];
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
@@ -295,6 +326,7 @@ export class RecordingRestApi extends FakeRestApi {
     assertMentioned(message.mentions);
     this.assertDistinctMentions(roomId, posted);
     await this.messageHolds.pass(roomId, message.content);
+    this.refuseWhileStopped(roomId);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -302,6 +334,8 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
+    await this.eventHolds.pass(roomId, event.content);
+    this.refuseWhileStopped(roomId);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
@@ -350,8 +384,14 @@ export class RecordingRestApi extends FakeRestApi {
    * at a time: what people said and what the agent posted.
    */
   public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
+    await this.contextHolds.pass(chatId);
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
+    // Band refuses a cursor it never handed out rather than restarting the walk.
+    if ((cursor !== undefined && !/^[1-9]\d*$/.test(cursor)) || start > conversation.length) {
+      // The generated client maps no 400 here, so a real rejection is a plain BandError.
+      throw new BandError({ statusCode: 400, body: { error: { code: "invalid_cursor", message: "Invalid cursor", request_id: randomUUID() } } });
+    }
     const end = start + limit;
     const hasMore = end < conversation.length;
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
@@ -365,19 +405,30 @@ export class RecordingRestApi extends FakeRestApi {
     }
   }
 
-  public override async markMessageProcessing(_roomId: string, messageId: string) {
-    this.processing.record(messageId);
+  public override async markMessageProcessing(roomId: string, messageId: string) {
     await this.processingHolds.pass(messageId);
+    // A refused claim claims nothing.
+    this.refuseWhileStopped(roomId);
+    this.processing.record(messageId);
     return {};
   }
 
-  public override async markMessageProcessed(_roomId: string, messageId: string) {
+  public override async markMessageProcessed(roomId: string, messageId: string) {
     await this.processedHolds.pass(messageId);
+    this.refuseWhileStopped(roomId);
     return this.settle(messageId, "processed");
   }
 
-  public override async markMessageFailed(_roomId: string, messageId: string) {
-    return this.settle(messageId, "failed");
+  public override async markMessageFailed(roomId: string, messageId: string, error: string) {
+    this.refuseWhileStopped(roomId);
+    return this.settle(messageId, "failed", error);
+  }
+
+  /** Band refuses an agent's claims, acknowledgements and posts in a room it stopped the agent in. */
+  private refuseWhileStopped(roomId: string): void {
+    if (this.stoppedRooms.has(roomId)) {
+      throw new RoomExecutionStoppedError(roomId);
+    }
   }
 
   /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
@@ -409,8 +460,8 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome) {
-    this.settled.record({ messageId, outcome });
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
     return {};
   }
 
@@ -486,6 +537,11 @@ export class BandRoom {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
   }
 
+  /** The labels the runtime marked `messageId` failed with so far. */
+  public failureLabels(messageId: string): string[] {
+    return this.platform.rest.settled.entries.flatMap((settled) => settled.messageId === messageId && settled.error !== undefined ? [settled.error] : []);
+  }
+
   /** Every outcome the runtime has settled `messageId` with so far. */
   public outcomes(messageId: string): Outcome[] {
     return this.platform.rest.settled.entries.filter((settled) => settled.messageId === messageId).map((settled) => settled.outcome);
@@ -499,6 +555,11 @@ export class BandRoom {
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
   public holdMessage(matches: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[roomId: string, content: string]> {
     return this.platform.rest.messageHolds.hold((roomId, content) => roomId === this.id && matches(content), options);
+  }
+
+  /** Keeps the agent's next matching event in flight until released. */
+  public holdEvent(matches: (content: string) => boolean): HeldCall<[roomId: string, content: string]> {
+    return this.platform.rest.eventHolds.hold((roomId, content) => roomId === this.id && matches(content));
   }
 
   /** Keeps the runtime's processing mark for `messageId` in flight until released. */
@@ -598,6 +659,30 @@ export class BandPlatform implements AsyncDisposable {
     this.rest.addRoom(roomId, participants);
     await this.announce(roomId);
     return new BandRoom(roomId, this);
+  }
+
+  /**
+   * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
+   * its rooms for null, as its `agent.control` push does; a stopped room's
+   * `/messages/next` serves nothing until a play, as on Band. With
+   * `delivered: false` the agent misses the push. Returns its correlation id.
+   */
+  public control(
+    mode: AgentControlMode,
+    roomId: string | null,
+    options: { delivered?: boolean; correlationId?: string } = {},
+  ): string {
+    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+      if (mode === "stop") this.rest.stoppedRooms.add(room);
+      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    }
+    const correlationId = options.correlationId ?? randomUUID();
+    if (options.delivered !== false) {
+      this.transport.pushControl({
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+      });
+    }
+    return correlationId;
   }
 
   /** A room the agent created, as `band_create_chatroom` reported it. */

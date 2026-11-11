@@ -7,7 +7,7 @@ import {
   getCustomToolName,
   type CustomToolDef,
 } from "../runtime/tools/customTools";
-import { errorResult, ROOM_ID_ARG, scopeToRoom, successResult, type McpToolRegistration } from "./registrations";
+import { declaresRoomId, errorResult, ROOM_ID_ARG, scopeToRoom, successResult, type McpToolRegistration } from "./registrations";
 
 /** Registered once; resolve the active room on each call to record the correct turn. */
 export function buildCustomMcpRegistrations(
@@ -20,7 +20,7 @@ export function buildCustomMcpRegistrations(
     const functionSchema = asOptionalRecord(schema.function) ?? {};
     const parameters = asOptionalRecord(functionSchema.parameters) ?? {};
     const properties = asOptionalRecord(parameters.properties) ?? {};
-    if (Object.hasOwn(properties, ROOM_ID_ARG)) {
+    if (declaresRoomId(properties)) {
       throw new CustomToolDefinitionError(`Custom tool '${name}' can't take '${ROOM_ID_ARG}': room-scoped MCP tools use it for routing.`);
     }
     const required = Array.isArray(parameters.required)

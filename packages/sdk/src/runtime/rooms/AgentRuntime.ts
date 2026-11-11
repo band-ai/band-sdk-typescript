@@ -4,6 +4,8 @@ import { RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution, type ExecutionHandler } from "../Execution";
+import type { RoomPauseSource } from "../../contracts/events";
+import { MS_PER_SECOND } from "../../core/deadline";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import type { RuntimeLifecycleState } from "../lifecycle";
 import {
@@ -27,8 +29,16 @@ interface AgentRuntimeOptions {
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
-  /** A room's execution stopped: the room was left or reset, or the runtime stopped. */
+  /** Handling of an admitted room started: once per execution, so again after a reset. */
+  onRoomAdmitted?: (roomId: string) => void;
+  /** The agent lost a room's membership; not called for rooms dropped by `stop()`. */
+  onRoomRemoved?: (roomId: string) => void;
+  /** A reported room's execution stopped: the room was left or reset, or the runtime stopped. */
   onRoomStopped?: (roomId: string) => void;
+  /** A room Band stopped is served again: its play push was missed. */
+  onMissedPlay?: (roomId: string) => void;
+  /** Losing a room's membership ended the pause Band's stop put on it. */
+  onBandStopCleared?: (roomId: string) => void;
   onContactEvent?: (event: ContactEvent) => Promise<void>;
   onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
@@ -49,7 +59,11 @@ export class AgentRuntime {
   private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
   private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
   private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
+  private readonly onRoomAdmitted?: AgentRuntimeOptions["onRoomAdmitted"];
+  private readonly onRoomRemoved?: AgentRuntimeOptions["onRoomRemoved"];
   private readonly onRoomStopped?: AgentRuntimeOptions["onRoomStopped"];
+  private readonly onMissedPlay?: AgentRuntimeOptions["onMissedPlay"];
+  private readonly onBandStopCleared?: AgentRuntimeOptions["onBandStopCleared"];
   private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
   private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
   private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
@@ -58,7 +72,11 @@ export class AgentRuntime {
   private readonly sessionConfig: ResolvedSessionConfig;
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
+  /** Who pauses each room, kept across its executions, so a reset or rejoin starts paused. */
+  private readonly roomPauses = new Map<string, Set<RoomPauseSource>>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
+  /** Executions reported through `onRoomAdmitted`, so each start and stop is reported once. */
+  private readonly announced = new WeakSet<Execution>();
   private readonly logger: Logger;
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
@@ -77,7 +95,11 @@ export class AgentRuntime {
     this.onSessionCleanup = options.onSessionCleanup ?? (async () => undefined);
     this.onRoomJoined = options.onRoomJoined;
     this.onRoomLeft = options.onRoomLeft;
+    this.onRoomAdmitted = options.onRoomAdmitted;
+    this.onRoomRemoved = options.onRoomRemoved;
     this.onRoomStopped = options.onRoomStopped;
+    this.onMissedPlay = options.onMissedPlay;
+    this.onBandStopCleared = options.onBandStopCleared;
     this.onError = options.onError;
     this.logger = resolveLogger(options.logger);
     this.onContactEvent = options.onContactEvent;
@@ -106,12 +128,27 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {
-      this.getOrCreateExecution(roomId);
+      // The execution may predate admission (a contact hub event), so report it now.
+      this.announceExecution(roomId, this.getOrCreateExecution(roomId));
       await this.onRoomJoined?.(roomId, payload);
     };
-    this.presence.onRoomLeft = async (roomId) => {
-      // Membership loss revokes admission even when the current handler cannot finish.
-      await this.teardownExecution(roomId, 0);
+    this.presence.onRoomLeft = async (roomId, reason) => {
+      try {
+        // Membership loss revokes admission even when the current handler cannot finish.
+        await this.teardownExecution(roomId, 0);
+      } finally {
+        // Reported even when the adapter's cleanup threw: the membership is gone either way.
+        if (reason === "removed") {
+          // Band's stop held the agent's handling of the room, which is gone with the membership.
+          if (this.resumeRoom(roomId, "band")) {
+            this.onBandStopCleared?.(roomId);
+          }
+          if (this.roomPauses.get(roomId)?.size === 0) {
+            this.roomPauses.delete(roomId);
+          }
+          this.onRoomRemoved?.(roomId);
+        }
+      }
       await this.onRoomLeft?.(roomId);
     };
     this.presence.onRoomEvent = async (roomId, event) => {
@@ -288,8 +325,7 @@ export class AgentRuntime {
         await isolateTeardown(errors, async () => {
           graceful = (await execution.stop(timeoutMs)) && graceful;
         });
-        this.executions.delete(roomId);
-        this.onRoomStopped?.(roomId);
+        this.evictExecution(roomId, execution);
       }),
     );
 
@@ -364,6 +400,62 @@ export class AgentRuntime {
     return await this.teardownExecution(roomId, timeoutMs);
   }
 
+  /**
+   * Pauses `roomId` for `source`, now and for every later execution of the
+   * room, until {@link resumeRoom}; see `Execution.pause`. False when
+   * `source` was already pausing it.
+   */
+  public pauseRoom(roomId: string, source: RoomPauseSource): boolean {
+    const execution = this.executions.get(roomId);
+    if (execution) {
+      return execution.pause(source);
+    }
+    const sources = this.pausesOf(roomId);
+    if (sources.has(source)) {
+      return false;
+    }
+    sources.add(source);
+    return true;
+  }
+
+  /** Lifts `source`'s pause on `roomId`; false when it was not pausing the room. */
+  public resumeRoom(roomId: string, source: RoomPauseSource): boolean {
+    const execution = this.executions.get(roomId);
+    return execution ? execution.resume(source) : (this.roomPauses.get(roomId)?.delete(source) ?? false);
+  }
+
+  /**
+   * Band played `roomId`: see `Execution.play`. Only a running execution
+   * takes it, as in the Python SDK. A play while a reset is stopping or has
+   * evicted the room's execution leaves Band's pause recorded, and the
+   * room's next execution, which starts paused, checks `/next` at once,
+   * finds the play and catches up. Returns whether Band's pause was lifted.
+   */
+  public playRoom(roomId: string): boolean {
+    const execution = this.executions.get(roomId);
+    return execution?.state.status === "running" ? execution.play() : false;
+  }
+
+  /** The room's pause record, which each of its executions shares. */
+  private pausesOf(roomId: string): Set<RoomPauseSource> {
+    let sources = this.roomPauses.get(roomId);
+    if (!sources) {
+      sources = new Set();
+      this.roomPauses.set(roomId, sources);
+    }
+    return sources;
+  }
+
+  /** Ends `roomId`'s running turn and consumes its message; false when none runs. */
+  public interruptTurn(roomId: string): boolean {
+    return this.executions.get(roomId)?.interrupt() ?? false;
+  }
+
+  /** The rooms this runtime is handling now, which an agent-wide control signal reaches. */
+  public handledRoomIds(): string[] {
+    return [...this.executions.keys()];
+  }
+
   private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
     const execution = this.executions.get(roomId);
     const errors: unknown[] = [];
@@ -376,10 +468,7 @@ export class AgentRuntime {
       });
     }
 
-    this.executions.delete(roomId);
-    if (execution) {
-      this.onRoomStopped?.(roomId);
-    }
+    this.evictExecution(roomId, execution);
     this.contexts.delete(roomId);
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
 
@@ -388,6 +477,26 @@ export class AgentRuntime {
     }
 
     return graceful;
+  }
+
+  /**
+   * Drops `roomId`'s execution after `execution` stopped. Overlapping teardowns
+   * share one execution's stop, so only the one that still finds it reports it.
+   */
+  private evictExecution(roomId: string, execution: Execution | undefined): void {
+    if (execution && this.executions.get(roomId) === execution && this.announced.has(execution)) {
+      this.onRoomStopped?.(roomId);
+    }
+    this.executions.delete(roomId);
+  }
+
+  /** Reports `execution` as handling `roomId` once the room is admitted; unadmitted rooms are not news. */
+  private announceExecution(roomId: string, execution: Execution): void {
+    if (this.announced.has(execution) || this.presence.roster.roomMembership(roomId) !== "admitted") {
+      return;
+    }
+    this.announced.add(execution);
+    this.onRoomAdmitted?.(roomId);
   }
 
   private async enqueueUnlessStopping(roomId: string, event: PlatformEvent): Promise<void> {
@@ -423,9 +532,13 @@ export class AgentRuntime {
       onFailure: async (error, event) => {
         await this.failRuntime(error, event);
       },
+      pausedBy: this.pausesOf(roomId),
+      onMissedPlay: () => this.onMissedPlay?.(roomId),
+      stoppedProbeIntervalMs: this.sessionConfig.stoppedResyncSeconds * MS_PER_SECOND,
       logger: this.logger,
     });
     this.executions.set(roomId, execution);
+    this.announceExecution(roomId, execution);
     if (this.stopMidStart) {
       this.stopExecutionMidStart(execution);
     }

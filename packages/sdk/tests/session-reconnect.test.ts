@@ -4,7 +4,8 @@ import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
-import { BandLink, type LinkConnectionChange } from "../src/platform/BandLink";
+import { BandLink } from "../src/platform/BandLink";
+import type { AgentControl } from "../src/platform/control";
 import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
@@ -17,7 +18,7 @@ import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSoc
 import type { ReconnectSnapshot } from "../src/platform/streaming/transport";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { FakePhoenixPeer, type UpgradeRefusal } from "./fakePhoenixPeer";
-import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy } from "./testUtils";
+import { FAKE_WIRE_CLOCK, FakeRestApi, RecordLog, advanceWireClock, fastSessionPolicy, recordConnectionChanges } from "./testUtils";
 
 /**
  * Core `Session` as the transport's only reconnect policy, over the real
@@ -231,21 +232,136 @@ describe("core Session owns reconnects (real wire)", () => {
       await using peer = await startPeer();
       await using agent = transportFor(peer);
       const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
-      const changes: LinkConnectionChange[] = [];
-      link.onConnectionChange((change) => changes.push(change));
+      const changes = recordConnectionChanges(link);
       await link.connect();
 
       peer.severAllConnections();
       await reconnected(peer, 2);
-      await wireUntil(() => changes.length >= 3);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
       await onWireClock(link.disconnect());
 
-      expect(changes).toEqual([
-        { connected: true, reconnected: false },
-        { connected: false, reason: "dropped" },
-        { connected: true, reconnected: true },
-        { connected: false, reason: "closed" },
+      expect(changes.entries).toEqual([
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
       ]);
+    });
+
+    it("hands each valid agent.control push to control listeners, in order, and drops an invalid one", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const controls = new RecordLog<AgentControl>();
+      link.onControl((control) => controls.record(control));
+      await link.connect();
+
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "pause", scope: "room", agent_id: AGENT_ID, room_id: "room-1", correlation_id: "c-0", execution_id: null });
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "stop", scope: "room", agent_id: AGENT_ID, room_id: "room-1", correlation_id: "c-1", execution_id: "e-1" });
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "play", scope: "agent", agent_id: AGENT_ID, room_id: null, correlation_id: "c-2", execution_id: null, reason: "resumed" });
+      await onWireClock(controls.until(() => controls.entries.length >= 2));
+
+      expect(controls.entries).toEqual([
+        { mode: "stop", scope: "room", agentId: AGENT_ID, roomId: "room-1", correlationId: "c-1", executionId: "e-1", reason: null },
+        { mode: "play", scope: "agent", agentId: AGENT_ID, roomId: null, correlationId: "c-2", executionId: null, reason: "resumed" },
+      ]);
+    });
+
+    it("tells connection listeners about the bounce a retryable supersede causes, once", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      pushSupersede(peer);
+      await reconnected(peer, 2);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
+      await onWireClock(link.disconnect());
+
+      // Session judges the superseded socket's own close stale, so the drop is reported once.
+      expect(changes.entries).toEqual([
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
+      ]);
+    });
+
+    it("still reports closed after a drop that never came back", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      // Refuse the transport's automatic retry so the drop cannot settle as a
+      // reconnect before this test's local disconnect runs.
+      peer.refuseUpgrades({ status: 503 });
+      peer.severAllConnections();
+      await onWireClock(changes.next((change) => change.type === "link.disconnected" && change.reason === "dropped"));
+      await onWireClock(link.disconnect());
+
+      expect(changes.entries).toEqual([
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.disconnected", reason: "closed" },
+      ]);
+    });
+
+    it("reports one drop across several refused reconnects, then the reconnect", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      peer.refuseUpgrades({ status: 503 });
+      peer.severAllConnections();
+      await refused(peer, 3);
+      peer.acceptUpgrades();
+      await reconnected(peer, 2);
+      await onWireClock(changes.until(() => changes.entries.length >= 3));
+      await onWireClock(link.disconnect());
+
+      expect(changes.entries).toEqual([
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.connected", reconnected: true },
+        { type: "link.disconnected", reason: "closed" },
+      ]);
+    });
+
+    it("still reports terminal after a drop whose reconnect is refused", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+      await link.connect();
+
+      peer.refuseUpgrades({ status: 403 });
+      peer.severAllConnections();
+      await onWireClock(changes.next((change) => change.type === "link.disconnected" && change.reason === "terminal"));
+      await advanceWireClock(PAST_ANY_DELAY_MS);
+
+      expect(changes.entries).toEqual([
+        { type: "link.connected", reconnected: false },
+        { type: "link.disconnected", reason: "dropped" },
+        { type: "link.disconnected", reason: "terminal" },
+      ]);
+    });
+
+    it("does not report a boot the platform refuses for good as a link going down", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const changes = recordConnectionChanges(link);
+
+      peer.refuseUpgrades({ status: 403 });
+      await expect(onWireClock(link.connect())).rejects.toBeInstanceOf(WebSocketDisconnectError);
+
+      expect(agent.terminals).toEqual([expect.objectContaining({ status: 403, retryable: false })]);
+      expect(changes.entries).toEqual([]);
     });
 
     it("drops a reconnected socket whose agent_control rejoin fails, and reconnects again", async () => {
@@ -324,13 +440,14 @@ describe("core Session owns reconnects (real wire)", () => {
 
     it("reports no reconnect when a room still rejoining on a superseded socket is left", async () => {
       await using peer = await startPeer();
-      // Long enough that the leave lands before the next socket opens.
-      await using agent = transportFor(peer, { baseDelayS: 1, maxDelayS: 1 });
+      await using agent = transportFor(peer);
       await agent.transport.connect();
       await onWireClock(agent.transport.join(ROOM, {}));
       const snapshotConnections: number[] = [];
+      const recovered = createDeferred<void>();
       agent.transport.onReconnected(() => {
         snapshotConnections.push(peer.connections.entries.length);
+        recovered.resolve();
       });
       peer.queueJoinOutcomes(ROOM, ["pending"]);
       peer.severAllConnections();
@@ -340,9 +457,13 @@ describe("core Session owns reconnects (real wire)", () => {
       // The room was all the dropped socket's rejoin still waited on.
       pushSupersede(peer);
       await connectedState(agent.transport, false);
+      // Hold the next socket closed until leave finishes — don't race a delay.
+      peer.refuseUpgrades({ status: 503 });
+      await refused(peer);
       await onWireClock(agent.transport.leave(ROOM));
+      peer.acceptUpgrades();
       await reconnected(peer, 3);
-      await advanceWireClock(100);
+      await onWireClock(recovered.promise);
 
       expect(snapshotConnections).toEqual([3]);
     });

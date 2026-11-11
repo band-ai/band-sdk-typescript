@@ -164,6 +164,42 @@ export class ExecutionContext {
     }
   }
 
+  /**
+   * Takes back what preparing a turn consumed, for a turn a pause or an
+   * interrupt cut short before the adapter saw it, so the next turn is
+   * prepared as this one was: the session-bootstrap flag and the participants
+   * and contacts notices it took. Its message is the caller's to settle.
+   */
+  public returnTurnPreparation(turn: {
+    isSessionBootstrap: boolean;
+    participantsMessage: string | null;
+    contactsMessage: string | null;
+  }): void {
+    if (turn.isSessionBootstrap) {
+      this._llmInitialized = false;
+    }
+    if (turn.participantsMessage) {
+      this.participantsMessage = this.participantsMessage ? `${turn.participantsMessage}\n${this.participantsMessage}` : turn.participantsMessage;
+    }
+    if (turn.contactsMessage) {
+      this._pendingSystemMessages.unshift(turn.contactsMessage);
+    }
+  }
+
+  /**
+   * Forgets `messageId`, so the room handles it afresh when Band serves it
+   * again: a turn a pause cut short left it for replay.
+   */
+  public forgetMessage(messageId: string): void {
+    this.dedupCache.delete(messageId);
+    const index = this.history.findIndex((entry) => entry.id === messageId);
+    if (index >= 0) this.history.splice(index, 1);
+    this.rebuildMessageIds();
+    if (this.contextCache) {
+      this.contextCache.messages = this.contextCache.messages.filter((entry) => entry.id !== messageId);
+    }
+  }
+
   public getRawHistory(): MetadataMap[] {
     return this.history.map((entry) => ({
       id: entry.id,

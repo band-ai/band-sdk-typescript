@@ -29,7 +29,7 @@
     "@band-ai/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^26.6.6",
-    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/eslint-plugin": "^8.72.1",
     "eslint": "^10.10.0",
     "js-yaml": "^5.5.0",
     "tsup": "^8.5.1",

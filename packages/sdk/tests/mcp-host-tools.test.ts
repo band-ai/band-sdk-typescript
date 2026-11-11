@@ -1,0 +1,216 @@
+import { PassThrough } from "node:stream";
+
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { describe, expect, it, onTestFinished } from "vitest";
+
+import { ACPClientAdapter } from "../src/adapters/acp";
+import type { McpToolRegistration } from "../src/mcp/registrations";
+import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { BandMcpStdioServer, type BandMcpStdioServerOptions } from "../src/mcp/stdio";
+import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { bandMcpAgent } from "./support/inMemoryAcpAgent";
+import { createDeferred } from "../src/core/deferred";
+import { UnsupportedFeatureError } from "../src/core/errors";
+import { trackTurn } from "../src/core/turn";
+import { FakeTools, tmpRoot } from "./testUtils";
+
+const ROOM = "room-1";
+const OTHER_ROOM = "room-2";
+
+/** A host's own tool that acts on the room its call names, through the tools it is handed. */
+const markRoom: McpToolRegistration = {
+  name: "mark_room",
+  description: "Leave a marker event in this room.",
+  inputSchema: { type: "object", properties: { room_id: { type: "string" }, marker: { type: "string" } }, required: ["room_id", "marker"] },
+  execute: async (args, tools) => {
+    await tools!.sendEvent(`marker: ${String(args.marker)}`, "thought");
+    return { content: [{ type: "text", text: "marked" }] };
+  },
+};
+
+/** The same kind of tool without `room_id`: on a multi-room server it cannot say which room it means. */
+const markUnnamedRoom: McpToolRegistration = {
+  ...markRoom,
+  name: "mark_unnamed_room",
+  inputSchema: { type: "object", properties: { marker: { type: "string" } }, required: ["marker"] },
+};
+
+const textOf = (result: unknown): string => {
+  const content = result && typeof result === "object" && "content" in result && Array.isArray(result.content) ? result.content : [];
+  const [block] = content;
+  return block?.type === "text" ? String(block.text) : "";
+};
+const isError = (result: unknown): boolean => Boolean(result && typeof result === "object" && "isError" in result && result.isError);
+
+async function bridgeClient(additionalTools: McpToolRegistration[], rooms: Record<string, FakeTools>) {
+  const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: (roomId) => rooms[roomId], additionalTools });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await bridge.serverConfig.instance.connect(serverTransport);
+  const client = new McpClient({ name: "host-tool-probe", version: "1.0.0" });
+  await client.connect(clientTransport);
+  onTestFinished(() => client.close());
+  return client;
+}
+
+describe("a host's MCP tool gets the room's tools on every server", () => {
+  it("on a room-scoped server, such as the Claude Agent SDK bridge, for the room each call names", async () => {
+    const rooms = { [ROOM]: new FakeTools(), [OTHER_ROOM]: new FakeTools() };
+    const client = await bridgeClient([markRoom], rooms);
+
+    const results = [
+      await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "first" } }),
+      await client.callTool({ name: "mark_room", arguments: { room_id: OTHER_ROOM, marker: "second" } }),
+    ];
+
+    expect(results.map(isError)).toEqual([false, false]);
+    expect(rooms[ROOM].events.map((event) => event.content)).toEqual(["marker: first"]);
+    expect(rooms[OTHER_ROOM].events.map((event) => event.content)).toEqual(["marker: second"]);
+  });
+
+  it("advertises a declared room_id as required on a room-scoped server", async () => {
+    const optionalRoom: McpToolRegistration = { ...markRoom, name: "mark_optional_room", inputSchema: { ...markRoom.inputSchema, required: ["marker"] } };
+    const client = await bridgeClient([markRoom, optionalRoom], { [ROOM]: new FakeTools() });
+
+    const { tools } = await client.listTools();
+
+    for (const name of ["mark_room", "mark_optional_room"]) {
+      expect([...(tools.find((tool) => tool.name === name)?.inputSchema.required ?? [])].sort()).toEqual(["marker", "room_id"]);
+    }
+  });
+
+  it("refuses room tools to a call that outlives its turn once the room moves to the next turn", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const late = createDeferred<unknown>();
+    const slowMark: McpToolRegistration = {
+      ...markRoom,
+      name: "slow_mark",
+      execute: async (args, tools) => {
+        entered.resolve();
+        await release.promise;
+        try {
+          await tools!.sendEvent(`marker: ${String(args.marker)}`, "thought");
+          late.resolve(null);
+        } catch (error) {
+          late.resolve(error);
+        }
+        return { content: [{ type: "text", text: "done" }] };
+      },
+    };
+    const firstTurn = trackTurn(new FakeTools());
+    const rooms: Record<string, FakeTools> = { [ROOM]: firstTurn };
+    const client = await bridgeClient([slowMark], rooms);
+
+    const call = client.callTool({ name: "slow_mark", arguments: { room_id: ROOM, marker: "late" } });
+    await entered.promise;
+    const nextTurn = trackTurn(new FakeTools());
+    rooms[ROOM] = nextTurn;
+    release.resolve();
+    await call;
+
+    expect(await late.promise).toBeInstanceOf(UnsupportedFeatureError);
+    expect(firstTurn.events).toEqual([]);
+    expect(nextTurn.events).toEqual([]);
+  });
+
+  /** A running stdio server and its client; host tools join with `addTools` after start. */
+  async function stdioClient(tools: BandMcpStdioServerOptions["tools"]) {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const server = new BandMcpStdioServer({ tools, enableMemoryTools: false, stdin, stdout });
+    await server.start();
+    onTestFinished(() => server.stop());
+    const client = new McpClient({ name: "host-tool-probe", version: "1.0.0" });
+    await client.connect(new StdioServerTransport(stdout, stdin));
+    onTestFinished(() => client.close());
+    return { server, client };
+  }
+
+  it("hands a host tool added after start its room's tools on a single-room stdio server", async () => {
+    const roomTools = new FakeTools();
+    const { server, client } = await stdioClient(roomTools);
+
+    await server.addTools([markUnnamedRoom]);
+    const result = await client.callTool({ name: "mark_unnamed_room", arguments: { marker: "added" } });
+
+    expect(isError(result)).toBe(false);
+    expect(roomTools.events.map((event) => event.content)).toEqual(["marker: added"]);
+  });
+
+  it("scopes a host tool added after start the same way on a room-scoped stdio server", async () => {
+    const rooms: Record<string, FakeTools> = { [ROOM]: new FakeTools() };
+    const { server, client } = await stdioClient((roomId) => rooms[roomId]);
+
+    await server.addTools([markRoom]);
+    const known = await client.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "added" } });
+    const unknown = await client.callTool({ name: "mark_room", arguments: { room_id: "room-9", marker: "lost" } });
+
+    expect(isError(known)).toBe(false);
+    expect(rooms[ROOM].events.map((event) => event.content)).toEqual(["marker: added"]);
+    expect(textOf(unknown)).toBe("No tool context found for room_id room-9");
+  });
+
+  it("on a single-room server, such as an ACP room's own", async () => {
+    let result: unknown;
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      additionalMcpTools: [markRoom],
+      connectionFactory: bandMcpAgent(async (band) => {
+        result = await band.callTool({ name: "mark_room", arguments: { room_id: ROOM, marker: "acp" } });
+      }),
+    });
+    const platform = await BandPlatform.start(adapter, [person("owner")]);
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    const room = await platform.room(ROOM);
+
+    expect(await room.outcome(await room.say("owner", "mark it"))).toBe("processed");
+    expect(isError(result)).toBe(false);
+    expect(room.events("thought").map((event) => event.content)).toContain("marker: acp");
+  });
+
+  it.each([
+    { call: "names an empty room", args: { room_id: " ", marker: "lost" }, error: "Missing required room_id" },
+    { call: "names an unknown room", args: { room_id: "room-9", marker: "lost" }, error: "No tool context found for room_id room-9" },
+  ])("refuses a call that $call, without running the tool", async ({ args, error }) => {
+    let runs = 0;
+    const countedMarkRoom: McpToolRegistration = { ...markRoom, execute: (toolArgs, tools) => { runs += 1; return markRoom.execute(toolArgs, tools); } };
+    const client = await bridgeClient([countedMarkRoom], { [ROOM]: new FakeTools() });
+
+    const result = await client.callTool({ name: "mark_room", arguments: args });
+
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toBe(error);
+    expect(runs).toBe(0);
+  });
+
+  it("runs a tool that declares no room_id and only passes its tools along", async () => {
+    const passAlong: McpToolRegistration = {
+      name: "pass_along",
+      description: "Hand the tools to an async helper that never uses them.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      execute: async (_args, tools) => {
+        await Promise.resolve(tools);
+        return { content: [{ type: "text", text: `passed ${Object.prototype.toString.call(tools)}` }] };
+      },
+    };
+    const client = await bridgeClient([passAlong], { [ROOM]: new FakeTools() });
+
+    const result = await client.callTool({ name: "pass_along", arguments: {} });
+
+    expect(textOf(result)).toBe("passed [object Object]");
+  });
+
+  it("fails loudly when a tool that declares no room_id uses room tools on a room-scoped server", async () => {
+    const roomTools = new FakeTools();
+    const client = await bridgeClient([markUnnamedRoom], { [ROOM]: roomTools });
+
+    const result = await client.callTool({ name: "mark_unnamed_room", arguments: { marker: "lost" } });
+
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain("declare room_id");
+    expect(roomTools.events).toEqual([]);
+  });
+});

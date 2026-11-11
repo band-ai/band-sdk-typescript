@@ -73,7 +73,33 @@ The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdap
 - **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
 - **Not a sandbox.** A workspace is the process's working directory, not an OS boundary. With Codex's `sandboxMode: "workspace-write"`, the writable workspace is now the room's folder rather than one shared `cwd`.
 - **Factories.** `connectionFactory` (ACP) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
+- **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
+
+### Reading the agent's room context
+
+`tools.fetchRoomContext({ cursor?, limit? })` returns one page of the agent's context in the room, oldest first, and a `nextCursor` for the next page (`null` once the page reaches the newest message). The context is the agent's own messages of every type and the text messages that mention it; it is not the room's full history, which the agent API does not serve. Pages hold `DEFAULT_CONTEXT_PAGE` messages by default and at most `MAX_CURSOR_PAGE`, both exported from `@band-ai/sdk/rest`. A REST client without `getChatContext` throws `UnsupportedFeatureError`.
+
+It is not a Band tool, so the model does not see it unless a host serves it. A host's own MCP tool (`additionalMcpTools`, or `additionalTools` on the MCP servers that serve rooms) gets the tools of the room its call belongs to as the second argument of `execute`; they carry the room's full authority, whatever Band tools the server enables. A single-room server, such as each ACP room's own, always passes its room's tools. A room-scoped server, such as the Claude Agent SDK bridge, passes the tools of the room the call names in `room_id`, so a tool that needs them declares `room_id`, which the server then advertises as required; a call naming no known room is refused without running the tool, a call that outlives its turn is refused its room's tools once the room resolves to another turn's or none, and a tool that declares no `room_id` gets tools that throw a clear error on use:
+
+```ts
+const readContext: McpToolRegistration = {
+  name: "read_room_context",
+  description: "Read this room's messages that you sent or that mention you, oldest first.",
+  inputSchema: { type: "object", properties: { room_id: { type: "string" }, cursor: { type: "string" }, limit: { type: "integer" } }, required: ["room_id"] },
+  execute: async ({ cursor, limit }, tools) => {
+    if (!tools?.fetchRoomContext) {
+      throw new UnsupportedFeatureError("These room tools cannot read room context");
+    }
+    const page = await tools.fetchRoomContext({ cursor: cursor as string | undefined, limit: limit as number | undefined });
+    return { content: [{ type: "text", text: JSON.stringify(page) }] };
+  },
+};
+```
+
+### Band stopping a room
+
+Band can stop, play or interrupt the agent in one room, or in all its rooms, with an `agent.control` signal on the agent's control channel; every adapter honours it. `stop` pauses the room: its running turn is cut short (`turn.stopped`), its message is left for Band to serve again, and no turn starts there until `play`, which catches up on that message and what arrived meanwhile. `interrupt` cuts the running turn short and consumes its message; the room keeps running. The runtime stops waiting on a cut-short turn and asks the adapter to `cancelTurn` it. An adapter that cannot cancel keeps working in the background, but the cut-short turn's tools reject every call that acts, so nothing it does reaches Band, and the room's next turn waits until it ends. A contact hub turn arriving while the room is paused waits and runs on resume, and one a stop cut short runs again then. Band delivers these signals on a best-effort basis, so the agent also treats Band refusing a claim or post as stopped as a stop, and while stopped it checks `/messages/next` when a message arrives, on each reconnect and every `sessionConfig.stoppedResyncSeconds` (default 60) to find a missed play. A play that lands while `resetRoomSession` is replacing the room's session takes effect when the room's next message (or bootstrap) starts its new session, which then checks `/messages/next` at once. Pauses are reported as `room.paused` and `room.resumed`.
 
 ### Observing an agent
 
@@ -85,7 +111,7 @@ const stop = agent.observe((event) => {
 });
 ```
 
-Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined`, `room.left` and `room.stopped`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, `approval.requested` and `approval.resolved`, and `room.failed` when the room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named by the agent's own tool name when its ACP bridge reports one, else by its ACP `kind` — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. Listeners run synchronously in event order, so keep them quick; one that throws or rejects is logged and skipped without failing the turn or the other listeners.
+Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined` (the room's handling started, again after `resetRoomSession`), `room.left` (membership lost) and `room.stopped` (the room's handling stopped, including when the agent stops), `turn.stopped`, `room.paused` and `room.resumed` when Band stops, interrupts or plays a room, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, and `approval.requested` and `approval.resolved`. They also report `room.failed` when a room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named as `AgentEvent`'s `tool.call` describes — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. `AgentEventListener` documents delivery: ordering, when a listener may call back into the agent (for example `agent.cancelTurn`), and how a failing listener is handled.
 
 ### Generic
 
@@ -366,6 +392,19 @@ All adapters automatically receive these tools. The LLM calls them as function c
 | `band_supersede_memory` | Soft-delete outdated memory (keeps audit trail) |
 | `band_archive_memory` | Archive memory for later restoration |
 
+### Board and tasks
+
+| Tool | Description |
+|------|-------------|
+| `band_get_board` | Read the room's goal |
+| `band_set_board` | Set or update the room's goal |
+| `band_list_tasks` | List the room's shared tasks |
+| `band_create_task` | Create a shared task |
+| `band_get_task` | Read one task, optionally with its history |
+| `band_update_task` | Report your status on a task, comment on it, or edit it |
+
+These need the agent's `tasks` capability: the host asks for it with `linkOptions: { capabilities: { tasks: true } }`, and Band grants it only where room tasks are enabled. Adapters that serve Band tools over MCP (`ACPClientAdapter` and its subclasses, `ClaudeSDKAdapter`, `createBandMcpBackend`, `createBandSdkMcpServer`) also leave them out unless `enableTaskTools: true`.
+
 ## Subpath Exports
 
 The root `@band-ai/sdk` import covers the common runtime, adapters, and config. Specialized modules are available under subpaths:
@@ -645,7 +684,6 @@ automatic custom-effect credit. Their calls may still count if they use the
 active turn's Band tools. Resolved failure values retain existing result
 serialization; effect credit is separate from an MCP transport error flag.
 
-
 ### Lifecycle conformance
 
 The [Core lifecycle traces](https://github.com/band-ai/band-sdk-core/blob/main/crates/core/README.md#sdk-conformance-traces)
@@ -780,7 +818,6 @@ fault.
 CJS callers must import the helper/error pair — and any runtime error class used
 for `instanceof` — from **one** entrypoint consistently (`require("@band-ai/sdk")`
 or `require("@band-ai/sdk/core")`, not both).
-
 
 ## Development
 

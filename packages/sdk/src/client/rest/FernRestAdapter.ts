@@ -1,4 +1,4 @@
-import { hasStatusCode, HTTP_UNPROCESSABLE, UnsupportedFeatureError } from "../../core/errors";
+import { hasStatusCode, HTTP_FORBIDDEN, HTTP_NO_CONTENT, HTTP_UNPROCESSABLE, RoomExecutionStoppedError, UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -381,6 +381,51 @@ export interface FernRestAdapterOptions {
   activityCapability?: ActivityCapability;
 }
 
+/** Band's message, in a 403, for a post refused because it stopped the agent in the room. */
+const EXECUTION_STOPPED_MESSAGE = "execution is stopped";
+
+/** A Fern call whose raw response is readable: every generated endpoint returns one. */
+interface RawResponseCall {
+  withRawResponse(): Promise<{ data: unknown; rawResponse: { status: number } }>;
+}
+
+function hasRawResponse(call: Promise<unknown>): call is Promise<unknown> & RawResponseCall {
+  return typeof (call as Partial<RawResponseCall>).withRawResponse === "function";
+}
+
+/**
+ * The claim or acknowledgement `call` makes, as Band answered it: Band answers
+ * one for a room it has stopped the agent in with 204 and no body.
+ */
+async function refusedWhileStopped(chatId: string, call: Promise<unknown>): Promise<unknown> {
+  if (!hasRawResponse(call)) {
+    return await call;
+  }
+  const { data, rawResponse } = await call.withRawResponse();
+  if (rawResponse.status === HTTP_NO_CONTENT) {
+    throw new RoomExecutionStoppedError(chatId);
+  }
+  return data;
+}
+
+function errorBodyMessage(error: unknown): string | null {
+  const body = asOptionalRecord(error)?.body;
+  if (typeof body === "string") return body;
+  return asString(asOptionalRecord(asOptionalRecord(body)?.error)?.message) ?? null;
+}
+
+/** Posts with `post`, turning Band's refusal of a post in a stopped room into {@link RoomExecutionStoppedError}. */
+async function postedUnlessStopped<T>(chatId: string, post: () => Promise<T>): Promise<T> {
+  try {
+    return await post();
+  } catch (error: unknown) {
+    if (hasStatusCode(error, HTTP_FORBIDDEN) && errorBodyMessage(error)?.toLowerCase().includes(EXECUTION_STOPPED_MESSAGE)) {
+      throw new RoomExecutionStoppedError(chatId, error);
+    }
+    throw error;
+  }
+}
+
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
   private readonly activityCapability?: ActivityCapability;
@@ -429,7 +474,7 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
     }
 
-    const response = await api(
+    const response = await postedUnlessStopped(chatId, () => api(
       chatId,
       {
         message: {
@@ -440,7 +485,7 @@ export class FernRestAdapter implements RestApi {
         },
       },
       mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
-    );
+    ));
     return normalizeToolOperationResult(response);
   }
 
@@ -456,7 +501,7 @@ export class FernRestAdapter implements RestApi {
     const createAgentChatEvent = this.client.agentApiEvents?.createAgentChatEvent
       ?.bind(this.client.agentApiEvents);
     if (createAgentChatEvent) {
-      const response = await createAgentChatEvent(
+      const response = await postedUnlessStopped(chatId, () => createAgentChatEvent(
         chatId,
         {
           event: {
@@ -466,7 +511,7 @@ export class FernRestAdapter implements RestApi {
           },
         },
         mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
-      );
+      ));
       return normalizeToolOperationResult(response);
     }
 
@@ -652,8 +697,7 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing mark message processing endpoint");
     }
 
-    const response = await api(chatId, messageId, mergeOptions(options));
-    return normalizeToolOperationResult(response);
+    return normalizeToolOperationResult(await refusedWhileStopped(chatId, api(chatId, messageId, mergeOptions(options))));
   }
 
   public async markMessageProcessed(
@@ -667,8 +711,7 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing mark message processed endpoint");
     }
 
-    const response = await api(chatId, messageId, mergeOptions(options));
-    return normalizeToolOperationResult(response);
+    return normalizeToolOperationResult(await refusedWhileStopped(chatId, api(chatId, messageId, mergeOptions(options))));
   }
 
   public async markMessageFailed(
@@ -683,13 +726,7 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing mark message failed endpoint");
     }
 
-    const response = await api(
-      chatId,
-      messageId,
-      { error },
-      mergeOptions(options),
-    );
-    return normalizeToolOperationResult(response);
+    return normalizeToolOperationResult(await refusedWhileStopped(chatId, api(chatId, messageId, { error }, mergeOptions(options))));
   }
 
   public async getNextMessage(

@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
+import type { AgentEventListener } from "../../../src/contracts/events";
 import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
@@ -65,6 +66,11 @@ export class RunningAgent implements AsyncDisposable {
     public readonly identity: AgentIdentity,
     private readonly agent: Agent,
   ) {}
+
+  /** Follows what the running agent reports locally; see `Agent.observe`. */
+  public observe(listener: AgentEventListener): () => void {
+    return this.agent.observe(listener);
+  }
 
   public async [Symbol.asyncDispose](): Promise<void> {
     // A managed CLI child can hang stop; never let that block the rest of teardown.

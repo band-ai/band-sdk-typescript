@@ -194,8 +194,28 @@ async function sendAsAgent(from: AgentIdentity, room: Room, recipient: AgentIden
   return sent.id;
 }
 
+/** What a room's owner can ask Band to do to the agents in it; Band pushes it to them as `agent.control`. */
+export const AGENT_CONTROL = { stop: "stop", play: "play" } as const;
+
+/**
+ * Stops or plays every agent in `room`, as its owner does in Band. The
+ * generated user client has no control operations yet, so this posts to the
+ * endpoint directly, the way `deleteRoomsBulk` does.
+ */
+async function controlAgents(room: Room, action: (typeof AGENT_CONTROL)[keyof typeof AGENT_CONTROL]): Promise<void> {
+  const { env } = await liveRun();
+  const response = await fetch(new URL(`api/v1/me/chats/${room.id}/agents/${action}`, env.restUrl), {
+    method: "POST",
+    headers: { "X-API-Key": env.userApiKey },
+  });
+  if (!response.ok) {
+    throw new Error(`${action} agents in room ${room.id} failed: ${response.status} ${await response.text()}`);
+  }
+}
+
 export const Rooms = {
   create: Room.create,
+  controlAgents,
   createAs,
   addParticipant,
   removeParticipant,
