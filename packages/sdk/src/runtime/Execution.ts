@@ -481,9 +481,9 @@ export class Execution {
     if (this.isPaused()) {
       // Resuming catches up, the stale processing messages included: Band serves those through /next too.
       this.syncBoundaries.completeBoundary(this.syncBoundaries.initial);
-      // Band may have played the room while no execution of it ran (a reset): check now, not on the interval.
+      // Band may have played the room while no execution of it ran (a reset): check now, not on the
+      // interval. The check arms the interval itself when Band still has the room stopped.
       this.probeSoon();
-      this.ensureStoppedProbe();
     } else {
       await this.recoverStaleProcessingMessages();
       await this.synchronizeWithNext(this.syncBoundaries.initial);
@@ -588,13 +588,17 @@ export class Execution {
       this.ensureStoppedProbe();
       return;
     }
-    // A stop heard while the read was in flight is newer than Band's answer.
-    if (next && this.isBandStopped() && this.bandStops === stopsBefore) {
+    // A reset that stopped this execution mid-read handed the room to another, which checks for itself.
+    if (!this.isActive()) return;
+    if (next && this.isBandStopped() && this.bandStops !== stopsBefore) {
+      // A stop heard while the read was in flight is newer than Band's answer.
+      this.logger.debug("ignoring a stopped room's check that Band answered before its latest stop", { roomId: this.roomId, messageId: next.id });
+    } else if (next && this.isBandStopped()) {
       this.logger.info("stopped room is served again; its play was missed", { roomId: this.roomId, messageId: next.id });
       this.onMissedPlay?.();
-    } else {
-      this.ensureStoppedProbe();
+      return;
     }
+    this.ensureStoppedProbe();
   }
 
   /** Queues one catch-up ahead of the work waiting, to run once no hold is in place. */

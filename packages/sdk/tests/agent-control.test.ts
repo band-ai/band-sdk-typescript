@@ -881,6 +881,7 @@ describe("agent.control from Band", () => {
     expect(handled.entries).toEqual([first]);
     expect(roomA.outcomes(second)).toEqual([]);
   });
+
   it.each([
     ["missed", false],
     ["delivered", true],
@@ -909,6 +910,34 @@ describe("agent.control from Band", () => {
     await later.sending;
 
     expect(of(ROOM_A).at(-1)).toBe("room.paused");
+    expect(handled.entries).toEqual([]);
+  });
+  it("does not lift a newer Band stop on a room's next execution with a check a forced reset left in flight", async () => {
+    const { adapter, handled } = settlingAdapter();
+    const { agent, platform, roomA, next, of } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    platform.control("play", ROOM_A, { delivered: false });
+    // Band answers this check while it plays the room; a second check queues behind it, so the room is not idle.
+    const check = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    await roomA.say("owner", "kept");
+    await check.sending;
+    await roomA.say("owner", "queued behind the check");
+    await agent.resetRoomSession(ROOM_A, 0);
+    // Band stops the room again while no execution handles it.
+    platform.control("stop", ROOM_A);
+    const fresh = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    await roomA.say("owner", "after the reset");
+    await fresh.sending;
+    fresh.release();
+
+    const later = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM_A);
+    check.release();
+    await roomA.say("owner", "sync");
+    await later.sending;
+    later.release();
+
+    expect(of(ROOM_A)).not.toContain("room.resumed");
     expect(handled.entries).toEqual([]);
   });
 });
