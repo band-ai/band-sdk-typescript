@@ -1,6 +1,6 @@
-import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import { RecoverableTurnError, RuntimeStateError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution } from "../src/runtime/Execution";
@@ -21,7 +21,7 @@ interface BacklogMessage {
   createdAt: Date;
 }
 
-function makeEvent(id: string): PlatformEvent {
+function makeEvent(id: string, sender = { id: "user-1", type: "User" }): PlatformEvent {
   return {
     type: "message_created",
     roomId: "room-1",
@@ -29,8 +29,8 @@ function makeEvent(id: string): PlatformEvent {
       id,
       content: "hello",
       message_type: "text",
-      sender_id: "user-1",
-      sender_type: "User",
+      sender_id: sender.id,
+      sender_type: sender.type,
       sender_name: "User One",
       metadata: {},
       inserted_at: new Date().toISOString(),
@@ -823,18 +823,10 @@ describe("Execution bootstrap messages", () => {
     const ran = createDeferred<void>();
     const { execution, processed } = createExecution({ onExecute: async () => ran.resolve() });
     onTestFinished(() => execution.stop(0).then(() => undefined));
-    const message = (id: string, senderType: string, senderId: string): PlatformEvent => ({
-      type: "message_created",
-      roomId: "room-1",
-      payload: {
-        id, content: id, sender_id: senderId, sender_type: senderType, sender_name: null,
-        message_type: "text", metadata: {}, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      },
-    });
     execution.pause("host");
 
-    await execution.enqueue(message("live", "User", "user-1"));
-    await execution.enqueue(message("synthetic", SYNTHETIC_SENDER_TYPE, SYNTHETIC_CONTACT_EVENTS_SENDER_ID));
+    await execution.enqueue(makeEvent("live"));
+    await execution.enqueue(makeEvent("synthetic", { id: SYNTHETIC_CONTACT_EVENTS_SENDER_ID, type: SYNTHETIC_SENDER_TYPE }));
     await execution.waitForIdle();
     expect(processed).toEqual([]);
 
@@ -843,4 +835,3 @@ describe("Execution bootstrap messages", () => {
     expect(processed).toEqual(["synthetic"]);
   });
 });
-

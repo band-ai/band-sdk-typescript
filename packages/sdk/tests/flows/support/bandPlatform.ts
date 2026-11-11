@@ -15,6 +15,7 @@ import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/r
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { RoomExecutionStoppedError } from "../../../src/core/errors";
+import type { AgentControlMode } from "../../../src/platform/control";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import type { SessionConfig } from "../../../src/runtime/types";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
@@ -659,7 +660,7 @@ export class BandPlatform implements AsyncDisposable {
    * `delivered: false` the agent misses the push. Returns its correlation id.
    */
   public control(
-    mode: "stop" | "play" | "interrupt",
+    mode: AgentControlMode,
     roomId: string | null,
     options: { delivered?: boolean; correlationId?: string } = {},
   ): string {

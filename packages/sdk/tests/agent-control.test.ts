@@ -8,6 +8,7 @@ import type { AgentEvent } from "../src/contracts/events";
 import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { BandLink } from "../src/platform/BandLink";
 import type { SessionConfig } from "../src/runtime/types";
+import { createDeferred } from "../src/core/deferred";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { inMemoryAgent } from "./support/inMemoryAcpAgent";
 import { RecordLog, tmpRoot } from "./testUtils";
@@ -23,20 +24,17 @@ const ROOM_B = "room-b";
 function firstTurnHangs() {
   const handled = new RecordLog<{ roomId: string; messageId: string }>();
   const ended = new RecordLog<string>();
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  onTestFinished(() => release());
+  const released = createDeferred();
+  onTestFinished(() => released.resolve());
   const handler: GenericAdapterHandler = async ({ roomId, message, tools }) => {
     handled.record({ roomId, messageId: message.id });
     if (handled.entries.length === 1) {
-      await released;
+      await released.promise;
     }
     tools.turn.settle();
     ended.record(message.id);
   };
-  return { adapter: new GenericAdapter(handler), handled, ended, release };
+  return { adapter: new GenericAdapter(handler), handled, ended, release: released.resolve };
 }
 
 /** Lets every queued microtask and I/O callback run: the in-process platform answers on microtasks. */
@@ -52,11 +50,8 @@ function settlingAdapter() {
   return { adapter, handled };
 }
 
-/** A started agent on a platform that has it in rooms A and B. */
-async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConfig) {
-  const platform = BandPlatform.host([person("owner")]);
-  const roomA = await platform.room(ROOM_A);
-  const roomB = await platform.room(ROOM_B);
+/** An agent on `platform`, not yet started, recording what it reports and stopped when the test ends. */
+function createAgent(platform: BandPlatform, adapter: FrameworkAdapter, sessionConfig?: SessionConfig) {
   const agent = Agent.create({
     adapter,
     agentId: AGENT_ID,
@@ -68,10 +63,19 @@ async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConf
   agent.observe((event) => {
     events.record(event);
   });
-  await agent.start();
   onTestFinished(async () => {
     if (agent.isRunning) await agent.stop();
   });
+  return { agent, events };
+}
+
+/** A started agent on a platform that has it in rooms A and B. */
+async function startAgent(adapter: FrameworkAdapter, sessionConfig?: SessionConfig) {
+  const platform = BandPlatform.host([person("owner")]);
+  const roomA = await platform.room(ROOM_A);
+  const roomB = await platform.room(ROOM_B);
+  const { agent, events } = createAgent(platform, adapter, sessionConfig);
+  await agent.start();
   /** Resolves with the next event at or after `from` that matches. */
   const next = (matches: (event: AgentEvent) => boolean, from = 0) => events.next(matches, from);
   const of = (roomId: string) =>
@@ -206,14 +210,8 @@ describe("agent.control from Band", () => {
   });
 
   it("asks an ACP agent to cancel the prompt a stop cut short", async () => {
-    let cancelled!: () => void;
-    const cancelRequested = new Promise<void>((resolve) => {
-      cancelled = resolve;
-    });
-    let prompted!: () => void;
-    const promptStarted = new Promise<void>((resolve) => {
-      prompted = resolve;
-    });
+    const cancelRequested = createDeferred();
+    const promptStarted = createDeferred();
     const adapter = new ACPClientAdapter({
       command: ["acp-fixture"],
       cwd: tmpRoot(),
@@ -225,14 +223,14 @@ describe("agent.control from Band", () => {
           authenticate: async () => ({}),
           newSession: async () => ({ sessionId: "session-1" }),
           cancel: async () => {
-            cancelled();
+            cancelRequested.resolve();
             cancel();
           },
           prompt: async () => {
             const ended = new Promise<void>((resolve) => {
               cancel = resolve;
             });
-            prompted();
+            promptStarted.resolve();
             await ended;
             return { stopReason: "cancelled" };
           },
@@ -241,12 +239,12 @@ describe("agent.control from Band", () => {
     });
     const { platform, roomA, next } = await startAgent(adapter);
     const first = await roomA.say("owner", "first");
-    await promptStarted;
+    await promptStarted.promise;
 
     platform.control("stop", ROOM_A);
 
     expect(await next(is("turn.stopped", ROOM_A))).toMatchObject({ messageId: first, mode: "stop" });
-    await cancelRequested;
+    await cancelRequested.promise;
     expect(roomA.outcomes(first)).toEqual([]);
   });
 
@@ -255,20 +253,8 @@ describe("agent.control from Band", () => {
     const platform = BandPlatform.host([person("owner")]);
     const roomA = await platform.room(ROOM_A);
     const missed = roomA.postBeforeConnect("owner", "sent while the agent was away");
-    const agent = Agent.create({
-      adapter,
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
-    });
-    const events = new RecordLog<AgentEvent>();
-    agent.observe((event) => {
-      events.record(event);
-    });
+    const { agent, events } = createAgent(platform, adapter);
     await agent.start();
-    onTestFinished(async () => {
-      if (agent.isRunning) await agent.stop();
-    });
     await handled.until(() => handled.entries.length === 1);
 
     platform.control("stop", ROOM_A);
@@ -311,15 +297,12 @@ describe("agent.control from Band", () => {
   });
 
   it("cuts a turn short when Band refuses its post as stopped, without the stop's push", async () => {
-    let gate!: () => void;
-    const gated = new Promise<void>((resolve) => {
-      gate = resolve;
-    });
-    onTestFinished(() => gate());
+    const gate = createDeferred();
+    onTestFinished(() => gate.resolve());
     const posts = new RecordLog<string>();
     const adapter = new GenericAdapter(async ({ message, tools }) => {
       posts.record(message.id);
-      if (posts.entries.length === 1) await gated;
+      if (posts.entries.length === 1) await gate.promise;
       await tools.sendMessage("done", ["owner"]);
     });
     const { platform, roomA, next } = await startAgent(adapter);
@@ -327,7 +310,7 @@ describe("agent.control from Band", () => {
     await posts.until(() => posts.entries.length === 1);
 
     platform.control("stop", ROOM_A, { delivered: false });
-    gate();
+    gate.resolve();
 
     expect(await next(is("turn.stopped", ROOM_A))).toMatchObject({ messageId: first, mode: "stop" });
     expect(roomA.messages).toEqual([]);
@@ -345,19 +328,7 @@ describe("agent.control from Band", () => {
     await platform.rest.markMessageProcessing(ROOM_A, leftover);
     platform.rest.serveStaleProcessing = true;
     platform.control("stop", ROOM_A, { delivered: false });
-    const agent = Agent.create({
-      adapter,
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
-    });
-    const events = new RecordLog<AgentEvent>();
-    agent.observe((event) => {
-      events.record(event);
-    });
-    onTestFinished(async () => {
-      if (agent.isRunning) await agent.stop();
-    });
+    const { agent, events } = createAgent(platform, adapter);
 
     await agent.start();
 
@@ -406,16 +377,13 @@ describe("agent.control from Band", () => {
   });
 
   it("refuses the tools of an interrupted turn the adapter could not cancel, so its late reply never posts", async () => {
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    onTestFinished(() => release());
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
     const outcomes = new RecordLog<string>();
     const adapter = new GenericAdapter(async ({ message, tools }) => {
       if (outcomes.entries.length === 0) {
         outcomes.record("started");
-        await released;
+        await released.promise;
         await tools.sendMessage("late reply", ["owner"]).then(
           () => outcomes.record("posted"),
           () => outcomes.record("refused"),
@@ -430,7 +398,7 @@ describe("agent.control from Band", () => {
 
     platform.control("interrupt", ROOM_A);
     await next(is("turn.stopped", ROOM_A));
-    release();
+    released.resolve();
     await outcomes.until(() => outcomes.entries.length === 2);
 
     expect(outcomes.entries).toEqual(["started", "refused"]);

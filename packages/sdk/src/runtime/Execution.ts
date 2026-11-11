@@ -35,6 +35,11 @@ export type ExecutionHandler = (
   stopped: AbortSignal,
 ) => Promise<void>;
 
+/** How a turn's `stopped` signal cut it short, or null while it has not. */
+export function stopModeOf(stopped: AbortSignal): TurnStopMode | null {
+  return stopped.aborted ? (stopped.reason as TurnStopMode) : null;
+}
+
 interface ExecutionOptions {
   roomId: string;
   link: BandLink;
@@ -288,7 +293,7 @@ export class Execution {
     } finally {
       if (this.runningTurn === turn) this.runningTurn = null;
     }
-    return turn.signal.aborted ? (turn.signal.reason as TurnStopMode) : null;
+    return stopModeOf(turn.signal);
   }
 
   private push(queued: QueuedEvent): void {
