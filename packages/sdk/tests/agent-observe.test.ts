@@ -1,0 +1,1187 @@
+import {
+  AgentSideConnection,
+  RequestError,
+  type Agent as AcpAgent,
+  type PromptRequest,
+  type RequestPermissionResponse,
+  type SessionUpdate,
+} from "@agentclientprotocol/sdk";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { agentContactsTopic, agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
+import { describe, expect, it, onTestFinished } from "vitest";
+
+import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import { CursorACPAdapter } from "../src/adapters/cursor-acp";
+import { CURSOR_PROJECT_CONFIG } from "../src/adapters/cursor-acp/permissions";
+import { GenericAdapter } from "../src/adapters/GenericAdapter";
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
+import { Agent, type AgentCreateOptions } from "../src/agent/Agent";
+import type { AgentEvent, AgentEventListener } from "../src/contracts/events";
+import type { FrameworkAdapter } from "../src/contracts/protocols";
+import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
+import { createDeferred } from "../src/core/deferred";
+import { BandLink } from "../src/platform/BandLink";
+import { WebSocketDisconnectError, type WebSocketDisconnectReason } from "../src/platform/streaming/disconnectReason";
+import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
+import { codexNamedBandTool, cursorLateNamedBandTool } from "./fixtures/providerTraces";
+import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { tmpRoot } from "./testUtils";
+
+const ROOM = "room-1";
+
+const TERMINAL_REASON = {
+  source: "agent_control",
+  code: "session.already_connected",
+  message: "superseded",
+  retryable: false,
+  retryAfter: null,
+  targetSocketId: null,
+  correlationId: null,
+} satisfies WebSocketDisconnectReason;
+
+/** Claude Code's ACP bridge on one Bash call, as recorded: the call arrives twice, first with no input, and its title is display copy. */
+const CLAUDE_BASH_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } }, rawInput: {}, status: "pending", title: "Terminal", kind: "execute", content: [] },
+  {
+    sessionUpdate: "tool_call", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } },
+    rawInput: { command: "echo hi", description: "Print \"hi\" to stdout" }, status: "pending", title: "`echo hi`", kind: "execute",
+    content: [{ type: "content", content: { type: "text", text: "Print \"hi\" to stdout" } }],
+  },
+  {
+    sessionUpdate: "tool_call_update", toolCallId: "toolu_01",
+    _meta: { claudeCode: { toolName: "Bash", toolResponse: { stdout: "hi", stderr: "", interrupted: false, isImage: false, noOutputExpected: false } } },
+  },
+  {
+    sessionUpdate: "tool_call_update", toolCallId: "toolu_01", _meta: { claudeCode: { toolName: "Bash" } },
+    status: "completed", rawOutput: "hi", content: [{ type: "content", content: { type: "text", text: "hi" } }],
+  },
+];
+
+/** The Copilot CLI's shape, as recorded: no bridge tool name, a sentence for a title, and a denied call. */
+const COPILOT_DENIED_CALL: SessionUpdate[] = [
+  {
+    sessionUpdate: "tool_call", toolCallId: "call_01", title: "Run the requested shell command and capture its output", kind: "execute", status: "pending",
+    rawInput: { command: "echo hi", description: "Run the requested shell command and capture its output", mode: "sync", initial_wait: 10 },
+  },
+  { sessionUpdate: "tool_call_update", toolCallId: "call_01", status: "failed", rawOutput: { message: "Denied by a preToolUse hook", code: "denied" } },
+];
+
+/** A call that genuinely takes no input: its only call frame is empty. */
+const EMPTY_INPUT_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "call_02", title: "Listing the workspace", kind: "read", status: "pending", rawInput: {} },
+  { sessionUpdate: "tool_call_update", toolCallId: "call_02", status: "completed", rawOutput: "notes.md" },
+];
+
+/** ACP lets a call arrive already finished: one `tool_call` frame with its status and output. */
+const ONE_FRAME_CALL: SessionUpdate[] = [
+  { sessionUpdate: "tool_call", toolCallId: "call_03", title: "Read notes.md", kind: "read", status: "completed", rawInput: { path: "notes.md" }, rawOutput: "three notes" },
+];
+
+const EDIT_CALL = { toolCallId: "edit-1", title: "Edit notes.md", name: "Edit", kind: "edit" } as const;
+const ALLOW_OPTION = { kind: "allow_once", optionId: "allow", name: "Allow" } as const;
+const DENY_OPTION = { kind: "reject_once", optionId: "deny", name: "Deny" } as const;
+
+/** The `approval.requested` a request for {@link EDIT_CALL} offering `options` reports. */
+function editApprovalRequested(...options: Array<typeof ALLOW_OPTION | typeof DENY_OPTION>) {
+  return {
+    type: "approval.requested",
+    roomId: ROOM,
+    toolCallId: EDIT_CALL.toolCallId,
+    toolName: EDIT_CALL.name,
+    options: options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+  };
+}
+
+const RUN_ECHO_CALL: SessionUpdate = {
+  sessionUpdate: "tool_call", toolCallId: "reuse-1", title: "Run echo", kind: "execute", status: "pending", rawInput: { command: "echo hi" },
+};
+
+/** Runs one prompt; `exit` closes the agent's side, as its process exiting on its own would. */
+type OnPrompt = (peer: AgentSideConnection, request: PromptRequest, exit: () => void) => Promise<{ stopReason: "end_turn" | "cancelled" }>;
+
+const endTurn: OnPrompt = async () => ({ stopReason: "end_turn" });
+
+interface FixtureAgentOptions {
+  /** Replaces the agent's handshake methods, which otherwise accept with session `session-1`. */
+  overrides?: Omit<Partial<AcpAgent>, "prompt">;
+  /** Runs when the adapter stops the agent's process. */
+  onStop?: () => void;
+}
+
+/** A real in-memory ACP agent; each prompt runs `onPrompt`. */
+function fixtureAgent(onPrompt: OnPrompt, { overrides, onStop }: FixtureAgentOptions = {}) {
+  return inMemoryAgent((peer, exit): AcpAgent => ({
+    initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+    authenticate: async () => ({}),
+    newSession: async () => ({ sessionId: "session-1" }),
+    cancel: async () => {},
+    ...overrides,
+    prompt: (request) => onPrompt(peer, request, exit),
+  }), onStop);
+}
+
+/** An `ACPClientAdapter` over {@link fixtureAgent}. */
+function acpAdapter(onPrompt: OnPrompt, options: Partial<ACPClientAdapterOptions> = {}, agent: FixtureAgentOptions = {}) {
+  return new ACPClientAdapter({
+    command: ["acp-fixture"],
+    cwd: tmpRoot(),
+    enableMcpTools: false,
+    connectionFactory: fixtureAgent(onPrompt, agent),
+    ...options,
+  });
+}
+
+/** A `CursorACPAdapter` over {@link fixtureAgent}, working in `cwd`. */
+function cursorAdapter(cwd: string, onPrompt: OnPrompt = endTurn) {
+  return new CursorACPAdapter({ cwd, enableMcpTools: false, connectionFactory: fixtureAgent(onPrompt) });
+}
+
+/** A workspace root whose room has an unparseable Cursor project config; returns the root and that config's path. */
+async function brokenCursorWorkspace() {
+  const root = tmpRoot();
+  const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, ROOM, CURSOR_PROJECT_CONFIG);
+  await mkdir(dirname(config), { recursive: true });
+  await writeFile(config, "{ allow: ");
+  return { root, config };
+}
+
+/** One turn's worth of agent output: a thought, a tool call and its result, then the reply. */
+async function workThenAnswer(peer: AgentSideConnection, sessionId: string, beforeAnswer: () => Promise<void> = async () => {}) {
+  await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "weighing the options" } } });
+  await peer.sessionUpdate({ sessionId, update: {
+    sessionUpdate: "tool_call", toolCallId: "call-1", title: "Read notes.md", kind: "read", status: "in_progress", rawInput: { path: "notes.md" },
+  } });
+  await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed", rawOutput: "three notes" } });
+  await beforeAnswer();
+  await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Found three notes." } } });
+  return { stopReason: "end_turn" as const };
+}
+
+type CreateAgentOptions = Partial<Omit<AgentCreateOptions, "adapter">> & { observe?: boolean };
+
+/** An agent on `platform`, not yet started; `events` is everything it reports, when `observe`. */
+function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, { observe = true, ...options }: CreateAgentOptions = {}) {
+  const agent = Agent.create({
+    adapter,
+    agentId: AGENT_ID,
+    apiKey: AGENT_API_KEY,
+    link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+    ...options,
+  });
+  const events: AgentEvent[] = [];
+  if (observe) {
+    agent.observe((event) => { events.push(event); });
+  }
+  onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
+  return { agent, events };
+}
+
+async function startAgent(adapter: FrameworkAdapter, options: { observe?: boolean } = {}) {
+  const platform = BandPlatform.host([person("owner")]);
+  const { agent, events } = createAgent(adapter, platform, options);
+  await agent.start();
+  return { agent, platform, events, room: await platform.room(ROOM) };
+}
+
+/** Resolves with the next event `agent` reports of `type`, in `roomId` when given. */
+function nextEvent<T extends AgentEvent["type"]>(agent: Agent, type: T, roomId?: string): Promise<Extract<AgentEvent, { type: T }>> {
+  const seen = createDeferred<Extract<AgentEvent, { type: T }>>();
+  const stop = agent.observe((event) => {
+    if (event.type === type && (roomId === undefined || ("roomId" in event && event.roomId === roomId))) {
+      stop();
+      seen.resolve(event as Extract<AgentEvent, { type: T }>);
+    }
+  });
+  return seen.promise;
+}
+
+/** What the room sees of one `workThenAnswer` turn, as on a build without `observe`. */
+const POSTED_FOR_WORK_THEN_ANSWER = [
+  ["thought", "weighing the options"],
+  ["tool_call", "Read notes.md"],
+  ["tool_result", "three notes"],
+  ["text", "Found three notes."],
+  ["task", "ACP client session"],
+];
+
+const posted = (room: BandRoom) => room.posted.map(({ messageType, content }) => [messageType, content]);
+const ofTypes = (events: AgentEvent[], ...types: AgentEvent["type"][]) => events.filter((event) => types.includes(event.type));
+
+describe("Agent.observe", () => {
+  it("reports an ACP turn's thought and tool call locally, before and without posting anything for them", async () => {
+    const observed = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId, async () => {
+      await observed.promise;
+      await release.promise;
+    })));
+    agent.observe((event) => { if (event.type === "tool.result") observed.resolve(); });
+
+    const message = await room.say("owner", "what is in my notes?");
+    await observed.promise;
+    expect(ofTypes(events, "thought", "tool.call", "tool.result")).toEqual([
+      { type: "thought", roomId: ROOM, text: "weighing the options" },
+      { type: "tool.call", roomId: ROOM, toolCallId: "call-1", name: "read", kind: "read", input: { path: "notes.md" } },
+      { type: "tool.result", roomId: ROOM, toolCallId: "call-1", status: "completed", output: "three notes" },
+    ]);
+    expect(room.posted, "observing posted nothing").toEqual([]);
+
+    release.resolve();
+    expect(await room.outcome(message)).toBe("processed");
+    expect(ofTypes(events, "turn.started", "message", "turn.completed")).toEqual([
+      { type: "turn.started", roomId: ROOM, messageId: message },
+      { type: "message", roomId: ROOM, text: "Found three notes." },
+      { type: "turn.completed", roomId: ROOM, messageId: message },
+    ]);
+    expect(ofTypes(events, "room.joined", "link.connected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "room.joined", roomId: ROOM },
+    ]);
+  });
+
+  it("delivers the reply's message event while the reply is still unposted", async () => {
+    const { agent, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    const reply = room.holdMessage((content) => content === "Found three notes.");
+    const streamed = nextEvent(agent, "message");
+
+    const message = await room.say("owner", "what is in my notes?");
+    // Awaited while the post is held, so a message event that waited for the post would never arrive.
+    expect(await streamed).toEqual({ type: "message", roomId: ROOM, text: "Found three notes." });
+    expect(room.messages).toEqual([]);
+
+    reply.release();
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.map(({ content }) => content)).toEqual(["Found three notes."]);
+  });
+
+  it.each([true, false])("posts the turn to the room as it always has, observed: %s", async (observe) => {
+    const { room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), { observe });
+    expect(await room.outcome(await room.say("owner", "what is in my notes?"))).toBe("processed");
+    expect(posted(room)).toEqual(POSTED_FOR_WORK_THEN_ANSWER);
+  });
+
+  it("keeps a turn and the other listeners going when one listener throws or rejects", async () => {
+    const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    agent.observe(() => { throw new Error("listener bug"); });
+    agent.observe(async () => { throw new Error("async listener bug"); });
+    const later: AgentEvent[] = [];
+    agent.observe((event) => { later.push(event); });
+
+    const message = await room.say("owner", "what is in my notes?");
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.map((entry) => entry.content)).toEqual(["Found three notes."]);
+    for (const seen of [events, later]) {
+      expect(ofTypes(seen, "turn.started", "thought", "tool.call", "tool.result", "turn.completed").map((event) => event.type))
+        .toEqual(["turn.started", "thought", "tool.call", "tool.result", "turn.completed"]);
+    }
+  });
+
+  it("stops delivering to a listener once it is removed", async () => {
+    const { agent, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    const seen: AgentEvent[] = [];
+    const stop = agent.observe((event) => { seen.push(event); });
+
+    expect(await room.outcome(await room.say("owner", "first"))).toBe("processed");
+    const before = seen.length;
+    expect(before).toBeGreaterThan(0);
+    stop();
+    expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+    expect(seen).toHaveLength(before);
+  });
+
+  it("reports a permission request and its answer", async () => {
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION, DENY_OPTION] });
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => "allow" });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      editApprovalRequested(ALLOW_OPTION, DENY_OPTION),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
+    ]);
+  });
+
+  it("reports a permission request for a call known only by its title without a tool name", async () => {
+    const titleOnly = { toolCallId: "rm-1", title: "`rm -rf build`" };
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: titleOnly, options: [ALLOW_OPTION, DENY_OPTION] });
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => "allow" });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "clean the build"))).toBe("processed");
+    const [requested] = ofTypes(events, "approval.requested");
+    expect(requested).toEqual({
+      type: "approval.requested",
+      roomId: ROOM,
+      toolCallId: "rm-1",
+      options: [ALLOW_OPTION, DENY_OPTION].map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+    });
+    expect(requested).not.toHaveProperty("toolName");
+  });
+
+  it("reports approval.resolved cancelled when cancelTurn runs while permission is pending", async () => {
+    const asked = createDeferred();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION, DENY_OPTION] });
+      return { stopReason: "cancelled" as const };
+    }, {
+      resolvePermission: (_request, signal) => {
+        const answer = createDeferred<string | undefined>();
+        signal.addEventListener("abort", () => answer.resolve(undefined));
+        asked.resolve();
+        return answer.promise;
+      },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    const message = await room.say("owner", "edit my notes");
+    await asked.promise;
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      editApprovalRequested(ALLOW_OPTION, DENY_OPTION),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it("answers a permission request cancelled when a listener cancels the turn on approval.requested", async () => {
+    const answered = createDeferred<string>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const { outcome } = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(outcome.outcome);
+      return { stopReason: "cancelled" as const };
+    }, { resolvePermission: () => new Promise<never>(() => {}) });
+    const { agent, events, room } = await startAgent(adapter);
+    let cancelled: Promise<boolean> | undefined;
+    agent.observe((event) => {
+      if (event.type === "approval.requested") cancelled = agent.cancelTurn(ROOM);
+    });
+
+    const message = await room.say("owner", "edit my notes");
+    expect(await answered.promise).toBe("cancelled");
+    expect(await cancelled).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    // Delivered after the request is pending, so the listener's cancel aborts it like any other cancel.
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      expect.objectContaining({ type: "approval.requested", toolCallId: "edit-1" }),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it("reports a permission request cancelled when resolvePermission rejects", async () => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(answer.outcome);
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => { throw new Error("approval UI unavailable"); } });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "cancelled" });
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([
+      editApprovalRequested(ALLOW_OPTION),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it.each([true, false])("answers a permission request itself when no resolver is set, posting it as before, observed: %s", async (observe) => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [DENY_OPTION, ALLOW_OPTION] });
+      answered.resolve(answer.outcome);
+      return workThenAnswer(peer, sessionId);
+    });
+    const { events, room } = await startAgent(adapter, { observe });
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "selected", optionId: "allow" });
+    expect(room.posted.filter(({ content }) => content.startsWith("Permission requested"))).toEqual([{
+      roomId: ROOM,
+      content: "Permission requested: Edit notes.md",
+      mentions: [],
+      messageType: "tool_call",
+      metadata: { permission_request: true, tool_name: "Edit notes.md", tool_call_id: "edit-1", acp_session_id: "session-1", auto_allowed: true },
+    }]);
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual(observe
+      ? [
+        editApprovalRequested(DENY_OPTION, ALLOW_OPTION),
+        { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "selected", optionId: "allow" },
+      ]
+      : []);
+  });
+
+  it("answers cancelled and posts nothing when a directly attached sink cancels the turn on approval.requested", async () => {
+    const answered = createDeferred<string>();
+    let asked = false;
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const { outcome } = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(outcome.outcome);
+      return { stopReason: "cancelled" as const };
+    }, { resolvePermission: () => { asked = true; return new Promise<never>(() => {}); } });
+    const { room } = await startAgent(adapter, { observe: false });
+    // Attached directly, a sink runs synchronously, inside the request it reports.
+    const seen: AgentEvent[] = [];
+    let cancelled: Promise<boolean> | undefined;
+    adapter.attachObserver((event) => {
+      seen.push(event);
+      if (event.type === "approval.requested") cancelled = adapter.cancelTurn(ROOM);
+    });
+
+    const message = await room.say("owner", "edit my notes");
+    expect(await answered.promise).toBe("cancelled");
+    expect(await cancelled).toBe(true);
+    expect(await room.outcome(message)).toBe("processed");
+    expect(asked, "never handed to resolvePermission").toBe(false);
+    expect(room.posted).toEqual([]);
+    expect(ofTypes(seen, "approval.requested", "approval.resolved")).toEqual([
+      expect.objectContaining({ type: "approval.requested", toolCallId: "edit-1" }),
+      { type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" },
+    ]);
+  });
+
+  it("still answers a permission request when a directly attached sink throws", async () => {
+    const answered = createDeferred<RequestPermissionResponse["outcome"]>();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      const answer = await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] });
+      answered.resolve(answer.outcome);
+      return workThenAnswer(peer, sessionId);
+    }, { resolvePermission: async () => "allow" });
+    const { room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+
+    expect(await room.outcome(await room.say("owner", "edit my notes"))).toBe("processed");
+    expect(await answered.promise).toEqual({ outcome: "selected", optionId: "allow" });
+  });
+
+  it("sends a running room's events to the sink attached last", async () => {
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId));
+    const { room } = await startAgent(adapter, { observe: false });
+    const first: AgentEvent[] = [];
+    const second: AgentEvent[] = [];
+    adapter.attachObserver((event) => { first.push(event); });
+    expect(await room.outcome(await room.say("owner", "first"))).toBe("processed");
+
+    // The room's engine is running now, so this exercises the sink it reads per event.
+    adapter.attachObserver((event) => { second.push(event); });
+    expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+
+    const turn = [
+      { type: "thought", roomId: ROOM, text: "weighing the options" },
+      { type: "message", roomId: ROOM, text: "Found three notes." },
+    ];
+    expect(ofTypes(first, "thought", "message")).toEqual(turn);
+    expect(ofTypes(second, "thought", "message")).toEqual(turn);
+  });
+
+  it("drops a room whose engine failed to start when a directly attached sink throws, so its next message starts it again", async () => {
+    const { root, config } = await brokenCursorWorkspace();
+    const adapter = cursorAdapter(root, (peer, { sessionId }) => workThenAnswer(peer, sessionId));
+    const { room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
+    await writeFile(config, "{}");
+    expect(await room.outcome(await room.say("owner", "hello again"))).toBe("processed");
+  });
+
+  it("fails a room with its own error, not a throwing sink's, when its workspace is taken", async () => {
+    const shared = join(tmpRoot(), "shared");
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId), { cwd: undefined, workspaceForRoom: () => shared });
+    const { platform, room } = await startAgent(adapter, { observe: false });
+    adapter.attachObserver(() => { throw new Error("sink bug"); });
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    const other = await platform.room("room-2");
+    const message = await other.say("owner", "hello");
+    expect(await other.outcome(message)).toBe("failed");
+    expect(other.failureLabels(message)).toEqual([expect.stringContaining("already in use by room room-1")]);
+  });
+
+  it("keeps an answered permission settled when its room closes while the request is still posting", async () => {
+    const answered = createDeferred();
+    const ended = createDeferred<unknown>();
+    const processStopped = createDeferred();
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+      return { stopReason: "end_turn" };
+    }, {
+      resolvePermission: async (_request, signal) => {
+        signal.addEventListener("abort", () => ended.resolve(signal.reason));
+        answered.resolve();
+        return "allow";
+      },
+    }, { onStop: () => processStopped.resolve() });
+    const { room } = await startAgent(adapter);
+    const requestPosting = room.holdEvent((content) => content.startsWith("Permission requested"));
+
+    await room.say("owner", "edit my notes");
+    await requestPosting.sending;
+    await answered.promise;
+    await room.remove();
+    await processStopped.promise;
+    requestPosting.release();
+
+    expect(await ended.promise, "the answer was taken before the room closed").toBe("settled");
+  });
+
+  it.each([
+    ["its room is removed", "room-closed"],
+    ["its process exits", "connection-lost"],
+  ] as const)("reports one cancelled approval.resolved when %s while a manual approval is pending", async (ending, reason) => {
+    const asked = createDeferred<AbortSignal>();
+    let exitProcess = (): void => {};
+    const adapter = acpAdapter(async (peer, { sessionId }, exit) => {
+      exitProcess = exit;
+      await peer.requestPermission({ sessionId, toolCall: EDIT_CALL, options: [ALLOW_OPTION] }).catch(() => undefined);
+      return { stopReason: "end_turn" };
+    }, {
+      resolvePermission: (_request, signal) => {
+        asked.resolve(signal);
+        return new Promise<never>(() => {});
+      },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+    const resolved = nextEvent(agent, "approval.resolved");
+
+    await room.say("owner", "edit my notes");
+    const signal = await asked.promise;
+    if (ending === "its room is removed") {
+      await room.remove();
+    } else {
+      exitProcess();
+    }
+
+    expect(await resolved).toEqual({ type: "approval.resolved", roomId: ROOM, toolCallId: "edit-1", outcome: "cancelled" });
+    expect(signal.reason).toBe(reason);
+    const linkClosed = nextEvent(agent, "link.disconnected");
+    await agent.stop();
+    await linkClosed;
+    expect(ofTypes(events, "approval.requested", "approval.resolved").map((event) => event.type)).toEqual([
+      "approval.requested",
+      "approval.resolved",
+    ]);
+  });
+
+  it("reports a turn the adapter fails", async () => {
+    const { events, room } = await startAgent(acpAdapter(async () => { throw new Error("agent crashed"); }));
+    const message = await room.say("owner", "hello");
+    expect(await room.outcome(message)).toBe("failed");
+    expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed")).toEqual([
+      { type: "turn.started", roomId: ROOM, messageId: message },
+      // ACP carries the agent's throw as a wire "Internal error"; the event mirrors the room's failure label.
+      { type: "turn.failed", roomId: ROOM, messageId: message, error: "Internal error" },
+    ]);
+  });
+
+  it("marks a failed turn with its error's own message, and reports that same label", async () => {
+    const { events, room } = await startAgent(new GenericAdapter(async ({ tools }) => {
+      await tools.sendMessage("On it.", ["owner"]);
+    }));
+    const refused = room.holdMessage((content) => content === "On it.", { error: new Error("platform unavailable") });
+
+    const message = await room.say("owner", "hello");
+    await refused.sending;
+    refused.release();
+    expect(await room.outcome(message)).toBe("failed");
+    // The reply's delivery failure carries its cause; the label is still only the message, as before observe.
+    expect(room.failureLabels(message)).toEqual(["platform unavailable"]);
+    expect(ofTypes(events, "turn.failed")).toEqual([
+      { type: "turn.failed", roomId: ROOM, messageId: message, error: "platform unavailable" },
+    ]);
+  });
+
+  it("reports a room whose agent process cannot start", async () => {
+    const adapter = acpAdapter(endTurn, { connectionFactory: async () => { throw new Error("acp-fixture: command not found"); } });
+    const { events, room } = await startAgent(adapter);
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: expect.stringContaining("command not found") },
+    ]);
+  });
+
+  it("reports a room whose engine cannot start in its workspace", async () => {
+    const { root } = await brokenCursorWorkspace();
+    const adapter = cursorAdapter(root);
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: expect.stringContaining("is not valid JSON") },
+    ]);
+  });
+
+  it("reports a room whose workspace another room already holds", async () => {
+    const shared = join(tmpRoot(), "shared");
+    const adapter = acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId), { cwd: undefined, workspaceForRoom: () => shared });
+    const { events, platform, room } = await startAgent(adapter);
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    const other = await platform.room("room-2");
+    expect(await other.outcome(await other.say("owner", "hello"))).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: "room-2", error: expect.stringContaining("already in use by room room-1") },
+    ]);
+  });
+
+  it("does not report room.failed for a room removed while its agent process is still handshaking", async () => {
+    const initializing = createDeferred();
+    const adapter = acpAdapter(endTurn, {}, {
+      overrides: { initialize: () => { initializing.resolve(); return new Promise(() => {}); } },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    await room.say("owner", "hello");
+    await initializing.promise;
+    await room.remove();
+    await room.left();
+    await agent.stop();
+    expect(ofTypes(events, "room.failed", "room.stopped", "room.left")).toEqual([
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
+    ]);
+  });
+
+  it("does not report room.failed for a room whose agent process is still handshaking when the agent stops without waiting", async () => {
+    const initializing = createDeferred();
+    const adapter = acpAdapter(endTurn, {}, {
+      overrides: { initialize: () => { initializing.resolve(); return new Promise(() => {}); } },
+    });
+    const { agent, events, room } = await startAgent(adapter);
+
+    await room.say("owner", "hello");
+    await initializing.promise;
+    const linkClosed = nextEvent(agent, "link.disconnected");
+    // A zero budget abandons the turn, so the stop, not a handshake timeout, ends it.
+    expect(await agent.stop(0)).toBe(false);
+    await linkClosed;
+    expect(ofTypes(events, "room.failed", "room.stopped")).toEqual([{ type: "room.stopped", roomId: ROOM }]);
+  });
+
+  it("reports process exit as room.failed, and a reused toolCallId still as tool.call", async () => {
+    let prompts = 0;
+    const adapter = acpAdapter(async (served, { sessionId }, exit) => {
+      prompts += 1;
+      await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
+      if (prompts === 1) {
+        exit();
+        await new Promise(() => {});
+      }
+      await served.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: "hi" },
+      });
+      await served.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } },
+      });
+      return { stopReason: "end_turn" };
+    }, {}, { overrides: { newSession: async () => ({ sessionId: `session-${prompts + 1}` }) } });
+    const { agent, events, room } = await startAgent(adapter);
+    const failed = nextEvent(agent, "room.failed");
+
+    const first = await room.say("owner", "run it");
+    await failed;
+    expect(await room.outcome(first)).toBe("failed");
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: "The ACP agent process exited" },
+    ]);
+    expect(ofTypes(events, "tool.call")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+    ]);
+
+    expect(await room.outcome(await room.say("owner", "run it again"))).toBe("processed");
+    expect(ofTypes(events, "tool.call")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+      { type: "tool.call", roomId: ROOM, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } },
+    ]);
+  });
+
+  it("keeps one room's process exit to that room while another room's tool call runs on", async () => {
+    const OTHER = "room-2";
+    const otherReleased = createDeferred();
+    onTestFinished(() => otherReleased.resolve());
+    let exited = false;
+    const adapter = acpAdapter(async (served, { sessionId }, exit) => {
+      // Both rooms use the same toolCallId, so a reset leaking across rooms would show.
+      await served.sessionUpdate({ sessionId, update: RUN_ECHO_CALL });
+      if (sessionId === ROOM && !exited) {
+        exited = true;
+        exit();
+        await new Promise(() => {});
+      }
+      if (sessionId === OTHER) await otherReleased.promise;
+      await served.sessionUpdate({ sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "reuse-1", status: "completed", rawOutput: sessionId } });
+      await served.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }, {}, {
+      // Each room's process runs in that room's own workspace.
+      overrides: { newSession: async ({ cwd }) => ({ sessionId: basename(cwd) }) },
+    });
+    const { agent, events, platform, room } = await startAgent(adapter);
+    const other = await platform.room(OTHER);
+
+    const otherCalled = nextEvent(agent, "tool.call", OTHER);
+    const pending = await other.say("owner", "run it there");
+    await otherCalled;
+    const failed = nextEvent(agent, "room.failed");
+    const crashed = await room.say("owner", "run it here");
+    await failed;
+    expect(await room.outcome(crashed)).toBe("failed");
+
+    otherReleased.resolve();
+    expect(await other.outcome(pending)).toBe("processed");
+    expect(await room.outcome(await room.say("owner", "run it here again"))).toBe("processed");
+
+    expect(ofTypes(events, "room.failed")).toEqual([
+      { type: "room.failed", roomId: ROOM, error: "The ACP agent process exited" },
+    ]);
+    const call = (roomId: string) => ({ type: "tool.call", roomId, toolCallId: "reuse-1", name: "execute", kind: "execute", input: { command: "echo hi" } });
+    const result = (roomId: string) => ({ type: "tool.result", roomId, toolCallId: "reuse-1", status: "completed", output: roomId });
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
+      call(OTHER),
+      call(ROOM),
+      result(OTHER),
+      call(ROOM),
+      result(ROOM),
+    ]);
+  });
+
+  it("reports leaving a room, and the link closing when the agent stops", async () => {
+    const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    await room.remove();
+    await room.left();
+    await agent.stop();
+    // No room.failed: retiring a live process is not the process exiting on its own.
+    expect(ofTypes(events, "room.joined", "room.stopped", "room.left", "room.failed", "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "room.joined", roomId: ROOM },
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports a room it still belongs to as stopped, not left, when the agent stops", async () => {
+    const { agent, events, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+
+    await agent.stop();
+    expect(ofTypes(events, "room.joined", "room.stopped", "room.left", "room.failed", "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "room.joined", roomId: ROOM },
+      { type: "room.stopped", roomId: ROOM },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports a room stopped once when a session reset and a removal overlap", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const { agent, events, room } = await startAgent(new GenericAdapter(async ({ tools }) => {
+      entered.resolve();
+      await release.promise;
+      tools.turn.settle();
+    }));
+
+    const message = await room.say("owner", "hello");
+    await entered.promise;
+    const reset = agent.resetRoomSession(ROOM);
+    await room.remove();
+    release.resolve();
+    await reset;
+    await room.left();
+    await agent.stop();
+    // The turn in flight across both still ends exactly once.
+    expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed", "room.stopped", "room.left")).toEqual([
+      { type: "turn.started", roomId: ROOM, messageId: message },
+      { type: "turn.completed", roomId: ROOM, messageId: message },
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
+    ]);
+  });
+
+  it("reports no turn for a message still queued when its room is removed", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const { agent, events, platform, room } = await startAgent(new GenericAdapter(async ({ message, tools }) => {
+      if (message.content === "first") {
+        entered.resolve();
+        await release.promise;
+      }
+      tools.turn.settle();
+    }));
+
+    const first = await room.say("owner", "first");
+    await entered.promise;
+    await room.say("owner", "second");
+    // Rooms' events are dispatched in order, so this turn starting means "second" is queued.
+    const other = await platform.room("room-2");
+    const otherStarted = nextEvent(agent, "turn.started", other.id);
+    await other.say("owner", "elsewhere");
+    await otherStarted;
+    await room.remove();
+    await room.left();
+    release.resolve();
+    await agent.stop();
+
+    expect(ofTypes(events, "turn.started", "turn.completed", "turn.failed").filter((event) => "roomId" in event && event.roomId === ROOM)).toEqual([
+      { type: "turn.started", roomId: ROOM, messageId: first },
+      { type: "turn.completed", roomId: ROOM, messageId: first },
+    ]);
+  });
+
+  it("reports the room joined again when its handling resumes after a reset", async () => {
+    const { agent, events, room } = await startAgent(new GenericAdapter(async ({ tools }) => { tools.turn.settle(); }));
+    const first = await room.say("owner", "first");
+    expect(await room.outcome(first)).toBe("processed");
+
+    await agent.resetRoomSession(ROOM);
+    const second = await room.say("owner", "second");
+    expect(await room.outcome(second)).toBe("processed");
+
+    expect(ofTypes(events, "room.joined", "room.stopped", "turn.started", "turn.completed")).toEqual([
+      { type: "room.joined", roomId: ROOM },
+      { type: "turn.started", roomId: ROOM, messageId: first },
+      { type: "turn.completed", roomId: ROOM, messageId: first },
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.joined", roomId: ROOM },
+      { type: "turn.started", roomId: ROOM, messageId: second },
+      { type: "turn.completed", roomId: ROOM, messageId: second },
+    ]);
+  });
+
+  it("reports leaving a room even when the adapter's cleanup for it throws", async () => {
+    class CleanupFailsAdapter extends GenericAdapter {
+      public override async onCleanup(): Promise<void> {
+        throw new Error("cleanup failed");
+      }
+    }
+    const { agent, events, room } = await startAgent(new CleanupFailsAdapter(async ({ tools }) => { tools.turn.settle(); }));
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+    const ended = agent.runForever();
+
+    await room.remove();
+    // The cleanup failure still fails the agent, as it did before observe.
+    await expect(ended).rejects.toThrow("cleanup failed");
+    await expect(agent.stop()).rejects.toThrow("cleanup failed");
+    expect(ofTypes(events, "room.stopped", "room.left")).toEqual([
+      { type: "room.stopped", roomId: ROOM },
+      { type: "room.left", roomId: ROOM },
+    ]);
+  });
+
+  it("reports a room gone from Band's list after a reconnect as stopped then left, and rejoins none still listed", async () => {
+    const { events, platform, room } = await startAgent(new GenericAdapter(async ({ tools }) => { tools.turn.settle(); }));
+    const gone = await platform.room("room-2");
+
+    platform.transport.triggerDrop();
+    platform.rest.removeRoom(gone.id);
+    await platform.transport.triggerReconnect({ generation: 1, joinedTopics: new Set(platform.transport.bound.entries) });
+    // Queued behind the reconnect, so its turn runs only once the reconcile finished.
+    expect(await room.outcome(await room.say("owner", "still here"))).toBe("processed");
+
+    expect(ofTypes(events, "room.joined", "room.stopped", "room.left")).toEqual([
+      { type: "room.joined", roomId: ROOM },
+      { type: "room.joined", roomId: gone.id },
+      { type: "room.stopped", roomId: gone.id },
+      { type: "room.left", roomId: gone.id },
+    ]);
+  });
+
+  it("reports a contact hub room joined once when Band announces it after its first turn", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    const announce = platform.rest.onRoomCreated!;
+    const created = createDeferred<string>();
+    // Band's push of the new hub room is held, so its first turn runs before admission.
+    platform.rest.onRoomCreated = (roomId) => created.resolve(roomId);
+    const hubTurn = createDeferred();
+    const { agent, events } = createAgent(
+      new GenericAdapter(async ({ tools }) => { hubTurn.resolve(); tools.turn.settle(); }),
+      platform,
+      { contactConfig: { strategy: "hub_room", hubTaskId: "contacts" } },
+    );
+    await agent.start();
+
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_request_received", {
+      id: "request-1", from_handle: "alice", from_name: "Alice", message: "Hello", status: "pending", inserted_at: new Date().toISOString(),
+    });
+    const hub = await created.promise;
+    await hubTurn.promise;
+    announce(hub);
+    // Queued behind the announce, so once it is handled the admission was too.
+    const room = platform.created(hub);
+    expect(await room.outcome(await platform.post(hub, "owner", "hello"))).toBe("processed");
+    await agent.stop();
+
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: hub }]);
+  });
+
+  it("reports a room joined once when Band announces it again", async () => {
+    const { events, platform, room } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    await platform.room(ROOM);
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: ROOM }]);
+  });
+
+  it("reports a room joined once when Band announces it while startup is already joining it", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    platform.rest.addRoom(ROOM);
+    const releaseJoin = platform.transport.gateJoin(chatRoomTopic(ROOM));
+    const { agent, events } = createAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)), platform);
+
+    const starting = agent.start();
+    await platform.transport.bound.until(() => platform.transport.hasTopic(agentRoomsTopic(AGENT_ID)));
+    const room = await platform.room(ROOM);
+    releaseJoin();
+    await starting;
+
+    expect(await room.outcome(await room.say("owner", "hello"))).toBe("processed");
+    expect(ofTypes(events, "room.joined")).toEqual([{ type: "room.joined", roomId: ROOM }]);
+  });
+
+  it.each(["attachObserver", "onStarted"] as const)("cleans up a start whose %s throws, so a restart reports its link once", async (failing) => {
+    let failOnce = true;
+    const failFirst = (): void => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error(`${failing} failed`);
+      }
+    };
+    let runtimeStops = 0;
+    class FailingStartAdapter extends GenericAdapter {
+      public attachObserver(_sink: AgentEventListener): void {
+        if (failing === "attachObserver") failFirst();
+      }
+      public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
+        if (failing === "onStarted") failFirst();
+        await super.onStarted(agentName, agentDescription);
+      }
+      public async onRuntimeStop(): Promise<void> {
+        runtimeStops += 1;
+      }
+    }
+    const platform = BandPlatform.host([person("owner")]);
+    const { agent, events } = createAgent(new FailingStartAdapter(async ({ tools }) => { tools.turn.settle(); }), platform);
+
+    await expect(agent.start()).rejects.toThrow(`${failing} failed`);
+    expect(runtimeStops).toBe(1);
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports each start's link once when the agent restarts", async () => {
+    const { agent, events } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    await agent.stop();
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports a borrowed link that was already connected before start as connected, then closed", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    const link = new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link });
+    await link.connect();
+    const { agent, events } = createAgent(new GenericAdapter(async () => {}), platform, { link });
+
+    await agent.start();
+    await agent.stop();
+
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it("reports link dropped, reconnected, and terminal", async () => {
+    const { agent, events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    expect(ofTypes(events, "link.connected")).toEqual([{ type: "link.connected", reconnected: false }]);
+
+    const dropped = nextEvent(agent, "link.disconnected");
+    platform.transport.triggerDrop();
+    await dropped;
+    expect(ofTypes(events, "link.disconnected")).toEqual([{ type: "link.disconnected", reason: "dropped" }]);
+
+    const reconnected = nextEvent(agent, "link.connected");
+    await platform.transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set(platform.transport.bound.entries),
+    });
+    await reconnected;
+    expect(ofTypes(events, "link.connected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.connected", reconnected: true },
+    ]);
+
+    const terminal = nextEvent(agent, "link.disconnected");
+    platform.transport.terminate(new WebSocketDisconnectError(TERMINAL_REASON));
+    await terminal;
+    expect(ofTypes(events, "link.disconnected")).toEqual([
+      { type: "link.disconnected", reason: "dropped" },
+      { type: "link.disconnected", reason: "terminal" },
+    ]);
+  });
+
+  it("reports only terminal when the link disconnects after a terminal down", async () => {
+    const { agent, events, platform } = await startAgent(acpAdapter((peer, { sessionId }) => workThenAnswer(peer, sessionId)));
+    platform.transport.terminate(new WebSocketDisconnectError(TERMINAL_REASON));
+    await agent.stop();
+    expect(ofTypes(events, "link.disconnected")).toEqual([
+      { type: "link.disconnected", reason: "terminal" },
+    ]);
+  });
+
+  it("reports a drop and then a local stop as two disconnects", async () => {
+    const { agent, events, platform } = await startAgent(new GenericAdapter(async () => {}));
+    const dropped = nextEvent(agent, "link.disconnected");
+    platform.transport.triggerDrop();
+    await dropped;
+    const closed = nextEvent(agent, "link.disconnected");
+    await agent.stop();
+    await closed;
+    expect(ofTypes(events, "link.connected", "link.disconnected")).toEqual([
+      { type: "link.connected", reconnected: false },
+      { type: "link.disconnected", reason: "dropped" },
+      { type: "link.disconnected", reason: "closed" },
+    ]);
+  });
+
+  it.each([
+    {
+      bridge: "Claude Code's",
+      frames: CLAUDE_BASH_CALL,
+      call: { toolCallId: "toolu_01", name: "Bash", kind: "execute", input: { command: "echo hi", description: "Print \"hi\" to stdout" } },
+      result: { toolCallId: "toolu_01", status: "completed", output: "hi" },
+    },
+    {
+      bridge: "Copilot's",
+      frames: COPILOT_DENIED_CALL,
+      call: {
+        toolCallId: "call_01",
+        name: "execute",
+        kind: "execute",
+        input: { command: "echo hi", description: "Run the requested shell command and capture its output", mode: "sync", initial_wait: 10 },
+      },
+      result: { toolCallId: "call_01", status: "failed", output: JSON.stringify({ message: "Denied by a preToolUse hook", code: "denied" }) },
+    },
+    {
+      bridge: "an input-less",
+      frames: EMPTY_INPUT_CALL,
+      call: { toolCallId: "call_02", name: "read", kind: "read" },
+      result: { toolCallId: "call_02", status: "completed", output: "notes.md" },
+    },
+    {
+      bridge: "a one-frame",
+      frames: ONE_FRAME_CALL,
+      call: { toolCallId: "call_03", name: "read", kind: "read", input: { path: "notes.md" } },
+      result: { toolCallId: "call_03", status: "completed", output: "three notes" },
+    },
+    {
+      bridge: "a call named by its first frame and then updated with only its kind, as a",
+      frames: [
+        { sessionUpdate: "tool_call", toolCallId: "named-1", _meta: { claudeCode: { toolName: "Bash" } }, rawInput: {}, status: "pending", title: "Terminal", kind: "execute" },
+        { sessionUpdate: "tool_call_update", toolCallId: "named-1", kind: "execute", rawInput: { command: "echo hi" } },
+        { sessionUpdate: "tool_call_update", toolCallId: "named-1", status: "completed", rawOutput: "hi" },
+      ] satisfies SessionUpdate[],
+      call: { toolCallId: "named-1", name: "Bash", kind: "execute", input: { command: "echo hi" } },
+      result: { toolCallId: "named-1", status: "completed", output: "hi" },
+    },
+    {
+      bridge: "Cursor's",
+      frames: cursorLateNamedBandTool("cursor-1"),
+      call: {
+        toolCallId: "cursor-1",
+        name: `${MCP_SERVER_NAME}-band_send_message`,
+        kind: "other",
+        input: { providerIdentifier: MCP_SERVER_NAME, toolName: "band_send_message", args: { content: "hi" } },
+      },
+      result: { toolCallId: "cursor-1", status: "completed", output: "{}" },
+    },
+    {
+      bridge: "Codex's",
+      frames: codexNamedBandTool("codex-1"),
+      call: {
+        toolCallId: "codex-1",
+        name: `${MCP_SERVER_NAME}-band_send_message`,
+        input: { server: MCP_SERVER_NAME, tool: "band_send_message", arguments: {} },
+      },
+      result: { toolCallId: "codex-1", status: "completed", output: "{}" },
+    },
+  ])("reports $bridge recorded tool call once, by its tool name or kind and never its title", async ({ frames, call, result }) => {
+    const { events, room } = await startAgent(acpAdapter(async (peer, { sessionId }) => {
+      for (const update of frames) await peer.sessionUpdate({ sessionId, update });
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }));
+
+    expect(await room.outcome(await room.say("owner", "run it"))).toBe("processed");
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
+      { type: "tool.call", roomId: ROOM, ...call },
+      { type: "tool.result", roomId: ROOM, ...result },
+    ]);
+  });
+
+  it("reports a toolCallId again in a new session on the same agent process", async () => {
+    let processes = 0;
+    let sessions = 0;
+    const adapter = acpAdapter(async (peer, { sessionId }) => {
+      await peer.sessionUpdate({ sessionId, update: ONE_FRAME_CALL[0] });
+      // An error answer keeps the process but drops the session, so the next turn opens another.
+      if (sessionId === "session-1") throw RequestError.internalError(undefined, "model overloaded");
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }, {}, { overrides: {
+      initialize: async () => { processes += 1; return { protocolVersion: 1, agentCapabilities: {} }; },
+      newSession: async () => ({ sessionId: `session-${++sessions}` }),
+    } });
+    const { events, room } = await startAgent(adapter);
+
+    expect(await room.outcome(await room.say("owner", "first"))).toBe("failed");
+    expect(await room.outcome(await room.say("owner", "second"))).toBe("processed");
+    expect(processes).toBe(1);
+    expect(sessions).toBe(2);
+    const call = { type: "tool.call", roomId: ROOM, toolCallId: "call_03", name: "read", kind: "read", input: { path: "notes.md" } };
+    const result = { type: "tool.result", roomId: ROOM, toolCallId: "call_03", status: "completed", output: "three notes" };
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([call, result, call, result]);
+  });
+
+  it("ignores a duplicate terminal tool_call_update after tool.result", async () => {
+    const frames: SessionUpdate[] = [
+      { sessionUpdate: "tool_call", toolCallId: "dup-1", title: "Read notes.md", kind: "read", status: "pending", rawInput: { path: "notes.md" } },
+      { sessionUpdate: "tool_call_update", toolCallId: "dup-1", status: "completed", rawOutput: "notes" },
+      { sessionUpdate: "tool_call_update", toolCallId: "dup-1", status: "completed", rawOutput: "notes again" },
+    ];
+    const { events, room } = await startAgent(acpAdapter(async (peer, { sessionId }) => {
+      for (const update of frames) await peer.sessionUpdate({ sessionId, update });
+      await peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } });
+      return { stopReason: "end_turn" };
+    }));
+
+    expect(await room.outcome(await room.say("owner", "run it"))).toBe("processed");
+    expect(ofTypes(events, "tool.call", "tool.result")).toEqual([
+      { type: "tool.call", roomId: ROOM, toolCallId: "dup-1", name: "read", kind: "read", input: { path: "notes.md" } },
+      { type: "tool.result", roomId: ROOM, toolCallId: "dup-1", status: "completed", output: "notes" },
+    ]);
+  });
+});

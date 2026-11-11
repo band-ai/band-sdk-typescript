@@ -15,7 +15,7 @@ import {
  */
 export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, TurnTools, ACPRoomAgent> {
   protected readonly provider: string = "acp"
-  private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider">
+  private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider" | "observer">
 
   public constructor(options: ACPClientAdapterOptions) {
     const { cwd, workspaceForRoom, ...roomOptions } = options
@@ -34,6 +34,7 @@ export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, T
 
   /** The adapter's options bound to one room, for any ACP engine subclass. */
   protected roomAgentOptions(roomId: string, workspace: string): ACPRoomAgentOptions {
-    return { ...this.roomOptions, roomId, cwd: workspace, provider: this.provider }
+    // Forwarded per call, so an engine sees whichever sink is attached when it reports.
+    return { ...this.roomOptions, roomId, cwd: workspace, provider: this.provider, observer: (event) => this.observer(event) }
   }
 }

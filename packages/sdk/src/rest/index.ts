@@ -16,6 +16,9 @@ export {
   fetchPaginated,
   getRecentMessages,
   listAllPeers,
+  fetchContextPage,
+  DEFAULT_CONTEXT_PAGE,
+  MAX_CURSOR_PAGE,
   normalizePaginationMetadata,
 } from "../client/rest/pagination";
 export type { CursorPageRequest, CursorTail, CursorTailOptions } from "../client/rest/pagination";

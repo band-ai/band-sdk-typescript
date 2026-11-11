@@ -1146,8 +1146,10 @@ describe("ACPClientAdapter", () => {
       "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
-        async extNotification() {
-          return [{ chunkType: "plan", content: "kept", metadata: {}, streamed: false }]
+        extensionHandler: {
+          async extNotification() {
+            return [{ chunkType: "plan", content: "kept", metadata: {}, streamed: false }]
+          },
         },
       },
     )
@@ -1391,12 +1393,14 @@ describe("ACPClientAdapter", () => {
       "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
-        extNotification: async () => [{
-          chunkType: "text",
-          content: "[Task completed] done",
-          metadata: {},
-          streamed: false,
-        }],
+        extensionHandler: {
+          extNotification: async () => [{
+            chunkType: "text",
+            content: "[Task completed] done",
+            metadata: {},
+            streamed: false,
+          }],
+        },
       },
     )
     client.beginSession("session-x")
@@ -1418,12 +1422,14 @@ describe("ACPClientAdapter", () => {
       "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
-        extNotification: async () => [{
-          chunkType: "text",
-          content: "[Task completed] done",
-          metadata: {},
-          streamed: false,
-        }],
+        extensionHandler: {
+          extNotification: async () => [{
+            chunkType: "text",
+            content: "[Task completed] done",
+            metadata: {},
+            streamed: false,
+          }],
+        },
       },
     )
     client.beginSession("session-x")
@@ -1453,7 +1459,7 @@ describe("ACPClientAdapter", () => {
     const client = new BandACPClient(
       "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
-      { extNotification: extension },
+      { extensionHandler: { extNotification: extension } },
     )
     client.beginSession("session-x")
 
@@ -1490,7 +1496,7 @@ describe("ACPClientAdapter", () => {
     const client = new BandACPClient(
       "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
-      { extMethod: method },
+      { extensionHandler: { extMethod: method } },
     )
 
     await expect(client.extMethod("vendor/decision", { session_id: "session-x" })).resolves.toEqual({
@@ -1506,13 +1512,15 @@ describe("ACPClientAdapter", () => {
     function attributingClient() {
       const contexts: unknown[] = []
       const client = new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }), {
-        extMethod: async (_method, _params, context) => {
-          contexts.push(context)
-          return { handled: true }
-        },
-        extNotification: async (_method, _params, context) => {
-          contexts.push(context)
-          return [PLAN]
+        extensionHandler: {
+          extMethod: async (_method, _params, context) => {
+            contexts.push(context)
+            return { handled: true }
+          },
+          extNotification: async (_method, _params, context) => {
+            contexts.push(context)
+            return [PLAN]
+          },
         },
       })
       return { client, contexts }

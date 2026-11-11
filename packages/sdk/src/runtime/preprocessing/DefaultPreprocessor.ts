@@ -1,32 +1,8 @@
 import type { Preprocessor, PreprocessorContext } from "../../contracts/protocols";
-import { HistoryProvider, type AgentInput, type PlatformMessage } from "../types";
+import { HistoryProvider, type AgentInput } from "../types";
 import type { PlatformEvent } from "../../platform/events";
 import { isSelfEcho } from "@band-ai/band-sdk-core";
-import { resolveMentions } from "../formatters";
-
-/** The message the agent sees for a `message_created` payload. */
-export function toPlatformMessage(roomId: string, payload: {
-  id: string;
-  content: string;
-  sender_id: string;
-  sender_type: string;
-  sender_name?: string | null;
-  message_type: string;
-  metadata?: Record<string, unknown> | null;
-  inserted_at: string;
-}): PlatformMessage {
-    return {
-      id: payload.id,
-      roomId,
-      content: resolveMentions(payload.content, payload.metadata),
-      senderId: payload.sender_id,
-      senderType: payload.sender_type,
-      senderName: payload.sender_name ?? null,
-      messageType: payload.message_type,
-      metadata: payload.metadata ?? {},
-      createdAt: new Date(payload.inserted_at),
-    };
-  }
+import { toPlatformMessage } from "../formatters";
 
 export class DefaultPreprocessor implements Preprocessor<PlatformEvent> {
   public async process(

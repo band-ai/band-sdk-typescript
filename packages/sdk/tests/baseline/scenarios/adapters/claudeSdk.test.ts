@@ -1,8 +1,9 @@
 /**
  * Claude Agent SDK: the agent's Claude Code session is isolated from the
  * host's, with no tool that reaches other local sessions, no host plugins or
- * connectors, and the Band tools connected and listed from the first turn. A
- * reply the agent sends through band_send_message is its only reply.
+ * connectors, and the Band tools connected and listed from the first turn.
+ * Every reply in the room was posted by a band_send_message the model made:
+ * the turn's closing text is never relayed after it.
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,33 +17,50 @@ import {
   type ClaudeSDKQuery,
   type ClaudeSDKQueryParams,
 } from "../../../../src/adapters/claude-sdk/ClaudeSDKAdapter";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
+import { isFailedToolOutput } from "../../../../src/contracts/protocols";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "../../../../src/contracts/toolSchemas";
+import { parseToolPayload } from "../../../../src/converters/shared";
 import { ADAPTER, buildClaudeSdk } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
+import { assertToolReply } from "../../toolkit/assertToolReply";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
-import { eventsFrom, MESSAGE_TYPE, observeRoom } from "../../toolkit/observeMessages";
+import { eventsFrom, MESSAGE_TYPE, observeRoom, type ToolCallEvent, type ToolResultEvent } from "../../toolkit/observeMessages";
 import { withAdapters } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
+import { scenarioEvidence } from "../../toolkit/scenarioEvidence";
 
 import { readText } from "../samples/files";
 import { uniqueMarker } from "../samples/markers";
+import { TOOL_REPLY_REQUEST, TOOL_REPLY_WORD } from "../samples/toolReply";
 
 const INIT = { type: "system", subtype: "init" } as const satisfies Pick<SDKSystemMessage, "type" | "subtype">;
 const MCP_CONNECTED = "connected" satisfies McpServerStatus["status"];
 /** The path the CLI reports for a plugin bundled with it, which is not host config and loads on the CLI's own flags. */
 const BUILTIN_PLUGIN_PATH = "builtin";
-const REQUEST = "Reply with the single word: pineapple";
-const SEND_MESSAGE_TOOL = `${MCP_TOOL_PREFIX}${SEND_MESSAGE_TOOL_NAME}`;
+const REQUEST = `Reply with the single word: ${TOOL_REPLY_WORD}`;
 
-/** The real SDK `query`, passing every message through while keeping the last init, the tools called, and the options it was called with. */
+/** A tool_result block's text: the SDK carries it as a string or as text blocks. */
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((block: { type?: string; text?: unknown }) => block.type === "text" && typeof block.text === "string" ? [block.text] : []).join("");
+}
+
+/**
+ * The real SDK `query`, passing every message through while keeping the last
+ * init, the tools called, the options it was called with, each Band tool's
+ * call and result as the model saw them, and the closing text.
+ */
 function recordingQuery() {
   let init: SDKSystemMessage | undefined;
   let options: ClaudeSDKQueryParams["options"];
+  let closingText: string | undefined;
   const toolsCalled: string[] = [];
+  const bandCalls: ToolCallEvent[] = [];
+  const bandResults: ToolResultEvent[] = [];
   const realQuery = query as ClaudeSDKQuery;
-
 
   return {
     get init() {
@@ -51,7 +69,12 @@ function recordingQuery() {
     get options() {
       return options;
     },
+    get closingText() {
+      return closingText;
+    },
     toolsCalled,
+    bandCalls,
+    bandResults,
     queryFn: async function* (params: ClaudeSDKQueryParams) {
       options = params.options;
       for await (const message of realQuery(params)) {
@@ -61,8 +84,29 @@ function recordingQuery() {
         }
         if (message.type === "assistant") {
           for (const block of message.message.content) {
-            if (block.type === "tool_use") toolsCalled.push(block.name);
+            if (block.type !== "tool_use") continue;
+            toolsCalled.push(block.name);
+            if (block.name.startsWith(MCP_TOOL_PREFIX)) {
+              const name = block.name.slice(MCP_TOOL_PREFIX.length);
+              bandCalls.push({ id: block.id, toolCallId: block.id, name, args: block.input as Record<string, unknown> });
+            }
           }
+        }
+        if (message.type === "user" && Array.isArray(message.message.content)) {
+          for (const block of message.message.content) {
+            if (block.type !== "tool_result") continue;
+            const call = bandCalls.find((candidate) => candidate.toolCallId === block.tool_use_id);
+            if (!call) continue;
+            const text = toolResultText(block.content);
+            const output = parseToolPayload(text) ?? text;
+            bandResults.push({
+              id: block.tool_use_id, name: call.name, toolCallId: block.tool_use_id, output,
+              isError: block.is_error === true || isFailedToolOutput(output),
+            });
+          }
+        }
+        if (message.type === "result" && message.subtype === "success") {
+          closingText = message.result;
         }
         yield message;
       }
@@ -106,16 +150,25 @@ withAdapters(
   [ADAPTER.claudeSdk],
   scenarioId(CATEGORY.adapters, "claudeSdk.repliesOnceThroughBandTool"),
   async ({ agents: [agent], room }) => {
-    const sent = await Rooms.sendMention(room, agent!, `${REQUEST}. Send it with ${SEND_MESSAGE_TOOL_NAME}.`);
-    const reply = await observeRoom(room).untilReply(agent!);
-    assertReplied(reply);
-    assertReplyContains(reply, "pineapple");
-    // Every post lands before the turn is marked processed, so the stored history is complete here.
-    assertDeliveryStatus(await observeAgent(agent!, room).untilProcessed(sent), DELIVERY_STATUS.processed);
-
-    expect(replyTap.toolsCalled, "the agent replied through the Band tool").toContain(SEND_MESSAGE_TOOL);
-    const replies = (await observeRoom(room).history(MESSAGE_TYPE.Text)).filter((message) => message.senderId === agent!.id);
-    expect(replies.map((message) => message.content), "the agent's room messages").toEqual([reply.message.content]);
+    const evidence = scenarioEvidence(room, agent!);
+    await evidence.run(async () => {
+      const sent = await Rooms.sendMention(room, agent!, TOOL_REPLY_REQUEST);
+      const [reply, delivery] = await Promise.all([
+        observeRoom(room).untilReply(agent!), observeAgent(agent!, room).untilProcessed(sent),
+      ]);
+      const { bandCalls, bandResults, closingText } = replyTap;
+      evidence.record({ sent, reply, delivery, bandCalls, bandResults, closingText });
+      // Every post lands before the turn is marked processed, so the stored history is complete here.
+      const stored = await evidence.read();
+      assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
+      assertReplied(reply);
+      assertReplyContains(reply, TOOL_REPLY_WORD);
+      // Without closing text there is nothing to relay, and the run would prove nothing.
+      expect(closingText?.trim(), "the turn's closing text, which must not be relayed").toBeTruthy();
+      const recipientId = stored.messages.find((message) => message.id === sent.id)?.senderId;
+      if (!recipientId) throw new Error("the request's stored sender is missing");
+      assertToolReply(bandCalls, bandResults, stored.replies, { marker: TOOL_REPLY_WORD, senderId: agent!.id, recipientId });
+    });
   },
   { build: (_spec, options) => buildClaudeSdk(options, { queryFn: replyTap.queryFn }) },
 );
