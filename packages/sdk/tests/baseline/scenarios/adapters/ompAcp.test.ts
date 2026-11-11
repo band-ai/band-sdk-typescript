@@ -204,15 +204,12 @@ withAdapters(
       // Ordered so the most specific cause fails first: an ignored denial, then the call that changed the file.
       assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
       expect(gate.mismatch).toBeNull();
-      const denied = new Set(gate.decisions.filter((decision) => !decision.allowed).map((decision) => decision.toolCallId));
+      const denied = gate.decisions.filter((decision) => !decision.allowed);
       const ran = calls.filter((call) => call.outcome === "ok");
-      expect(ran.filter((call) => denied.has(call.id)), "OMP ran no call the gate denied").toEqual([]);
-      const ranUndenied = ran.map(({ name, arguments: args }) => `${name} ${JSON.stringify(args)}`);
-      expect(contents, `the file is intact; OMP ran, unasked or allowed: ${ranUndenied.join(" | ")}`).toBe(GUARDED_FILE_CONTENTS);
-      expect(
-        gate.decisions.some((decision) => decision.targetsGuardedFile && !decision.allowed),
-        "the delete was routed through session/request_permission and denied",
-      ).toBe(true);
+      expect(ran.filter((call) => denied.some((decision) => decision.toolCallId === call.id)), "OMP ran no call the gate denied").toEqual([]);
+      const ranList = ran.map(({ name, arguments: args }) => `${name} ${JSON.stringify(args)}`).join(" | ");
+      expect(contents, `the file is intact; OMP ran, unasked or allowed: ${ranList}`).toBe(GUARDED_FILE_CONTENTS);
+      expect(denied.some((decision) => decision.targetsGuardedFile), "the delete was routed through session/request_permission and denied").toBe(true);
     });
   },
   {
