@@ -52,6 +52,9 @@ export type TerminalObserver = (error: WebSocketDisconnectError) => void;
 
 export type DropObserver = (reason: WebSocketDisconnectReason) => void;
 
+/** Receives each raw `agent.control` payload pushed on the agent's control channel, in order. */
+export type ControlObserver = (payload: Record<string, unknown>) => void;
+
 export interface StreamingTransport {
   /**
    * Connects, rejecting if `signal` aborts first. `disconnect()` may run while
@@ -95,4 +98,10 @@ export interface StreamingTransport {
    * `onTerminal` instead. Returns an unsubscribe function.
    */
   onDropped?(observer: DropObserver): () => void;
+  /**
+   * Optional: a transport that joins the agent's control channel reports each
+   * `agent.control` push here, synchronously and unbuffered, as it arrives.
+   * Returns an unsubscribe function.
+   */
+  onControl?(observer: ControlObserver): () => void;
 }

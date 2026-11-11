@@ -97,6 +97,10 @@ const readContext: McpToolRegistration = {
 };
 ```
 
+### Band stopping a room
+
+Band can stop, play or interrupt the agent in one room, or in all its rooms, with an `agent.control` signal on the agent's control channel; every adapter honours it. `stop` pauses the room: its running turn is cut short (`turn.stopped`), its message is left for Band to serve again, and no turn starts there until `play`, which catches up on that message and what arrived meanwhile. `interrupt` cuts the running turn short and consumes its message; the room keeps running. The runtime stops waiting on a cut-short turn and asks the adapter to `cancelTurn` it. An adapter that cannot cancel keeps working in the background, but the cut-short turn's tools reject every call that acts, so nothing it does reaches Band, and the room's next turn waits until it ends. A contact hub turn arriving while the room is paused waits and runs on resume, and one a stop cut short runs again then. Band delivers these signals on a best-effort basis, so the agent also treats Band refusing a claim or post as stopped as a stop, and while stopped it checks `/messages/next` when a message arrives, on each reconnect and every `sessionConfig.stoppedResyncSeconds` (default 60) to find a missed play. A play that lands while `resetRoomSession` is replacing the room's session takes effect when the room's next message (or bootstrap) starts its new session, which then checks `/messages/next` at once. Pauses are reported as `room.paused` and `room.resumed`.
+
 ### Observing an agent
 
 A process that hosts an agent can follow it locally with `agent.observe(listener)`, which returns a function that removes the listener. Nothing a listener receives is posted to a room, and observing does not change what the room sees.
@@ -107,7 +111,7 @@ const stop = agent.observe((event) => {
 });
 ```
 
-Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined` (the room's handling started, again after `resetRoomSession`), `room.left` (membership lost) and `room.stopped` (the room's handling stopped, including when the agent stops), and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, and `approval.requested` and `approval.resolved`. They also report `room.failed` when a room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named as `AgentEvent`'s `tool.call` describes — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. `AgentEventListener` documents delivery: ordering, when a listener may call back into the agent (for example `agent.cancelTurn`), and how a failing listener is handled.
+Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined` (the room's handling started, again after `resetRoomSession`), `room.left` (membership lost) and `room.stopped` (the room's handling stopped, including when the agent stops), `turn.stopped`, `room.paused` and `room.resumed` when Band stops, interrupts or plays a room, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, and `approval.requested` and `approval.resolved`. They also report `room.failed` when a room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named as `AgentEvent`'s `tool.call` describes — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. `AgentEventListener` documents delivery: ordering, when a listener may call back into the agent (for example `agent.cancelTurn`), and how a failing listener is handled.
 
 ### Generic
 
@@ -680,7 +684,6 @@ automatic custom-effect credit. Their calls may still count if they use the
 active turn's Band tools. Resolved failure values retain existing result
 serialization; effect credit is separate from an MCP transport error flag.
 
-
 ### Lifecycle conformance
 
 The [Core lifecycle traces](https://github.com/band-ai/band-sdk-core/blob/main/crates/core/README.md#sdk-conformance-traces)
@@ -815,7 +818,6 @@ fault.
 CJS callers must import the helper/error pair — and any runtime error class used
 for `instanceof` — from **one** entrypoint consistently (`require("@band-ai/sdk")`
 or `require("@band-ai/sdk/core")`, not both).
-
 
 ## Development
 

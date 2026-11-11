@@ -104,7 +104,9 @@ export type {
   AgentEventType,
   ApprovalOutcome,
   LinkDisconnectReason,
+  RoomPauseSource,
   ToolCallEndStatus,
+  TurnStopMode,
 } from "./core";
 
 export type {
@@ -155,6 +157,7 @@ export {
   FAILURE_METADATA_KEY,
   toFailureEvent,
   RecoverableTurnError,
+  RoomExecutionStoppedError,
   DeliveryFailedError,
   deliverReply,
   deliverNotice,

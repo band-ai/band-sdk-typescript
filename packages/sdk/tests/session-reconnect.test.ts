@@ -5,6 +5,7 @@ import { agentControlTopic } from "@band-ai/band-sdk-core";
 import { createDeferred } from "../src/core/deferred";
 import { RuntimeStateError, TransportError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
+import type { AgentControl } from "../src/platform/control";
 import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
@@ -244,6 +245,25 @@ describe("core Session owns reconnects (real wire)", () => {
         { type: "link.disconnected", reason: "dropped" },
         { type: "link.connected", reconnected: true },
         { type: "link.disconnected", reason: "closed" },
+      ]);
+    });
+
+    it("hands each valid agent.control push to control listeners, in order, and drops an invalid one", async () => {
+      await using peer = await startPeer();
+      await using agent = transportFor(peer);
+      const link = new BandLink({ agentId: AGENT_ID, apiKey: "test-key", transport: agent.transport, restApi: new FakeRestApi() });
+      const controls = new RecordLog<AgentControl>();
+      link.onControl((control) => controls.record(control));
+      await link.connect();
+
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "pause", scope: "room", agent_id: AGENT_ID, room_id: "room-1", correlation_id: "c-0", execution_id: null });
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "stop", scope: "room", agent_id: AGENT_ID, room_id: "room-1", correlation_id: "c-1", execution_id: "e-1" });
+      peer.push(CONTROL_TOPIC, "agent.control", { mode: "play", scope: "agent", agent_id: AGENT_ID, room_id: null, correlation_id: "c-2", execution_id: null, reason: "resumed" });
+      await onWireClock(controls.until(() => controls.entries.length >= 2));
+
+      expect(controls.entries).toEqual([
+        { mode: "stop", scope: "room", agentId: AGENT_ID, roomId: "room-1", correlationId: "c-1", executionId: "e-1", reason: null },
+        { mode: "play", scope: "agent", agentId: AGENT_ID, roomId: null, correlationId: "c-2", executionId: null, reason: "resumed" },
       ]);
     });
 

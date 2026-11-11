@@ -39,7 +39,9 @@ export type {
   AgentEventType,
   ApprovalOutcome,
   LinkDisconnectReason,
+  RoomPauseSource,
   ToolCallEndStatus,
+  TurnStopMode,
 } from "../contracts/events";
 export {
   BandSdkError,
@@ -48,6 +50,7 @@ export {
   TransportError,
   RuntimeStateError,
   RecoverableTurnError,
+  RoomExecutionStoppedError,
 } from "./errors";
 export { WebSocketDisconnectError } from "../platform/streaming/disconnectReason";
 export type {

@@ -184,7 +184,7 @@ WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/Ph
 | Chat Room | `chat_room:{chat_room_id}` | `message_created` |
 | Room Participants | `room_participants:{chat_room_id}` | `participant_added`, `participant_removed` |
 | Agent Contacts | `agent_contacts:{agent_id}` | `contact_request_received`, `contact_request_updated`, `contact_added`, `contact_removed` |
-| Agent Control | `agent_control:{agent_id}` | `supersede` |
+| Agent Control | `agent_control:{agent_id}` | `supersede`, `agent.control` |
 
 ### Event Types
 
@@ -224,6 +224,10 @@ Two runtime consumers act on it:
 - `Execution` (via `AgentRuntime`) intercepts it in its serialized event queue and calls `synchronizeWithNext()` again — the same `/messages/next` catch-up sweep used at startup — so messages missed during the disconnect are picked up before normal WebSocket processing resumes. The event itself is never forwarded to `onExecute`/adapters.
 
 A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no payload, and `roomId` is set only for a single room's channel rejoin.
+
+### Band control signals (`agent.control`)
+
+Band pushes `agent.control` (`interrupt`, `stop`, `play`; one room or agent-wide) on the agent control channel, best-effort. The transport hands it to `BandLink.onControl` outside the event stream, validated by Core; `PlatformRuntime` dedupes on `correlation_id`, applies signals in order, and pauses or resumes the room's `Execution` (pause source `"band"`). A stopped turn's message stays `processing` for `/messages/next` to serve again on play; an interrupted one is marked processed. A cut-short turn's tools reject every call that acts (`runtime/turnRevocation.ts`), and a turn the adapter cannot cancel holds the room until it ends. Synthetic (contact hub) turns stay queued while paused, and a stopped one is queued again, since Band cannot serve them again. A play always catches a running room up, even one whose stop this run never saw. As in Python, only a running execution takes a play (`AgentRuntime.playRoom`): one that lands during a reset leaves Band's stop recorded, and the room's next execution starts paused and checks `/next` at once. While a room is stopped Band refuses the agent's claims and acknowledgements (204) and posts (403 "execution is stopped"), which `FernRestAdapter` raises as `RoomExecutionStoppedError`, and echoes a working report as not working; `BandLink.onExecutionStopped` reports all three so a missed stop push still pauses the room. Band serves a stopped room nothing from `/next`, so a delivered message, each reconnect and a periodic check (`stoppedResyncSeconds`) probe it to find a missed play. The Python SDK's `runtime/control.py` and `Execution.stop_room`/`resume_room` are the counterpart.
 
 ## Contact Event Handling
 

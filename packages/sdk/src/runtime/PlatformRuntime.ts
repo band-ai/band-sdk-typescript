@@ -1,8 +1,9 @@
 import { bindWorkingCycle } from "./workingState";
-import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../contracts/protocols";
+import { isSyntheticTurn, type FrameworkAdapter, type FrameworkAdapterInput, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
+import { stopModeOf } from "./Execution";
 import {
   parseSessionConfig,
   type AgentConfig,
@@ -23,7 +24,11 @@ import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
 import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
-import type { AgentEventListener } from "../contracts/events";
+import type { AgentEventListener, TurnStopMode } from "../contracts/events";
+import type { AgentControl, AgentControlMode } from "../platform/control";
+import { ControlDeduplicator, controlTargets } from "./control";
+import { untilStopped } from "../core/signals";
+import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
@@ -51,6 +56,19 @@ export interface PlatformRuntimeOptions {
   };
 }
 
+/** A turn's claim and acknowledgements: a failed mark is logged, never the turn's failure. */
+const TURN_MARK = { bestEffort: true } as const;
+
+/**
+ * A turn's message as settling sees it: Band holds and settles it (`settles`),
+ * or the runtime made it itself (`synthetic`) and only the room holds it.
+ */
+interface TurnMessage {
+  id: string;
+  settles: boolean;
+  synthetic: boolean;
+}
+
 export class PlatformRuntime implements AsyncDisposable {
   private readonly _agentId: string;
   private readonly _apiKey: string;
@@ -72,8 +90,9 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
   private readonly events: AgentEventHub;
-  /** Stops relaying link changes; held from start until the matching stop. */
+  /** Stops relaying link changes and control signals; held from start until the matching stop. */
   private stopObservingLink: (() => void) | null = null;
+  private readonly controlIds = new ControlDeduplicator();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
@@ -137,7 +156,14 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   private observeLink(): void {
-    this.stopObservingLink = this.link.onConnectionChange(this.events.emit);
+    const stopConnection = this.link.onConnectionChange(this.events.emit);
+    const stopControl = this.link.onControl((control) => this.applyControl(control));
+    const stopObservedStops = this.link.onExecutionStopped((roomId) => this.observeBandStop(roomId));
+    this.stopObservingLink = () => {
+      stopConnection();
+      stopControl();
+      stopObservedStops();
+    };
     // A borrowed link may already be up, and its connect() then reports nothing.
     if (this.link.isConnected()) {
       this.events.emit({ type: "link.connected", reconnected: false });
@@ -147,6 +173,102 @@ export class PlatformRuntime implements AsyncDisposable {
   private unobserveLink(): void {
     this.stopObservingLink?.();
     this.stopObservingLink = null;
+  }
+
+  /**
+   * Band refused a request in `roomId` as stopped, so its stop push was missed
+   * or is still on its way: pause the room now, synchronously, so the turn that
+   * made the request is cut short before it settles its message, then cancel it.
+   */
+  private observeBandStop(roomId: string): void {
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    if (!runtime || !adapter || !this.pauseForBand(runtime, roomId)) {
+      return;
+    }
+    this.logger.info("Band has stopped the agent in a room; pausing it", { roomId });
+    this.cancelAdapterTurn(adapter, roomId);
+  }
+
+  /** Pauses `roomId` for Band, reporting it; false when Band's pause already held it. */
+  private pauseForBand(runtime: AgentRuntime, roomId: string): boolean {
+    if (!runtime.pauseRoom(roomId, "band")) {
+      return false;
+    }
+    this.events.emit({ type: "room.paused", roomId, source: "band" });
+    return true;
+  }
+
+  private reportBandResumed(roomId: string): void {
+    this.events.emit({ type: "room.resumed", roomId, source: "band" });
+  }
+
+  /** Band played `roomId`, by its push or as a check found: lifts its pause and catches it up. */
+  private playBand(roomId: string): void {
+    if (this.runtime?.playRoom(roomId)) {
+      this.reportBandResumed(roomId);
+    }
+  }
+
+  /**
+   * Applies one `agent.control` signal to the rooms it reaches, all at once,
+   * so signals apply in arrival order and only to rooms still handled. A
+   * signal that reaches no handled room is not remembered, so a repeat can
+   * still apply once the room is handled.
+   */
+  private applyControl(control: AgentControl): void {
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    const roomIds = runtime ? controlTargets(control, runtime.handledRoomIds()) : [];
+    if (!runtime || !adapter || roomIds.length === 0) {
+      this.logger.info("Control signal reached no handled room", { mode: control.mode, roomId: control.roomId, scope: control.scope });
+      return;
+    }
+    if (!this.controlIds.firstSighting(control)) {
+      this.logger.debug("Ignoring a repeated control signal", { correlationId: control.correlationId });
+      return;
+    }
+    this.logger.info("Applying control signal", {
+      mode: control.mode,
+      scope: control.scope,
+      rooms: roomIds.length,
+      correlationId: control.correlationId,
+      executionId: control.executionId,
+    });
+    for (const roomId of roomIds) {
+      this.applyControlToRoom(runtime, adapter, roomId, control.mode);
+    }
+  }
+
+  private applyControlToRoom(runtime: AgentRuntime, adapter: FrameworkAdapter, roomId: string, mode: AgentControlMode): void {
+    switch (mode) {
+      case "stop":
+        this.pauseForBand(runtime, roomId);
+        // Also reaches work the adapter kept running after its handler returned.
+        this.cancelAdapterTurn(adapter, roomId);
+        return;
+      case "play":
+        this.playBand(roomId);
+        return;
+      case "interrupt":
+        if (!runtime.interruptTurn(roomId)) {
+          this.logger.debug("Interrupt found no running turn in the room", { roomId });
+        }
+        this.cancelAdapterTurn(adapter, roomId);
+        return;
+    }
+  }
+
+  /**
+   * Asks the adapter to cancel the room's turn without waiting on it: a cancel
+   * is third-party work that may never settle, and no later signal waits on it.
+   */
+  private cancelAdapterTurn(adapter: FrameworkAdapter, roomId: string): void {
+    void Promise.resolve()
+      .then(() => adapter.cancelTurn?.(roomId))
+      .catch((error: unknown) => {
+        this.logger.warn("Adapter failed to cancel a stopped turn", { roomId, error });
+      });
   }
 
   /** Current lifecycle state of this runtime. */
@@ -333,7 +455,9 @@ export class PlatformRuntime implements AsyncDisposable {
         onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => this.events.emit({ type: "room.stopped", roomId }),
-        onExecute: (context, event, admitted, holdRoomUntil) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil),
+        onMissedPlay: (roomId) => this.playBand(roomId),
+        onBandStopCleared: (roomId) => this.reportBandResumed(roomId),
+        onExecute: (context, event, admitted, holdRoomUntil, stopped) => this.executeAdapter(context, event, adapter, admitted, holdRoomUntil, stopped),
         isControlEvent: (event) => this.isControlEvent(adapter, event),
         onSessionCleanup: (roomId) => adapter.onCleanup(roomId),
         onContactEvent: (event) => this.handleContactEvent(event),
@@ -495,29 +619,39 @@ export class PlatformRuntime implements AsyncDisposable {
     adapter: FrameworkAdapter,
     admitted: () => boolean,
     holdRoomUntil: (ended: Promise<void>) => void,
-  ): Promise<void> {
-    if (!admitted()) return;
+    stopped: AbortSignal,
+  ): Promise<boolean> {
+    if (!admitted() || stopped.aborted) return false;
     const input = await this.preprocessor.process(context, event, this._agentId);
-    if (!admitted()) return;
+    if (!admitted()) return false;
     if (!input) {
       this.logger.debug("preprocessor returned no input", {
         roomId: context.roomId,
         eventType: event.type,
         messageId: messageIdOf(event),
       });
-      return;
+      return false;
     }
 
     const messageId = String(input.message.id ?? "");
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
-    const messageMarkOptions = { bestEffort: true } as const;
-
-    if (messageId && !isSynthetic) {
-      await this.link.markProcessing(roomId, messageId, messageMarkOptions);
+    const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
+    // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
+    const stoppedWhilePreparing = stopModeOf(stopped);
+    if (stoppedWhilePreparing) {
+      return await this.settleUnstartedTurn(context, input, message, stoppedWhilePreparing, false);
     }
 
-    if (!admitted()) return;
+    if (message.settles) {
+      await this.link.markProcessing(roomId, messageId, TURN_MARK);
+    }
+
+    if (!admitted()) return false;
+    const stoppedBeforeStart = stopModeOf(stopped);
+    if (stoppedBeforeStart) {
+      return await this.settleUnstartedTurn(context, input, message, stoppedBeforeStart, true);
+    }
     const lease = roomId === this.contactHubRoomId ? undefined : context.openWorkingCycle(
       (working, options) => this.link.reportActivity(roomId, working, options),
     );
@@ -533,38 +667,97 @@ export class PlatformRuntime implements AsyncDisposable {
     let succeeded = true;
     let caughtError: unknown;
     let started = false;
+    let stopMode: TurnStopMode | null = null;
     try {
       await lease?.ready;
-      if (!admitted()) return;
-      this.events.emit({ type: "turn.started", roomId, messageId });
-      started = true;
-      await adapter.onEvent({ ...input, ...(lease ? { tools: bindWorkingCycle(input.tools, lease) } : {}), holdRoomUntil });
+      if (!admitted()) return false;
+      if (!stopped.aborted) {
+        this.events.emit({ type: "turn.started", roomId, messageId });
+        started = true;
+        const tools = revokedOnStop(lease ? bindWorkingCycle(input.tools, lease) : input.tools, stopped);
+        const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
+        const cut = await untilStopped(
+          turn,
+          stopped,
+          (error) => this.logger.debug("A stopped turn failed after the runtime stopped waiting on it", { roomId, messageId, error }),
+        );
+        stopMode = cut ? stopModeOf(stopped) : null;
+        if (stopMode) {
+          // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
+          holdRoomUntil(turn.then(() => undefined, () => undefined));
+        }
+      }
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
       await lease?.end();
     }
-    if (started) {
-      this.events.emit(succeeded
-        ? { type: "turn.completed", roomId, messageId }
-        : { type: "turn.failed", roomId, messageId, error: turnFailureLabel(caughtError) });
+    if (!started) {
+      const stoppedAtStart = stopModeOf(stopped);
+      return stoppedAtStart !== null && admitted() && await this.settleUnstartedTurn(context, input, message, stoppedAtStart, true);
     }
-    if (!admitted()) return;
+    // A turn that finished before the stop landed settles as usual.
+    if (stopMode) {
+      this.events.emit({ type: "turn.stopped", roomId, messageId, mode: stopMode });
+      return admitted() && await this.settleCutShortMessage(context, message, stopMode);
+    }
+    this.events.emit(succeeded
+      ? { type: "turn.completed", roomId, messageId }
+      : { type: "turn.failed", roomId, messageId, error: turnFailureLabel(caughtError) });
+    if (!admitted()) return false;
     this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
 
-    if (messageId && !isSynthetic) {
+    if (message.settles) {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
-        await this.link.markProcessed(roomId, messageId, messageMarkOptions);
+        await this.link.markProcessed(roomId, messageId, TURN_MARK);
       } else {
-        await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), messageMarkOptions);
+        await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), TURN_MARK);
       }
     }
 
     if (!succeeded) {
       throw caughtError;
     }
+    return false;
+  }
+
+  /**
+   * A cut-short turn's message. A stopped one is forgotten, so it runs again
+   * once the room resumes: Band serves its own message again, left
+   * `processing`, and a synthetic one only this room holds is run again by
+   * the room, which the `true` result asks for. An interrupted one is consumed.
+   */
+  private async settleCutShortMessage(context: ExecutionContext, message: TurnMessage, mode: TurnStopMode): Promise<boolean> {
+    this.logger.info("turn cut short", { roomId: context.roomId, messageId: message.id, mode });
+    if (mode === "stop") {
+      if (message.id) context.forgetMessage(message.id);
+      return message.synthetic;
+    }
+    if (message.settles) {
+      await this.link.markProcessed(context.roomId, message.id, TURN_MARK);
+    }
+    return false;
+  }
+
+  /**
+   * A turn cut short before the adapter saw it gives back what preparing it
+   * took, so the next turn is prepared as this one was. Its message is
+   * settled as a cut-short one; an interrupt claims it first when it was not.
+   */
+  private async settleUnstartedTurn(
+    context: ExecutionContext,
+    input: FrameworkAdapterInput,
+    message: TurnMessage,
+    mode: TurnStopMode,
+    claimed: boolean,
+  ): Promise<boolean> {
+    context.returnTurnPreparation(input);
+    if (mode === "interrupt" && message.settles && !claimed) {
+      await this.link.markProcessing(context.roomId, message.id, TURN_MARK);
+    }
+    return await this.settleCutShortMessage(context, message, mode);
   }
 
   private async handleContactEvent(event: ContactEvent): Promise<void> {
