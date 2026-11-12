@@ -22,7 +22,7 @@ const journalRecordSchema = z.discriminatedUnion("t", [
 ]);
 
 /** A record a newer version wrote: kept through compaction for that version, never applied here. */
-const foreignRecordSchema = recordBase.extend({ t: z.string() }).loose();
+const foreignRecordSchema = recordBase.extend({ t: z.string() });
 
 type JournalRecord = z.infer<typeof journalRecordSchema>;
 type StoredRecord = JournalRecord | z.infer<typeof foreignRecordSchema>;
