@@ -138,12 +138,15 @@ export class PlatformRuntime implements AsyncDisposable {
     };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = parseSessionConfig(options.sessionConfig);
-    this.journal = this.sessionConfig.journalDir === undefined
-      ? undefined
-      : new TurnJournal(this.sessionConfig.journalDir, { retentionMs: this.sessionConfig.journalRetentionSeconds * MS_PER_SECOND });
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
+    this.journal = this.sessionConfig.journalDir === undefined
+      ? undefined
+      : new TurnJournal(this.sessionConfig.journalDir, options.agentId, {
+        retentionMs: this.sessionConfig.journalRetentionSeconds * MS_PER_SECOND,
+        logger: this.logger,
+      });
     this.events = new AgentEventHub(this.logger);
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
@@ -401,6 +404,9 @@ export class PlatformRuntime implements AsyncDisposable {
       }
     };
 
+    // Before anything connects, so an unusable `journalDir` fails start instead of the first turn.
+    await this.journal?.prepare();
+    assertNotSuperseded();
     await this.initialize();
     assertNotSuperseded();
     // Relays link changes until `stop()` unsubscribes, since a borrowed link can outlive this runtime.
@@ -649,7 +655,7 @@ export class PlatformRuntime implements AsyncDisposable {
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
     const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
-    const journal = message.settles ? await this.journal?.room(roomId) : undefined;
+    const journal = message.settles ? await this.openJournal(roomId, messageId) : undefined;
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
     if (stoppedWhilePreparing) {
@@ -695,7 +701,7 @@ export class PlatformRuntime implements AsyncDisposable {
         const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
         // Journaled over the working cycle, so every reply path is recorded, and
         // under the revocation, so a cut-short turn's refused call records nothing.
-        const tools = revokedOnStop(journal ? journalingTools(cycled, journal, messageId) : cycled, stopped);
+        const tools = revokedOnStop(journal ? journalingTools(cycled, journal, messageId, this.logger) : cycled, stopped);
         const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
         const cut = await untilStopped(
           turn,
@@ -723,7 +729,7 @@ export class PlatformRuntime implements AsyncDisposable {
       this.events.emit({ type: "turn.stopped", roomId, messageId, mode: stopMode });
       if (!admitted()) return false;
       // A stopped turn runs again on play: what it posted no longer answers its message.
-      if (stopMode === "stop") await journal?.turnRetried(messageId);
+      if (stopMode === "stop") await this.recordTurnEnd(journal, "retried", roomId, messageId);
       return await this.settleCutShortMessage(context, message, stopMode, journal);
     }
     this.events.emit(succeeded
@@ -736,12 +742,12 @@ export class PlatformRuntime implements AsyncDisposable {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
         // Recorded first, so a restart before the mark below does not answer it again.
-        await journal?.turnDone(messageId);
+        await this.recordTurnEnd(journal, "done", roomId, messageId);
         await this.link.markProcessed(roomId, messageId, TURN_MARK);
       } else {
         // Band serves a failed message again (a restart before its give-up runs it again):
         // what this attempt posted no longer answers it.
-        await journal?.turnRetried(messageId);
+        await this.recordTurnEnd(journal, "retried", roomId, messageId);
         await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), TURN_MARK);
       }
     }
@@ -770,7 +776,7 @@ export class PlatformRuntime implements AsyncDisposable {
       return message.synthetic;
     }
     if (message.settles) {
-      await journal?.turnDone(message.id);
+      await this.recordTurnEnd(journal, "done", context.roomId, message.id);
       await this.link.markProcessed(context.roomId, message.id, TURN_MARK);
     }
     return false;
@@ -794,6 +800,39 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.link.markProcessing(context.roomId, message.id, TURN_MARK);
     }
     return await this.settleCutShortMessage(context, message, mode, journal);
+  }
+
+  /**
+   * The room's journal for a message Band settles. One that cannot be read
+   * fails this turn alone: the message is marked failed, as any failed turn's
+   * is, and the room and runtime keep running.
+   */
+  private async openJournal(roomId: string, messageId: string): Promise<RoomJournal | undefined> {
+    try {
+      return await this.journal?.room(roomId);
+    } catch (error) {
+      await this.link.markProcessing(roomId, messageId, TURN_MARK);
+      await this.link.markFailed(roomId, messageId, turnFailureLabel(error), TURN_MARK);
+      throw error;
+    }
+  }
+
+  /**
+   * Records how a turn ended before its message is settled. A failed write is
+   * logged and the settle goes ahead: the mark itself is what keeps Band from
+   * serving the message again, and the journal only covers a mark that is lost.
+   */
+  private async recordTurnEnd(
+    journal: RoomJournal | undefined,
+    end: "done" | "retried",
+    roomId: string,
+    messageId: string,
+  ): Promise<void> {
+    try {
+      await (end === "done" ? journal?.turnDone(messageId) : journal?.turnRetried(messageId));
+    } catch (error) {
+      this.logger.warn("Failed to record a turn's end in the turn journal", { roomId, messageId, end, error });
+    }
   }
 
   /** Closes a room's journal once its handling stopped, so a left room holds no file open. */
@@ -821,8 +860,7 @@ export class PlatformRuntime implements AsyncDisposable {
     const state = journal.inbound(messageId);
     if (state.answered || state.done) {
       // Written, `turn.done` also drops the message from memory; one read back as done needs no second record.
-      if (state.done) journal.forget(messageId);
-      else await journal.turnDone(messageId);
+      if (!state.done) await journal.turnDone(messageId);
       this.logger.info("inbound already answered before a restart; not answering it again", { roomId, messageId });
       // Claimed, then settled, as the runtime settles a message it gives up on without running it.
       await this.link.markProcessing(roomId, messageId, TURN_MARK);

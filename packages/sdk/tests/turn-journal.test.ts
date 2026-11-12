@@ -1,23 +1,32 @@
-import { appendFile, readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { describe, expect, it, onTestFinished } from "vitest";
 
-import { RuntimeStateError } from "../src/core/errors";
+import { RecoverableTurnError, RuntimeStateError, ValidationError } from "../src/core/errors";
 import { NO_REPLY_RESULT } from "../src/contracts/toolSchemas";
-import { roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
+import { agentJournalDir, roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
 import { MS_PER_SECOND } from "../src/core/deadline";
 import { tmpRoot } from "./testUtils";
 
+const AGENT = "agent/one";
 const ROOM = "room/with:odd chars";
 const RETENTION_MS = DEFAULT_JOURNAL_RETENTION_SECONDS * MS_PER_SECOND;
+/** Writes queued behind a release: enough that a reopen not waiting for the close reads before they land. */
+const QUEUED_WRITES = 50;
 
-/** A journal under `dir` on the real clock, or on `clock` when given. */
-function journalIn(dir: string, clock?: { now: number }) {
-  return new TurnJournal(dir, { retentionMs: RETENTION_MS, ...(clock ? { now: () => clock.now } : {}) });
+/** One agent's journal under `dir` on the real clock, or on `clock` when given; closed when the test ends. */
+function journalIn(dir: string, clock?: { now: number }, agentId = AGENT): TurnJournal {
+  const journals = new TurnJournal(dir, agentId, { retentionMs: RETENTION_MS, ...(clock ? { now: () => clock.now } : {}) });
+  onTestFinished(() => journals.close());
+  return journals;
+}
+
+function roomFile(dir: string, agentId = AGENT): string {
+  return roomJournalFile(agentJournalDir(dir, agentId), ROOM);
 }
 
 async function fileLines(dir: string): Promise<string[]> {
-  const text = await readFile(roomJournalFile(dir, ROOM), "utf8");
+  const text = await readFile(roomFile(dir), "utf8");
   return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { t: string }).t);
 }
 
@@ -49,7 +58,9 @@ describe("TurnJournal", () => {
     expect(reopened.inbound("m1")).toMatchObject({ answered: false, unrecorded: [{ digest: "d1", operationId: "op-1" }] });
 
     await reopened.deliveryUnrecorded(unrecorded!);
-    expect((await journalIn(dir).room(ROOM)).inbound("m1").unrecorded).toEqual([]);
+    const afterReport = await journalIn(dir).room(ROOM);
+    expect(afterReport.inbound("m1").unrecorded).toEqual([]);
+    expect(afterReport.operation("op-1")).toEqual({ status: "uncertain", tool: "band_send_message", digest: "d1" });
   });
 
   it("finds a posted or declined operation by its id, with its payload digest and result", async () => {
@@ -57,72 +68,93 @@ describe("TurnJournal", () => {
     const sent = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
     await journal.replyPosted(sent, { ok: true, id: "posted-1" });
     await journal.replyDeclined("m2", { tool: "band_no_reply", digest: "d2", operationId: "op-2" }, NO_REPLY_RESULT);
-    const pending = await journal.beginReply("m3", { tool: "band_send_message", digest: "d3", operationId: "op-3" });
+    const refused = await journal.beginReply("m3", { tool: "band_send_message", digest: "d3", operationId: "op-3" });
 
-    expect(journal.operation("op-1")).toEqual({ tool: "band_send_message", digest: "d1", result: { ok: true, id: "posted-1" } });
-    expect(journal.operation("op-2")).toMatchObject({ tool: "band_no_reply" });
-    expect(journal.operation("op-3")).toBeUndefined();
-    await journal.replyFailed(pending);
+    expect(journal.operation("op-1")).toEqual({ status: "landed", tool: "band_send_message", digest: "d1", result: { ok: true, id: "posted-1" } });
+    expect(journal.operation("op-2")).toEqual({ status: "landed", tool: "band_no_reply", digest: "d2", result: NO_REPLY_RESULT });
+    // Pending with no outcome, and not landing: how it ended is unknown.
+    expect(journal.operation("op-3")).toEqual({ status: "uncertain", tool: "band_send_message", digest: "d3" });
+    await journal.replyFailed(refused);
     expect(journal.operation("op-3")).toBeUndefined();
   });
 
-  it("ignores a last record a crash cut short", async () => {
+  it("ignores a last record a crash cut short, and appends after it on a line of its own", async () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
     await journal.turnDone("m1");
-    const [file] = (await readFile(roomJournalFile(dir, ROOM), "utf8")).split("\n");
-    expect(file).toContain("turn.done");
-    await appendFile(roomJournalFile(dir, ROOM), '{"t":"turn.do');
+    await journal.close();
+    await appendFile(roomFile(dir), '{"t":"turn.do');
 
     const reopened = await journalIn(dir).room(ROOM);
     expect(reopened.inbound("m1").done).toBe(true);
     await reopened.turnDone("m2");
+    expect(await fileLines(dir)).toEqual(["turn.done", "turn.done"]);
     expect((await journalIn(dir).room(ROOM)).inbound("m2").done).toBe(true);
   });
 
-  it("forgets what a retried inbound's turn answered, including a reply of that turn that lands after the retry", async () => {
+  it("drops a line that parses but is not a record instead of failing the room", async () => {
+    const dir = tmpRoot();
+    const journal = await journalIn(dir).room(ROOM);
+    await journal.turnDone("m1");
+    await journal.close();
+    await appendFile(roomFile(dir), "null\n{\"t\":\"turn.done\"}\n");
+
+    const reopened = await journalIn(dir).room(ROOM);
+
+    expect(reopened.inbound("m1").done).toBe(true);
+    expect(await fileLines(dir)).toEqual(["turn.done"]);
+  });
+
+  it("does not let a reply of a retried turn answer the inbound, and still reports it if it never lands", async () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
     const posted = await journal.beginReply("m1", { tool: "band_send_message" });
     await journal.replyPosted(posted, { ok: true });
-    const inFlight = await journal.beginReply("m1", { tool: "band_send_message" });
+    const lands = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
+    await journal.beginReply("m1", { tool: "band_send_message" });
 
     await journal.turnRetried("m1");
-    await journal.replyPosted(inFlight, { ok: true });
+    await journal.replyPosted(lands, { ok: true, id: "late" });
 
-    const expected = { answered: false, done: false, unrecorded: [] };
-    expect(journal.inbound("m1")).toEqual(expected);
-    expect((await journalIn(dir).room(ROOM)).inbound("m1")).toEqual(expected);
+    expect(journal.inbound("m1")).toMatchObject({ answered: false, done: false });
+    // A late post still binds its operation id: a retry under it must not post again.
+    expect(journal.operation("op-1")).toMatchObject({ status: "landed", result: { ok: true, id: "late" } });
+    const reopened = (await journalIn(dir).room(ROOM)).inbound("m1");
+    expect(reopened).toMatchObject({ answered: false, done: false });
+    // The third reply has no outcome: delivery uncertain, retried turn or not.
+    expect(reopened.unrecorded).toHaveLength(1);
+  });
+
+  it("records a reply that lands after its turn ended, and keeps the ended turn's marker", async () => {
+    const dir = tmpRoot();
+    const journal = await journalIn(dir).room(ROOM);
+    const inFlight = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
+
+    await journal.turnDone("m1");
+    await journal.replyPosted(inFlight, { ok: true, id: "late" });
+
+    // Kept in memory as on disk, so neither a re-served message nor a retry under the id posts again.
+    expect(journal.inbound("m1")).toEqual({ answered: true, done: true, unrecorded: [] });
+    expect(journal.operation("op-1")).toMatchObject({ status: "landed", result: { ok: true, id: "late" } });
+    const reopened = await journalIn(dir).room(ROOM);
+    expect(reopened.inbound("m1")).toEqual({ answered: true, done: true, unrecorded: [] });
+    expect(reopened.operation("op-1")).toMatchObject({ status: "landed" });
   });
 
   it("closes a released room, refusing its later writes, and reopens it with every record it wrote", async () => {
     const journals = journalIn(tmpRoot());
     const released = await journals.room(ROOM);
-    const writing = released.turnDone("m1");
+    const writes = Array.from({ length: QUEUED_WRITES }, (_, index) => released.turnDone(`m${index}`));
 
     const releasing = journals.release(ROOM);
     const reopened = journals.room(ROOM);
-    await writing;
+    await Promise.all(writes);
     await releasing;
 
-    await expect(released.turnDone("m2")).rejects.toBeInstanceOf(RuntimeStateError);
+    await expect(released.turnDone("late")).rejects.toBeInstanceOf(RuntimeStateError);
     expect(await reopened).not.toBe(released);
-    expect((await reopened).inbound("m1").done).toBe(true);
-    expect((await reopened).inbound("m2").done).toBe(false);
-    await journals.close();
-  });
-
-  it("forgets a message whose turn ended here, but keeps it in the file and keeps its operation", async () => {
-    const dir = tmpRoot();
-    const journal = await journalIn(dir).room(ROOM);
-    const sent = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
-    await journal.replyPosted(sent, { ok: true });
-
-    await journal.turnDone("m1");
-
-    expect(journal.inbound("m1")).toEqual({ answered: false, done: false, unrecorded: [] });
-    expect(journal.operation("op-1")).toMatchObject({ digest: "d1" });
-    expect((await journalIn(dir).room(ROOM)).inbound("m1")).toEqual({ answered: true, done: true, unrecorded: [] });
+    expect((await reopened).inbound(`m${QUEUED_WRITES - 1}`).done).toBe(true);
+    expect((await reopened).inbound("late").done).toBe(false);
   });
 
   it("forgets operations and answers older than the retention", async () => {
@@ -139,7 +171,7 @@ describe("TurnJournal", () => {
     expect(journal.inbound("m1").answered).toBe(false);
   });
 
-  it("drops expired records from the file when it opens, keeping the rest", async () => {
+  it("drops a message's records from the file when its newest one expired, keeping the rest", async () => {
     const dir = tmpRoot();
     const clock = { now: 1_000 };
     const journal = await journalIn(dir, clock).room(ROOM);
@@ -157,11 +189,45 @@ describe("TurnJournal", () => {
     expect(reopened.operation("op-1")).toBeDefined();
   });
 
-  it("keeps rooms apart", async () => {
-    const journals = journalIn(tmpRoot());
+  it("keeps a reply's intent while its outcome is inside the retention, though the intent alone is older", async () => {
+    const dir = tmpRoot();
+    const clock = { now: 1_000 };
+    const journal = await journalIn(dir, clock).room(ROOM);
+    const pending = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
+    clock.now += 50;
+    await journal.replyPosted(pending, { ok: true });
+    await journal.close();
+    // The cutoff falls between the intent and its outcome.
+    clock.now += RETENTION_MS - 30;
+
+    const reopened = await journalIn(dir, clock).room(ROOM);
+
+    expect(reopened.inbound("m1").answered).toBe(true);
+    expect(reopened.operation("op-1")).toMatchObject({ status: "landed" });
+  });
+
+  it("keeps rooms and agents apart", async () => {
+    const dir = tmpRoot();
+    const journals = journalIn(dir);
     await (await journals.room("room-a")).turnDone("m1");
 
     expect((await journals.room("room-b")).inbound("m1").done).toBe(false);
     expect(await journals.room("room-a")).toBe(await journals.room("room-a"));
+    expect((await journalIn(dir, undefined, "agent-two").room("room-a")).inbound("m1").done).toBe(false);
+  });
+
+  it("fails prepare for a journalDir that is not a writable directory", async () => {
+    const dir = tmpRoot();
+    await appendFile(`${dir}/not-a-dir`, "");
+
+    await expect(journalIn(`${dir}/not-a-dir`).prepare()).rejects.toBeInstanceOf(ValidationError);
+    await expect(journalIn(dir).prepare()).resolves.toBeUndefined();
+  });
+
+  it("fails a room whose file cannot be read with a turn-scoped error", async () => {
+    const dir = tmpRoot();
+    await mkdir(roomFile(dir), { recursive: true });
+
+    await expect(journalIn(dir).room(ROOM)).rejects.toBeInstanceOf(RecoverableTurnError);
   });
 });

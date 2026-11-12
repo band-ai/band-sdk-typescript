@@ -24,6 +24,14 @@ export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
 export const SEND_EVENT_TOOL_NAME = "band_send_event";
 export const NO_REPLY_TOOL_NAME = "band_no_reply";
 
+/** The tools whose landing answers a turn: a posted reply or a decline. */
+export const REPLY_TOOL_NAMES = [SEND_MESSAGE_TOOL_NAME, NO_REPLY_TOOL_NAME] as const;
+export type ReplyToolName = (typeof REPLY_TOOL_NAMES)[number];
+
+export function isReplyToolName(name: unknown): name is ReplyToolName {
+  return (REPLY_TOOL_NAMES as readonly unknown[]).includes(name);
+}
+
 /** `band_no_reply`'s result: it posts nothing, so there is nothing else to report. */
 export const NO_REPLY_RESULT: Readonly<ToolOperationResult> = Object.freeze({ status: "ok" });
 
