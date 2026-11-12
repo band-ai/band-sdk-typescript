@@ -83,7 +83,7 @@ describe("TurnJournal", () => {
     const reopened = await journalIn(dir).room(ROOM);
     expect(reopened.inbound("m1")).toEqual({ done: false, unreportedReplies: 2 });
 
-    await reopened.deliveryUnrecorded("m1");
+    await reopened.repliesReported("m1");
     await reopened.replyBegun("m1");
     expect((await journalIn(dir).room(ROOM)).inbound("m1")).toEqual({ done: false, unreportedReplies: 1 });
   });
@@ -114,7 +114,7 @@ describe("TurnJournal", () => {
 
     expect(reopened.inbound("m1").done).toBe(true);
     expect(await fileRecords(dir)).toEqual(["turn.done"]);
-    expect(logged.entries).toEqual([{ level: "warn", message: expect.any(String), context: { unreadable: 2, expired: 0 } }]);
+    expect(logged.entries).toEqual([{ level: "warn", message: expect.any(String), context: { roomId: ROOM, unreadable: 2, expired: 0 } }]);
   });
 
   it("keeps the next record whole after an append the disk cut short", async () => {
@@ -158,9 +158,9 @@ describe("TurnJournal", () => {
       order.push("closed");
     });
     const openRoom = RoomJournal.open.bind(RoomJournal);
-    const reopen = vi.spyOn(RoomJournal, "open").mockImplementation((file, options) => {
+    const reopen = vi.spyOn(RoomJournal, "open").mockImplementation((file, options, roomId) => {
       order.push("opened");
-      return openRoom(file, options);
+      return openRoom(file, options, roomId);
     });
     onTestFinished(() => {
       close.mockRestore();
@@ -215,7 +215,7 @@ describe("TurnJournal", () => {
     const reopened = await journalIn(dir, { clock, logger }).room(ROOM);
     expect(await fileRecords(dir)).toEqual(["reply.intent", "reply.intent"]);
     expect(reopened.inbound("recent").unreportedReplies).toBe(2);
-    expect(logged.entries).toEqual([{ level: "debug", message: expect.any(String), context: { expired: 1 } }]);
+    expect(logged.entries).toEqual([{ level: "debug", message: expect.any(String), context: { roomId: ROOM, expired: 1 } }]);
   });
 
   it("keeps rooms and agents apart", async () => {

@@ -32,7 +32,7 @@ import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 import { MS_PER_SECOND } from "../core/deadline";
 import { journalingTools } from "./journal/journalTools";
-import { TurnJournal, type RoomJournal } from "./journal/TurnJournal";
+import { bestEffort, TurnJournal, type RoomJournal } from "./journal/TurnJournal";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -655,7 +655,8 @@ export class PlatformRuntime implements AsyncDisposable {
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
     const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
-    const journal = message.settles ? await this.openJournal(roomId) : undefined;
+    // Not for a turn already cut short: it would open the journal of a room whose handling may have stopped.
+    const journal = message.settles && !stopped.aborted ? await this.openJournal(roomId) : undefined;
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
     if (stoppedWhilePreparing) {
@@ -699,8 +700,10 @@ export class PlatformRuntime implements AsyncDisposable {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
         const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
+        const journals = this.journal;
         // Journaled under the revocation, so a cut-short turn's refused reply records nothing.
-        const tools = revokedOnStop(journal ? journalingTools(cycled, journal, messageId, this.logger) : cycled, stopped);
+        const journaled = journal && journals ? journalingTools(cycled, () => journals.room(roomId), messageId, this.logger) : cycled;
+        const tools = revokedOnStop(journaled, stopped);
         const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
         const cut = await untilStopped(
           turn,
@@ -815,16 +818,15 @@ export class PlatformRuntime implements AsyncDisposable {
    * message, and a lost record only lets a restart answer it again.
    */
   private async recordTurnDone(journal: RoomJournal | undefined, roomId: string, messageId: string): Promise<void> {
-    await journal?.turnDone(messageId).catch((error: unknown) => {
-      this.logger.warn("Failed to record a turn's end in the turn journal", { roomId, messageId, error });
-    });
+    if (!journal) return;
+    await bestEffort(() => journal.turnDone(messageId), this.logger, "Failed to record a turn's end in the turn journal", { roomId, messageId });
   }
 
   /** Closes a room's journal once its handling stopped, so a left room holds no file open. */
   private releaseJournal(roomId: string): void {
-    this.journal?.release(roomId).catch((error: unknown) => {
-      this.logger.warn("Failed to close a room's turn journal", { roomId, error });
-    });
+    const journals = this.journal;
+    if (!journals) return;
+    void bestEffort(() => journals.release(roomId), this.logger, "Failed to close a room's turn journal", { roomId });
   }
 
   /**
@@ -850,8 +852,9 @@ export class PlatformRuntime implements AsyncDisposable {
         replies: state.unreportedReplies,
       });
       this.events.emit({ type: "delivery.unrecorded", roomId, messageId });
-      await journal.deliveryUnrecorded(messageId).catch((error: unknown) => {
-        this.logger.warn("Failed to record a reported delivery in the turn journal", { roomId, messageId, error });
+      await bestEffort(() => journal.repliesReported(messageId), this.logger, "Failed to record a reported repeat in the turn journal", {
+        roomId,
+        messageId,
       });
     }
     return false;

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, rename, type FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -12,15 +12,16 @@ import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 /** A journal line: what happened to an inbound message, and when it was written, in epoch milliseconds. */
 const journalRecordSchema = z.discriminatedUnion("t", [
   /** A reply to the message began posting. Nothing records how it ended: Band may or may not have it. */
-  z.object({ t: z.literal("reply.intent"), messageId: z.string(), id: z.string(), at: z.number() }),
+  z.object({ t: z.literal("reply.intent"), messageId: z.string(), at: z.number() }),
   /** The message's turn ended; it is about to be, or was, marked processed. */
   z.object({ t: z.literal("turn.done"), messageId: z.string(), at: z.number() }),
-  /** The replies begun so far for the message were reported as possibly posted. */
-  z.object({ t: z.literal("delivery.unrecorded"), messageId: z.string(), at: z.number() }),
+  /** The replies begun so far for the message were reported as possibly in the room. */
+  z.object({ t: z.literal("replies.reported"), messageId: z.string(), at: z.number() }),
 ]);
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type JournalRecord = z.infer<typeof journalRecordSchema>;
-type JournalEntry = JournalRecord extends infer R ? (R extends JournalRecord ? Omit<R, "at"> : never) : never;
+type JournalEntry = DistributiveOmit<JournalRecord, "at">;
 
 /** What the journal knows of one inbound message. */
 export interface InboundState {
@@ -30,12 +31,8 @@ export interface InboundState {
   unreportedReplies: number;
 }
 
-interface InboundIndex {
-  done: boolean;
-  unreported: number;
-  /** When a record last touched it; the index is kept in this order. */
-  at: number;
-}
+/** A message's state, stamped with when a record last touched it; the index is kept in that order. */
+type InboundIndex = InboundState & { at: number };
 
 /** The directory of one agent's journal under `journalDir`. */
 export function agentJournalDir(journalDir: string, agentId: string): string {
@@ -47,11 +44,24 @@ export function roomJournalFile(dir: string, roomId: string): string {
   return path.join(dir, `${encodeURIComponent(roomId)}.jsonl`);
 }
 
+/**
+ * Runs a journal write whose failure must not stop the runtime: every record
+ * only ever stops a message from being answered twice, so a lost one is logged
+ * and the runtime carries on as it would without a journal.
+ */
+export async function bestEffort(write: () => Promise<unknown>, logger: Logger, failure: string, context: Record<string, unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    logger.warn(failure, { ...context, error });
+  }
+}
+
 function toLine(record: JournalRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-/** A journal read or write failure. Its cause holds the file; the message stays generic, since it can reach Band. */
+/** A journal read or write failure; the file is in its cause. */
 function journalFailure(error: unknown): BandSdkError {
   return error instanceof BandSdkError ? error : new BandSdkError("Turn journal I/O failed", error);
 }
@@ -100,7 +110,7 @@ export class TurnJournal {
       const file = roomJournalFile(this.dir, roomId);
       // A failed close was logged where it happened; the reopen reads whatever the file holds.
       const released = (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
-      journal = released.then(() => RoomJournal.open(file, this.options));
+      journal = released.then(() => RoomJournal.open(file, this.options, roomId));
       this.rooms.set(roomId, journal);
       journal.catch(() => {
         if (this.rooms.get(roomId) === journal) this.rooms.delete(roomId);
@@ -163,15 +173,20 @@ function unexpired(records: JournalRecord[], cutoff: number): JournalRecord[] {
 
 /** Replaces `file` with `records`, through a renamed copy so a crash leaves the old file or the new one. */
 async function rewrite(file: string, records: JournalRecord[]): Promise<void> {
-  const copy = `${file}.compacting`;
-  const handle = await open(copy, "w");
+  const copy = `${file}.${randomUUID()}.compacting`;
   try {
-    await handle.writeFile(records.map(toLine).join(""), "utf8");
-    await handle.datasync();
-  } finally {
-    await handle.close();
+    const handle = await open(copy, "w");
+    try {
+      await handle.writeFile(records.map(toLine).join(""), "utf8");
+      await handle.datasync();
+    } finally {
+      await handle.close();
+    }
+    await rename(copy, file);
+  } catch (error) {
+    await rm(copy, { force: true });
+    throw error;
   }
-  await rename(copy, file);
   await syncDirectory(path.dirname(file));
 }
 
@@ -197,6 +212,11 @@ async function syncDirectory(dir: string): Promise<void> {
  * Every record only ever stops a message from being answered twice: losing
  * one, to a failed write or a damaged line, leaves the message to be answered
  * again, as it would be without a journal.
+ *
+ * A JSON-lines file rather than `node:sqlite` (which the Linear store uses):
+ * the journal is opt-in for every runtime, and `node:sqlite` warns as
+ * experimental on Node 22 and needs a flag below 22.13, which the engines
+ * range still allows.
  */
 export class RoomJournal {
   private readonly inbounds = new Map<string, InboundIndex>();
@@ -211,7 +231,7 @@ export class RoomJournal {
     private readonly now: () => number,
   ) {}
 
-  public static async open(file: string, options: TurnJournalOptions): Promise<RoomJournal> {
+  public static async open(file: string, options: TurnJournalOptions, roomId: string): Promise<RoomJournal> {
     const now = options.now ?? Date.now;
     try {
       await mkdir(path.dirname(file), { recursive: true });
@@ -224,8 +244,8 @@ export class RoomJournal {
       const expired = readable.length - records.length;
       // Rewritten also when a crash cut the last line's newline, so the next append starts a line.
       if (unreadable > 0 || expired > 0 || (text !== null && text !== "" && !text.endsWith("\n"))) {
-        if (unreadable > 0) options.logger?.warn("Dropping unreadable turn journal lines", { unreadable, expired });
-        else options.logger?.debug("Compacting a turn journal", { expired });
+        if (unreadable > 0) options.logger?.warn("Dropping unreadable turn journal lines", { roomId, unreadable, expired });
+        else options.logger?.debug("Compacting a turn journal", { roomId, expired });
         await rewrite(file, records);
       } else if (text === null) {
         // Created by the open below: its directory entry is flushed once it exists.
@@ -243,12 +263,12 @@ export class RoomJournal {
   public inbound(messageId: string): InboundState {
     this.expire();
     const index = this.inbounds.get(messageId);
-    return { done: index?.done ?? false, unreportedReplies: index?.unreported ?? 0 };
+    return { done: index?.done ?? false, unreportedReplies: index?.unreportedReplies ?? 0 };
   }
 
   /** Records that a reply to `messageId` is about to begin posting. */
   public async replyBegun(messageId: string): Promise<void> {
-    await this.append({ t: "reply.intent", messageId, id: randomUUID() });
+    await this.append({ t: "reply.intent", messageId });
   }
 
   /** Records that the inbound's turn ended, before it is marked processed. */
@@ -256,9 +276,9 @@ export class RoomJournal {
     await this.append({ t: "turn.done", messageId });
   }
 
-  /** Records that the message's begun replies were reported as possibly posted, so they are reported once. */
-  public async deliveryUnrecorded(messageId: string): Promise<void> {
-    await this.append({ t: "delivery.unrecorded", messageId });
+  /** Records that the message's begun replies were reported as possibly in the room, so they are reported once. */
+  public async repliesReported(messageId: string): Promise<void> {
+    await this.append({ t: "replies.reported", messageId });
   }
 
   public async close(): Promise<void> {
@@ -290,7 +310,7 @@ export class RoomJournal {
 
   /** `messageId`'s index, moved to the newest end and stamped `at`. */
   private touch(messageId: string, at: number): InboundIndex {
-    const index = this.inbounds.get(messageId) ?? { done: false, unreported: 0, at };
+    const index = this.inbounds.get(messageId) ?? { done: false, unreportedReplies: 0, at };
     this.inbounds.delete(messageId);
     index.at = at;
     this.inbounds.set(messageId, index);
@@ -310,14 +330,14 @@ export class RoomJournal {
     const index = this.touch(record.messageId, record.at);
     switch (record.t) {
       case "reply.intent":
-        if (!index.done) index.unreported += 1;
+        if (!index.done) index.unreportedReplies += 1;
         return;
       case "turn.done":
         index.done = true;
-        index.unreported = 0;
+        index.unreportedReplies = 0;
         return;
-      case "delivery.unrecorded":
-        index.unreported = 0;
+      case "replies.reported":
+        index.unreportedReplies = 0;
         return;
     }
   }

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,8 +13,9 @@ import { ValidationError } from "../src/core/errors";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { PlatformRuntime } from "../src/runtime";
-import { agentJournalDir, RoomJournal, roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
-import { DEFAULT_JOURNAL_RETENTION_SECONDS, type SessionConfig } from "../src/runtime/types";
+import { agentJournalDir, roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
+import { DEFAULT_JOURNAL_RETENTION_SECONDS, type ContactEventConfig, type SessionConfig } from "../src/runtime/types";
+import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
 
@@ -36,8 +37,9 @@ async function startProcess(
   platform: BandPlatform,
   journalDir: string | undefined,
   handler: Handler,
-  sessionConfig: Omit<SessionConfig, "journalDir"> = {},
+  options: { sessionConfig?: Omit<SessionConfig, "journalDir">; contactConfig?: ContactEventConfig } = {},
 ) {
+  const { sessionConfig = {}, contactConfig } = options;
   const handled: string[] = [];
   const events = new RecordLog<AgentEvent>();
   const runtime = new PlatformRuntime({
@@ -46,6 +48,7 @@ async function startProcess(
     linkOptions: platform.link,
     agentConfig: { autoSubscribeExistingRooms: true },
     sessionConfig: journalDir === undefined ? sessionConfig : { ...sessionConfig, journalDir },
+    ...(contactConfig ? { contactConfig } : {}),
   });
   runtime.observe((event) => {
     events.record(event);
@@ -72,6 +75,21 @@ async function journalRecords(journalDir: string): Promise<string[]> {
 }
 
 const reported = (events: RecordLog<AgentEvent>) => events.entries.filter((event) => event.type === "delivery.unrecorded");
+
+/** Fails, as a full disk does, every journal append whose line matches `matches`; restored when the test ends. */
+async function failJournalAppends(matches: (line: string) => boolean): Promise<void> {
+  const probe = await open(path.join(tmpRoot(), "probe"), "w");
+  const prototype = Object.getPrototypeOf(probe) as { appendFile: (...args: unknown[]) => Promise<void> };
+  await probe.close();
+  const appendLine = prototype.appendFile;
+  const spy = vi.spyOn(prototype, "appendFile").mockImplementation(function (this: unknown, ...args: unknown[]) {
+    if (typeof args[0] === "string" && matches(args[0])) {
+      return Promise.reject(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }));
+    }
+    return appendLine.apply(this, args);
+  });
+  onTestFinished(() => spy.mockRestore());
+}
 
 /** Each reply path, and the journal records its turn leaves. */
 const replyPaths: Array<[string, Handler, string[]]> = [
@@ -174,7 +192,7 @@ describe("the turn journal across a restart", () => {
     // As without the journal, the re-run may repeat what the killed turn posted: it is reported.
     expect(room.messages.map((posted) => posted.content)).toEqual(["first", "first", "second"]);
     expect(reported(second.events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
-    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "delivery.unrecorded", "reply.intent", "reply.intent", "turn.done"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "replies.reported", "reply.intent", "reply.intent", "turn.done"]);
   });
 
   it("dispatches nothing for a message whose turn ended before a restart, and still bootstraps the next turn", async () => {
@@ -198,6 +216,29 @@ describe("the turn journal across a restart", () => {
     const next = await room.say(OWNER, `${MENTION} again`);
     expect(await room.outcome(next)).toBe("processed");
     expect(bootstraps).toEqual([true]);
+  });
+
+  it("records an interrupted turn's end before its message is consumed", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
+    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("partial", ["@owner"]);
+      await released.promise;
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await room.until(() => room.messages.length === 1);
+    const mark = room.holdNextProcessed();
+
+    platform.control("interrupt", ROOM);
+    await mark.sending;
+
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
+    mark.release();
+    expect(await room.outcome(inbound)).toBe("processed");
+    await events.next((event) => event.type === "turn.stopped");
   });
 });
 
@@ -226,6 +267,8 @@ describe("the turn journal when Band serves a message again", () => {
     expect(room.outcomes(inbound)).toEqual(["failed", "processed"]);
     expect(second.handled).toEqual([inbound]);
     expect(room.messages.map((posted) => posted.content)).toEqual(["partial", "answered"]);
+    expect(reported(second.events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "replies.reported", "reply.intent", "turn.done"]);
   });
 
   it("runs a stopped turn's message again on play, though the stopped turn had replied", async () => {
@@ -234,11 +277,15 @@ describe("the turn journal when Band serves a message again", () => {
     const released = createDeferred();
     onTestFinished(() => released.resolve());
     let turns = 0;
-    const { handled, events } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
+    const journalDir = tmpRoot();
+    const refused = createDeferred<unknown>();
+    const { handled, events } = await startProcess(platform, journalDir, async ({ tools }) => {
       turns += 1;
       if (turns === 1) {
         await tools.sendMessage("partial", ["@owner"]);
         await released.promise;
+        // Cut short: this reply is refused and records nothing.
+        await tools.sendMessage("late", ["@owner"]).then(refused.resolve, refused.resolve);
         return;
       }
       await tools.sendMessage("answered", ["@owner"]);
@@ -249,35 +296,100 @@ describe("the turn journal when Band serves a message again", () => {
     platform.control("stop", ROOM);
     await events.next((event) => event.type === "turn.stopped");
     released.resolve();
+    await refused.promise;
     platform.control("play", ROOM);
 
     expect(await room.outcome(inbound)).toBe("processed");
     expect(handled).toEqual([inbound, inbound]);
     expect(room.messages.map((posted) => posted.content)).toEqual(["partial", "answered"]);
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "replies.reported", "reply.intent", "turn.done"]);
   });
 
-  it("records an interrupted turn's end before its message is consumed, so a restart does not run it", async () => {
+});
+
+describe("the turn journal while a room's handling stops and starts", () => {
+  it("records the replies of a turn that outlives its room's reset, so the repeat is reported", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const keepWorking = createDeferred();
+    onTestFinished(() => keepWorking.resolve());
+    const lateSent = createDeferred<unknown>();
+    let turns = 0;
+    const { runtime, events, handled } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
+      turns += 1;
+      if (turns === 1) {
+        // An adapter that cannot be cancelled keeps working past the reset's budget.
+        await keepWorking.promise;
+        await tools.sendMessage("late", ["@owner"]).then(lateSent.resolve, lateSent.resolve);
+        return;
+      }
+      await tools.sendMessage("again", ["@owner"]);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await events.next((event) => event.type === "turn.started");
+
+    expect(await runtime.resetRoomSession(ROOM, 1)).toBe(false);
+    await events.next((event) => event.type === "room.stopped");
+    keepWorking.resolve();
+    await lateSent.promise;
+    const next = await room.say(OWNER, `${MENTION} next`);
+    await room.until(() => handled.filter((id) => id === inbound).length === 2);
+    await room.outcome(next);
+
+    expect(room.messages.map((posted) => posted.content)).toContain("again");
+    expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
+  });
+
+  it("settles a finished message Band serves again after its room was left and rejoined, without running it", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const { handled, events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]);
+    });
+    // The turn finishes but Band never hears it was processed.
+    const mark = room.holdNextProcessed({ error: new Error("503 from Band") });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await mark.sending;
+    mark.release();
+    await room.remove();
+    await events.next((event) => event.type === "room.stopped");
+
+    const rejoined = await platform.room(ROOM);
+    await platform.rest.settled.next((settled) => settled.messageId === inbound && settled.outcome === "processed");
+
+    expect(handled).toEqual([inbound]);
+    expect(rejoined.messages.map((posted) => posted.content)).toEqual(["answered"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
+  });
+
+  it("opens no journal for a synthetic contact-hub turn, stopped and replayed", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const journalDir = tmpRoot();
     const released = createDeferred();
     onTestFinished(() => released.resolve());
-    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
-      await tools.sendMessage("partial", ["@owner"]);
-      await released.promise;
+    let turns = 0;
+    const { handled, events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      turns += 1;
+      if (turns === 1) await released.promise;
+      tools.turn.settle();
+    }, { contactConfig: { strategy: "hub_room", hubTaskId: "contacts" } });
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_request_received", {
+      id: "request-1", from_handle: "alice", from_name: "alice", message: "Hello", status: "pending", inserted_at: new Date().toISOString(),
     });
-    const inbound = await room.say(OWNER, `${MENTION} hello`);
-    await room.until(() => room.messages.length === 1);
-    const mark = room.holdNextProcessed();
+    const started = await events.next((event) => event.type === "turn.started");
+    if (started.type !== "turn.started") throw new Error("expected the hub turn to start");
 
-    platform.control("interrupt", ROOM);
-    await mark.sending;
-
-    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
-    mark.release();
-    expect(await room.outcome(inbound)).toBe("processed");
+    platform.control("stop", started.roomId);
     await events.next((event) => event.type === "turn.stopped");
+    released.resolve();
+    platform.control("play", started.roomId);
+    await events.next((event) => event.type === "turn.completed" || event.type === "turn.failed");
+
+    expect(handled).toEqual([started.messageId, started.messageId]);
+    expect(reported(events)).toEqual([]);
+    expect(await readdir(agentJournalDir(journalDir, AGENT_ID))).toEqual([]);
   });
 });
 
@@ -321,26 +433,42 @@ describe("a turn journal that fails", () => {
   it("still posts a reply and settles its message when the journal cannot record either", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
-    const full = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
-    const replyBegun = vi.spyOn(RoomJournal.prototype, "replyBegun").mockRejectedValue(full);
-    const turnDone = vi.spyOn(RoomJournal.prototype, "turnDone").mockRejectedValue(full);
-    onTestFinished(() => {
-      replyBegun.mockRestore();
-      turnDone.mockRestore();
-    });
-    const { runtime } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
+    const journalDir = tmpRoot();
+    await failJournalAppends((line) => line.includes('"t":"reply.intent"') || line.includes('"t":"turn.done"'));
+    const { runtime } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
     });
 
     expect(await room.outcome(await room.say(OWNER, `${MENTION} hello`))).toBe("processed");
 
     expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
-    expect(replyBegun).toHaveBeenCalledTimes(1);
-    expect(turnDone).toHaveBeenCalledTimes(1);
+    expect(await journalRecords(journalDir)).toEqual([]);
     expect(runtime.state.status).toBe("running");
   });
 
-  it("forgets a message one journalRetentionSeconds after its last record", async () => {
+  it("still answers a message again when its repeat report cannot be recorded", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
+    const crashed = new TurnJournal(journalDir, AGENT_ID, { retentionMs: RETENTION_MS });
+    await (await crashed.room(ROOM)).replyBegun(inbound);
+    await crashed.close();
+    await failJournalAppends((line) => line.includes('"t":"replies.reported"'));
+
+    const { handled, events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]);
+    });
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(handled).toEqual([inbound]);
+    expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
+  });
+
+  it.each([
+    ["is still settled without a turn exactly", 60 * MS_PER_SECOND, false],
+    ["runs again one millisecond past", 60 * MS_PER_SECOND + 1, true],
+  ] as const)("a message whose turn ended %s journalRetentionSeconds after its last record", async (_when, elapsedMs, runsAgain) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     onTestFinished(() => {
       vi.useRealTimers();
@@ -352,13 +480,13 @@ describe("a turn journal that fails", () => {
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
     await (await ended.room(ROOM)).turnDone(inbound);
     await ended.close();
-    vi.advanceTimersByTime(60 * MS_PER_SECOND + 1);
+    vi.advanceTimersByTime(elapsedMs);
 
     const { handled } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
-    }, { journalRetentionSeconds: 60 });
+    }, { sessionConfig: { journalRetentionSeconds: 60 } });
 
     expect(await room.outcome(inbound)).toBe("processed");
-    expect(handled).toEqual([inbound]);
+    expect(handled).toEqual(runsAgain ? [inbound] : []);
   });
 });

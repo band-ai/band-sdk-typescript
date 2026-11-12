@@ -28,7 +28,7 @@ export const DEFAULT_MAX_MESSAGE_RETRIES = 1;
 
 export const WORKING_STATE_TTL_SECONDS = 10;
 export const DEFAULT_STOPPED_RESYNC_SECONDS = 60;
-/** How long the turn journal remembers a record: three hours. */
+/** Default `journalRetentionSeconds`. */
 export const DEFAULT_JOURNAL_RETENTION_SECONDS = 3 * 60 * 60;
 
 // Range checks apply only when reporting is enabled; dormant numeric settings are preserved.
