@@ -24,30 +24,8 @@ export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
 export const SEND_EVENT_TOOL_NAME = "band_send_event";
 export const NO_REPLY_TOOL_NAME = "band_no_reply";
 
-/** The tools whose landing answers a turn: a posted reply or a decline. */
-export const REPLY_TOOL_NAMES = [SEND_MESSAGE_TOOL_NAME, NO_REPLY_TOOL_NAME] as const;
-export type ReplyToolName = (typeof REPLY_TOOL_NAMES)[number];
-
-export function isReplyToolName(name: unknown): name is ReplyToolName {
-  return (REPLY_TOOL_NAMES as readonly unknown[]).includes(name);
-}
-
 /** `band_no_reply`'s result: it posts nothing, so there is nothing else to report. */
 export const NO_REPLY_RESULT: Readonly<ToolOperationResult> = Object.freeze({ status: "ok" });
-
-/**
- * The optional argument that makes a retried reply land once. Only a turn the
- * journal records advertises it (see `journalingTools`): without the journal it
- * would promise a dedupe nothing performs.
- */
-export const OPERATION_ID_ARG = "operation_id";
-
-export const OPERATION_ID_PROPERTY = {
-  type: "string",
-  description:
-    "Optional. Your own id for this reply. Retrying with the same id and the same arguments " +
-    "does not post it again; the same id with different arguments is refused.",
-} as const;
 
 /** A core `ToolSpec` as a JSON-schema tool model; every core parameter is a string. */
 function toolModelFromSpec(spec: ToolSpec) {

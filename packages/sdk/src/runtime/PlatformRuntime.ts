@@ -28,9 +28,9 @@ import type { AgentEventListener, TurnStopMode } from "../contracts/events";
 import type { AgentControl, AgentControlMode } from "../platform/control";
 import { ControlDeduplicator, controlTargets } from "./control";
 import { untilStopped } from "../core/signals";
-import { MS_PER_SECOND } from "../core/deadline";
 import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
+import { MS_PER_SECOND } from "../core/deadline";
 import { journalingTools } from "./journal/journalTools";
 import { TurnJournal, type RoomJournal } from "./journal/TurnJournal";
 
@@ -79,7 +79,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _restUrl?: string;
   private readonly preprocessor: Preprocessor<PlatformEvent>;
   private readonly sessionConfig: ResolvedSessionConfig;
-  /** Set with `sessionConfig.journalDir`: what each room's turns answered, kept across restarts. */
+  /** Set with `sessionConfig.journalDir`: which messages' turns ended, kept across restarts. */
   private readonly journal?: TurnJournal;
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
@@ -404,7 +404,7 @@ export class PlatformRuntime implements AsyncDisposable {
       }
     };
 
-    // Before anything connects, so an unusable `journalDir` fails start instead of the first turn.
+    // Before anything connects, so an unusable `journalDir` fails start instead of degrading every turn.
     await this.journal?.prepare();
     assertNotSuperseded();
     await this.initialize();
@@ -655,7 +655,7 @@ export class PlatformRuntime implements AsyncDisposable {
     const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
     const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
-    const journal = message.settles ? await this.openJournal(roomId, messageId) : undefined;
+    const journal = message.settles ? await this.openJournal(roomId) : undefined;
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
     if (stoppedWhilePreparing) {
@@ -699,8 +699,7 @@ export class PlatformRuntime implements AsyncDisposable {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
         const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
-        // Journaled over the working cycle, so every reply path is recorded, and
-        // under the revocation, so a cut-short turn's refused call records nothing.
+        // Journaled under the revocation, so a cut-short turn's refused reply records nothing.
         const tools = revokedOnStop(journal ? journalingTools(cycled, journal, messageId, this.logger) : cycled, stopped);
         const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
         const cut = await untilStopped(
@@ -727,10 +726,7 @@ export class PlatformRuntime implements AsyncDisposable {
     // A turn that finished before the stop landed settles as usual.
     if (stopMode) {
       this.events.emit({ type: "turn.stopped", roomId, messageId, mode: stopMode });
-      if (!admitted()) return false;
-      // A stopped turn runs again on play: what it posted no longer answers its message.
-      if (stopMode === "stop") await this.recordTurnEnd(journal, "retried", roomId, messageId);
-      return await this.settleCutShortMessage(context, message, stopMode, journal);
+      return admitted() && await this.settleCutShortMessage(context, message, stopMode, journal);
     }
     this.events.emit(succeeded
       ? { type: "turn.completed", roomId, messageId }
@@ -742,12 +738,9 @@ export class PlatformRuntime implements AsyncDisposable {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);
       if (decision.decision === "processed") {
         // Recorded first, so a restart before the mark below does not answer it again.
-        await this.recordTurnEnd(journal, "done", roomId, messageId);
+        await this.recordTurnDone(journal, roomId, messageId);
         await this.link.markProcessed(roomId, messageId, TURN_MARK);
       } else {
-        // Band serves a failed message again (a restart before its give-up runs it again):
-        // what this attempt posted no longer answers it.
-        await this.recordTurnEnd(journal, "retried", roomId, messageId);
         await this.link.markFailed(roomId, messageId, turnFailureLabel(caughtError), TURN_MARK);
       }
     }
@@ -776,7 +769,7 @@ export class PlatformRuntime implements AsyncDisposable {
       return message.synthetic;
     }
     if (message.settles) {
-      await this.recordTurnEnd(journal, "done", context.roomId, message.id);
+      await this.recordTurnDone(journal, context.roomId, message.id);
       await this.link.markProcessed(context.roomId, message.id, TURN_MARK);
     }
     return false;
@@ -803,36 +796,28 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * The room's journal for a message Band settles. One that cannot be read
-   * fails this turn alone: the message is marked failed, as any failed turn's
-   * is, and the room and runtime keep running.
+   * The room's turn journal, or none when it cannot be opened: the turn then
+   * runs as it would without a journal, which can only mean a message is
+   * answered again after a restart, never one left unanswered.
    */
-  private async openJournal(roomId: string, messageId: string): Promise<RoomJournal | undefined> {
+  private async openJournal(roomId: string): Promise<RoomJournal | undefined> {
     try {
       return await this.journal?.room(roomId);
     } catch (error) {
-      await this.link.markProcessing(roomId, messageId, TURN_MARK);
-      await this.link.markFailed(roomId, messageId, turnFailureLabel(error), TURN_MARK);
-      throw error;
+      this.logger.warn("Failed to open a room's turn journal; handling the turn without it", { roomId, error });
+      return undefined;
     }
   }
 
   /**
-   * Records how a turn ended before its message is settled. A failed write is
-   * logged and the settle goes ahead: the mark itself is what keeps Band from
-   * serving the message again, and the journal only covers a mark that is lost.
+   * Records that a turn ended, before its message is marked processed. A failed
+   * write is logged and the mark goes ahead: it is the mark that settles the
+   * message, and a lost record only lets a restart answer it again.
    */
-  private async recordTurnEnd(
-    journal: RoomJournal | undefined,
-    end: "done" | "retried",
-    roomId: string,
-    messageId: string,
-  ): Promise<void> {
-    try {
-      await (end === "done" ? journal?.turnDone(messageId) : journal?.turnRetried(messageId));
-    } catch (error) {
-      this.logger.warn("Failed to record a turn's end in the turn journal", { roomId, messageId, end, error });
-    }
+  private async recordTurnDone(journal: RoomJournal | undefined, roomId: string, messageId: string): Promise<void> {
+    await journal?.turnDone(messageId).catch((error: unknown) => {
+      this.logger.warn("Failed to record a turn's end in the turn journal", { roomId, messageId, error });
+    });
   }
 
   /** Closes a room's journal once its handling stopped, so a left room holds no file open. */
@@ -843,42 +828,30 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * Before a turn starts: an inbound the journal shows done, or answered by a
-   * posted reply or a decline with no later retry, was answered before a
-   * restart, so it is marked processed and not answered again. A failed or
-   * stopped turn records a retry, so Band serving it again runs it again. A
-   * reply whose post began but was never recorded may or may not have reached
-   * Band: it is recorded as `delivery.unrecorded` and reported, and the
-   * inbound is answered again.
-   * Resolves true when the inbound needs no turn.
+   * Before a turn starts. A message whose turn the journal shows ended was
+   * answered before a restart that beat its processed mark: it is claimed and
+   * marked processed, and not answered again. Otherwise it runs; when an
+   * earlier, unfinished turn for it began posting replies, those may already
+   * be in the room, so the repeat is reported once as `delivery.unrecorded`.
+   * Resolves true when the message needs no turn.
    */
-  private async settleJournaledInbound(
-    journal: RoomJournal,
-    roomId: string,
-    messageId: string,
-  ): Promise<boolean> {
+  private async settleJournaledInbound(journal: RoomJournal, roomId: string, messageId: string): Promise<boolean> {
     const state = journal.inbound(messageId);
-    if (state.answered || state.done) {
-      // Written, `turn.done` also drops the message from memory; one read back as done needs no second record.
-      if (!state.done) await journal.turnDone(messageId);
-      this.logger.info("inbound already answered before a restart; not answering it again", { roomId, messageId });
-      // Claimed, then settled, as the runtime settles a message it gives up on without running it.
+    if (state.done) {
+      this.logger.info("Message answered before a restart; marking it processed without a turn", { roomId, messageId });
       await this.link.markProcessing(roomId, messageId, TURN_MARK);
       await this.link.markProcessed(roomId, messageId, TURN_MARK);
       return true;
     }
-    for (const pending of state.unrecorded) {
-      await journal.deliveryUnrecorded(pending);
-      this.logger.warn("a reply's delivery is uncertain: it may have posted before a restart", {
+    if (state.unreportedReplies > 0) {
+      this.logger.warn("Answering a message again whose earlier turn began posting replies; they may repeat", {
         roomId,
         messageId,
-        operationId: pending.operationId,
+        replies: state.unreportedReplies,
       });
-      this.events.emit({
-        type: "delivery.unrecorded",
-        roomId,
-        messageId,
-        ...(pending.operationId === undefined ? {} : { operationId: pending.operationId }),
+      this.events.emit({ type: "delivery.unrecorded", roomId, messageId });
+      await journal.deliveryUnrecorded(messageId).catch((error: unknown) => {
+        this.logger.warn("Failed to record a reported delivery in the turn journal", { roomId, messageId, error });
       });
     }
     return false;

@@ -62,16 +62,15 @@ export const sessionConfigSchema = z.object({
    */
   stoppedResyncSeconds: z.number().positive().max(MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND).default(DEFAULT_STOPPED_RESYNC_SECONDS),
   /**
-   * Directory for the durable turn journal. Set, each room keeps a record of
-   * the replies its turns posted, so an inbound whose reply was recorded is
-   * not answered again after a restart, and `operation_id` makes a retried
-   * `band_send_message` or `band_no_reply` land once.
+   * Directory for the durable turn journal. Set, each room records which
+   * messages' turns ended, so a message whose turn ended before a restart that
+   * beat its processed mark is not answered again.
    */
   journalDir: z.string().min(1).optional(),
   /**
-   * How long the journal remembers a record. An older `operation_id` no
-   * longer dedupes, and a message answered longer ago is answered again if
-   * Band still serves it. Expired records leave a room's file when it opens.
+   * How long the journal remembers a message after its last record. An older
+   * message is answered again if Band still serves it. Expired messages leave
+   * a room's file when it opens.
    */
   journalRetentionSeconds: z.number().positive().default(DEFAULT_JOURNAL_RETENTION_SECONDS),
 }).superRefine((config, ctx) => {

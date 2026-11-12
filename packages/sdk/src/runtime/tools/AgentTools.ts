@@ -428,7 +428,6 @@ export class AgentTools implements AgentToolsProtocol {
         toolName,
         message,
         legacyMessage: `Error executing ${toolName}: ${message}`,
-        details: failureDetails(error),
       });
     }
   }
@@ -1238,17 +1237,4 @@ function taskRef(ref: string): string {
   const normalized = ref.replace(/^#/, "");
   if (!TASK_REF.test(normalized)) throw new ValidationError("ID must contain only ASCII letters, digits, underscores or hyphens");
   return normalized;
-}
-
-/**
- * What a caller can tell about a failed call without its error object: its
- * name and, for an HTTP failure, the status. Whether a post may still have
- * landed depends on both.
- */
-function failureDetails(error: unknown): MetadataMap {
-  const details: MetadataMap = { errorName: error instanceof Error ? error.name : typeof error };
-  if (typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number") {
-    details.statusCode = error.statusCode;
-  }
-  return details;
 }

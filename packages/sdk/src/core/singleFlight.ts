@@ -76,29 +76,3 @@ export class Serializer {
     return run;
   }
 }
-
-/**
- * A {@link Serializer} per key: bodies under one key run one at a time, in
- * order, while different keys run independently. A key's queue is dropped
- * once nothing is queued under it.
- */
-export class KeyedSerializer {
-  private readonly queues = new Map<string, { serializer: Serializer; queued: number }>();
-
-  public run<T>(key: string, body: () => Promise<T>): Promise<T> {
-    let queue = this.queues.get(key);
-    if (!queue) {
-      queue = { serializer: new Serializer(), queued: 0 };
-      this.queues.set(key, queue);
-    }
-    const owner = queue;
-    owner.queued += 1;
-    const run = owner.serializer.run(body);
-    const settled = (): void => {
-      owner.queued -= 1;
-      if (owner.queued === 0 && this.queues.get(key) === owner) this.queues.delete(key);
-    };
-    run.then(settled, settled);
-    return run;
-  }
-}

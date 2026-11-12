@@ -4,86 +4,38 @@ import { access, mkdir, open, readFile, rename, type FileHandle } from "node:fs/
 import path from "node:path";
 import { z } from "zod";
 
-import { REPLY_TOOL_NAMES, type ReplyToolName } from "../../contracts/toolSchemas";
-import { RecoverableTurnError, RuntimeStateError, ValidationError } from "../../core/errors";
+import { BandSdkError, RuntimeStateError, ValidationError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
-import { KeyedSerializer, Serializer } from "../../core/singleFlight";
+import { Serializer } from "../../core/singleFlight";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 
-/** A reply's tool, and the operation id and payload digest it is bound to when it carries one. */
-export type ReplyIdentity = { tool: ReplyToolName } & (
-  | { operationId?: undefined; digest?: undefined }
-  | { operationId: string; digest: string }
-);
-
-/** A reply whose post began; `id` pairs it with how it ended. */
-export type PendingReply = ReplyIdentity & {
-  id: string;
-  messageId: string;
-};
-
-/** What the journal knows of one inbound message's turn. */
-export interface InboundState {
-  /** A reply posted or a decline landed for it since its last retry. */
-  answered: boolean;
-  /** Its turn ended and the inbound is about to be, or was, marked processed. */
-  done: boolean;
-  /** Replies whose post began but whose outcome was never recorded: delivery uncertain. */
-  unrecorded: PendingReply[];
-}
-
-/** What a reply under an operation id is known to have done. */
-export type RecordedOperation =
-  | { status: "landed"; tool: ReplyToolName; digest: string; result: unknown }
-  /** Its post began and how it ended is unknown: Band may or may not have it. */
-  | { status: "uncertain"; tool: ReplyToolName; digest: string };
-
-const recordFields = { at: z.number(), messageId: z.string() };
-const identityFields = {
-  tool: z.enum(REPLY_TOOL_NAMES),
-  operationId: z.string().optional(),
-  digest: z.string().optional(),
-};
-const outcomeFields = { ...recordFields, id: z.string() };
-
-/** A journal line as read back from disk: every record names its message and when it was written. */
+/** A journal line: what happened to an inbound message, and when it was written, in epoch milliseconds. */
 const journalRecordSchema = z.discriminatedUnion("t", [
-  z.object({ t: z.literal("reply.intent"), ...outcomeFields, ...identityFields }),
-  z.object({ t: z.literal("reply.posted"), ...outcomeFields, result: z.unknown().optional() }),
-  z.object({ t: z.literal("reply.failed"), ...outcomeFields }),
-  z.object({ t: z.literal("delivery.unrecorded"), ...outcomeFields }),
-  z.object({ t: z.literal("reply.declined"), ...recordFields, ...identityFields, result: z.unknown().optional() }),
-  z.object({ t: z.literal("turn.done"), ...recordFields }),
-  z.object({ t: z.literal("turn.retried"), ...recordFields }),
+  /** A reply to the message began posting. Nothing records how it ended: Band may or may not have it. */
+  z.object({ t: z.literal("reply.intent"), messageId: z.string(), id: z.string(), at: z.number() }),
+  /** The message's turn ended; it is about to be, or was, marked processed. */
+  z.object({ t: z.literal("turn.done"), messageId: z.string(), at: z.number() }),
+  /** The replies begun so far for the message were reported as possibly posted. */
+  z.object({ t: z.literal("delivery.unrecorded"), messageId: z.string(), at: z.number() }),
 ]);
 
-/** Which pending reply an outcome record ends. */
-type Outcome = { id: string; messageId: string };
+type JournalRecord = z.infer<typeof journalRecordSchema>;
+type JournalEntry = JournalRecord extends infer R ? (R extends JournalRecord ? Omit<R, "at"> : never) : never;
 
-type JournalEntry =
-  | ({ t: "reply.intent" } & PendingReply)
-  /** `result` is kept only for a reply under an operation id: nothing else replays it. */
-  | ({ t: "reply.posted"; result?: unknown } & Outcome)
-  | ({ t: "reply.failed" } & Outcome)
-  | ({ t: "reply.declined"; messageId: string; result?: unknown } & ReplyIdentity)
-  | ({ t: "delivery.unrecorded" } & Outcome)
-  | { t: "turn.done"; messageId: string }
-  | { t: "turn.retried"; messageId: string };
-
-/** A journal line: an entry stamped with when it was written, in epoch milliseconds. */
-type JournalRecord = JournalEntry & { at: number };
+/** What the journal knows of one inbound message. */
+export interface InboundState {
+  /** Its turn ended here or in an earlier process. */
+  done: boolean;
+  /** Replies its unfinished turns began posting that were not reported yet. */
+  unreportedReplies: number;
+}
 
 interface InboundIndex {
-  answered: boolean;
   done: boolean;
-  /** Replies begun before the last retry: landing, they no longer answer the inbound. */
-  stale: Set<string>;
+  unreported: number;
   /** When a record last touched it; the index is kept in this order. */
   at: number;
 }
-
-/** A remembered value and when it was last written, which is when it expires from. */
-type Dated<T> = { value: T; at: number };
 
 /** The directory of one agent's journal under `journalDir`. */
 export function agentJournalDir(journalDir: string, agentId: string): string {
@@ -99,12 +51,16 @@ function toLine(record: JournalRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
 
+/** A journal read or write failure. Its cause holds the file; the message stays generic, since it can reach Band. */
+function journalFailure(error: unknown): BandSdkError {
+  return error instanceof BandSdkError ? error : new BandSdkError("Turn journal I/O failed", error);
+}
+
 export interface TurnJournalOptions {
   /**
-   * How long a message's records count, from the last one written for it.
-   * Past that it is forgotten: its operation ids dedupe nothing, and it is
-   * answered again if Band still serves it. Expired records are dropped from
-   * a room's file when it opens.
+   * How long a message is remembered after its last record. Past that it is
+   * forgotten, and answered again if Band still serves it. Expired messages
+   * are dropped from a room's file when it opens.
    */
   retentionMs: number;
   /** The clock records are stamped and expired by; `Date.now` by default. */
@@ -124,17 +80,17 @@ export class TurnJournal {
   private readonly dir: string;
 
   public constructor(journalDir: string, agentId: string, private readonly options: TurnJournalOptions) {
-    // Per agent: a room's file holds what this agent answered, which another agent in the room did not.
+    // Per agent: a room's file holds what this agent finished, which another agent in the room did not.
     this.dir = agentJournalDir(journalDir, agentId);
   }
 
-  /** Creates the agent's directory and checks it is writable, so a bad `journalDir` fails start, not a turn. */
+  /** Creates the agent's directory and checks it is usable, so a bad `journalDir` fails start, not a turn. */
   public async prepare(): Promise<void> {
     try {
       await mkdir(this.dir, { recursive: true });
-      await access(this.dir, constants.W_OK);
+      await access(this.dir, constants.R_OK | constants.W_OK | constants.X_OK);
     } catch (error) {
-      throw new ValidationError(`sessionConfig.journalDir is not a writable directory: ${this.dir}`, error);
+      throw new ValidationError("sessionConfig.journalDir is not a usable directory", error);
     }
   }
 
@@ -142,7 +98,8 @@ export class TurnJournal {
     let journal = this.rooms.get(roomId);
     if (!journal) {
       const file = roomJournalFile(this.dir, roomId);
-      const released = this.releasing.get(roomId) ?? Promise.resolve();
+      // A failed close was logged where it happened; the reopen reads whatever the file holds.
+      const released = (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
       journal = released.then(() => RoomJournal.open(file, this.options));
       this.rooms.set(roomId, journal);
       journal.catch(() => {
@@ -191,12 +148,8 @@ function parseLines(text: string): { records: JournalRecord[]; unreadable: numbe
       continue;
     }
     const parsed = journalRecordSchema.safeParse(json);
-    if (parsed.success) {
-      // The schema checks each field; the pairing of an operation id with its digest is the writer's.
-      records.push(parsed.data as JournalRecord);
-    } else {
-      unreadable += 1;
-    }
+    if (parsed.success) records.push(parsed.data);
+    else unreadable += 1;
   }
   return { records, unreadable };
 }
@@ -237,28 +190,23 @@ async function syncDirectory(dir: string): Promise<void> {
 }
 
 /**
- * One room's record of what each inbound turn answered, written before the
- * runtime acts on it: a reply's intent before its post, its outcome after,
- * and a turn's end before the inbound is marked processed. Each record is
- * flushed to disk before the call that wrote it resolves.
+ * One room's record of which inbound messages' turns ended, written before
+ * the message is marked processed, and of the replies a turn began posting.
+ * Each record is flushed to disk before the call that wrote it resolves.
  *
- * Memory holds a finished message only as its end marker, and only for the
- * retention; a reply still landing for it, or one whose outcome was never
- * recorded, is kept until its outcome or expiry.
+ * Every record only ever stops a message from being answered twice: losing
+ * one, to a failed write or a damaged line, leaves the message to be answered
+ * again, as it would be without a journal.
  */
 export class RoomJournal {
   private readonly inbounds = new Map<string, InboundIndex>();
-  /** Replies whose post began and has no recorded outcome, oldest first. */
-  private readonly pending = new Map<string, Dated<PendingReply>>();
-  private readonly operations = new Map<string, Dated<RecordedOperation>>();
-  /** Replies under one operation id land one at a time, so a racing retry sees the first one's record. */
-  private readonly landing = new KeyedSerializer();
   private readonly writes = new Serializer();
+  /** A failed append may have left part of a line; the next one starts a line of its own. */
+  private lineCut = false;
   private closed = false;
 
   private constructor(
     private readonly handle: FileHandle,
-    private readonly file: string,
     private readonly retentionMs: number,
     private readonly now: () => number,
   ) {}
@@ -276,74 +224,31 @@ export class RoomJournal {
       const expired = readable.length - records.length;
       // Rewritten also when a crash cut the last line's newline, so the next append starts a line.
       if (unreadable > 0 || expired > 0 || (text !== null && text !== "" && !text.endsWith("\n"))) {
-        options.logger?.warn("Compacting a turn journal", { file, expired, unreadable });
+        if (unreadable > 0) options.logger?.warn("Dropping unreadable turn journal lines", { unreadable, expired });
+        else options.logger?.debug("Compacting a turn journal", { expired });
         await rewrite(file, records);
+      } else if (text === null) {
+        // Created by the open below: its directory entry is flushed once it exists.
+        await open(file, "a").then((created) => created.close());
+        await syncDirectory(path.dirname(file));
       }
-      const journal = new RoomJournal(await open(file, "a"), file, options.retentionMs, now);
-      if (text === null) await syncDirectory(path.dirname(file));
+      const journal = new RoomJournal(await open(file, "a"), options.retentionMs, now);
       for (const record of records) journal.apply(record);
       return journal;
     } catch (error) {
-      throw journalFailure(file, error);
+      throw journalFailure(error);
     }
   }
 
   public inbound(messageId: string): InboundState {
     this.expire();
     const index = this.inbounds.get(messageId);
-    return {
-      answered: index?.answered ?? false,
-      done: index?.done ?? false,
-      unrecorded: [...this.pending.values()].map((entry) => entry.value).filter((reply) => reply.messageId === messageId),
-    };
+    return { done: index?.done ?? false, unreportedReplies: index?.unreported ?? 0 };
   }
 
-  /**
-   * What the reply under `operationId` did. Called inside {@link once}, a
-   * reply still pending under the id is not landing: its outcome is uncertain.
-   */
-  public operation(operationId: string): RecordedOperation | undefined {
-    this.expire();
-    const stored = this.operations.get(operationId);
-    if (stored) return stored.value;
-    const reply = [...this.pending.values()].map((entry) => entry.value).find((candidate) => candidate.operationId === operationId);
-    return reply?.operationId === undefined ? undefined : { status: "uncertain", tool: reply.tool, digest: reply.digest };
-  }
-
-  /** Runs `land` once no other reply under `operationId` is landing, so a racing retry sees what the first recorded. */
-  public once<T>(operationId: string, land: () => Promise<T>): Promise<T> {
-    return this.landing.run(operationId, land);
-  }
-
-  /** Records that a reply's post is about to begin. */
-  public async beginReply(messageId: string, identity: ReplyIdentity): Promise<PendingReply> {
-    const pending: PendingReply = { id: randomUUID(), messageId, ...identity };
-    await this.append({ t: "reply.intent", ...pending });
-    return pending;
-  }
-
-  /** Records that Band accepted the reply. */
-  public async replyPosted(pending: PendingReply, result: unknown): Promise<void> {
-    await this.append({ t: "reply.posted", ...outcomeOf(pending), ...replayable(pending, result) });
-  }
-
-  /** Records that Band refused the reply: it is not pending anymore, and nothing was posted. */
-  public async replyFailed(pending: PendingReply): Promise<void> {
-    await this.append({ t: "reply.failed", ...outcomeOf(pending) });
-  }
-
-  /** Records a decline, which posts nothing. */
-  public async replyDeclined(messageId: string, identity: ReplyIdentity, result: unknown): Promise<void> {
-    await this.append({ t: "reply.declined", messageId, ...identity, ...replayable(identity, result) });
-  }
-
-  /**
-   * Records that a pending reply's delivery is uncertain: its post began, and
-   * nothing records how it ended. It may or may not have reached Band. This
-   * never means the post was accepted; nothing may treat it as delivered.
-   */
-  public async deliveryUnrecorded(pending: PendingReply): Promise<void> {
-    await this.append({ t: "delivery.unrecorded", ...outcomeOf(pending) });
+  /** Records that a reply to `messageId` is about to begin posting. */
+  public async replyBegun(messageId: string): Promise<void> {
+    await this.append({ t: "reply.intent", messageId, id: randomUUID() });
   }
 
   /** Records that the inbound's turn ended, before it is marked processed. */
@@ -351,13 +256,9 @@ export class RoomJournal {
     await this.append({ t: "turn.done", messageId });
   }
 
-  /**
-   * Records that the inbound runs again, failed or stopped: what its turn
-   * answered so far no longer answers it, and a reply of that turn still in
-   * flight no longer counts.
-   */
-  public async turnRetried(messageId: string): Promise<void> {
-    await this.append({ t: "turn.retried", messageId });
+  /** Records that the message's begun replies were reported as possibly posted, so they are reported once. */
+  public async deliveryUnrecorded(messageId: string): Promise<void> {
+    await this.append({ t: "delivery.unrecorded", messageId });
   }
 
   public async close(): Promise<void> {
@@ -373,11 +274,14 @@ export class RoomJournal {
     }
     return this.writes.run(async () => {
       const record: JournalRecord = { ...entry, at: this.now() };
+      const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
       try {
-        await this.handle.appendFile(toLine(record), "utf8");
+        this.lineCut = true;
+        await this.handle.appendFile(line, "utf8");
         await this.handle.datasync();
+        this.lineCut = false;
       } catch (error) {
-        throw journalFailure(this.file, error);
+        throw journalFailure(error);
       }
       this.apply(record);
       this.expire();
@@ -386,96 +290,35 @@ export class RoomJournal {
 
   /** `messageId`'s index, moved to the newest end and stamped `at`. */
   private touch(messageId: string, at: number): InboundIndex {
-    const index = this.inbounds.get(messageId) ?? { answered: false, done: false, stale: new Set(), at };
+    const index = this.inbounds.get(messageId) ?? { done: false, unreported: 0, at };
     this.inbounds.delete(messageId);
     index.at = at;
     this.inbounds.set(messageId, index);
     return index;
   }
 
-  private remember(operationId: string, operation: RecordedOperation, at: number): void {
-    this.operations.delete(operationId);
-    this.operations.set(operationId, { value: operation, at });
-  }
-
-  /** Forgets what the retention no longer covers; every map is kept oldest first. */
+  /** Forgets the messages the retention no longer covers; the map is kept oldest first. */
   private expire(): void {
     const cutoff = this.now() - this.retentionMs;
-    for (const map of [this.inbounds, this.pending, this.operations] as Map<string, { at: number }>[]) {
-      for (const [key, entry] of map) {
-        if (entry.at >= cutoff) break;
-        map.delete(key);
-      }
+    for (const [messageId, index] of this.inbounds) {
+      if (index.at >= cutoff) break;
+      this.inbounds.delete(messageId);
     }
-  }
-
-  /** The pending reply `outcome` ends, taken off the pending set. */
-  private settle(outcome: Outcome, at: number): { reply: PendingReply | undefined; index: InboundIndex } {
-    const reply = this.pending.get(outcome.id)?.value;
-    this.pending.delete(outcome.id);
-    const index = this.touch(outcome.messageId, at);
-    index.stale.delete(outcome.id);
-    return { reply, index };
   }
 
   private apply(record: JournalRecord): void {
+    const index = this.touch(record.messageId, record.at);
     switch (record.t) {
-      case "reply.intent": {
-        const { t: _t, at, ...reply } = record;
-        this.pending.set(reply.id, { value: reply, at });
-        this.touch(reply.messageId, at);
-        return;
-      }
-      case "reply.posted": {
-        const stale = this.inbounds.get(record.messageId)?.stale.has(record.id) ?? false;
-        const { reply, index } = this.settle(record, record.at);
-        if (!stale) index.answered = true;
-        if (reply?.operationId !== undefined) {
-          this.remember(reply.operationId, { status: "landed", tool: reply.tool, digest: reply.digest, result: record.result }, record.at);
-        }
-        return;
-      }
-      case "reply.failed":
-        this.settle(record, record.at);
-        return;
-      case "delivery.unrecorded": {
-        const { reply } = this.settle(record, record.at);
-        if (reply?.operationId !== undefined) {
-          this.remember(reply.operationId, { status: "uncertain", tool: reply.tool, digest: reply.digest }, record.at);
-        }
-        return;
-      }
-      case "reply.declined":
-        this.touch(record.messageId, record.at).answered = true;
-        if (record.operationId !== undefined) {
-          this.remember(record.operationId, { status: "landed", tool: record.tool, digest: record.digest, result: record.result }, record.at);
-        }
+      case "reply.intent":
+        if (!index.done) index.unreported += 1;
         return;
       case "turn.done":
-        this.touch(record.messageId, record.at).done = true;
+        index.done = true;
+        index.unreported = 0;
         return;
-      case "turn.retried": {
-        const index = this.touch(record.messageId, record.at);
-        index.answered = false;
-        for (const { value: reply } of this.pending.values()) {
-          if (reply.messageId === record.messageId) index.stale.add(reply.id);
-        }
+      case "delivery.unrecorded":
+        index.unreported = 0;
         return;
-      }
     }
   }
-}
-
-function outcomeOf(pending: PendingReply): Outcome {
-  return { id: pending.id, messageId: pending.messageId };
-}
-
-/** `result`, kept only for a reply under an operation id: nothing else replays it. */
-function replayable(identity: ReplyIdentity, result: unknown): { result?: unknown } {
-  return identity.operationId === undefined ? {} : { result };
-}
-
-/** A journal read or write failure, confined to the turn that hit it. */
-function journalFailure(file: string, error: unknown): RecoverableTurnError {
-  return error instanceof RecoverableTurnError ? error : new RecoverableTurnError(`Turn journal I/O failed: ${file}`, error);
 }
