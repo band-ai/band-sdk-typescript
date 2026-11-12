@@ -39,6 +39,7 @@ export type {
   AgentEventType,
   ApprovalOutcome,
   LinkDisconnectReason,
+  RoomAgentIdentity,
   RoomPauseSource,
   ToolCallEndStatus,
   TurnStopMode,

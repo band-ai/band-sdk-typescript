@@ -1,4 +1,4 @@
-import type { AgentEventListener } from "../../contracts/events";
+import type { AgentEventListener, RoomAgentIdentity } from "../../contracts/events";
 import type { OmpRpcSessionState } from "../../converters/omp-rpc";
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -30,6 +30,7 @@ import {
 } from "./client";
 import {
   OMP_COMMAND,
+  OMP_RPC_PROTOCOL_VERSION,
   type OmpEvent,
   type OmpHostToolCall,
   type OmpHostToolDefinition,
@@ -237,9 +238,13 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
     });
   }
 
-  /** Starts the room's process and waits for its `ready`, rather than on the first turn. */
-  public async warm(): Promise<void> {
+  /**
+   * Starts the room's process and waits for its `ready`, rather than on the
+   * first turn. A process that starts has negotiated {@link OMP_RPC_PROTOCOL_VERSION}.
+   */
+  public async warm(): Promise<RoomAgentIdentity> {
     await this.ensureProcess();
+    return { protocol: "omp-rpc", protocolVersion: OMP_RPC_PROTOCOL_VERSION };
   }
 
   public async onMessage(

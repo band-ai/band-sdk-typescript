@@ -1,4 +1,14 @@
 /**
+ * What a room's agent process said about itself when it started: the
+ * protocol it speaks and the version negotiated, and for ACP the
+ * implementation its `initialize` response named, or `null` when it named
+ * none. A host can check from it which agent answered before using the room.
+ */
+export type RoomAgentIdentity =
+  | { protocol: "acp"; protocolVersion: number; agentInfo: { name: string; version: string } | null }
+  | { protocol: "omp-rpc"; protocolVersion: number };
+
+/**
  * Why a live Band link is down: `dropped` while it retries on its own,
  * `closed` by a local disconnect, `terminal` when it ended for good.
  */
@@ -90,6 +100,13 @@ export type AgentEvent =
   | { type: "room.joined"; roomId: string }
   /** The agent is no longer a member of a room. Stopping the agent reports `room.stopped`, not this. */
   | { type: "room.left"; roomId: string }
+  /**
+   * A room allowed with `warm` has its agent process started, ahead of the
+   * room's first message; reported before the room's messages are handled.
+   * `agent` is what that process said about itself, or `null` when the
+   * adapter starts nothing ahead of a message.
+   */
+  | { type: "room.ready"; roomId: string; agent: RoomAgentIdentity | null }
   /**
    * The room's agent process could not start, or exited on its own; the
    * room's messages fail until a later start succeeds. `error` is the

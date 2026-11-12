@@ -1,6 +1,6 @@
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 import { isBlankEventContent, type ChatEventType } from "./chatEvents";
-import type { AgentEventListener } from "./events";
+import type { AgentEventListener, RoomAgentIdentity } from "./events";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
@@ -377,6 +377,14 @@ export interface FrameworkAdapter {
    */
   isControlMessage?(message: PlatformMessageLike, roomId: string): boolean;
   onCleanup(roomId: string): Promise<void>;
+  /**
+   * Starts the room's own agent ahead of the room's first message, for
+   * `agent.rooms.allow(roomId, { warm: true })`, and resolves with what that
+   * agent said about itself when it started, or `null` when it says nothing.
+   * Rejects when it cannot start; the runtime then reports `room.failed`
+   * unless the adapter already did.
+   */
+  warmRoom?(roomId: string): Promise<RoomAgentIdentity | null>;
   /**
    * Cancels the turn running in `roomId` without resetting the room's session,
    * so the room's next message continues it. Resolves false when no turn is

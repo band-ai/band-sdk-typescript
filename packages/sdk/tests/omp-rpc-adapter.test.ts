@@ -203,18 +203,11 @@ describe("OmpRpcAdapter", () => {
 
   it("leaves the board and task tools out unless enabled", async () => {
     const omp = fakeOmpProcesses();
-    const { room } = await startAgent(ompAdapter(omp));
-    const prompted = omp.nextPrompt();
-    const message = await room.say("owner", "list your tools");
-    const { peer, prompt } = await prompted;
-
-    const names = (peer.received.find((frame) => frame.type === "set_host_tools")!.tools as Array<{ name: string }>).map((tool) => tool.name);
+    const { agent } = await startAgent(ompAdapter(omp), (roomId) => roomId === ROOM);
+    await agent.rooms.allow(OTHER_ROOM, { warm: true });
+    const names = (omp.peers[0]!.received.find((frame) => frame.type === "set_host_tools")!.tools as Array<{ name: string }>).map((tool) => tool.name);
     expect(names).toContain("band_send_message");
     expect(names.filter((name) => TASK_TOOL_NAMES.has(name))).toEqual([]);
-
-    peer.send(assistant(text("done")));
-    peer.finish(prompt.id);
-    expect(await room.outcome(message)).toBe("processed");
   });
 
   it("asks resolvePermission about OMP's tool approval and answers with the label it chose", async () => {
@@ -437,6 +430,17 @@ describe("OmpRpcAdapter", () => {
     peer.finish(prompt.id, "aborted");
     expect(await room.outcome(message)).toBe("processed");
     expect(room.posted).toEqual([]);
+  });
+
+  it("starts a warm room's process, reports room.ready on OMP's ready, and sends no prompt", async () => {
+    const omp = fakeOmpProcesses();
+    const { agent, events } = await startAgent(ompAdapter(omp), (roomId) => roomId === ROOM);
+
+    await expect(agent.rooms.allow(OTHER_ROOM, { warm: true })).resolves.toBe(true);
+
+    expect(omp.peers).toHaveLength(1);
+    expect(omp.peers[0]!.received.map((frame) => frame.type)).toEqual(["negotiate_protocol", "get_state", "set_host_tools"]);
+    expect(events.filter((event) => "roomId" in event && event.roomId === OTHER_ROOM).map((event) => event.type)).toEqual(["room.ready", "room.joined"]);
   });
 
   it("reassembles a frame OMP splits into rpc_chunk frames", async () => {
