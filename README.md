@@ -841,7 +841,7 @@ With `sessionConfig.journalDir` set, each room keeps an append-only journal (`<j
 
 With the journal, `band_send_message` and `band_no_reply` take an optional `operation_id`. A retry with the same id and the same arguments, in this turn or a later one in the room, returns the first call's result without posting again. The same id with different arguments is refused. This dedupes a retry the journal has recorded, and nothing more: it does not close the window above. Only a journaled turn's tool schemas (`getToolSchemas` and its format variants) advertise `operation_id`; MCP tool listings, built once per server, do not, though a journaled turn honours it when a model passes it. Without `journalDir`, `operation_id` is neither advertised nor honoured.
 
-The journal grows with every reply; nothing compacts it.
+The journal remembers a record for `sessionConfig.journalRetentionSeconds` (three hours by default). Past that, an `operation_id` no longer dedupes a retry, and a message whose answer was recorded earlier is answered again if Band still serves it. Expired records are dropped from a room's file when the file opens (on start, and when the room is joined again or reset), so a room that stays open keeps appending until then. In memory, a message is forgotten as soon as its turn ends: within one process the room's execution never runs a message twice, and a restart reads the turn's end back from the file.
 
 ## Automatic working state
 

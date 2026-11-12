@@ -28,6 +28,7 @@ import type { AgentEventListener, TurnStopMode } from "../contracts/events";
 import type { AgentControl, AgentControlMode } from "../platform/control";
 import { ControlDeduplicator, controlTargets } from "./control";
 import { untilStopped } from "../core/signals";
+import { MS_PER_SECOND } from "../core/deadline";
 import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 import { journalingTools } from "./journal/journalTools";
@@ -137,7 +138,9 @@ export class PlatformRuntime implements AsyncDisposable {
     };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = parseSessionConfig(options.sessionConfig);
-    this.journal = this.sessionConfig.journalDir === undefined ? undefined : new TurnJournal(this.sessionConfig.journalDir);
+    this.journal = this.sessionConfig.journalDir === undefined
+      ? undefined
+      : new TurnJournal(this.sessionConfig.journalDir, { retentionMs: this.sessionConfig.journalRetentionSeconds * MS_PER_SECOND });
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
@@ -817,7 +820,8 @@ export class PlatformRuntime implements AsyncDisposable {
   ): Promise<boolean> {
     const state = journal.inbound(messageId);
     if (state.answered || state.done) {
-      if (!state.done) await journal.turnDone(messageId);
+      // Recorded again even when read back as done: written, it drops the message from memory.
+      await journal.turnDone(messageId);
       this.logger.info("inbound already answered before a restart; not answering it again", { roomId, messageId });
       // Claimed, then settled, as the runtime settles a message it gives up on without running it.
       await this.link.markProcessing(roomId, messageId, TURN_MARK);

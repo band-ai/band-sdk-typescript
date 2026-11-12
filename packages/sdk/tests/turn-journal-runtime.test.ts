@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import type { AgentEvent } from "../src/contracts/events";
@@ -9,6 +9,8 @@ import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
 import { PlatformRuntime } from "../src/runtime";
 import { TurnJournal } from "../src/runtime/journal/TurnJournal";
+import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
+import { MS_PER_SECOND } from "../src/core/deadline";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
 
@@ -143,7 +145,7 @@ describe("the turn journal across a restart", () => {
     const journalDir = tmpRoot();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
     // A turn that ended without a reply journaled: it settled, or reported its failure.
-    const ended = new TurnJournal(journalDir);
+    const ended = new TurnJournal(journalDir, { retentionMs: DEFAULT_JOURNAL_RETENTION_SECONDS * MS_PER_SECOND });
     await (await ended.room(ROOM)).turnDone(inbound);
     await ended.close();
 
@@ -214,7 +216,7 @@ describe("the turn journal across a restart", () => {
     const journalDir = tmpRoot();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
     // What a process killed mid-post leaves: the reply's intent, and nothing after it.
-    const crashed = new TurnJournal(journalDir);
+    const crashed = new TurnJournal(journalDir, { retentionMs: DEFAULT_JOURNAL_RETENTION_SECONDS * MS_PER_SECOND });
     await (await crashed.room(ROOM)).beginReply(inbound, { tool: "band_send_message", digest: "d", operationId: "op-1" });
     await crashed.close();
 
@@ -265,6 +267,35 @@ describe("operation_id", () => {
     expect(await room.outcome(await room.say(OWNER, `${MENTION} two`))).toBe("processed");
 
     expect(room.messages.map((posted) => posted.content)).toEqual(["once"]);
+    await runtime.stop();
+  });
+
+  it("posts a retry again once its id is older than journalRetentionSeconds", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir: tmpRoot(), journalRetentionSeconds: 60 },
+    });
+    await runtime.start(new GenericAdapter(async ({ tools }) => {
+      await tools.executeToolCall("band_send_message", { content: "once", mentions: ["@owner"], operation_id: "op-1" });
+    }));
+
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} one`))).toBe("processed");
+    vi.advanceTimersByTime(60 * MS_PER_SECOND);
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} two`))).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["once"]);
+
+    vi.advanceTimersByTime(1);
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} three`))).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["once", "once"]);
     await runtime.stop();
   });
 

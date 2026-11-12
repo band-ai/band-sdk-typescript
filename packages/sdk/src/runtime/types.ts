@@ -28,6 +28,8 @@ export const DEFAULT_MAX_MESSAGE_RETRIES = 1;
 
 export const WORKING_STATE_TTL_SECONDS = 10;
 export const DEFAULT_STOPPED_RESYNC_SECONDS = 60;
+/** How long the turn journal remembers a record: three hours. */
+export const DEFAULT_JOURNAL_RETENTION_SECONDS = 3 * 60 * 60;
 
 // Range checks apply only when reporting is enabled; dormant numeric settings are preserved.
 const workingTiming = z.custom<number>((value) => typeof value === "number", "Expected a number");
@@ -66,6 +68,12 @@ export const sessionConfigSchema = z.object({
    * `band_send_message` or `band_no_reply` land once.
    */
   journalDir: z.string().min(1).optional(),
+  /**
+   * How long the journal remembers a record. An older `operation_id` no
+   * longer dedupes, and a message answered longer ago is answered again if
+   * Band still serves it. Expired records leave a room's file when it opens.
+   */
+  journalRetentionSeconds: z.number().positive().default(DEFAULT_JOURNAL_RETENTION_SECONDS),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
   const cadence = config.workingKeepAliveSeconds;
