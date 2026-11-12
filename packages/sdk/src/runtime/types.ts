@@ -62,7 +62,7 @@ export const sessionConfigSchema = z.object({
    */
   stoppedResyncSeconds: z.number().positive().max(MAX_SETTIMEOUT_DELAY_MS / MS_PER_SECOND).default(DEFAULT_STOPPED_RESYNC_SECONDS),
   /**
-   * Directory for the durable turn journal. Set, each room records which
+   * Directory for the durable turn journal. When set, each room records which
    * messages' turns ended, so a message whose turn ended before a restart that
    * beat its processed mark is not answered again.
    */

@@ -80,7 +80,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly preprocessor: Preprocessor<PlatformEvent>;
   private readonly sessionConfig: ResolvedSessionConfig;
   /** Set with `sessionConfig.journalDir`: which messages' turns ended, kept across restarts. */
-  private readonly journal?: TurnJournal;
+  private readonly journals?: TurnJournal;
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -141,7 +141,7 @@ export class PlatformRuntime implements AsyncDisposable {
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);
-    this.journal = this.sessionConfig.journalDir === undefined
+    this.journals = this.sessionConfig.journalDir === undefined
       ? undefined
       : new TurnJournal(this.sessionConfig.journalDir, options.agentId, {
         retentionMs: this.sessionConfig.journalRetentionSeconds * MS_PER_SECOND,
@@ -405,7 +405,7 @@ export class PlatformRuntime implements AsyncDisposable {
     };
 
     // Before anything connects, so an unusable `journalDir` fails start instead of degrading every turn.
-    await this.journal?.prepare();
+    await this.journals?.prepare();
     assertNotSuperseded();
     await this.initialize();
     assertNotSuperseded();
@@ -574,7 +574,8 @@ export class PlatformRuntime implements AsyncDisposable {
     await isolateTeardown(errors, () => Promise.resolve(adapter?.onRuntimeStop?.()));
     // After the runtime stop above, so its `link.disconnected` is still relayed.
     this.unobserveLink();
-    await isolateTeardown(errors, () => this.journal?.close() ?? Promise.resolve());
+    // A journal that fails to close falls back like every other journal failure: it does not fail the stop.
+    await bestEffort(async () => this.journals?.close(), this.logger, "Failed to close the turn journal", {});
 
     if (errors.length > 0) {
       throw this.recordStopFailure(
@@ -700,9 +701,11 @@ export class PlatformRuntime implements AsyncDisposable {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
         const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
-        const journals = this.journal;
-        // Journaled under the revocation, so a cut-short turn's refused reply records nothing.
-        const journaled = journal && journals ? journalingTools(cycled, () => journals.room(roomId), messageId, this.logger) : cycled;
+        // Revoked on both sides of the journal: a reply refused at its call records nothing, and one
+        // cut short while its record was written does not post.
+        const journaled = journal && this.journals
+          ? journalingTools(revokedOnStop(cycled, stopped), this.journals, roomId, messageId, this.logger)
+          : cycled;
         const tools = revokedOnStop(journaled, stopped);
         const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
         const cut = await untilStopped(
@@ -805,7 +808,7 @@ export class PlatformRuntime implements AsyncDisposable {
    */
   private async openJournal(roomId: string): Promise<RoomJournal | undefined> {
     try {
-      return await this.journal?.room(roomId);
+      return await this.journals?.room(roomId);
     } catch (error) {
       this.logger.warn("Failed to open a room's turn journal; handling the turn without it", { roomId, error });
       return undefined;
@@ -824,9 +827,7 @@ export class PlatformRuntime implements AsyncDisposable {
 
   /** Closes a room's journal once its handling stopped, so a left room holds no file open. */
   private releaseJournal(roomId: string): void {
-    const journals = this.journal;
-    if (!journals) return;
-    void bestEffort(() => journals.release(roomId), this.logger, "Failed to close a room's turn journal", { roomId });
+    void bestEffort(async () => this.journals?.release(roomId), this.logger, "Failed to close a room's turn journal", { roomId });
   }
 
   /**

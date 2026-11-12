@@ -10,13 +10,14 @@ import { Serializer } from "../../core/singleFlight";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 
 /** A journal line: what happened to an inbound message, and when it was written, in epoch milliseconds. */
+const recordBase = z.object({ messageId: z.string(), at: z.number() });
 const journalRecordSchema = z.discriminatedUnion("t", [
   /** A reply to the message began posting. Nothing records how it ended: Band may or may not have it. */
-  z.object({ t: z.literal("reply.intent"), messageId: z.string(), at: z.number() }),
+  recordBase.extend({ t: z.literal("reply.intent") }),
   /** The message's turn ended; it is about to be, or was, marked processed. */
-  z.object({ t: z.literal("turn.done"), messageId: z.string(), at: z.number() }),
+  recordBase.extend({ t: z.literal("turn.done") }),
   /** The replies begun so far for the message were reported as possibly in the room. */
-  z.object({ t: z.literal("replies.reported"), messageId: z.string(), at: z.number() }),
+  recordBase.extend({ t: z.literal("replies.reported") }),
 ]);
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -88,6 +89,8 @@ export class TurnJournal {
   /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
   private readonly releasing = new Map<string, Promise<void>>();
   private readonly dir: string;
+  /** Set by `close()` until the next `prepare()`: a turn the runtime stopped waiting on opens no file. */
+  private closed = false;
 
   public constructor(journalDir: string, agentId: string, private readonly options: TurnJournalOptions) {
     // Per agent: a room's file holds what this agent finished, which another agent in the room did not.
@@ -96,6 +99,7 @@ export class TurnJournal {
 
   /** Creates the agent's directory and checks it is usable, so a bad `journalDir` fails start, not a turn. */
   public async prepare(): Promise<void> {
+    this.closed = false;
     try {
       await mkdir(this.dir, { recursive: true });
       await access(this.dir, constants.R_OK | constants.W_OK | constants.X_OK);
@@ -105,6 +109,7 @@ export class TurnJournal {
   }
 
   public room(roomId: string): Promise<RoomJournal> {
+    if (this.closed) return Promise.reject(new RuntimeStateError("The turn journal is closed; the runtime stopped"));
     let journal = this.rooms.get(roomId);
     if (!journal) {
       const file = roomJournalFile(this.dir, roomId);
@@ -131,11 +136,16 @@ export class TurnJournal {
     return closing;
   }
 
+  /**
+   * Closes every room's journal, and opens none until the next `prepare()`.
+   * Rejects only for the closes it made: one already releasing reports its
+   * failure to whoever released it.
+   */
   public async close(): Promise<void> {
-    const rooms = [...this.rooms.values()];
-    this.rooms.clear();
+    this.closed = true;
+    const releasing = [...this.releasing.values()].map((closing) => closing.catch(() => undefined));
     const errors: unknown[] = [];
-    await Promise.all([...rooms.map(closeRoom), ...this.releasing.values()].map((closing) => isolateTeardown(errors, () => closing)));
+    await Promise.all([...[...this.rooms.keys()].map((roomId) => isolateTeardown(errors, () => this.release(roomId))), ...releasing]);
     if (errors.length > 0) throw combineTeardownErrors(errors, "Failed to close the turn journal's rooms");
   }
 }

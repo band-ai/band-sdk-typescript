@@ -1,4 +1,4 @@
-import { appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -6,13 +6,11 @@ import { BandSdkError, RuntimeStateError, ValidationError } from "../src/core/er
 import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { agentJournalDir, RoomJournal, roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
-import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
-import { MS_PER_SECOND } from "../src/core/deadline";
 import { RecordLog, tmpRoot } from "./testUtils";
+import { holdJournalAppend, interceptJournalAppends, recordTypes, RETENTION_MS } from "./turnJournalSupport";
 
 const AGENT = "agent/one";
 const ROOM = "room/with:odd chars";
-const RETENTION_MS = DEFAULT_JOURNAL_RETENTION_SECONDS * MS_PER_SECOND;
 
 interface Logged {
   level: "debug" | "warn";
@@ -48,17 +46,8 @@ function roomFile(dir: string, agentId = AGENT): string {
   return roomJournalFile(agentJournalDir(dir, agentId), ROOM);
 }
 
-async function fileRecords(dir: string): Promise<string[]> {
-  const text = await readFile(roomFile(dir), "utf8");
-  return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { t: string }).t);
-}
-
-/** Node's FileHandle prototype: the fs boundary every journal write goes through. */
-async function fileHandlePrototype(): Promise<{ appendFile: (...args: unknown[]) => Promise<void> }> {
-  const handle = await open(path.join(tmpRoot(), "probe"), "w");
-  const prototype = Object.getPrototypeOf(handle) as { appendFile: (...args: unknown[]) => Promise<void> };
-  await handle.close();
-  return prototype;
+function fileRecords(dir: string): Promise<string[]> {
+  return recordTypes(roomFile(dir));
 }
 
 describe("TurnJournal", () => {
@@ -120,25 +109,21 @@ describe("TurnJournal", () => {
   it("keeps the next record whole after an append the disk cut short", async () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
-    const prototype = await fileHandlePrototype();
-    const appendLine = prototype.appendFile;
     let cut = false;
-    const spy = vi.spyOn(prototype, "appendFile").mockImplementation(async function (this: unknown, ...args: unknown[]) {
+    await interceptJournalAppends(async (original, self, args) => {
       const [data] = args;
       if (!cut && typeof data === "string" && data.includes("message-a")) {
         cut = true;
         // Half the line lands, then the disk is full.
-        await appendLine.call(this, data.slice(0, Math.floor(data.length / 2)), "utf8");
+        await original.call(self, data.slice(0, Math.floor(data.length / 2)), "utf8");
         throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
       }
-      return appendLine.apply(this, args);
+      return original.apply(self, args);
     });
-    onTestFinished(() => spy.mockRestore());
 
     await expect(journal.turnDone("message-a")).rejects.toBeInstanceOf(BandSdkError);
     await journal.turnDone("message-b");
     await journal.close();
-    spy.mockRestore();
 
     const reopened = await journalIn(dir).room(ROOM);
     expect(reopened.inbound("message-b").done).toBe(true);
@@ -149,6 +134,10 @@ describe("TurnJournal", () => {
     const journals = journalIn(tmpRoot());
     const released = await journals.room(ROOM);
     await released.turnDone("m1");
+    // A turn's end still being written when its room is released.
+    const append = await holdJournalAppend((line) => line.includes('"m2"'));
+    const writing = released.turnDone("m2");
+    await append.entered;
     const order: string[] = [];
     const closing = createDeferred();
     const closeRoom = RoomJournal.prototype.close;
@@ -169,6 +158,8 @@ describe("TurnJournal", () => {
 
     const releasing = journals.release(ROOM);
     const reopened = journals.room(ROOM);
+    append.release();
+    await writing;
     closing.resolve();
     const journal = await reopened;
     await releasing;
@@ -177,6 +168,7 @@ describe("TurnJournal", () => {
     await expect(released.turnDone("late")).rejects.toBeInstanceOf(RuntimeStateError);
     expect(journal).not.toBe(released);
     expect(journal.inbound("m1").done).toBe(true);
+    expect(journal.inbound("m2").done).toBe(true);
   });
 
   it("reopens a room whose close failed", async () => {
@@ -200,9 +192,9 @@ describe("TurnJournal", () => {
     const dir = tmpRoot();
     const clock = { now: 1_000 };
     const journal = await journalIn(dir, { clock }).room(ROOM);
-    await journal.turnDone("old");
-    // A message expires from its last record, not its first: this one's first is as old as "old".
+    // A message expires from its last record, not its first: this one's first is older than "old".
     await journal.replyBegun("recent");
+    await journal.turnDone("old");
     clock.now += RETENTION_MS / 2;
     await journal.replyBegun("recent");
 
@@ -216,6 +208,64 @@ describe("TurnJournal", () => {
     expect(await fileRecords(dir)).toEqual(["reply.intent", "reply.intent"]);
     expect(reopened.inbound("recent").unreportedReplies).toBe(2);
     expect(logged.entries).toEqual([{ level: "debug", message: expect.any(String), context: { roomId: ROOM, expired: 1 } }]);
+  });
+
+  it("opens no room once closed, until it is prepared again", async () => {
+    const dir = tmpRoot();
+    const journals = journalIn(dir);
+    await journals.prepare();
+    await (await journals.room(ROOM)).turnDone("m1");
+
+    await journals.close();
+
+    await expect(journals.room(ROOM)).rejects.toBeInstanceOf(RuntimeStateError);
+    await journals.prepare();
+    expect((await journals.room(ROOM)).inbound("m1").done).toBe(true);
+  });
+
+  it("keeps a record still being written when it closes, even though an expired one compacts the file next", async () => {
+    const dir = tmpRoot();
+    const clock = { now: 1_000 };
+    const journals = journalIn(dir, { clock });
+    const journal = await journals.room(ROOM);
+    await journal.turnDone("expired");
+    clock.now += RETENTION_MS + 1;
+    const append = await holdJournalAppend((line) => line.includes('"m2"'));
+    const writing = journal.turnDone("m2");
+    await append.entered;
+
+    const closing = journals.close();
+    // A turn the runtime stopped waiting on replies meanwhile: it opens nothing, so nothing compacts under the write.
+    await expect(journals.room(ROOM)).rejects.toBeInstanceOf(RuntimeStateError);
+    append.release();
+    await writing;
+    await closing;
+
+    const reopened = await journalIn(dir, { clock }).room(ROOM);
+    expect(reopened.inbound("m2").done).toBe(true);
+    expect(await fileRecords(dir)).toEqual(["turn.done"]);
+  });
+
+  it("rejects a close only for the rooms it closed itself", async () => {
+    const journals = journalIn(tmpRoot());
+    await journals.room(ROOM);
+    await journals.room("room-b");
+    const failing = createDeferred();
+    const close = vi.spyOn(RoomJournal.prototype, "close")
+      .mockImplementationOnce(async () => {
+        await failing.promise;
+        throw new Error("EIO: i/o error, close");
+      })
+      .mockImplementationOnce(() => Promise.reject(new Error("EBADF: bad file descriptor, close")));
+    onTestFinished(() => close.mockRestore());
+
+    // ROOM's release is still closing, and reports its own failure to whoever released it.
+    const releasing = journals.release(ROOM);
+    const closing = journals.close();
+    failing.resolve();
+
+    await expect(releasing).rejects.toThrow("EIO");
+    await expect(closing).rejects.toThrow("EBADF");
   });
 
   it("keeps rooms and agents apart", async () => {
