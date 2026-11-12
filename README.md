@@ -830,6 +830,20 @@ pnpm typecheck   # tsc --noEmit
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
 
+## Turn journal
+
+With `sessionConfig.journalDir` set, the runtime records, per room, which messages' turns ended, under `<journalDir>/<agent id>/<room id>.jsonl`. It covers one gap: a turn that finished and replied, in a process that died before Band heard the message was processed. Band serves that message again after the restart, and without the journal it is answered a second time.
+
+- **A turn's end is recorded before its message is marked processed.** That holds for a turn that completes and for one Band interrupts. After a restart, a message Band serves again whose turn the journal shows ended is marked processed without a new turn.
+- **Anything else runs again, as without the journal.** A turn that failed, was stopped, or was killed midway has no recorded end, so its message is answered again when Band serves it.
+- **A repeat that may duplicate replies is reported.** Just before each reply posts, once its arguments and mentions are accepted (`band_send_message`, any other reply tool, or a plain `sendMessage`, including calls an in-process Band MCP server makes on the turn's tools), the journal records that a reply began. When a message is answered again and an earlier, unfinished turn for it began replies, those may already be in the room. The turn that answers it again reports this as one `delivery.unrecorded` event, covering every reply begun since the last report, so each begun reply is reported once. Notices (`sendNotice`) are not replies and are not recorded, and neither are replies an external Band MCP process posts. Nor is a reply reported when a turn left running past a timed-out reset posts it after the message was answered again.
+- **A turn that hands its reply to later work records no end.** An adapter that detaches a turn (a decision wait the reply follows) ends it before the reply posts, so its message runs again after a restart, as without the journal.
+- **Every journal failure falls back to the behaviour without a journal.** A room journal that cannot be opened leaves that turn unjournaled, and a record that cannot be written is logged and skipped. The worst outcome is a message answered again, never one left unanswered. `start()` fails when `journalDir` is not a usable directory.
+
+Each record is flushed to disk, with its directory entry, before the runtime acts on it. One agent's directory belongs to one running process of that agent. A room's file is closed when the room is left or reset, and reopened on its next turn; a reply from a turn left running past that reopens it until the room's next execution or the runtime stops. Once the runtime stopped, such a reply posts unrecorded, unless the same runtime was started again, when it records into that run's journal.
+
+The journal remembers a message for `sessionConfig.journalRetentionSeconds` (three hours by default) after its last record; an older one is answered again if Band still serves it. A message's records expire together, and are dropped from a room's file when the file opens, on the room's first turn after start, a rejoin, or a reset. Until then they stay in the file, which grows with a room that is never left or reset while the process runs.
+
 ## Automatic working state
 
 The runtime reports a working indicator for accepted messages in ordinary

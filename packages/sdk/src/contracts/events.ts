@@ -99,6 +99,13 @@ export type AgentEvent =
   /** The room's message handling stopped: the room was left or reset, or the agent stopped. */
   | { type: "room.stopped"; roomId: string }
   /**
+   * `messageId` is answered again, and the turn journal shows an earlier,
+   * unfinished turn for it began posting replies: Band may already have them,
+   * so they may repeat. Each begun reply is reported once: a later repeat is
+   * reported again only for replies begun since.
+   */
+  | { type: "delivery.unrecorded"; roomId: string; messageId: string }
+  /**
    * `source` paused the room: no turn starts there, and Band keeps its
    * messages, until every source that paused it resumes it.
    */

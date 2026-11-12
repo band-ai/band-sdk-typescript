@@ -1,4 +1,5 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { replyPosting } from "../../core/replyGate";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
@@ -163,7 +164,24 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
+    return this.postMessage(content, mentions, replyPosting);
+  }
+
+  /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
+  public async sendNotice(
+    content: string,
+    mentions: MentionInput = [],
+  ): Promise<ToolOperationResult> {
+    return this.postMessage(content, mentions);
+  }
+
+  private async postMessage(
+    content: string,
+    mentions: MentionInput,
+    beforePost?: () => Promise<void>,
+  ): Promise<ToolOperationResult> {
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
+    await beforePost?.();
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
@@ -174,13 +192,6 @@ export class AgentTools implements AgentToolsProtocol {
         mentions: resolvedMentions,
       },
     );
-  }
-
-  public async sendNotice(
-    content: string,
-    mentions: MentionInput = [],
-  ): Promise<ToolOperationResult> {
-    return this.sendMessage(content, mentions);
   }
 
   public async sendEvent(

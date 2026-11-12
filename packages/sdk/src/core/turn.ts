@@ -139,13 +139,16 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
 }
 
 /**
- * Wrappers for `tools`' Band tool methods that record each call that lands on
- * `turn`, whichever way it is made: the model's `executeToolCall`, or a direct
- * method such as `sendMessage`. They call the methods `tools` has now, and
- * `executeToolCall` dispatches to the real methods, not these, so each call
- * records once.
+ * Wrappers for every Band tool call on `tools`, whichever way it is made: the
+ * model's `executeToolCall` by name, or a direct method such as `sendMessage`.
+ * `wrap` gets the tool, the call to make, and the content it carries. The
+ * wrappers call the methods `tools` has now, and `executeToolCall` dispatches
+ * to the real methods, not these, so each call is wrapped once.
  */
-export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: () => Turn): Partial<T> {
+export function bandToolOverrides<T extends AdapterToolsProtocol>(
+  tools: T,
+  wrap: (toolName: BandToolName, call: () => Promise<unknown>, content: unknown) => Promise<unknown>,
+): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
 
   for (const [toolName, methodName] of Object.entries(TOOL_METHODS) as [ToolName, AdapterToolMethodName | null][]) {
@@ -153,21 +156,23 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
     if (!method) {
       continue;
     }
-    overrides[methodName] = async (...args: unknown[]) => {
-      const result = await method(...args);
-      recordLanded(turn(), toolName, args[0], result);
-      return result;
-    };
+    overrides[methodName] = (...args: unknown[]) => wrap(toolName, () => method(...args), args[0]);
   }
 
   const executeToolCall = tools.executeToolCall.bind(tools);
-  overrides.executeToolCall = async (toolName: string, args: Record<string, unknown>) => {
-    const result = await executeToolCall(toolName, args);
-    if (isBandToolName(toolName)) {
-      recordLanded(turn(), toolName, args.content, result);
-    }
+  overrides.executeToolCall = (toolName: string, args: Record<string, unknown>) =>
+    isBandToolName(toolName) ? wrap(toolName, () => executeToolCall(toolName, args), args.content) : executeToolCall(toolName, args);
+
+  return overrides;
+}
+
+/** Wrappers for `tools`' Band tool calls that record each one that lands on `turn`, via {@link bandToolOverrides}. */
+export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: () => Turn): Partial<T> {
+  const overrides = bandToolOverrides(tools, async (toolName, call, content) => {
+    const result = await call();
+    recordLanded(turn(), toolName, content, result);
     return result;
-  };
+  });
 
   const sendFailure = tools.sendFailure.bind(tools);
   overrides.sendFailure = async (failure: AgentFailure) => {
