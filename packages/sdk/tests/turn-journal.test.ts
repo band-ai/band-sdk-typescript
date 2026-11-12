@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -274,7 +274,7 @@ describe("TurnJournal", () => {
     await expect(closing).rejects.toThrow("EBADF");
   });
 
-  it("keeps a record a newer version wrote through compaction, without applying it", async () => {
+  it("keeps what a newer version wrote through compaction, applying only what this one knows", async () => {
     const dir = tmpRoot();
     const clock = { now: 1_000 };
     const journal = await journalIn(dir, { clock }).room(ROOM);
@@ -282,11 +282,18 @@ describe("TurnJournal", () => {
     await journal.close();
     clock.now += RETENTION_MS + 1;
     await appendFile(roomFile(dir), `${JSON.stringify({ t: "reply.settled", messageId: "m1", at: clock.now, extra: 1 })}\n`);
+    // A field a newer version added to a record this one knows.
+    await appendFile(roomFile(dir), `${JSON.stringify({ t: "turn.done", messageId: "m2", at: clock.now, outcome: "posted" })}\n`);
 
     const reopened = await journalIn(dir, { clock }).room(ROOM);
 
     expect(reopened.inbound("m1")).toEqual({ done: false, unreportedReplies: 0 });
-    expect(await fileRecords(dir)).toEqual(["reply.settled"]);
+    expect(reopened.inbound("m2").done).toBe(true);
+    const kept = (await readFile(roomFile(dir), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as object);
+    expect(kept).toEqual([
+      { t: "reply.settled", messageId: "m1", at: clock.now, extra: 1 },
+      { t: "turn.done", messageId: "m2", at: clock.now, outcome: "posted" },
+    ]);
   });
 
   it("removes a copy a crash left mid-compaction when the room opens, and only its own", async () => {

@@ -10,7 +10,8 @@ import { Serializer } from "../../core/singleFlight";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 
 /** A journal line: what happened to an inbound message, and when it was written, in epoch milliseconds. */
-const recordBase = z.object({ messageId: z.string(), at: z.number() });
+// Loose, so fields a newer version adds to a record survive compaction.
+const recordBase = z.looseObject({ messageId: z.string(), at: z.number() });
 const journalRecordSchema = z.discriminatedUnion("t", [
   /** A reply to the message began posting. Nothing records how it ended: Band may or may not have it. */
   recordBase.extend({ t: z.literal("reply.intent") }),
@@ -23,10 +24,10 @@ const journalRecordSchema = z.discriminatedUnion("t", [
 /** A record a newer version wrote: kept through compaction for that version, never applied here. */
 const foreignRecordSchema = recordBase.extend({ t: z.string() }).loose();
 
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type JournalRecord = z.infer<typeof journalRecordSchema>;
 type StoredRecord = JournalRecord | z.infer<typeof foreignRecordSchema>;
-type JournalEntry = DistributiveOmit<JournalRecord, "at">;
+/** A record before it is stamped. */
+type JournalEntry = Pick<JournalRecord, "t" | "messageId">;
 
 /** What the journal knows of one inbound message. */
 export interface InboundState {
@@ -337,7 +338,7 @@ export class RoomJournal {
       return Promise.reject(new RuntimeStateError("The room's turn journal is closed; its handling stopped"));
     }
     return this.writes.run(async () => {
-      const record: JournalRecord = { ...entry, at: this.now() };
+      const record: StoredRecord = { ...entry, at: this.now() };
       const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
       try {
         this.lineCut = true;

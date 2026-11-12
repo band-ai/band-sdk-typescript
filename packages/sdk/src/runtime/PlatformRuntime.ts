@@ -406,8 +406,11 @@ export class PlatformRuntime implements AsyncDisposable {
 
     // Before anything connects, so an unusable `journalDir` fails start instead of degrading every turn.
     await this.journals?.prepare();
-    // A stop that superseded this start may have closed the journal before it was prepared.
-    if (!this.lifecycle.isCurrent(startState)) await this.closeJournal();
+    // A stop that superseded this start may have closed the journal before it was prepared. Not
+    // once a newer start owns it: that run prepared it for itself.
+    if (!this.lifecycle.isCurrent(startState) && (this.lifecycle.is("stopped") || this.lifecycle.is("failed"))) {
+      await this.closeJournal();
+    }
     assertNotSuperseded();
     await this.initialize();
     assertNotSuperseded();

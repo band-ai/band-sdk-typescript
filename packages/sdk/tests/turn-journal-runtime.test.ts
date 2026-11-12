@@ -12,6 +12,7 @@ import { MS_PER_SECOND } from "../src/core/deadline";
 import { createDeferred } from "../src/core/deferred";
 import { ValidationError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
+import { gatingReplies } from "../src/core/replyGate";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { PlatformRuntime } from "../src/runtime";
@@ -671,12 +672,13 @@ describe("what the turn journal records and reports", () => {
     expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
   });
 
-  it("does not count a notice as a reply", async () => {
+  it("does not count a notice as a reply, even one sent while a reply is posting", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
     await startProcess(platform, journalDir, async ({ tools }) => {
-      await tools.sendNotice("working on it", ["@owner"]);
+      // Inside a reply's scope, where a reply would wait on this gate: the notice must not.
+      await gatingReplies(() => Promise.reject(new Error("a reply's gate")), () => tools.sendNotice("working on it", ["@owner"]));
       await tools.sendMessage("answered", ["@owner"]);
     });
 
@@ -780,7 +782,10 @@ describe("what the turn journal records and reports", () => {
     let turns = 0;
     const { events, handled } = await startProcess(platform, journalDir, async ({ tools }) => {
       turns += 1;
-      if (turns > 1) return answers({ tools } as Parameters<Handler>[0]);
+      if (turns > 1) {
+        await tools.sendMessage("answered", ["@owner"]);
+        return;
+      }
       // Bob joined without the agent hearing of it, so mentioning him fetches the room's participants.
       await platform.rest.addChatParticipant(ROOM, { participantId: "bob" });
       lookup.resolve(platform.rest.participantHolds.hold(() => true));
@@ -826,5 +831,60 @@ describe("what the turn journal records and reports", () => {
 
     expect(opened).not.toHaveBeenCalled();
     expect(runtime.state.status).toBe("stopped");
+  });
+
+  it("closes the journal a superseded start prepared after its stop, unless a newer start owns it", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const { runtime } = await startProcess(platform, journalDir, answers);
+    expect(await runtime.stop()).toBe(true);
+    const prepare = TurnJournal.prototype.prepare;
+    const close = TurnJournal.prototype.close;
+    const order: string[] = [];
+    const preparing = createDeferred();
+    const prepareStarted = createDeferred();
+    const held = vi.spyOn(TurnJournal.prototype, "prepare").mockImplementationOnce(async function (this: TurnJournal) {
+      prepareStarted.resolve();
+      await preparing.promise;
+      await prepare.call(this);
+      order.push("prepared");
+    });
+    const closes = vi.spyOn(TurnJournal.prototype, "close").mockImplementation(async function (this: TurnJournal) {
+      await close.call(this);
+      order.push("closed");
+    });
+    onTestFinished(() => {
+      held.mockRestore();
+      closes.mockRestore();
+    });
+
+    // The stop closes the journal before the superseded start prepares it: that start closes it again.
+    const superseded = runtime.start(new GenericAdapter(answers));
+    await prepareStarted.promise;
+    expect(await runtime.stop()).toBe(true);
+    preparing.resolve();
+    await expect(superseded).rejects.toThrow("superseded");
+    expect(order).toEqual(["closed", "prepared", "closed"]);
+
+    // Superseded again, but a newer start runs before it finishes preparing: that run keeps its journal.
+    const again = createDeferred();
+    const againStarted = createDeferred();
+    const heldAgain = vi.spyOn(TurnJournal.prototype, "prepare").mockImplementationOnce(async function (this: TurnJournal) {
+      againStarted.resolve();
+      await again.promise;
+      await prepare.call(this);
+    });
+    onTestFinished(() => heldAgain.mockRestore());
+    const supersededAgain = runtime.start(new GenericAdapter(answers));
+    await againStarted.promise;
+    expect(await runtime.stop()).toBe(true);
+    await runtime.start(new GenericAdapter(answers));
+    again.resolve();
+    await expect(supersededAgain).rejects.toThrow("superseded");
+    expect(runtime.state.status).toBe("running");
+
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} hello`))).toBe("processed");
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
   });
 });
