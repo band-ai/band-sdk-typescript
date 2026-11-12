@@ -177,6 +177,80 @@ describe("agent.control from Band", () => {
     expect(await roomB.outcome(held)).toBe("processed");
   });
 
+  it("drops a stop or interrupt addressed to one execution when it names no room, and never fans it out", async () => {
+    const { adapter, handled, release } = firstTurnHangs();
+    const { platform, roomA, roomB, next, of } = await startAgent(adapter);
+    await roomA.say("owner", "hangs");
+    await handled.until(() => handled.entries.length === 1);
+    // Give B an execution, so a genuine pause of it is reportable.
+    expect((await roomB.sayAndSettle("owner", "warm")).outcome).toBe("processed");
+
+    platform.control("stop", null, { executionId: "exec-1" });
+    platform.control("interrupt", null, { executionId: "exec-2" });
+    // A well-formed room signal applied after them proves both earlier pushes were processed.
+    platform.control("stop", ROOM_B);
+    await next(is("room.paused", ROOM_B));
+
+    // A's hanging turn was neither paused nor interrupted: the execution-addressed signals reached no room.
+    expect(of(ROOM_A)).toEqual(["room.joined", "turn.started"]);
+
+    // Release A's hanging turn, so teardown finds a settled agent.
+    release();
+    await next(is("turn.completed", ROOM_A));
+  });
+
+  it("lets a later agent-wide stop apply under the same correlation id after dropping an execution-addressed one", async () => {
+    const { adapter } = settlingAdapter();
+    const { platform, next } = await startAgent(adapter);
+
+    platform.control("stop", null, { executionId: "exec-1", correlationId: "sig-1" });
+    platform.control("stop", null, { correlationId: "sig-1" });
+
+    await next(is("room.paused", ROOM_A));
+    await next(is("room.paused", ROOM_B));
+  });
+
+  it("applies a room-scoped stop that carries an execution id, and an agent-wide play without one lifts both rooms", async () => {
+    const { adapter } = settlingAdapter();
+    const { platform, roomA, roomB, next } = await startAgent(adapter);
+
+    platform.control("stop", ROOM_A, { executionId: "exec-9" });
+    await next(is("room.paused", ROOM_A));
+    platform.control("stop", ROOM_B, { executionId: "exec-9" });
+    await next(is("room.paused", ROOM_B));
+    const heldA = await roomA.say("owner", "while stopped");
+    const heldB = await roomB.say("owner", "also stopped");
+    expect(roomA.outcomes(heldA)).toEqual([]);
+    expect(roomB.outcomes(heldB)).toEqual([]);
+
+    // The platform sends none like this — every push carries an execution id —
+    // but the SDK's agent-wide contract must hold.
+    platform.control("play", null);
+    expect(await roomA.outcome(heldA)).toBe("processed");
+    expect(await roomB.outcome(heldB)).toBe("processed");
+  });
+
+  it("lifts no pause for a play addressed to one execution, and resumes only the stopped room whose /next serves it", async () => {
+    const { adapter } = settlingAdapter();
+    const { platform, roomA, roomB, next, of } = await startAgent(adapter);
+    platform.control("stop", ROOM_A);
+    await next(is("room.paused", ROOM_A));
+    platform.control("stop", ROOM_B);
+    await next(is("room.paused", ROOM_B));
+    const waitingA = await roomA.say("owner", "played with its execution");
+    const waitingB = await roomB.say("owner", "still stopped on Band");
+
+    // Band played the execution in room A: the serving flips, and the push names the execution with no room.
+    platform.control("play", ROOM_A, { delivered: false });
+    platform.transport.pushControl({ mode: "play", scope: "agent", agent_id: AGENT_ID, room_id: null, correlation_id: "sig-exec-play", execution_id: "exec-1" });
+
+    // A caught up because its /next served the message; B stays stopped, its own play never came.
+    await next(is("room.resumed", ROOM_A));
+    expect(await roomA.outcome(waitingA)).toBe("processed");
+    expect(roomB.outcomes(waitingB)).toEqual([]);
+    expect(of(ROOM_B).filter((type) => type === "room.resumed")).toEqual([]);
+  });
+
   it("applies a repeated signal once", async () => {
     const { adapter } = settlingAdapter();
     const { platform, events, next } = await startAgent(adapter);
