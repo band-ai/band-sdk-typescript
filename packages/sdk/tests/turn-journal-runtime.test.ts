@@ -265,6 +265,28 @@ describe("the turn journal across a restart", () => {
     expect(handled).toEqual([]);
   });
 
+  it.each<[string, Handler]>([
+    ["arguments that fail validation", async ({ tools }) => {
+      await tools.executeToolCall("band_send_message", { content: "unaddressed", mentions: [] });
+    }],
+    ["a mention nobody in the room has", async ({ tools }) => {
+      await tools.sendMessage("unaddressed", ["@nobody"]).catch(() => undefined);
+    }],
+  ])("records no reply for a send refused before its post, for %s", async (_refusal, refuse) => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    await startProcess(platform, journalDir, async (args) => {
+      await refuse(args);
+      await args.tools.sendMessage("answered", ["@owner"]);
+    });
+
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} hello`))).toBe("processed");
+
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
+  });
+
   it("does not post a reply whose turn is interrupted while its record is written", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
@@ -415,6 +437,40 @@ describe("the turn journal while a room's handling stops and starts", () => {
     expect(opened).toHaveBeenCalledTimes(2);
     expect(rejoined.messages.map((posted) => posted.content)).toEqual(["answered"]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done"]);
+  });
+
+  it("settles an interrupted message whose room was left meanwhile without writing to the released journal", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
+    const opening = createDeferred();
+    const openStarted = createDeferred();
+    const openRoom = RoomJournal.open.bind(RoomJournal);
+    const open = vi.spyOn(RoomJournal, "open").mockImplementationOnce(async (...args) => {
+      openStarted.resolve();
+      await opening.promise;
+      return openRoom(...args);
+    });
+    const turnDone = vi.spyOn(RoomJournal.prototype, "turnDone");
+    onTestFinished(() => {
+      open.mockRestore();
+      turnDone.mockRestore();
+    });
+    const claim = room.holdProcessing(inbound);
+    const { handled, events } = await startProcess(platform, tmpRoot(), async () => undefined);
+    await openStarted.promise;
+
+    // Interrupted before it was claimed, then the claim is held while the room is left.
+    platform.control("interrupt", ROOM);
+    opening.resolve();
+    await claim.sending;
+    await room.remove();
+    await events.next((event) => event.type === "room.stopped");
+    claim.release();
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(handled).toEqual([]);
+    expect(turnDone).not.toHaveBeenCalled();
   });
 
   it("opens no journal for a reply a turn makes after the runtime stopped waiting on it, and posts it", async () => {

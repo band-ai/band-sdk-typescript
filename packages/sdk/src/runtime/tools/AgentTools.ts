@@ -4,6 +4,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
+import { replyPosting } from "../journal/replyGate";
 import { fetchContextPage, listAllPeers } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -164,6 +165,7 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
+    await replyPosting();
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.

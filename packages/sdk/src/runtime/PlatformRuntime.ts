@@ -701,10 +701,9 @@ export class PlatformRuntime implements AsyncDisposable {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
         const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
-        // Revoked on both sides of the journal: a reply refused at its call records nothing, and one
-        // cut short while its record was written does not post.
+        // Journaled under the revocation, so a reply refused at its call records nothing.
         const journaled = journal && this.journals
-          ? journalingTools(revokedOnStop(cycled, stopped), this.journals, roomId, messageId, this.logger)
+          ? journalingTools(cycled, this.journals, roomId, messageId, stopped, this.logger)
           : cycled;
         const tools = revokedOnStop(journaled, stopped);
         const turn = adapter.onEvent({ ...input, tools, holdRoomUntil });
@@ -822,6 +821,12 @@ export class PlatformRuntime implements AsyncDisposable {
    */
   private async recordTurnDone(journal: RoomJournal | undefined, roomId: string, messageId: string): Promise<void> {
     if (!journal) return;
+    if (journal.isClosed) {
+      // The room's handling stopped while the turn settled (an interrupt racing a leave): the mark below
+      // settles the message as it would without a journal.
+      this.logger.debug("Not recording a turn's end: its room's journal was released", { roomId, messageId });
+      return;
+    }
     await bestEffort(() => journal.turnDone(messageId), this.logger, "Failed to record a turn's end in the turn journal", { roomId, messageId });
   }
 

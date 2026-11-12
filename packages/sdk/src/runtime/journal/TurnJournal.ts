@@ -270,6 +270,11 @@ export class RoomJournal {
     }
   }
 
+  /** Whether this handle closed: its room's handling stopped, and the room's next turn opens a new one. */
+  public get isClosed(): boolean {
+    return this.closed;
+  }
+
   public inbound(messageId: string): InboundState {
     this.expire();
     const index = this.inbounds.get(messageId);

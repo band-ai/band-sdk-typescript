@@ -21,8 +21,10 @@ const DESCRIBING_TOOLS: ReadonlySet<PropertyKey> = new Set(Object.keys({
  * reply and the replay's.
  */
 export function revokedOnStop<T extends object>(tools: T, stopped: AbortSignal): T {
-  return guardedTools(tools, (key) =>
-    stopped.aborted && !DESCRIBING_TOOLS.has(key)
-      ? new RuntimeStateError(`This turn was cut short (${String(stopped.reason)}); its tools no longer act`)
-      : null);
+  return guardedTools(tools, (key) => (DESCRIBING_TOOLS.has(key) ? null : cutShort(stopped)));
+}
+
+/** The error a cut-short turn's call is refused with, or null while the turn runs. */
+export function cutShort(stopped: AbortSignal): RuntimeStateError | null {
+  return stopped.aborted ? new RuntimeStateError(`This turn was cut short (${String(stopped.reason)}); its tools no longer act`) : null;
 }
