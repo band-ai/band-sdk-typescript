@@ -4,6 +4,7 @@ import { onTestFinished, vi } from "vitest";
 
 import { MS_PER_SECOND } from "../src/core/deadline";
 import { createDeferred } from "../src/core/deferred";
+import { RoomJournal, TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
 import { tmpRoot } from "./testUtils";
 
@@ -44,8 +45,28 @@ export async function holdJournalAppend(matches: (line: string) => boolean): Pro
   return { entered: entered.promise, release: () => released.resolve() };
 }
 
+/** The records in a journal file, in order: each one's type and message. */
+export async function journalLines(file: string): Promise<Array<{ t: string; messageId: string }>> {
+  const text = await readFile(file, "utf8");
+  return text.split("\n").filter(Boolean).map((line) => {
+    const { t, messageId } = JSON.parse(line) as { t: string; messageId: string };
+    return { t, messageId };
+  });
+}
+
 /** The record types in a journal file, in order. */
 export async function recordTypes(file: string): Promise<string[]> {
-  const text = await readFile(file, "utf8");
-  return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { t: string }).t);
+  return (await journalLines(file)).map((line) => line.t);
+}
+
+/** Writes what an earlier process of `agentId` journaled in `roomId`, then closes it. */
+export async function seedJournal(journalDir: string, agentId: string, roomId: string, write: (room: RoomJournal) => Promise<void>): Promise<void> {
+  const journals = new TurnJournal(journalDir, agentId, { retentionMs: RETENTION_MS });
+  await write(await journals.room(roomId));
+  await journals.close();
+}
+
+/** The error a full disk fails a write with. */
+export function diskFull(): Error {
+  return Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
 }

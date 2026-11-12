@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -7,7 +7,7 @@ import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { agentJournalDir, RoomJournal, roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { RecordLog, tmpRoot } from "./testUtils";
-import { holdJournalAppend, interceptJournalAppends, recordTypes, RETENTION_MS } from "./turnJournalSupport";
+import { diskFull, holdJournalAppend, interceptJournalAppends, recordTypes, RETENTION_MS } from "./turnJournalSupport";
 
 const AGENT = "agent/one";
 const ROOM = "room/with:odd chars";
@@ -116,7 +116,7 @@ describe("TurnJournal", () => {
         cut = true;
         // Half the line lands, then the disk is full.
         await original.call(self, data.slice(0, Math.floor(data.length / 2)), "utf8");
-        throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+        throw diskFull();
       }
       return original.apply(self, args);
     });
@@ -251,12 +251,18 @@ describe("TurnJournal", () => {
     await journals.room(ROOM);
     await journals.room("room-b");
     const failing = createDeferred();
+    const realClose = RoomJournal.prototype.close;
+    // Each handle really closes, then reports a failure.
     const close = vi.spyOn(RoomJournal.prototype, "close")
-      .mockImplementationOnce(async () => {
+      .mockImplementationOnce(async function (this: RoomJournal) {
         await failing.promise;
+        await realClose.call(this);
         throw new Error("EIO: i/o error, close");
       })
-      .mockImplementationOnce(() => Promise.reject(new Error("EBADF: bad file descriptor, close")));
+      .mockImplementationOnce(async function (this: RoomJournal) {
+        await realClose.call(this);
+        throw new Error("EBADF: bad file descriptor, close");
+      });
     onTestFinished(() => close.mockRestore());
 
     // ROOM's release is still closing, and reports its own failure to whoever released it.
@@ -266,6 +272,38 @@ describe("TurnJournal", () => {
 
     await expect(releasing).rejects.toThrow("EIO");
     await expect(closing).rejects.toThrow("EBADF");
+  });
+
+  it("keeps a record a newer version wrote through compaction, without applying it", async () => {
+    const dir = tmpRoot();
+    const clock = { now: 1_000 };
+    const journal = await journalIn(dir, { clock }).room(ROOM);
+    await journal.turnDone("expired");
+    await journal.close();
+    clock.now += RETENTION_MS + 1;
+    await appendFile(roomFile(dir), `${JSON.stringify({ t: "reply.settled", messageId: "m1", at: clock.now, extra: 1 })}\n`);
+
+    const reopened = await journalIn(dir, { clock }).room(ROOM);
+
+    expect(reopened.inbound("m1")).toEqual({ done: false, unreportedReplies: 0 });
+    expect(await fileRecords(dir)).toEqual(["reply.settled"]);
+  });
+
+  it("removes a copy a crash left mid-compaction when the room opens, and only its own", async () => {
+    const dir = tmpRoot();
+    const journals = journalIn(dir);
+    await (await journals.room(ROOM)).turnDone("m1");
+    await journals.release(ROOM);
+    const orphan = `${roomFile(dir)}.0b5e6a3c-1f2d-4e5f-8a9b-0c1d2e3f4a5b.compacting`;
+    const otherRooms = `${roomJournalFile(agentJournalDir(dir, AGENT), "room-b")}.0b5e6a3c-1f2d-4e5f-8a9b-0c1d2e3f4a5b.compacting`;
+    await appendFile(orphan, "partial");
+    await appendFile(otherRooms, "partial");
+
+    await journals.room(ROOM);
+
+    const left = await readdir(agentJournalDir(dir, AGENT));
+    expect(left).not.toContain(path.basename(orphan));
+    expect(left).toContain(path.basename(otherRooms));
   });
 
   it("keeps rooms and agents apart", async () => {

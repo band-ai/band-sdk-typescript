@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, rename, rm, type FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readdir, readFile, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -20,8 +20,12 @@ const journalRecordSchema = z.discriminatedUnion("t", [
   recordBase.extend({ t: z.literal("replies.reported") }),
 ]);
 
+/** A record a newer version wrote: kept through compaction for that version, never applied here. */
+const foreignRecordSchema = recordBase.extend({ t: z.string() }).loose();
+
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type JournalRecord = z.infer<typeof journalRecordSchema>;
+type StoredRecord = JournalRecord | z.infer<typeof foreignRecordSchema>;
 type JournalEntry = DistributiveOmit<JournalRecord, "at">;
 
 /** What the journal knows of one inbound message. */
@@ -46,19 +50,20 @@ export function roomJournalFile(dir: string, roomId: string): string {
 }
 
 /**
- * Runs a journal write whose failure must not stop the runtime: every record
- * only ever stops a message from being answered twice, so a lost one is logged
- * and the runtime carries on as it would without a journal.
+ * Runs a journal operation (a write, a close) whose failure must not stop the
+ * runtime: every record only ever stops a message from being answered twice,
+ * so a failure is logged and the runtime carries on as it would without a
+ * journal.
  */
-export async function bestEffort(write: () => Promise<unknown>, logger: Logger, failure: string, context: Record<string, unknown>): Promise<void> {
+export async function bestEffort(operation: () => Promise<unknown>, logger: Logger, failure: string, context: Record<string, unknown>): Promise<void> {
   try {
-    await write();
+    await operation();
   } catch (error) {
     logger.warn(failure, { ...context, error });
   }
 }
 
-function toLine(record: JournalRecord): string {
+function toLine(record: StoredRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
 
@@ -155,8 +160,8 @@ async function closeRoom(journal: Promise<RoomJournal>): Promise<void> {
 }
 
 /** Every readable line of `text`, and how many were not. */
-function parseLines(text: string): { records: JournalRecord[]; unreadable: number } {
-  const records: JournalRecord[] = [];
+function parseLines(text: string): { records: StoredRecord[]; unreadable: number } {
+  const records: StoredRecord[] = [];
   let unreadable = 0;
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
@@ -168,21 +173,22 @@ function parseLines(text: string): { records: JournalRecord[]; unreadable: numbe
       continue;
     }
     const parsed = journalRecordSchema.safeParse(json);
-    if (parsed.success) records.push(parsed.data);
+    const foreign = parsed.success ? parsed : foreignRecordSchema.safeParse(json);
+    if (foreign.success) records.push(foreign.data);
     else unreadable += 1;
   }
   return { records, unreadable };
 }
 
 /** The records of every message written to at or after `cutoff`: a message's records expire together. */
-function unexpired(records: JournalRecord[], cutoff: number): JournalRecord[] {
+function unexpired(records: StoredRecord[], cutoff: number): StoredRecord[] {
   const latest = new Map<string, number>();
   for (const record of records) latest.set(record.messageId, Math.max(record.at, latest.get(record.messageId) ?? record.at));
   return records.filter((record) => (latest.get(record.messageId) ?? 0) >= cutoff);
 }
 
 /** Replaces `file` with `records`, through a renamed copy so a crash leaves the old file or the new one. */
-async function rewrite(file: string, records: JournalRecord[]): Promise<void> {
+async function rewrite(file: string, records: StoredRecord[]): Promise<void> {
   const copy = `${file}.${randomUUID()}.compacting`;
   try {
     const handle = await open(copy, "w");
@@ -198,6 +204,24 @@ async function rewrite(file: string, records: JournalRecord[]): Promise<void> {
     throw error;
   }
   await syncDirectory(path.dirname(file));
+}
+
+const COMPACTING_COPY = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.compacting$/;
+
+/** Removes the copies of `file` a crash left mid-compaction; they never replaced it. */
+async function removeOrphanedCopies(file: string): Promise<void> {
+  const dir = path.dirname(file);
+  const base = path.basename(file);
+  for (const name of await readdir(dir)) {
+    if (name.startsWith(base) && COMPACTING_COPY.test(name.slice(base.length))) {
+      await rm(path.join(dir, name), { force: true });
+    }
+  }
+}
+
+/** Whether `error` is a file system error with `code`. */
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 /**
@@ -245,8 +269,9 @@ export class RoomJournal {
     const now = options.now ?? Date.now;
     try {
       await mkdir(path.dirname(file), { recursive: true });
-      const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
+      await removeOrphanedCopies(file);
+      const text = await readFile(file, "utf8").catch((error: unknown) => {
+        if (hasErrorCode(error, "ENOENT")) return null;
         throw error;
       });
       const { records: readable, unreadable } = parseLines(text ?? "");
@@ -257,12 +282,16 @@ export class RoomJournal {
         if (unreadable > 0) options.logger?.warn("Dropping unreadable turn journal lines", { roomId, unreadable, expired });
         else options.logger?.debug("Compacting a turn journal", { roomId, expired });
         await rewrite(file, records);
-      } else if (text === null) {
-        // Created by the open below: its directory entry is flushed once it exists.
-        await open(file, "a").then((created) => created.close());
-        await syncDirectory(path.dirname(file));
       }
-      const journal = new RoomJournal(await open(file, "a"), options.retentionMs, now);
+      const handle = await open(file, "a");
+      try {
+        // This open created the file: its directory entry is flushed before the first record.
+        if (text === null) await syncDirectory(path.dirname(file));
+      } catch (error) {
+        await handle.close();
+        throw error;
+      }
+      const journal = new RoomJournal(handle, options.retentionMs, now);
       for (const record of records) journal.apply(record);
       return journal;
     } catch (error) {
@@ -341,7 +370,8 @@ export class RoomJournal {
     }
   }
 
-  private apply(record: JournalRecord): void {
+  /** Applies `record`; one this version does not know only keeps its message's records from expiring. */
+  private apply(record: StoredRecord): void {
     const index = this.touch(record.messageId, record.at);
     switch (record.t) {
       case "reply.intent":
