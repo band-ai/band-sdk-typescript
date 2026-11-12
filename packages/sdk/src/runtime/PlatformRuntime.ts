@@ -820,8 +820,9 @@ export class PlatformRuntime implements AsyncDisposable {
   ): Promise<boolean> {
     const state = journal.inbound(messageId);
     if (state.answered || state.done) {
-      // Recorded again even when read back as done: written, it drops the message from memory.
-      await journal.turnDone(messageId);
+      // Written, `turn.done` also drops the message from memory; one read back as done needs no second record.
+      if (state.done) journal.forget(messageId);
+      else await journal.turnDone(messageId);
       this.logger.info("inbound already answered before a restart; not answering it again", { roomId, messageId });
       // Claimed, then settled, as the runtime settles a message it gives up on without running it.
       await this.link.markProcessing(roomId, messageId, TURN_MARK);

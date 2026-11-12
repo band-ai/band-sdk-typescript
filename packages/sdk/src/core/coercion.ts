@@ -12,7 +12,8 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-function asNonEmptyString(value: unknown): string | null {
+/** `value` trimmed, or null when it is not a string or is blank. */
+export function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }

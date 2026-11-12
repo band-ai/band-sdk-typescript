@@ -3,22 +3,23 @@ import { mkdir, open, readFile, rename, type FileHandle } from "node:fs/promises
 import path from "node:path";
 
 import { RuntimeStateError } from "../../core/errors";
+import { Serializer } from "../../core/singleFlight";
+import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 
 /** The Band tools whose landing answers an inbound turn. */
 export type ReplyTool = "band_send_message" | "band_no_reply";
 
-export interface ReplyIdentity {
-  tool: ReplyTool;
-  /** Digest of the reply's payload; an operation id is bound to it. */
-  digest: string;
-  operationId?: string;
-}
+/** A reply's tool, and the operation id and payload digest it is bound to when it carries one. */
+export type ReplyIdentity = { tool: ReplyTool } & (
+  | { operationId?: undefined; digest?: undefined }
+  | { operationId: string; digest: string }
+);
 
 /** A reply whose post began; `id` pairs it with how it ended. */
-export interface PendingReply extends ReplyIdentity {
+export type PendingReply = ReplyIdentity & {
   id: string;
   messageId: string;
-}
+};
 
 /** What the journal knows of one inbound message's turn. */
 export interface InboundState {
@@ -37,12 +38,15 @@ export interface RecordedOperation {
   result: unknown;
 }
 
+/** How a pending reply ended; `result` is kept only for a reply under an operation id, the one a retry replays. */
+type Outcome = { id: string; messageId: string };
+
 type JournalEntry =
   | ({ t: "reply.intent" } & PendingReply)
-  | { t: "reply.posted"; id: string; result: unknown }
-  | { t: "reply.failed"; id: string }
-  | ({ t: "reply.declined"; messageId: string; result: unknown } & ReplyIdentity)
-  | { t: "delivery.unrecorded"; id: string }
+  | ({ t: "reply.posted"; result?: unknown } & Outcome)
+  | ({ t: "reply.failed" } & Outcome)
+  | ({ t: "reply.declined"; messageId: string; result?: unknown } & ReplyIdentity)
+  | ({ t: "delivery.unrecorded" } & Outcome)
   | { t: "turn.done"; messageId: string }
   | { t: "turn.retried"; messageId: string };
 
@@ -59,6 +63,11 @@ interface InboundIndex {
 
 interface StoredOperation extends RecordedOperation {
   at: number;
+}
+
+/** The path of `roomId`'s journal under `dir`. */
+export function roomJournalFile(dir: string, roomId: string): string {
+  return path.join(dir, `${encodeURIComponent(roomId)}.jsonl`);
 }
 
 export interface TurnJournalOptions {
@@ -86,7 +95,7 @@ export class TurnJournal {
   public room(roomId: string): Promise<RoomJournal> {
     let journal = this.rooms.get(roomId);
     if (!journal) {
-      const file = path.join(this.dir, `${encodeURIComponent(roomId)}.jsonl`);
+      const file = roomJournalFile(this.dir, roomId);
       const released = this.releasing.get(roomId) ?? Promise.resolve();
       journal = released.then(() => RoomJournal.open(file, this.options));
       this.rooms.set(roomId, journal);
@@ -112,7 +121,9 @@ export class TurnJournal {
   public async close(): Promise<void> {
     const rooms = [...this.rooms.values()];
     this.rooms.clear();
-    await Promise.all([...rooms.map(closeRoom), ...this.releasing.values()]);
+    const errors: unknown[] = [];
+    await Promise.all([...rooms.map(closeRoom), ...this.releasing.values()].map((closing) => isolateTeardown(errors, () => closing)));
+    if (errors.length > 0) throw combineTeardownErrors(errors, "Failed to close the turn journal's rooms");
   }
 }
 
@@ -121,12 +132,13 @@ async function closeRoom(journal: Promise<RoomJournal>): Promise<void> {
 }
 
 /**
- * The records in `text` written at or after `cutoff`; `dropped` when any line
- * was left out, expired or unreadable (a last line a crash cut short).
+ * The records in `text` written at or after `cutoff`; `dropped` when the file
+ * needs rewriting: a line was left out, expired or unreadable, or a crash cut
+ * the last line's newline.
  */
 function readRecords(text: string, cutoff: number): { records: JournalRecord[]; dropped: boolean } {
   const records: JournalRecord[] = [];
-  let dropped = false;
+  let dropped = text.length > 0 && !text.endsWith("\n");
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let record: JournalRecord;
@@ -171,30 +183,28 @@ async function rewrite(file: string, records: JournalRecord[]): Promise<void> {
  */
 export class RoomJournal {
   private readonly inbounds = new Map<string, InboundIndex>();
-  private readonly pendingById = new Map<string, PendingReply>();
   private readonly operations = new Map<string, StoredOperation>();
-  private readonly retentionMs: number;
-  private readonly now: () => number;
-  private writes: Promise<void> = Promise.resolve();
-  private separate: boolean;
+  /** Replies under one operation id land one at a time, so a racing retry sees the first one's record. */
+  private readonly landing = new Map<string, Promise<unknown>>();
+  private readonly writes = new Serializer();
   private closed = false;
 
-  private constructor(private readonly handle: FileHandle, options: TurnJournalOptions, separate: boolean) {
-    this.retentionMs = options.retentionMs;
-    this.now = options.now ?? Date.now;
-    this.separate = separate;
-  }
+  private constructor(
+    private readonly handle: FileHandle,
+    private readonly retentionMs: number,
+    private readonly now: () => number,
+  ) {}
 
   public static async open(file: string, options: TurnJournalOptions): Promise<RoomJournal> {
+    const now = options.now ?? Date.now;
     await mkdir(path.dirname(file), { recursive: true });
     const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return "";
       throw error;
     });
-    const { records, dropped } = readRecords(text, (options.now ?? Date.now)() - options.retentionMs);
+    const { records, dropped } = readRecords(text, now() - options.retentionMs);
     if (dropped) await rewrite(file, records);
-    const separate = !dropped && text.length > 0 && !text.endsWith("\n");
-    const journal = new RoomJournal(await open(file, "a"), options, separate);
+    const journal = new RoomJournal(await open(file, "a"), options.retentionMs, now);
     for (const record of records) journal.apply(record, "read");
     return journal;
   }
@@ -215,6 +225,28 @@ export class RoomJournal {
     return stored && { tool: stored.tool, digest: stored.digest, result: stored.result };
   }
 
+  /**
+   * Runs `land` once no other reply under `operationId` is landing, so a
+   * racing retry runs after the first and sees what it recorded.
+   */
+  public async once<T>(operationId: string, land: () => Promise<T>): Promise<T> {
+    for (let previous = this.landing.get(operationId); previous; previous = this.landing.get(operationId)) {
+      await previous.catch(() => undefined);
+    }
+    const landing = land();
+    this.landing.set(operationId, landing);
+    try {
+      return await landing;
+    } finally {
+      if (this.landing.get(operationId) === landing) this.landing.delete(operationId);
+    }
+  }
+
+  /** Drops a message from memory; its records stay in the file. */
+  public forget(messageId: string): void {
+    this.inbounds.delete(messageId);
+  }
+
   /** Records that a reply's post is about to begin. */
   public async beginReply(messageId: string, identity: ReplyIdentity): Promise<PendingReply> {
     const pending: PendingReply = { id: randomUUID(), messageId, ...identity };
@@ -224,17 +256,17 @@ export class RoomJournal {
 
   /** Records that Band accepted the reply. */
   public async replyPosted(pending: PendingReply, result: unknown): Promise<void> {
-    await this.append({ t: "reply.posted", id: pending.id, result });
+    await this.append({ t: "reply.posted", ...outcomeOf(pending), ...replayable(pending, result) });
   }
 
   /** Records that the reply's post failed: it is not pending anymore, and nothing was posted. */
   public async replyFailed(pending: PendingReply): Promise<void> {
-    await this.append({ t: "reply.failed", id: pending.id });
+    await this.append({ t: "reply.failed", ...outcomeOf(pending) });
   }
 
   /** Records a decline, which posts nothing. */
-  public async replyDeclined(messageId: string, identity: ReplyIdentity, result: unknown = { status: "ok" }): Promise<void> {
-    await this.append({ t: "reply.declined", messageId, ...identity, result });
+  public async replyDeclined(messageId: string, identity: ReplyIdentity, result: unknown): Promise<void> {
+    await this.append({ t: "reply.declined", messageId, ...identity, ...replayable(identity, result) });
   }
 
   /**
@@ -243,7 +275,7 @@ export class RoomJournal {
    * never means the post was accepted; nothing may treat it as delivered.
    */
   public async deliveryUnrecorded(pending: PendingReply): Promise<void> {
-    await this.append({ t: "delivery.unrecorded", id: pending.id });
+    await this.append({ t: "delivery.unrecorded", ...outcomeOf(pending) });
   }
 
   /** Records that the inbound's turn ended, before it is marked processed; memory forgets it. */
@@ -263,26 +295,21 @@ export class RoomJournal {
   public async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.writes;
-    await this.handle.close();
+    // Queued after every write already accepted.
+    await this.writes.run(() => this.handle.close());
   }
 
   private append(entry: JournalEntry): Promise<void> {
     if (this.closed) {
       return Promise.reject(new RuntimeStateError("The room's turn journal is closed; its handling stopped"));
     }
-    const write = this.writes.then(async () => {
+    return this.writes.run(async () => {
       const record: JournalRecord = { ...entry, at: this.now() };
-      const line = `${this.separate ? "\n" : ""}${JSON.stringify(record)}\n`;
-      await this.handle.appendFile(line, "utf8");
+      await this.handle.appendFile(`${JSON.stringify(record)}\n`, "utf8");
       await this.handle.datasync();
-      this.separate = false;
       this.apply(record, "written");
       this.expire();
     });
-    // A failed write fails its own caller; the next one still runs.
-    this.writes = write.catch(() => undefined);
-    return write;
   }
 
   /** `messageId`'s index, moved to the newest end and stamped `at`. */
@@ -294,16 +321,12 @@ export class RoomJournal {
     return index;
   }
 
-  private remember(operationId: string, operation: RecordedOperation, at: number): void {
-    this.operations.delete(operationId);
-    this.operations.set(operationId, { ...operation, at });
-  }
-
-  private forget(messageId: string): void {
-    const index = this.inbounds.get(messageId);
-    if (!index) return;
-    for (const id of index.pending.keys()) this.pendingById.delete(id);
-    this.inbounds.delete(messageId);
+  /** Marks `messageId` answered, and keeps the reply's result under its operation id for a retry to replay. */
+  private answered(messageId: string, identity: ReplyIdentity, result: unknown, at: number): void {
+    this.touch(messageId, at).answered = true;
+    if (identity.operationId === undefined) return;
+    this.operations.delete(identity.operationId);
+    this.operations.set(identity.operationId, { tool: identity.tool, digest: identity.digest, result, at });
   }
 
   /** Forgets what the retention no longer covers; both maps are kept oldest first. */
@@ -323,28 +346,20 @@ export class RoomJournal {
     switch (record.t) {
       case "reply.intent": {
         const { t: _t, at, ...pending } = record;
-        this.pendingById.set(pending.id, pending);
         this.touch(pending.messageId, at).pending.set(pending.id, pending);
         return;
       }
       case "reply.posted": {
-        const pending = this.settle(record.id);
-        if (!pending) return;
-        this.touch(pending.messageId, record.at).answered = true;
-        if (pending.operationId !== undefined) {
-          this.remember(pending.operationId, { tool: pending.tool, digest: pending.digest, result: record.result }, record.at);
-        }
+        const pending = this.settle(record);
+        if (pending) this.answered(pending.messageId, pending, record.result, record.at);
         return;
       }
       case "reply.failed":
       case "delivery.unrecorded":
-        this.settle(record.id);
+        this.settle(record);
         return;
       case "reply.declined":
-        this.touch(record.messageId, record.at).answered = true;
-        if (record.operationId !== undefined) {
-          this.remember(record.operationId, { tool: record.tool, digest: record.digest, result: record.result }, record.at);
-        }
+        this.answered(record.messageId, record, record.result, record.at);
         return;
       case "turn.done":
         // Read back, it is what keeps a restart from answering again; written here, the execution already does.
@@ -354,18 +369,26 @@ export class RoomJournal {
       case "turn.retried": {
         const index = this.touch(record.messageId, record.at);
         index.answered = false;
-        for (const id of index.pending.keys()) this.pendingById.delete(id);
         index.pending.clear();
         return;
       }
     }
   }
 
-  private settle(id: string): PendingReply | undefined {
-    const pending = this.pendingById.get(id);
-    if (!pending) return undefined;
-    this.pendingById.delete(id);
-    this.inbounds.get(pending.messageId)?.pending.delete(id);
-    return pending;
+  /** The pending reply `outcome` ends, taken off its message; none when a retry or forget already dropped it. */
+  private settle(outcome: Outcome): PendingReply | undefined {
+    const pending = this.inbounds.get(outcome.messageId)?.pending;
+    const reply = pending?.get(outcome.id);
+    pending?.delete(outcome.id);
+    return reply;
   }
+}
+
+function outcomeOf(pending: PendingReply): Outcome {
+  return { id: pending.id, messageId: pending.messageId };
+}
+
+/** `result`, kept only for a reply under an operation id: nothing else replays it. */
+function replayable(identity: ReplyIdentity, result: unknown): { result?: unknown } {
+  return identity.operationId === undefined ? {} : { result };
 }

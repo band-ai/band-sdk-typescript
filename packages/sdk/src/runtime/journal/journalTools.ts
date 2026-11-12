@@ -12,11 +12,9 @@ import {
   OPERATION_ID_PROPERTY,
   SEND_MESSAGE_TOOL_NAME,
 } from "../../contracts/toolSchemas";
+import { asNonEmptyString } from "../../core/coercion";
 import { overrideTools } from "../../core/overrideTools";
 import type { ReplyIdentity, ReplyTool, RoomJournal } from "./TurnJournal";
-
-/** Replies under one operation id run one at a time per room, so a racing retry sees the first one's record. */
-const operationsInFlight = new WeakMap<RoomJournal, Map<string, Promise<unknown>>>();
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -106,48 +104,27 @@ export function journalingTools<T extends AdapterToolsProtocol>(tools: T, journa
     return result;
   };
 
-  const once = async (tool: ReplyTool, operationId: string, digest: string, land: () => Promise<unknown>): Promise<unknown> => {
-    let inFlight = operationsInFlight.get(journal);
-    if (!inFlight) {
-      inFlight = new Map();
-      operationsInFlight.set(journal, inFlight);
+  const land = async (tool: ReplyTool, payload: MetadataMap, identity: ReplyIdentity): Promise<unknown> => {
+    if (tool === SEND_MESSAGE_TOOL_NAME) {
+      return post(identity, () => executeToolCall(tool, payload));
     }
-    for (let previous = inFlight.get(operationId); previous; previous = inFlight.get(operationId)) {
-      await previous.catch(() => undefined);
-    }
-    const recorded = journal.operation(operationId);
-    if (recorded) {
-      return recorded.tool === tool && recorded.digest === digest ? recorded.result : operationConflict(tool, operationId);
-    }
-    const landing = land();
-    inFlight.set(operationId, landing);
-    try {
-      return await landing;
-    } finally {
-      if (inFlight.get(operationId) === landing) inFlight.delete(operationId);
-    }
+    const result = await executeToolCall(tool, payload);
+    if (!isFailedToolOutput(result)) await journal.replyDeclined(messageId, identity, result);
+    return result;
   };
 
   const reply = async (tool: ReplyTool, args: MetadataMap): Promise<unknown> => {
     const operationId = args[OPERATION_ID_ARG];
-    if (operationId !== undefined && (typeof operationId !== "string" || operationId.trim() === "")) {
-      return invalidOperationId(tool);
-    }
     const payload = withoutOperationId(args);
-    const digest =
-      tool === SEND_MESSAGE_TOOL_NAME
-        ? replyDigest(tool, { content: payload.content, mentions: payload.mentions })
-        : replyDigest(tool, payload);
-    const identity: ReplyIdentity = operationId === undefined ? { tool, digest } : { tool, digest, operationId };
-    const land = async (): Promise<unknown> => {
-      if (tool === SEND_MESSAGE_TOOL_NAME) {
-        return post(identity, () => executeToolCall(tool, payload));
-      }
-      const result = await executeToolCall(tool, payload);
-      if (!isFailedToolOutput(result)) await journal.replyDeclined(messageId, identity, result);
-      return result;
-    };
-    return operationId === undefined ? land() : once(tool, operationId, digest, land);
+    if (operationId === undefined) return land(tool, payload, { tool });
+    if (typeof operationId !== "string" || asNonEmptyString(operationId) === null) return invalidOperationId(tool);
+    const digest = replyDigest(tool, tool === SEND_MESSAGE_TOOL_NAME ? { content: payload.content, mentions: payload.mentions } : payload);
+    // Under the id's turn, so a racing retry finds the first one's record.
+    return journal.once(operationId, async () => {
+      const recorded = journal.operation(operationId);
+      if (!recorded) return land(tool, payload, { tool, operationId, digest });
+      return recorded.tool === tool && recorded.digest === digest ? recorded.result : operationConflict(tool, operationId);
+    });
   };
 
   return overrideTools(tools, {
@@ -158,10 +135,7 @@ export function journalingTools<T extends AdapterToolsProtocol>(tools: T, journa
     getOpenAIToolSchemas: (options?: { includeMemory?: boolean }) =>
       advertiseOperationId(tools.getOpenAIToolSchemas(options)),
     sendMessage: (content: string, mentions?: MentionInput) =>
-      post(
-        { tool: SEND_MESSAGE_TOOL_NAME, digest: replyDigest(SEND_MESSAGE_TOOL_NAME, { content, mentions: mentions ?? [] }) },
-        () => sendMessage(content, mentions),
-      ),
+      post({ tool: SEND_MESSAGE_TOOL_NAME }, () => sendMessage(content, mentions)),
     executeToolCall: (toolName: string, args: MetadataMap) =>
       isReplyTool(toolName)
         ? reply(toolName, args ?? {})

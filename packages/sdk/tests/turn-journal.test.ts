@@ -1,9 +1,9 @@
 import { appendFile, readFile } from "node:fs/promises";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { RuntimeStateError } from "../src/core/errors";
-import { TurnJournal } from "../src/runtime/journal/TurnJournal";
+import { NO_REPLY_RESULT } from "../src/contracts/toolSchemas";
+import { roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
 import { MS_PER_SECOND } from "../src/core/deadline";
 import { tmpRoot } from "./testUtils";
@@ -17,7 +17,7 @@ function journalIn(dir: string, clock?: { now: number }) {
 }
 
 async function fileLines(dir: string): Promise<string[]> {
-  const text = await readFile(path.join(dir, `${encodeURIComponent(ROOM)}.jsonl`), "utf8");
+  const text = await readFile(roomJournalFile(dir, ROOM), "utf8");
   return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { t: string }).t);
 }
 
@@ -25,9 +25,9 @@ describe("TurnJournal", () => {
   it("keeps what each inbound's turn answered across a reopen", async () => {
     const dir = tmpRoot();
     const first = await journalIn(dir).room(ROOM);
-    const sent = await first.beginReply("m1", { tool: "band_send_message", digest: "d1" });
+    const sent = await first.beginReply("m1", { tool: "band_send_message" });
     await first.replyPosted(sent, { ok: true, id: "posted-1" });
-    await first.replyDeclined("m2", { tool: "band_no_reply", digest: "d2" });
+    await first.replyDeclined("m2", { tool: "band_no_reply" }, NO_REPLY_RESULT);
     await first.turnDone("m1");
 
     const reopened = await journalIn(dir).room(ROOM);
@@ -41,7 +41,7 @@ describe("TurnJournal", () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
     await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
-    const failed = await journal.beginReply("m1", { tool: "band_send_message", digest: "d2" });
+    const failed = await journal.beginReply("m1", { tool: "band_send_message" });
     await journal.replyFailed(failed);
 
     const reopened = await journalIn(dir).room(ROOM);
@@ -56,11 +56,11 @@ describe("TurnJournal", () => {
     const journal = await journalIn(tmpRoot()).room(ROOM);
     const sent = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1", operationId: "op-1" });
     await journal.replyPosted(sent, { ok: true, id: "posted-1" });
-    await journal.replyDeclined("m2", { tool: "band_no_reply", digest: "d2", operationId: "op-2" });
+    await journal.replyDeclined("m2", { tool: "band_no_reply", digest: "d2", operationId: "op-2" }, NO_REPLY_RESULT);
     const pending = await journal.beginReply("m3", { tool: "band_send_message", digest: "d3", operationId: "op-3" });
 
     expect(journal.operation("op-1")).toEqual({ tool: "band_send_message", digest: "d1", result: { ok: true, id: "posted-1" } });
-    expect(journal.operation("op-2")).toMatchObject({ tool: "band_no_reply", digest: "d2" });
+    expect(journal.operation("op-2")).toMatchObject({ tool: "band_no_reply" });
     expect(journal.operation("op-3")).toBeUndefined();
     await journal.replyFailed(pending);
     expect(journal.operation("op-3")).toBeUndefined();
@@ -70,9 +70,9 @@ describe("TurnJournal", () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
     await journal.turnDone("m1");
-    const [file] = (await readFile(path.join(dir, `${encodeURIComponent(ROOM)}.jsonl`), "utf8")).split("\n");
+    const [file] = (await readFile(roomJournalFile(dir, ROOM), "utf8")).split("\n");
     expect(file).toContain("turn.done");
-    await appendFile(path.join(dir, `${encodeURIComponent(ROOM)}.jsonl`), '{"t":"turn.do');
+    await appendFile(roomJournalFile(dir, ROOM), '{"t":"turn.do');
 
     const reopened = await journalIn(dir).room(ROOM);
     expect(reopened.inbound("m1").done).toBe(true);
@@ -83,9 +83,9 @@ describe("TurnJournal", () => {
   it("forgets what a retried inbound's turn answered, including a reply of that turn that lands after the retry", async () => {
     const dir = tmpRoot();
     const journal = await journalIn(dir).room(ROOM);
-    const posted = await journal.beginReply("m1", { tool: "band_send_message", digest: "d1" });
+    const posted = await journal.beginReply("m1", { tool: "band_send_message" });
     await journal.replyPosted(posted, { ok: true });
-    const inFlight = await journal.beginReply("m1", { tool: "band_send_message", digest: "d2" });
+    const inFlight = await journal.beginReply("m1", { tool: "band_send_message" });
 
     await journal.turnRetried("m1");
     await journal.replyPosted(inFlight, { ok: true });
@@ -128,7 +128,7 @@ describe("TurnJournal", () => {
   it("forgets operations and answers older than the retention", async () => {
     const clock = { now: 1_000 };
     const journal = await journalIn(tmpRoot(), clock).room(ROOM);
-    await journal.replyDeclined("m1", { tool: "band_no_reply", digest: "d1", operationId: "op-1" });
+    await journal.replyDeclined("m1", { tool: "band_no_reply", digest: "d1", operationId: "op-1" }, NO_REPLY_RESULT);
 
     clock.now += RETENTION_MS;
     expect(journal.operation("op-1")).toBeDefined();
@@ -145,7 +145,7 @@ describe("TurnJournal", () => {
     const journal = await journalIn(dir, clock).room(ROOM);
     await journal.turnDone("old");
     clock.now += RETENTION_MS / 2;
-    await journal.replyDeclined("recent", { tool: "band_no_reply", digest: "d1", operationId: "op-1" });
+    await journal.replyDeclined("recent", { tool: "band_no_reply", digest: "d1", operationId: "op-1" }, NO_REPLY_RESULT);
     await journal.close();
     clock.now += RETENTION_MS / 2 + 1;
 

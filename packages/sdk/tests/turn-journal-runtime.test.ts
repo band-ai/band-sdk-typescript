@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
@@ -8,8 +7,8 @@ import { isFailedToolOutput } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
 import { PlatformRuntime } from "../src/runtime";
-import { TurnJournal } from "../src/runtime/journal/TurnJournal";
-import { DEFAULT_JOURNAL_RETENTION_SECONDS } from "../src/runtime/types";
+import { roomJournalFile, TurnJournal } from "../src/runtime/journal/TurnJournal";
+import { DEFAULT_JOURNAL_RETENTION_SECONDS, type SessionConfig } from "../src/runtime/types";
 import { MS_PER_SECOND } from "../src/core/deadline";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
@@ -21,7 +20,12 @@ const MENTION = `@[[${AGENT_ID}]]`;
 type Handler = GenericAdapterHandler;
 
 /** One process of the agent: a runtime on `platform` journaling to `journalDir`, or not journaling without one. */
-async function startProcess(platform: BandPlatform, journalDir: string | undefined, handler: Handler) {
+async function startProcess(
+  platform: BandPlatform,
+  journalDir: string | undefined,
+  handler: Handler,
+  sessionConfig: Omit<SessionConfig, "journalDir"> = {},
+) {
   const handled: string[] = [];
   const events = new RecordLog<AgentEvent>();
   const runtime = new PlatformRuntime({
@@ -29,7 +33,7 @@ async function startProcess(platform: BandPlatform, journalDir: string | undefin
     apiKey: AGENT_API_KEY,
     linkOptions: platform.link,
     agentConfig: { autoSubscribeExistingRooms: true },
-    sessionConfig: journalDir === undefined ? {} : { journalDir },
+    sessionConfig: journalDir === undefined ? sessionConfig : { ...sessionConfig, journalDir },
   });
   runtime.observe((event) => {
     events.record(event);
@@ -44,7 +48,7 @@ async function startProcess(platform: BandPlatform, journalDir: string | undefin
 }
 
 async function journalLines(journalDir: string): Promise<string[]> {
-  const text = await readFile(path.join(journalDir, `${ROOM}.jsonl`), "utf8");
+  const text = await readFile(roomJournalFile(journalDir, ROOM), "utf8");
   return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { t: string }).t);
 }
 
@@ -112,17 +116,14 @@ describe("the turn journal across a restart", () => {
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} two answers please`);
-    let firstSent: () => void = () => undefined;
-    const sentFirst = new Promise<void>((resolve) => {
-      firstSent = resolve;
-    });
+    const sentFirst = createDeferred();
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.executeToolCall("band_send_message", { content: "first", mentions: ["@owner"] });
-      firstSent();
+      sentFirst.resolve();
       // Killed here: the second reply is never sent.
       await new Promise<never>(() => undefined);
     });
-    await sentFirst;
+    await sentFirst.promise;
     await first.runtime.stop(50);
     expect(await journalLines(journalDir)).toEqual(["reply.intent", "reply.posted"]);
 
@@ -172,20 +173,17 @@ describe("the turn journal across a restart", () => {
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
     // Band accepts the post, then the process dies before the response reaches it.
     const createChatMessage = platform.rest.createChatMessage.bind(platform.rest);
-    let accepted: () => void = () => undefined;
-    const postAccepted = new Promise<void>((resolve) => {
-      accepted = resolve;
-    });
+    const postAccepted = createDeferred();
     platform.rest.createChatMessage = async (...args) => {
       await createChatMessage(...args);
-      accepted();
+      postAccepted.resolve();
       return await new Promise<never>(() => undefined);
     };
     const answer: Handler = async ({ tools }) => {
       await tools.executeToolCall("band_send_message", { content: "answered", mentions: ["@owner"], operation_id: "op-1" });
     };
     const first = await startProcess(platform, journalDir, answer);
-    await postAccepted;
+    await postAccepted.promise;
     await first.runtime.stop(50);
 
     expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
@@ -277,16 +275,9 @@ describe("operation_id", () => {
     });
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
-    const runtime = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: { journalDir: tmpRoot(), journalRetentionSeconds: 60 },
-    });
-    await runtime.start(new GenericAdapter(async ({ tools }) => {
+    const { runtime } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
       await tools.executeToolCall("band_send_message", { content: "once", mentions: ["@owner"], operation_id: "op-1" });
-    }));
+    }, { journalRetentionSeconds: 60 });
 
     expect(await room.outcome(await room.say(OWNER, `${MENTION} one`))).toBe("processed");
     vi.advanceTimersByTime(60 * MS_PER_SECOND);

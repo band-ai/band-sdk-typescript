@@ -3,7 +3,7 @@ import { toLegacyToolExecutorErrorMessage } from "../../contracts/protocols";
 // Lives in core/, not here, so runtime/ code needing the same conversion
 // (e.g. ContactCallbackTools) can import it without depending on adapters/ --
 // re-exported for every existing adapter import of it from this module.
-export { asErrorMessage, asNestedMessage, truncate } from "../../core/coercion";
+export { asErrorMessage, asNestedMessage, asNonEmptyString, truncate } from "../../core/coercion";
 
 export function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -20,15 +20,6 @@ export function asRecord(value: unknown, context = "value"): Record<string, unkn
   }
 
   return record;
-}
-
-export function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function asString(value: unknown): string | undefined {
