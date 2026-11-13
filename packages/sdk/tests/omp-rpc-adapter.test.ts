@@ -251,6 +251,46 @@ describe("OmpRpcAdapter", () => {
     expect(await room.outcome(message)).toBe("processed");
   });
 
+  it("runs a host tool on the child's own gate, with no approval raised anywhere else", async () => {
+    const omp = fakeOmpProcesses();
+    const gates: string[] = [];
+    const permissions: OmpPermissionRequest[] = [];
+    const { room, events } = await startAgent(ompAdapter(omp, {
+      resolvePermission: async (request) => {
+        permissions.push(request);
+        return "Approve";
+      },
+      additionalTools: [
+        {
+          name: "linear__search",
+          description: "Search an authorized server.",
+          inputSchema: { type: "object", properties: { query: { type: "string" } }, required: [] },
+          execute: async () => {
+            gates.push("linear__search");
+            return { content: [{ type: "text", text: "found" }] };
+          },
+        },
+      ],
+    }));
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "search for ada");
+    const { peer, prompt } = await prompted;
+
+    expect(toolText(await peer.callHostTool("tool-1", "linear__search", { query: "ada" }))).toBe("found");
+
+    // The measurement this unit rests on, pinned rather than asserted in prose: OMP raises no
+    // approval of its own for a host tool, so nothing but the tool's own gate stands between a
+    // proxied call and the person's service. A host tool wired into the permission path would
+    // fail all three lines below.
+    expect(gates).toEqual(["linear__search"]);
+    expect(permissions).toEqual([]);
+    expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([]);
+
+    peer.send(assistant(text("Ada.")));
+    peer.finish(prompt.id);
+    expect(await room.outcome(message)).toBe("processed");
+  });
+
   it("grants an approval once by default", async () => {
     const omp = fakeOmpProcesses();
     const { room } = await startAgent(ompAdapter(omp));
