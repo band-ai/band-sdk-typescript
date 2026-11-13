@@ -390,8 +390,6 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 export interface FernRestAdapterOptions {
   /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
   activityCapability?: ActivityCapability;
-  /** The agent's id. Without it, a message post whose outcome is unknown is resent without reading the room back. */
-  selfId?: string;
   logger?: Logger;
 }
 
@@ -446,13 +444,11 @@ async function postedUnlessStopped<T>(chatId: string, post: () => Promise<T>): P
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
   private readonly activityCapability?: ActivityCapability;
-  private readonly selfId?: string;
   private readonly logger: Logger;
 
   public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
     this.activityCapability = options.activityCapability;
-    this.selfId = options.selfId;
     this.logger = resolveLogger(options.logger);
   }
 
@@ -507,9 +503,7 @@ export class FernRestAdapter implements RestApi {
     // Each attempt is seen by deliverMessage, which owns the resends.
     const attemptOptions = { ...mergeOptions(requestOptions), maxRetries: 0 };
     const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
-    const findPosted = delivery && this.selfId
-      ? () => this.findPosted(chatId, fingerprint, delivery)
-      : undefined;
+    const findPosted = delivery ? () => this.findPosted(chatId, fingerprint, delivery) : undefined;
     const delivered = await deliverMessage({
       post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
       findPosted,
@@ -537,7 +531,7 @@ export class FernRestAdapter implements RestApi {
     delivery: MessageDelivery,
   ): Promise<PlatformChatMessage | null> {
     const isThisPost = (message: PlatformChatMessage) =>
-      message.sender_id === this.selfId
+      message.sender_id === delivery.selfId
       && message.message_type === "text"
       && !delivery.attributed.has(message.id)
       && sameFingerprint(storedFingerprint(message), fingerprint);

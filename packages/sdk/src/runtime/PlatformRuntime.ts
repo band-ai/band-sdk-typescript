@@ -793,6 +793,7 @@ export class PlatformRuntime implements AsyncDisposable {
       }
     }
     return {
+      selfId: this._agentId,
       anchor: { id: String(input.message.id), createdAt: input.message.createdAt },
       attributed: context.attributedPosts,
       stopped,

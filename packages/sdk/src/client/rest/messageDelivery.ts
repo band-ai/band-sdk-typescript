@@ -116,6 +116,8 @@ export class AttributedPosts implements PostAttribution {
 
 /** Where a post may be read back: the turn it answers, and the room's credited posts. */
 export interface MessageDelivery {
+  /** The posting agent: a read-back matches only its own posts. */
+  selfId: string;
   /** The turn's trigger. Band stamps a post when it arrives, so every reply sorts after it. */
   anchor: { id: string; createdAt: Date };
   attributed: PostAttribution;

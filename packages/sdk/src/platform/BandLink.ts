@@ -158,7 +158,6 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         }),
         {
           activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }),
-          selfId: this.agentId,
           logger: this.logger,
         },
       );

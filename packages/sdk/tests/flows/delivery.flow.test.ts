@@ -18,7 +18,7 @@ function sendTool(tools: AdapterToolsProtocol, content: string): Promise<unknown
 }
 
 describe("Message delivery in a Band room", () => {
-  it("anchors every post of a turn at its trigger: notices, tool calls and direct replies", async () => {
+  it("anchors every post of a turn at its trigger, as the agent's own: notices, tool calls and direct replies", async () => {
     const adapter = new GenericAdapter(async ({ tools }) => {
       await tools.sendNotice("working on it", [ADA.id]);
       await sendTool(tools, "by tool");
@@ -29,10 +29,10 @@ describe("Message delivery in a Band room", () => {
     const trigger = await session.room.say(ADA.id, ASK);
     await session.room.outcome(trigger);
 
-    expect(session.platform.rest.deliveries.map(({ content, delivery }) => [content, delivery?.anchor.id])).toEqual([
-      ["working on it", trigger],
-      ["by tool", trigger],
-      ["by method", trigger],
+    expect(session.platform.rest.deliveries.map(({ content, delivery }) => [content, delivery?.selfId, delivery?.anchor.id])).toEqual([
+      ["working on it", AGENT_ID, trigger],
+      ["by tool", AGENT_ID, trigger],
+      ["by method", AGENT_ID, trigger],
     ]);
   });
 

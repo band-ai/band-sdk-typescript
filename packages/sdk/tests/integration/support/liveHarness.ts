@@ -61,8 +61,8 @@ export function cliProbeFailure(command: string): string | null {
 }
 
 /** A REST client acting as the agent that owns `apiKey`. */
-export function agentRest(restUrl: string, apiKey: string, logger?: Logger): FernRestAdapter {
-  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }), {
+export function agentRest(restUrl: string, apiKey: string, logger?: Logger, fetch?: typeof globalThis.fetch): FernRestAdapter {
+  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey, fetch }), {
     activityCapability: new ActivityCapability({ origin: restUrl, logger }),
   });
 }

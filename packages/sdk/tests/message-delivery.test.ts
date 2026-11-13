@@ -24,7 +24,7 @@ describe("message delivery", () => {
     vi.useFakeTimers();
     room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
     const trigger = room.seed({ id: "trigger", content: `@[[${SELF_ID}]] hi`, senderId: USER, mentionIds: [SELF_ID] });
-    delivery = { anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
+    delivery = { selfId: SELF_ID, anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
   });
 
   afterEach(() => {
@@ -139,7 +139,7 @@ describe("message delivery", () => {
     room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
     if (place === "before") room.seed(earlier);
     const trigger = room.seed({ id: "trigger", content: "hi", senderId: USER, mentionIds: [SELF_ID] });
-    delivery = { anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
+    delivery = { selfId: SELF_ID, anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
     if (place === "after") {
       room.seed(earlier);
       delivery.attributed.add(earlier.id);

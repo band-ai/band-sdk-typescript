@@ -26,8 +26,8 @@ export type ProvisionedName = `${typeof NAME_PREFIX}${string}`;
 
 const AGENT_STOP_TIMEOUT_MS = 10_000;
 
-/** Runtime options a scenario may set on a running agent, and the transport it connects over. */
-export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig"> & Pick<BandLinkOptions, "transport">;
+/** Runtime options a scenario may set on a running agent, and the transport and REST client it connects over. */
+export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig"> & Pick<BandLinkOptions, "transport" | "restApi">;
 
 /** A provisioned Band agent identity, reaped when its scope ends. */
 export class AgentIdentity implements AsyncDisposable {
@@ -93,7 +93,7 @@ async function provision(testName: string, label: string): Promise<AgentIdentity
 async function runAs(
   identity: AgentIdentity,
   adapter: FrameworkAdapter,
-  { transport, ...options }: RunOptions = {},
+  { transport, restApi = identity.rest, ...options }: RunOptions = {},
 ): Promise<RunningAgent> {
   const { env } = await liveRun();
   const agent = Agent.create({
@@ -103,7 +103,7 @@ async function runAs(
     wsUrl: env.wsUrl,
     restUrl: env.restUrl,
     logger: debugLogger(identity.name),
-    linkOptions: { restApi: identity.rest, transport },
+    linkOptions: { restApi, transport },
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,
   });
