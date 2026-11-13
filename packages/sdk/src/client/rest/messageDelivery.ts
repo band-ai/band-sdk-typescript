@@ -13,19 +13,20 @@ import {
   RuntimeStateError,
   statusCodeOf,
 } from "../../core/errors";
+import { MS_PER_SECOND } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { MESSAGE_SEND_MAX_RETRIES } from "./requestOptions";
 import type { PlatformChatMessage } from "./types";
 
 /** The first pause before a resend; each later one doubles. Latency only, never a decision. */
-export const MESSAGE_RESEND_BASE_DELAY_MS = 1_000;
+const MESSAGE_RESEND_BASE_DELAY_MS = MS_PER_SECOND;
 
 /**
  * Own posts a room keeps credited to deliveries. Only posts newer than a turn's
  * trigger can be mistaken for its reply, so this covers the replies of the
  * turns still queued behind one, with a large margin.
  */
-export const ATTRIBUTED_POSTS_PER_ROOM = 1_000;
+const ATTRIBUTED_POSTS_PER_ROOM = 1_000;
 
 /** A mention as the agent sends it; Band rewrites the content from these fields. */
 export interface SentMention {
@@ -130,9 +131,9 @@ export interface MessageDelivery {
  * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
  * - `uncertain`: a 5xx, no response, or a response that could not be read.
  */
-export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
+type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
-export function classifyFailedAttempt(error: unknown): FailedAttempt {
+function classifyFailedAttempt(error: unknown): FailedAttempt {
   if (error instanceof RoomExecutionStoppedError) return "refused";
   const status = statusCodeOf(error);
   if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
@@ -140,9 +141,9 @@ export function classifyFailedAttempt(error: unknown): FailedAttempt {
   return "uncertain";
 }
 
-export type Delivered<T> = { posted: T } | { found: PlatformChatMessage };
+type Delivered<T> = { posted: T } | { found: PlatformChatMessage };
 
-export interface DeliverMessageOptions<T> {
+interface DeliverMessageOptions<T> {
   /** One attempt, with no retries of its own. */
   post: () => Promise<T>;
   /** The post's own message in the room, or null when not found or not readable. Absent: no read-back. */
@@ -192,7 +193,7 @@ function retryAfterMs(failure: unknown): number | undefined {
   const headers = (failure as { rawResponse?: { headers?: Headers } } | undefined)?.rawResponse?.headers;
   const value = headers?.get?.("retry-after");
   const seconds = value === null || value === undefined ? Number.NaN : Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * MS_PER_SECOND : undefined;
 }
 
 function pause(ms: number, stopped?: AbortSignal): Promise<void> {

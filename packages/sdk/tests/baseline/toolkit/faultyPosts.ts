@@ -26,7 +26,7 @@ export class FaultyPosts {
   public attempts = 0;
 
   private constructor(restUrl: string, identity: AgentIdentity, private readonly fault: PostFault) {
-    this.rest = agentRest(restUrl, identity.apiKey, undefined, this.fetch);
+    this.rest = agentRest(restUrl, identity.apiKey, { fetch: this.fetch });
   }
 
   public static async create(identity: AgentIdentity, fault: PostFault): Promise<FaultyPosts> {

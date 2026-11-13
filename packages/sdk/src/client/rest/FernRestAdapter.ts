@@ -502,8 +502,9 @@ export class FernRestAdapter implements RestApi {
     };
     // Each attempt is seen by deliverMessage, which owns the resends.
     const attemptOptions = { ...mergeOptions(requestOptions), maxRetries: 0 };
-    const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
-    const findPosted = delivery ? () => this.findPosted(chatId, fingerprint, delivery) : undefined;
+    const findPosted = delivery
+      ? () => this.findPosted(chatId, sentFingerprint(message.content, message.mentions ?? []), delivery)
+      : undefined;
     const delivered = await deliverMessage({
       post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
       findPosted,
@@ -511,11 +512,9 @@ export class FernRestAdapter implements RestApi {
       logger: this.logger,
       roomId: chatId,
     });
-    if ("found" in delivered) {
-      delivery?.attributed.add(delivered.found.id);
-      return { id: delivered.found.id, success: true };
-    }
-    const result = normalizeToolOperationResult(delivered.posted);
+    const result = "found" in delivered
+      ? { id: delivered.found.id, success: true }
+      : normalizeToolOperationResult(delivered.posted);
     if (typeof result.id === "string") delivery?.attributed.add(result.id);
     return result;
   }

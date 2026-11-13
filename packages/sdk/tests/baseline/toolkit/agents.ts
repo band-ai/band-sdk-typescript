@@ -40,7 +40,7 @@ export class AgentIdentity implements AsyncDisposable {
     public readonly apiKey: string,
     restUrl: string,
   ) {
-    this.rest = agentRest(restUrl, apiKey, debugLogger(name));
+    this.rest = agentRest(restUrl, apiKey, { logger: debugLogger(name) });
   }
 
   /** The platform handle (`owner/agent`) others address this agent by. */
