@@ -903,11 +903,12 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
+      // A process that ignores stdin closing: the turn's own drain has to escalate
+      // to a stop, so this is set before the turn is scripted, not after.
+      peer.exitsOnEof = false;
       await waitForPrompt(peer);
       peer.writeStderr("stuck before exit");
       await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
-      // A process that ignores stdin closing: the drain has to escalate to a stop.
-      peer.exitsOnEof = false;
       await prompted;
       await promptedDone;
       expect(peer.stopped).toBe(true);
