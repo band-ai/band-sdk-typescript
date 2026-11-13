@@ -504,39 +504,44 @@ export class FernRestAdapter implements RestApi {
     // Each attempt is seen by deliverMessage, which owns the resends.
     const attemptOptions = { ...mergeOptions(requestOptions), ...NO_TRANSPORT_RETRIES };
     const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
-    // Set when a settle read-back failed: credit twins before (and after) any
-    // resend so a twin committed under that failure cannot be claimed later.
+    // Any uncertain settle that does not find the post must credit after-anchor
+    // matches before/after resend (and in finally if delivery throws) so a twin
+    // left in the room cannot be claimed by a later turn.
     let creditTwins = false;
     const findPosted = delivery
       ? async () => {
         try {
-          return await this.findPosted(chatId, fingerprint, delivery);
+          const found = await this.findPosted(chatId, fingerprint, delivery);
+          if (found) return found;
+          creditTwins = true;
+          await this.creditMatchingPosts(chatId, fingerprint, delivery);
+          return null;
         } catch (error) {
           this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
           creditTwins = true;
-          // Before any resend: credit every own after-anchor match already in the
-          // room so a twin committed under a failed read-back cannot be claimed
-          // by a later turn's settle.
           await this.creditMatchingPosts(chatId, fingerprint, delivery);
           return null;
         }
       }
       : undefined;
-    const delivered = await deliverMessage({
-      post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
-      findPosted,
-      stopped: delivery?.stopped,
-      logger: this.logger,
-      roomId: chatId,
-    });
-    const result = "found" in delivered
-      ? { id: delivered.found.id, success: true }
-      : normalizeToolOperationResult(delivered.posted);
-    if (typeof result.id === "string") delivery?.attributed.add(result.id);
-    // Retry the credit walk after a post that followed a failed read-back, in
-    // case the pre-resend walk could not see the room either.
-    if (delivery && creditTwins) await this.creditMatchingPosts(chatId, fingerprint, delivery);
-    return result;
+    try {
+      const delivered = await deliverMessage({
+        post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
+        findPosted,
+        stopped: delivery?.stopped,
+        logger: this.logger,
+        roomId: chatId,
+      });
+      const result = "found" in delivered
+        ? { id: delivered.found.id, success: true }
+        : normalizeToolOperationResult(delivered.posted);
+      if (typeof result.id === "string") delivery?.attributed.add(result.id);
+      return result;
+    } finally {
+      // Catch twins that landed after the pre-resend walk, including when
+      // deliverMessage threw after a committed uncertain attempt.
+      if (delivery && creditTwins) await this.creditMatchingPosts(chatId, fingerprint, delivery);
+    }
   }
 
   /**
@@ -603,7 +608,7 @@ export class FernRestAdapter implements RestApi {
         await creditFrom(undefined);
       }
     } catch (error) {
-      this.logger.warn("Could not credit matching posts after a failed read-back", { roomId: chatId, error });
+      this.logger.warn("Could not credit matching posts after an uncertain settle", { roomId: chatId, error });
     }
   }
 

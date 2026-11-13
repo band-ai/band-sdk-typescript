@@ -100,7 +100,8 @@ describe("message delivery", () => {
 
     await expect(settleThroughRetries(failing)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
     expect(room.posts).toHaveLength(3);
-    expect(room.contextCursors).toHaveLength(3);
+    // One settle read per attempt, plus credit walks after each null settle.
+    expect(room.contextCursors.length).toBeGreaterThanOrEqual(3);
     expect(ownPosts()).toEqual([]);
   });
 
@@ -196,7 +197,9 @@ describe("message delivery", () => {
     expect(result).toMatchObject({ id: "stored-1" });
     expect(room.posts).toHaveLength(2);
     expect(ownPosts()).toEqual(["ancient-twin", "stored-1"]);
-    expect(room.contextCursors).toEqual([contextCursorAfter(delivery.anchor), undefined]);
+    // Anchored cursor refused, then full-room fallback (settle and credit walks).
+    expect(room.contextCursors[0]).toEqual(contextCursorAfter(delivery.anchor));
+    expect(room.contextCursors).toContain(undefined);
   });
 
   it("keeps credited posts so a later uncertain settle cannot claim an earlier twin", async () => {
@@ -265,6 +268,91 @@ describe("message delivery", () => {
     expect(m2Result).toMatchObject({ id: "stored-3" });
     expect(room.posts).toHaveLength(4);
     expect(ownPosts()).toEqual(["stored-1", "stored-2", "stored-3"]);
+  });
+
+  it("credits a late twin after a negative read-back so a later queued turn cannot false-found it", async () => {
+    const attributed = new AttributedPosts();
+    room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+    const m1 = room.seed({ id: "m1", content: "ping-1", senderId: USER, mentionIds: [SELF_ID] });
+    const m2 = room.seed({ id: "m2", content: "ping-2", senderId: USER, mentionIds: [SELF_ID] });
+    const body = { content: REPLY, mentions: [{ id: USER, handle: USER }] as [{ id: string; handle: string }] };
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Land the first attempt's commit as the resend POST arrives — after the
+    // successful null read-back, so only the finally credit walk can catch it.
+    void room.posted(2).then(() => release());
+
+    const deliveryM1: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m1.id, createdAt: new Date(m1.inserted_at) },
+      attributed,
+    };
+    room.script({ kind: "commitsOnRelease", status: UNAVAILABLE, release: gate }, { kind: "created" });
+    const m1Result = await settleThroughRetries(
+      room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM1 }),
+    );
+
+    expect(m1Result).toMatchObject({ id: "stored-1" });
+    expect(ownPosts().sort()).toEqual(["stored-1", "stored-2"]);
+    expect(attributed.has("stored-1")).toBe(true);
+    expect(attributed.has("stored-2")).toBe(true);
+
+    const deliveryM2: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m2.id, createdAt: new Date(m2.inserted_at) },
+      attributed,
+    };
+    room.script({ kind: "refused", status: UNAVAILABLE }, { kind: "created" });
+    const m2Result = await settleThroughRetries(
+      room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM2 }),
+    );
+
+    expect(m2Result).toMatchObject({ id: "stored-3" });
+    expect(ownPosts().sort()).toEqual(["stored-1", "stored-2", "stored-3"]);
+  });
+
+  it("credits a committed twin in finally when settle throws so a later queued turn cannot false-found it", async () => {
+    const attributed = new AttributedPosts();
+    room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+    const m1 = room.seed({ id: "m1", content: "ping-1", senderId: USER, mentionIds: [SELF_ID] });
+    const m2 = room.seed({ id: "m2", content: "ping-2", senderId: USER, mentionIds: [SELF_ID] });
+    const body = { content: REPLY, mentions: [{ id: USER, handle: USER }] as [{ id: string; handle: string }] };
+
+    const deliveryM1: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m1.id, createdAt: new Date(m1.inserted_at) },
+      attributed,
+    };
+    // Enough /context failures to cover findPosted+creditMatchingPosts across
+    // every uncertain attempt; finally must credit once reads work again.
+    room.failContext(6);
+    room.script(
+      { kind: "committedThen", status: UNAVAILABLE },
+      { kind: "refused", status: UNAVAILABLE },
+      { kind: "refused", status: UNAVAILABLE },
+    );
+    await expect(
+      settleThroughRetries(room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM1 })),
+    ).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+
+    expect(ownPosts()).toEqual(["stored-1"]);
+    expect(attributed.has("stored-1")).toBe(true);
+
+    const deliveryM2: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m2.id, createdAt: new Date(m2.inserted_at) },
+      attributed,
+    };
+    room.script({ kind: "refused", status: UNAVAILABLE }, { kind: "created" });
+    const m2Result = await settleThroughRetries(
+      room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM2 }),
+    );
+
+    expect(m2Result).toMatchObject({ id: "stored-2" });
+    expect(ownPosts()).toEqual(["stored-1", "stored-2"]);
   });
 
   it("resends without a read-back when the post has no turn to anchor it", async () => {
