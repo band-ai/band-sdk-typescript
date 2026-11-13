@@ -1,7 +1,3 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -17,40 +13,8 @@ import {
 } from "../src/adapters/claude-cli";
 import type { Logger } from "../src/core/logger";
 import { fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
+import { addressed, captured, capturedStdin, turnFrames, type Frame } from "./support/claudeCaptures";
 import { makeLoggerSpy, tmpRoot, type LoggerSpy } from "./testUtils";
-
-type Frame = Record<string, unknown>;
-
-const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "claude-cli");
-
-/** The frames one captured scenario's CLI wrote, in the order it wrote them. */
-function captured(scenario: string): Frame[] {
-  return readFileSync(join(fixturesRoot, scenario, "stdout.ndjson"), "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Frame);
-}
-
-/** The frames a scenario's CLI wrote for its turn; its handshake answers our own request. */
-function listScenarios(): string[] {
-  return readdirSync(fixturesRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
-}
-
-function turnFrames(scenario: string): Frame[] {
-  return captured(scenario).filter((frame) => frame.type !== "control_response");
-}
-
-/** A captured control_response, addressed to the id this client actually used. */
-function addressed(frame: Frame, requestId: string): Frame {
-  const clone = JSON.parse(JSON.stringify(frame)) as { response?: Record<string, unknown> };
-  if (clone.response) {
-    clone.response.request_id = requestId;
-  }
-  return clone as Frame;
-}
 
 function processOptions(logger: Logger): ClaudeProcessOptions {
   return { command: ["claude", "--print", "--input-format", "stream-json"], cwd: tmpRoot(), logger };
@@ -256,10 +220,7 @@ describe("ClaudeCliClient", () => {
       // byte for byte, or the real CLI would not accept what we write.
       const normalize = (frame: Frame): Frame =>
         typeof frame.request_id === "string" ? { ...frame, request_id: "minted" } : frame;
-      const wanted = readFileSync(join(fixturesRoot, "turn-basic", "stdin.ndjson"), "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => normalize(JSON.parse(line) as Frame));
+      const wanted = capturedStdin("turn-basic").map(normalize);
       expect(peer.received.map(normalize)).toEqual(wanted);
       await client.close({ drainMs: 10 });
     });
@@ -469,63 +430,6 @@ describe("ClaudeCliClient", () => {
       const client = await import("../src/adapters/claude-cli/index");
       expect(typeof client.ClaudeCliClient).toBe("function");
       expect(client.CLAUDE_PROTOCOL).toBe("claude-stream-json");
-    });
-  });
-
-  describe("the captured fixtures", () => {
-    // A guard that scans nothing is a green light for a leak, so the count is pinned.
-    const scenarios = listScenarios();
-    expect(scenarios).toHaveLength(9);
-
-    it("are replayable by this client, so the protocol they record is the one it parses", () => {
-      for (const scenario of scenarios) {
-        const frames = captured(scenario);
-        expect(frames.length, scenario).toBeGreaterThan(0);
-        for (const frame of frames) {
-          expect(typeof frame.type, `${scenario} frame type`).toBe("string");
-        }
-      }
-    });
-
-    it("name no person, machine or session, and carry no thinking signature", () => {
-      const forbidden = [
-        /\/Users\//,
-        /\/home\//,
-        /\/private\/tmp\//,
-        /claude-captures/,
-        /cc-socks/,
-        /"signature"\s*:/,
-        /"account"\s*:/,
-        /"pid"\s*:/,
-        /[\w.+-]+@[\w-]+\.[\w.]{2,}/,
-      ];
-      for (const scenario of scenarios) {
-        for (const file of ["stdout.ndjson", "stdin.ndjson", "mcp.ndjson", "meta.json"]) {
-          const path = join(fixturesRoot, scenario, file);
-          let text: string;
-          try {
-            text = readFileSync(path, "utf8");
-          } catch {
-            continue; // an MCP log exists only where a probe was configured
-          }
-          for (const pattern of forbidden) {
-            expect(text, `${scenario}/${file} matches ${pattern}`).not.toMatch(pattern);
-          }
-        }
-      }
-    });
-
-    it("record the CLI version and invocation they were captured with", () => {
-      for (const scenario of scenarios) {
-        const meta = JSON.parse(readFileSync(join(fixturesRoot, scenario, "meta.json"), "utf8")) as {
-          cliVersion: string;
-          invocation: string[];
-        };
-        expect(meta.cliVersion, scenario).toBe("2.1.319");
-        expect(meta.invocation[0], scenario).toBe("<claude-cli>");
-        expect(meta.invocation, scenario).toContain("--strict-mcp-config");
-        expect(meta.invocation, scenario).toContain("--permission-prompt-tool");
-      }
     });
   });
 
