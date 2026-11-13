@@ -81,11 +81,19 @@ export function rethrowIfRecoverableTurnFailure(error: unknown): void {
 export const HTTP_NO_CONTENT = 204;
 export const HTTP_FORBIDDEN = 403;
 export const HTTP_NOT_FOUND = 404;
+export const HTTP_REQUEST_TIMEOUT = 408;
 export const HTTP_UNPROCESSABLE = 422;
 export const HTTP_TOO_MANY_REQUESTS = 429;
 export const HTTP_SERVER_ERROR = 500;
 
 /** Whether `error` is an HTTP failure from the REST client carrying `statusCode`. */
 export function hasStatusCode(error: unknown, statusCode: number): boolean {
-  return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === statusCode;
+  return statusCodeOf(error) === statusCode;
+}
+
+/** The HTTP status a REST client failure carries, or undefined when no response arrived. */
+export function statusCodeOf(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
+    ? error.statusCode
+    : undefined;
 }

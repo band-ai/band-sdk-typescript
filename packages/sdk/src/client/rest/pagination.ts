@@ -185,6 +185,8 @@ export interface CursorTailOptions<T> {
   keep: number;
   /** Which items count; all of them when unset. */
   where?: (item: T) => boolean;
+  /** Where the walk starts; the first item Band holds when unset. */
+  from?: string;
 }
 
 export interface CursorTail<T> {
@@ -201,10 +203,10 @@ export interface CursorTail<T> {
  */
 export async function fetchCursorTail<T>(
   fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
-  { keep, where }: CursorTailOptions<T>,
+  { keep, where, from }: CursorTailOptions<T>,
 ): Promise<CursorTail<T>> {
   const items: T[] = [];
-  let cursor: string | undefined;
+  let cursor = from;
   for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
     const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
     items.push(...(where ? data.filter(where) : data));

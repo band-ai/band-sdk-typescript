@@ -1,6 +1,7 @@
 import { WorkingStateReporter, type ReportFn, type WorkingLease } from "./workingState";
 import type { AgentToolsRestApi } from "../client/rest/types";
 import { fetchCursorTail } from "../client/rest/pagination";
+import { AttributedPosts } from "../client/rest/messageDelivery";
 import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
@@ -61,6 +62,8 @@ export class ExecutionContext {
   private readonly retryTrackerInstance: RetryTracker;
   private _llmInitialized = false;
   private readonly _pendingSystemMessages: string[] = [];
+  /** The room's own posts already credited to a delivery, which a read-back never matches again. */
+  public readonly attributedPosts = new AttributedPosts();
 
   public constructor(options: ExecutionContextOptions) {
     const sessionConfig = parseSessionConfig(options);

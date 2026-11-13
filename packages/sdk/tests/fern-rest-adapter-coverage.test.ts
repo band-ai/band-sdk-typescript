@@ -254,7 +254,7 @@ describe("FernRestAdapter coverage", () => {
     );
   });
 
-  it("calls createChatMessage once with maxRetries: 2, letting the generated client own retries", async () => {
+  it("calls createChatMessage once with maxRetries: 0, so message delivery sees and owns every attempt", async () => {
     const createChatMessage = vi.fn().mockResolvedValueOnce({ data: { ok: true, id: "msg-1" } });
     const adapter = new FernRestAdapter({
       chatMessages: {
@@ -272,7 +272,7 @@ describe("FernRestAdapter coverage", () => {
     expect(createChatMessage).toHaveBeenLastCalledWith(
       "room-1",
       expect.any(Object),
-      expect.objectContaining({ maxRetries: 2 }),
+      expect.objectContaining({ maxRetries: 0 }),
     );
   });
 

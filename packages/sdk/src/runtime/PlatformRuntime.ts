@@ -32,6 +32,8 @@ import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 import { MS_PER_SECOND } from "../core/deadline";
 import { journalingTools } from "./journal/journalTools";
+import { deliveringMessages } from "./messageDelivery";
+import type { MessageDelivery } from "../client/rest/messageDelivery";
 import { bestEffort, TurnJournal, type RoomJournal } from "./journal/TurnJournal";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
@@ -716,7 +718,10 @@ export class PlatformRuntime implements AsyncDisposable {
         const journaled = journal && this.journals
           ? journalingTools(cycled, this.journals, roomId, messageId, stopped, this.logger)
           : cycled;
-        const tools = revokedOnStop(journaled, stopped);
+        const delivering = message.settles
+          ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
+          : journaled;
+        const tools = revokedOnStop(delivering, stopped);
         const turn = adapter.onEvent({
           ...input,
           tools,
@@ -773,6 +778,25 @@ export class PlatformRuntime implements AsyncDisposable {
       throw caughtError;
     }
     return false;
+  }
+
+  /**
+   * What the turn's message posts settle under: read back after its trigger,
+   * past the room's credited posts. A session's first turn credits the own
+   * posts its history holds, so one an earlier process made is never taken
+   * for this turn's reply.
+   */
+  private messageDelivery(context: ExecutionContext, input: FrameworkAdapterInput, stopped: AbortSignal): MessageDelivery {
+    if (input.isSessionBootstrap) {
+      for (const entry of input.history.raw) {
+        if (entry.sender_id === this._agentId && typeof entry.id === "string") context.attributedPosts.add(entry.id);
+      }
+    }
+    return {
+      anchor: { id: String(input.message.id), createdAt: input.message.createdAt },
+      attributed: context.attributedPosts,
+      stopped,
+    };
   }
 
   /**

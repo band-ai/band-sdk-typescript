@@ -1,4 +1,5 @@
 import { hasStatusCode, HTTP_FORBIDDEN, HTTP_NO_CONTENT, HTTP_UNPROCESSABLE, RoomExecutionStoppedError, UnsupportedFeatureError } from "../../core/errors";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -24,7 +25,16 @@ import {
   type ReportActivityOptions,
 } from "./requestOptions";
 import type { ActivityCapability } from "./activityCapability";
-import { normalizePaginationMetadata } from "./pagination";
+import {
+  contextCursorAfter,
+  deliverMessage,
+  sameFingerprint,
+  sentFingerprint,
+  storedFingerprint,
+  type MessageDelivery,
+  type PostFingerprint,
+} from "./messageDelivery";
+import { fetchCursorTail, normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   FernUserProfile,
@@ -34,6 +44,7 @@ import type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
+  MessagePostOptions,
   PaginatedResponse,
   PlatformChatMessage,
 } from "./types";
@@ -379,7 +390,13 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 export interface FernRestAdapterOptions {
   /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
   activityCapability?: ActivityCapability;
+  /** The agent's id. Without it, a message post whose outcome is unknown is resent without reading the room back. */
+  selfId?: string;
+  logger?: Logger;
 }
+
+/** One read per page: a read-back that fails is answered by a resend, not by retrying the read. */
+const READ_BACK_REQUEST_OPTIONS: RestRequestOptions = { maxRetries: 0 };
 
 /** Band's message, in a 403, for a post refused because it stopped the agent in the room. */
 const EXECUTION_STOPPED_MESSAGE = "execution is stopped";
@@ -429,10 +446,14 @@ async function postedUnlessStopped<T>(chatId: string, post: () => Promise<T>): P
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
   private readonly activityCapability?: ActivityCapability;
+  private readonly selfId?: string;
+  private readonly logger: Logger;
 
   public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
     this.activityCapability = options.activityCapability;
+    this.selfId = options.selfId;
+    this.logger = resolveLogger(options.logger);
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -465,7 +486,7 @@ export class FernRestAdapter implements RestApi {
       metadata?: MetadataMap;
       mentions?: MentionReference[];
     },
-    options?: RestRequestOptions,
+    options: MessagePostOptions = {},
   ): Promise<ToolOperationResult> {
     const api = this.client.chatMessages?.createChatMessage?.bind(this.client.chatMessages)
       ?? this.client.agentApiMessages?.createAgentChatMessage?.bind(this.client.agentApiMessages)
@@ -474,19 +495,69 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
     }
 
-    const response = await postedUnlessStopped(chatId, () => api(
-      chatId,
-      {
-        message: {
-          content: message.content,
-          message_type: message.messageType,
-          metadata: message.metadata,
-          mentions: message.mentions,
-        },
+    const { delivery, ...requestOptions } = options;
+    const body = {
+      message: {
+        content: message.content,
+        message_type: message.messageType,
+        metadata: message.metadata,
+        mentions: message.mentions,
       },
-      mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
-    ));
-    return normalizeToolOperationResult(response);
+    };
+    // Each attempt is seen by deliverMessage, which owns the resends.
+    const attemptOptions = { ...mergeOptions(requestOptions), maxRetries: 0 };
+    const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
+    const findPosted = delivery && this.selfId
+      ? () => this.findPosted(chatId, fingerprint, delivery)
+      : undefined;
+    const delivered = await deliverMessage({
+      post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
+      findPosted,
+      stopped: delivery?.stopped,
+      logger: this.logger,
+      roomId: chatId,
+    });
+    if ("found" in delivered) {
+      delivery?.attributed.add(delivered.found.id);
+      return { id: delivered.found.id, success: true };
+    }
+    const result = normalizeToolOperationResult(delivered.posted);
+    if (typeof result.id === "string") delivery?.attributed.add(result.id);
+    return result;
+  }
+
+  /**
+   * This agent's text message matching `fingerprint` that Band stored after
+   * the delivery's anchor and no other delivery was credited with, read from
+   * the anchor on. Null when absent or unreadable: either way, a resend.
+   */
+  private async findPosted(
+    chatId: string,
+    fingerprint: PostFingerprint,
+    delivery: MessageDelivery,
+  ): Promise<PlatformChatMessage | null> {
+    const isThisPost = (message: PlatformChatMessage) =>
+      message.sender_id === this.selfId
+      && message.message_type === "text"
+      && !delivery.attributed.has(message.id)
+      && sameFingerprint(storedFingerprint(message), fingerprint);
+    const walkFrom = async (from: string | undefined) => (await fetchCursorTail(
+      (page) => this.getChatContext({ chatId, ...page }, READ_BACK_REQUEST_OPTIONS),
+      { keep: 1, where: isThisPost, from },
+    )).items[0] ?? null;
+    try {
+      try {
+        return await walkFrom(contextCursorAfter(delivery.anchor));
+      } catch (error) {
+        // A cursor Band no longer reads this way: the whole room, from its start.
+        if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
+        this.logger.warn("Band refused the read-back cursor; reading the room from its start", { roomId: chatId });
+        return await walkFrom(undefined);
+      }
+    } catch (error) {
+      this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
+      return null;
+    }
   }
 
   public async createChatEvent(
