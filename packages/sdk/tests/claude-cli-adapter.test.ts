@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentEvent } from "../src/contracts/events";
 import { createDeferred } from "../src/core/deferred";
@@ -24,6 +24,12 @@ let SESSION = SESSION_DEFAULT;
 const useSession = (sessionId: string) => {
   SESSION = sessionId;
 };
+
+// The frame builders name this module's session, so each test starts from the
+// default rather than from whichever session a previous test named.
+beforeEach(() => {
+  useSession(SESSION_DEFAULT);
+});
 const PERMISSION_TOOL = "band_permission_decision";
 
 const systemInit = (sessionId = SESSION) => ({
