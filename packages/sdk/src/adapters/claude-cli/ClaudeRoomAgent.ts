@@ -721,8 +721,12 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     for (const dir of this.pluginDirs) {
       args.push("--plugin-dir", dir);
     }
-    if (this.allowedTools.length > 0) {
-      args.push("--allowedTools", ...this.allowedTools);
+    // Band's own tools are pre-approved from the list the backend registered, so
+    // they run without a prompt and the permission callback sees only native tools
+    // and other servers'. The host's list is appended, never a substitute.
+    const approved = [...backend.allowedTools, ...this.allowedTools];
+    if (approved.length > 0) {
+      args.push("--allowedTools", ...approved);
     }
     args.push("--disallowedTools", ...DENIED_CLAUDE_CLI_TOOLS);
     return args;
@@ -914,9 +918,10 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   }
 
   /**
-   * Band's registrations are served under the `mcp__band__` prefix, so a call to
-   * one is the room action itself (or the permission callback), not work the
-   * model did with its own tools.
+   * Every tool call is reported, Band's own included, under the CLI's tool name:
+   * the host tells a Band tool from a local one, and its activity view tracks the
+   * tool-call IDs through these events. Only the CLI's own tools hold the room's
+   * working state, which is what `localToolNames` separates.
    */
   private isLocallyExecuted(name: string): boolean {
     return name.startsWith(`mcp__${MCP_SERVER_NAME}__`) || this.localToolNames.has(name);
@@ -926,16 +931,13 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     if (turn.calls.has(event.id)) return;
     turn.calls.set(event.id, event.name);
     this.observer({ type: "tool.call", roomId: this.roomId, toolCallId: event.id, name: event.name, input: event.input });
-    if (this.isLocallyExecuted(event.name)) return;
-    // A Band tool is the room action itself, and the permission callback is not
-    // the model's work; only the CLI's own tools are reported as such.
-    if (this.isLocallyExecuted(event.name)) return;
-    turn.native.tool(event.id, event.name);
     this.post(turn, event.name, "tool_call", {
       tool_call_id: event.id,
       raw_input: redacted(event.input),
       status: "in_progress",
     });
+    if (this.isLocallyExecuted(event.name)) return;
+    turn.native.tool(event.id, event.name);
   }
 
   private endTool(turn: ActiveTurn, event: Extract<ClaudeEvent, { type: "tool_result" }>): void {
@@ -945,9 +947,9 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     const status = event.isError ? "failed" : "completed";
     const output = textOf(event.content);
     this.observer({ type: "tool.result", roomId: this.roomId, toolCallId: event.toolUseId, status, output });
+    this.post(turn, redactCredentialText(output), "tool_result", { tool_call_id: event.toolUseId, status });
     if (this.isLocallyExecuted(name)) return;
     turn.native.end(event.toolUseId);
-    this.post(turn, redactCredentialText(output), "tool_result", { tool_call_id: event.toolUseId, status });
   }
 
   private post(turn: ActiveTurn, content: string, messageType: "tool_call" | "tool_result", metadata: Record<string, unknown>): void {
