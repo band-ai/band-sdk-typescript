@@ -550,9 +550,15 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       }
       await reportTurnFailure(turn.tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: this.roomId });
     } finally {
-      // The turn is over, so its process is too: it is drained and closed, and
-      // only its session id outlives it.
-      if (generation) await this.close(generation);
+      // The turn is over: its process and its server are gone, and the room moves
+      // to a new generation so nothing from this turn — a start still in flight, a
+      // cached client — can be mistaken for the next one's. Only its session id
+      // outlives it.
+      if (generation) {
+        await this.close(generation);
+        this.generation += 1;
+        this.starting = null;
+      }
     }
   }
 
