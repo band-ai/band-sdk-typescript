@@ -156,7 +156,10 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
         }),
-        { activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }) },
+        {
+          activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }),
+          logger: this.logger,
+        },
       );
 
     // Every REST call Band refuses because it stopped the agent in a room tells the stop listeners.

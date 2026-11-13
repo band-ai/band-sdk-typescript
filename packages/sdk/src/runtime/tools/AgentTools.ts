@@ -1,5 +1,6 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { replyPosting } from "../../core/replyGate";
+import { currentDelivery } from "../messageDelivery";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
@@ -183,14 +184,15 @@ export class AgentTools implements AgentToolsProtocol {
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
     await beforePost?.();
 
-    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+    // The REST adapter owns the post's attempts; the turn's delivery lets it read the room back.
+    const delivery = currentDelivery();
     return this.rest.createChatMessage(
       this.roomId,
       {
         content,
         mentions: resolvedMentions,
       },
+      delivery ? { delivery } : undefined,
     );
   }
 

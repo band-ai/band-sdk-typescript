@@ -1,3 +1,4 @@
+import type { MessageDelivery } from "./messageDelivery";
 import type { ReportActivityOptions, RestRequestOptions } from "./requestOptions";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -94,6 +95,16 @@ export interface AgentProfileRestApi {
   getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity>;
 }
 
+/**
+ * A message post's options: with `delivery`, a post whose outcome is unknown is
+ * read back before any resend. Omits `maxRetries` — delivery owns the attempt
+ * budget (`MESSAGE_SEND_MAX_RETRIES`), and each HTTP attempt is made with
+ * transport retries disabled.
+ */
+export interface MessagePostOptions extends Omit<RestRequestOptions, "maxRetries"> {
+  delivery?: MessageDelivery;
+}
+
 export interface ChatMessagingRestApi {
   createChatMessage(
     chatId: string,
@@ -103,7 +114,7 @@ export interface ChatMessagingRestApi {
       metadata?: MetadataMap;
       mentions?: MentionReference[];
     },
-    options?: RestRequestOptions,
+    options?: MessagePostOptions,
   ): Promise<ToolOperationResult>;
   createChatEvent(
     chatId: string,

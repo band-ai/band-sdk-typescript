@@ -31,6 +31,7 @@ import type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
+  MessagePostOptions,
   PaginatedResponse,
   PlatformChatMessage,
   RestApi,
@@ -72,7 +73,7 @@ export class RestFacade implements RestApi {
       metadata?: MetadataMap;
       mentions?: MentionReference[];
     },
-    options?: RestRequestOptions,
+    options?: MessagePostOptions,
   ): Promise<ToolOperationResult> {
     return this.forward("createChatMessage", () => this.api.createChatMessage(chatId, message, options), {
       chatId,

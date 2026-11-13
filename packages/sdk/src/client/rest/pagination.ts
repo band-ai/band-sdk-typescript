@@ -185,6 +185,8 @@ export interface CursorTailOptions<T> {
   keep: number;
   /** Which items count; all of them when unset. */
   where?: (item: T) => boolean;
+  /** Where the walk starts; the first item Band holds when unset. */
+  from?: string;
 }
 
 export interface CursorTail<T> {
@@ -201,10 +203,10 @@ export interface CursorTail<T> {
  */
 export async function fetchCursorTail<T>(
   fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
-  { keep, where }: CursorTailOptions<T>,
+  { keep, where, from }: CursorTailOptions<T>,
 ): Promise<CursorTail<T>> {
   const items: T[] = [];
-  let cursor: string | undefined;
+  let cursor = from;
   for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
     const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
     items.push(...(where ? data.filter(where) : data));
@@ -216,6 +218,35 @@ export async function fetchCursorTail<T>(
     cursor = next;
   }
   return { items, truncated: true };
+}
+
+
+export interface CursorFirstOptions<T> {
+  /** Which item counts as a hit. */
+  where: (item: T) => boolean;
+  /** Where the walk starts; the first item Band holds when unset. */
+  from?: string;
+}
+
+/**
+ * The first item passing `where` from a forward cursor walk. Stops paging as
+ * soon as one matches, so a settle that only needs existence does not pay a
+ * full walk to the newest end.
+ */
+export async function fetchCursorFirst<T>(
+  fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
+  { where, from }: CursorFirstOptions<T>,
+): Promise<T | null> {
+  let cursor = from;
+  for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
+    const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
+    const hit = data.find(where);
+    if (hit !== undefined) return hit;
+    const next = nextCursorOf(metadata);
+    if (next === null) return null;
+    cursor = next;
+  }
+  return null;
 }
 
 /** The cursor of the page after this one; null when Band has no more, or has more but handed back no cursor. */
@@ -276,7 +307,8 @@ export async function fetchContextPage(
   return { messages: data, nextCursor };
 }
 
-const TEXT_MESSAGE: ChatMessageType = "text";
+/** Band's chat message type for ordinary agent text posts. */
+export const TEXT_MESSAGE: ChatMessageType = "text";
 /** How many messages `getRecentMessages` returns by default; `MAX_CURSOR_PAGE` at most. */
 export const DEFAULT_RECENT_MESSAGES = 20;
 

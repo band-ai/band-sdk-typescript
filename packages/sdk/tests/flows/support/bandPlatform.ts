@@ -12,7 +12,8 @@ import { Band, BandError } from "@band-ai/rest-client";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
 import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
-import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
+import type { MessageDelivery } from "../../../src/client/rest/messageDelivery";
+import type { ChatRoom, CreateChatRequest, MessagePostOptions, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { RoomExecutionStoppedError } from "../../../src/core/errors";
 import type { AgentControlMode } from "../../../src/platform/control";
@@ -146,6 +147,8 @@ export class RecordingRestApi extends FakeRestApi {
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  /** Every message post the agent attempted, with the delivery its turn gave it. */
+  public readonly deliveries: Array<{ content: string; delivery?: MessageDelivery }> = [];
   public readonly eventHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly processedHolds = new CallHolds<[messageId: string]>();
@@ -320,7 +323,8 @@ export class RecordingRestApi extends FakeRestApi {
     return { id: roomId };
   }
 
-  public override async createChatMessage(roomId: string, message: MessageBody) {
+  public override async createChatMessage(roomId: string, message: MessageBody, options?: MessagePostOptions) {
+    this.deliveries.push({ content: message.content, delivery: options?.delivery });
     const posted = { roomId, content: message.content, mentions: message.mentions?.map((mention) => mention.id) ?? [], messageType: "text" };
     this.assertMember(roomId, "createChatMessage", posted);
     assertMentioned(message.mentions);

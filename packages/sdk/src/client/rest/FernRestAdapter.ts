@@ -1,4 +1,5 @@
 import { hasStatusCode, HTTP_FORBIDDEN, HTTP_NO_CONTENT, HTTP_UNPROCESSABLE, RoomExecutionStoppedError, UnsupportedFeatureError } from "../../core/errors";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
   GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
@@ -24,7 +25,17 @@ import {
   type ReportActivityOptions,
 } from "./requestOptions";
 import type { ActivityCapability } from "./activityCapability";
-import { normalizePaginationMetadata } from "./pagination";
+import {
+  contextCursorAfter,
+  deliverMessage,
+  sameFingerprint,
+  sentFingerprint,
+  sortsAfterAnchor,
+  storedFingerprint,
+  type MessageDelivery,
+  type PostFingerprint,
+} from "./messageDelivery";
+import { fetchCursorFirst, fetchCursorTail, normalizePaginationMetadata, TEXT_MESSAGE } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   FernUserProfile,
@@ -34,6 +45,7 @@ import type {
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
+  MessagePostOptions,
   PaginatedResponse,
   PlatformChatMessage,
 } from "./types";
@@ -379,7 +391,11 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 export interface FernRestAdapterOptions {
   /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
   activityCapability?: ActivityCapability;
+  logger?: Logger;
 }
+
+/** No Fern transport retries: deliverMessage owns post resends; a failed read-back is answered by a resend. */
+const NO_TRANSPORT_RETRIES: RestRequestOptions = { maxRetries: 0 };
 
 /** Band's message, in a 403, for a post refused because it stopped the agent in the room. */
 const EXECUTION_STOPPED_MESSAGE = "execution is stopped";
@@ -429,10 +445,12 @@ async function postedUnlessStopped<T>(chatId: string, post: () => Promise<T>): P
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
   private readonly activityCapability?: ActivityCapability;
+  private readonly logger: Logger;
 
   public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
     this.activityCapability = options.activityCapability;
+    this.logger = resolveLogger(options.logger);
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -465,7 +483,7 @@ export class FernRestAdapter implements RestApi {
       metadata?: MetadataMap;
       mentions?: MentionReference[];
     },
-    options?: RestRequestOptions,
+    options: MessagePostOptions = {},
   ): Promise<ToolOperationResult> {
     const api = this.client.chatMessages?.createChatMessage?.bind(this.client.chatMessages)
       ?? this.client.agentApiMessages?.createAgentChatMessage?.bind(this.client.agentApiMessages)
@@ -474,19 +492,124 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
     }
 
-    const response = await postedUnlessStopped(chatId, () => api(
-      chatId,
-      {
-        message: {
-          content: message.content,
-          message_type: message.messageType,
-          metadata: message.metadata,
-          mentions: message.mentions,
-        },
+    const { delivery, ...requestOptions } = options;
+    const body = {
+      message: {
+        content: message.content,
+        message_type: message.messageType,
+        metadata: message.metadata,
+        mentions: message.mentions,
       },
-      mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
-    ));
-    return normalizeToolOperationResult(response);
+    };
+    // Each attempt is seen by deliverMessage, which owns the resends.
+    const attemptOptions = { ...mergeOptions(requestOptions), ...NO_TRANSPORT_RETRIES };
+    const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
+    // Any uncertain settle that does not find the post must credit after-anchor
+    // matches before/after resend (and in finally if delivery throws) so a twin
+    // left in the room cannot be claimed by a later turn.
+    let creditTwins = false;
+    const findPosted = delivery
+      ? async () => {
+        try {
+          const found = await this.findPosted(chatId, fingerprint, delivery);
+          if (found) return found;
+          creditTwins = true;
+          await this.creditMatchingPosts(chatId, fingerprint, delivery);
+          return null;
+        } catch (error) {
+          this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
+          creditTwins = true;
+          await this.creditMatchingPosts(chatId, fingerprint, delivery);
+          return null;
+        }
+      }
+      : undefined;
+    try {
+      const delivered = await deliverMessage({
+        post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
+        findPosted,
+        stopped: delivery?.stopped,
+        logger: this.logger,
+        roomId: chatId,
+      });
+      const result = "found" in delivered
+        ? { id: delivered.found.id, success: true }
+        : normalizeToolOperationResult(delivered.posted);
+      if (typeof result.id === "string") delivery?.attributed.add(result.id);
+      return result;
+    } finally {
+      // Catch twins that landed after the pre-resend walk, including when
+      // deliverMessage threw after a committed uncertain attempt.
+      if (delivery && creditTwins) await this.creditMatchingPosts(chatId, fingerprint, delivery);
+    }
+  }
+
+  /**
+   * This agent's text message matching `fingerprint` that Band stored after
+   * the delivery's anchor and no other delivery was credited with, read from
+   * the anchor on. Null when absent. Throws when the room cannot be read —
+   * the caller credits any matches it can see, then treats settle as a miss.
+   */
+  private async findPosted(
+    chatId: string,
+    fingerprint: PostFingerprint,
+    delivery: MessageDelivery,
+  ): Promise<PlatformChatMessage | null> {
+    const isThisPost = (message: PlatformChatMessage) =>
+      message.sender_id === delivery.selfId
+      && message.message_type === TEXT_MESSAGE
+      && sortsAfterAnchor(message, delivery.anchor)
+      && !delivery.attributed.has(message.id)
+      && sameFingerprint(storedFingerprint(message), fingerprint);
+    const walkFrom = async (from: string | undefined) => fetchCursorFirst(
+      (page) => this.getChatContext({ chatId, ...page }, NO_TRANSPORT_RETRIES),
+      { where: isThisPost, from },
+    );
+    try {
+      return await walkFrom(contextCursorAfter(delivery.anchor));
+    } catch (error) {
+      // A cursor Band no longer reads this way: the whole room, from its start.
+      // isThisPost still keeps the after-anchor filter so a pre-trigger twin
+      // cannot settle an uncertain post that never committed.
+      if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
+      this.logger.warn("Band refused the read-back cursor; reading the room from its start", { roomId: chatId });
+      return await walkFrom(undefined);
+    }
+  }
+
+  /**
+   * Credits every own after-anchor fingerprint match already in the room.
+   * Best-effort: a read failure leaves attribution unchanged so delivery can
+   * still resend under at-least-once.
+   */
+  private async creditMatchingPosts(
+    chatId: string,
+    fingerprint: PostFingerprint,
+    delivery: MessageDelivery,
+  ): Promise<void> {
+    const isMatch = (message: PlatformChatMessage) =>
+      message.sender_id === delivery.selfId
+      && message.message_type === TEXT_MESSAGE
+      && sortsAfterAnchor(message, delivery.anchor)
+      && sameFingerprint(storedFingerprint(message), fingerprint);
+    const creditFrom = async (from: string | undefined) => {
+      const { items } = await fetchCursorTail(
+        (page) => this.getChatContext({ chatId, ...page }, NO_TRANSPORT_RETRIES),
+        { keep: Number.MAX_SAFE_INTEGER, where: isMatch, from },
+      );
+      for (const message of items) delivery.attributed.add(message.id);
+    };
+    try {
+      try {
+        await creditFrom(contextCursorAfter(delivery.anchor));
+      } catch (error) {
+        if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
+        this.logger.warn("Band refused the credit-walk cursor; reading the room from its start", { roomId: chatId });
+        await creditFrom(undefined);
+      }
+    } catch (error) {
+      this.logger.warn("Could not credit matching posts after an uncertain settle", { roomId: chatId, error });
+    }
   }
 
   public async createChatEvent(
