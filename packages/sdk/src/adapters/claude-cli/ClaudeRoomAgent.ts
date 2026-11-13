@@ -92,6 +92,9 @@ const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 const INTERRUPT_ACK_TIMEOUT_MS = 10_000;
 // How long a process gets to leave after its stdin closes before it is killed.
 const DRAIN_TIMEOUT_MS = 5_000;
+
+/** How long a closed generation's Band server may take to stop before the room moves on. */
+const BACKEND_STOP_TIMEOUT_MS = 1_000;
 /** Loading no settings source is how a Band agent is kept out of the host's own Claude Code setup. */
 const NO_SETTING_SOURCES = "";
 /** A generation whose tools are closed answers nothing, however the request arrives. */
@@ -885,7 +888,14 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     }
     this.revoke(generation, generation.endReason);
     const report = await generation.client.close({ drainMs: DRAIN_TIMEOUT_MS });
-    await generation.backend.stop().catch((error: unknown) => {
+    // A Band server that will not close must not hold the room hostage: its stop
+    // gets its own bound, shorter than the process drain, and a server that
+    // overruns it is logged and left to settle behind the next turn.
+    await withTimeout(
+      generation.backend.stop(),
+      BACKEND_STOP_TIMEOUT_MS,
+      () => new Error(`the Band MCP server did not stop within ${BACKEND_STOP_TIMEOUT_MS}ms`),
+    ).catch((error: unknown) => {
       this.logger.warn("claude_cli.backend_stop_failed", { roomId: this.roomId, error: asErrorMessage(error) });
     });
     if (!report.drained) {
