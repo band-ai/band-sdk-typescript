@@ -34,6 +34,20 @@ export {
   type OmpRpcAdapterOptions,
 } from "./omp-rpc";
 export {
+  ClaudeCliAdapter,
+  ClaudeCliRoomAgent,
+  CLAUDE_PERMISSION_TOOL,
+  DEFAULT_CLAUDE_CLI_COMMAND,
+  DENIED_CLAUDE_CLI_TOOLS,
+  RESERVED_CLAUDE_FLAGS,
+  validateClaudeArgs,
+  validateClaudeCliOptions,
+  type ClaudeCliAdapterOptions,
+  type ClaudePermissionEndReason,
+  type ClaudePermissionPrompt,
+  type ClaudeTurnUsage,
+} from "./claude-cli";
+export {
   CopilotACPAdapter,
   DEFAULT_COPILOT_ACP_COMMAND,
   type CopilotACPAdapterOptions,
