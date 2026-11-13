@@ -915,7 +915,9 @@ const CONTRACT_TURNS: Record<TurnScript, (peer: FakeClaude) => void> = {
 
 async function judgedTurn(script: TurnScript, tools: FakeTools): Promise<void> {
   const rigged = rig((peer) => {
-    void peer.controlRequest("user-prompt").then(() => CONTRACT_TURNS[script](peer));
+    // The CLI scripts its turn after it is handed the prompt; it never sends a
+    // `user-prompt` control request, so the prompt frame is the gate.
+    void peer.waitFor((frame) => frame.type === "user").then(() => CONTRACT_TURNS[script](peer));
   });
   const claude = new ClaudeCliAdapter({ cwd: tmpRoot(), spawnProcess: rigged.spawnProcess });
   await claude.onStarted("Agent", "desc");
