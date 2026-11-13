@@ -33,8 +33,8 @@ export class FakeClaude {
   public readonly received: Frame[] = [];
   public stopped = false;
   public stdinEnded = false;
-  /** Set when the test wants the process to leave as soon as its stdin closes. */
-  public exitsOnEof = false;
+  /** A CLI that behaves leaves when its stdin closes; a stuck one does not. */
+  public exitsOnEof = true;
   public exitCalls = 0;
   public hasExited = false;
   public readonly exited = createDeferred<ClaudeExitInfo>();

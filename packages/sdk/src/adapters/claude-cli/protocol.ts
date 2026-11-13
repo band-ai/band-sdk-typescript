@@ -11,6 +11,7 @@
  * documented wire format.
  */
 
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { asOptionalRecord } from "../shared/coercion";
 
 /** The transport name a `room.ready` identity reports for this protocol. */
@@ -399,4 +400,61 @@ export function encodeControlRequest(
 /** The answer to a `control_request` the client cannot serve. */
 export function encodeControlError(requestId: string, error: string): Record<string, unknown> {
   return { type: CLAUDE_FRAME.controlResponse, response: { subtype: "error", request_id: requestId, error } };
+}
+
+// -- the private permission callback ------------------------------------------
+
+/** What a tool's host decided about one tool use. */
+export type ClaudePermissionDecision =
+  | { behavior: "allow"; updatedInput: Record<string, unknown> }
+  | { behavior: "deny"; message: string };
+
+/**
+ * The CLI's answer for one tool use: a single `content` text block holding the
+ * decision as JSON. This is the only shape the CLI accepts — an extra key such
+ * as `structuredContent` makes it reject the whole answer and fail the tool
+ * with "Permission prompt tool returned an invalid result", turning a considered
+ * decision into an error. The return type has no other field to fill in.
+ */
+export function encodePermissionDecision(decision: ClaudePermissionDecision): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text", text: JSON.stringify(decision) }] };
+}
+
+/** One permission request as the CLI passes it to the callback tool. */
+export interface ClaudePermissionRequest {
+  toolName: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+}
+
+export function parsePermissionRequest(args: unknown): ClaudePermissionRequest | null {
+  const record = asOptionalRecord(args);
+  const toolName = asStringOrNull(record?.tool_name);
+  const toolUseId = asStringOrNull(record?.tool_use_id);
+  if (!record || toolName === null || toolUseId === null) {
+    return null;
+  }
+  return { toolName, toolUseId, input: asOptionalRecord(record.input) ?? {} };
+}
+
+// -- launch configuration -----------------------------------------------------
+
+/** One MCP server as `--mcp-config` names it. Only what the adapter writes is typed. */
+export interface ClaudeMcpServerConfig {
+  type: "http";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * The `--mcp-config` document for one process generation. Band's server is
+ * always present; any further servers are appended beside it, each under its own
+ * name, so a host that grants access to another server cannot do it by editing
+ * Band's entry.
+ */
+export function encodeMcpConfig(
+  band: ClaudeMcpServerConfig,
+  extra: Readonly<Record<string, ClaudeMcpServerConfig>> = {},
+): { mcpServers: Record<string, ClaudeMcpServerConfig> } {
+  return { mcpServers: { [MCP_SERVER_NAME]: band, ...extra } };
 }
