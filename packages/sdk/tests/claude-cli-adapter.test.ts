@@ -13,7 +13,7 @@ import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/b
 import { fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
 import { turnFrames, addressed } from "./support/claudeCaptures";
 import { FakeTools, tmpRoot } from "./testUtils";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { ACT_ARGS, ACT_TOOL, CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
 const ROOM = "room-1";
 const OTHER_ROOM = "room-2";
@@ -878,48 +878,51 @@ describe("ClaudeCliAdapter", () => {
   });
 });
 
-const CONTRACT_TURNS: Record<TurnScript, (peer: FakeClaude) => void> = {
-  decline: (peer) => {
-    peer.send(
-      systemInit(),
-      assistant(toolUse("toolu-1", "mcp__band__band_no_reply", { reason: "FYI only" })),
-      userFrame(toolResult("toolu-1", "ok")),
-      assistant(text(CLOSING_TEXT)),
-      result({ result: CLOSING_TEXT }),
-    );
+const CONTRACT_TURNS: Record<TurnScript, (peer: FakeClaude, tool?: { name: string }) => Promise<void>> = {
+  // The CLI runs a Band or custom tool by calling the turn's own MCP server, so
+  // a contract turn that "calls" a tool has to reach it for real: announcing a
+  // tool use and typing its result by hand would settle nothing on the turn.
+  decline: async (peer) => {
+    peer.send(systemInit(), assistant(toolUse("toolu-1", "mcp__band__band_no_reply", { reason: "FYI only" })));
+    await callBand(peer, "band_no_reply", { reason: "FYI only" });
+    peer.send(userFrame(toolResult("toolu-1", "ok")), assistant(text(CLOSING_TEXT)), result({ result: CLOSING_TEXT }));
   },
-  toolReply: (peer) => {
-    peer.send(
-      systemInit(),
-      assistant(toolUse("toolu-1", "mcp__band__band_send_message", { content: TOOL_REPLY, mentions: ["@user"] })),
-      userFrame(toolResult("toolu-1", "ok")),
-      assistant(text(CLOSING_TEXT)),
-      result({ result: CLOSING_TEXT }),
-    );
+  toolReply: async (peer) => {
+    peer.send(systemInit(), assistant(toolUse("toolu-1", "mcp__band__band_send_message", { content: TOOL_REPLY, mentions: ["@user"] })));
+    await callBand(peer, "band_send_message", { content: TOOL_REPLY, mentions: ["@user"] });
+    peer.send(userFrame(toolResult("toolu-1", "ok")), assistant(text(CLOSING_TEXT)), result({ result: CLOSING_TEXT }));
   },
-  act: (peer) => {
-    peer.send(
-      systemInit(),
-      assistant(toolUse("toolu-1", "mcp__band__band_add_participant", { name: "Helper" })),
-      userFrame(toolResult("toolu-1", "ok")),
-      result({ result: "" }),
-    );
+  act: async (peer, tool) => {
+    // A turn that only acted: a Band tool by default, or the custom tool the
+    // contract hands in.
+    const name = tool?.name ?? ACT_TOOL;
+    peer.send(systemInit(), assistant(toolUse("toolu-1", `mcp__band__${name}`, tool ? {} : ACT_ARGS)));
+    await callBand(peer, name, tool ? {} : ACT_ARGS);
+    peer.send(userFrame(toolResult("toolu-1", "ok")), result({ result: "" }));
   },
-  finalText: (peer) => {
+  finalText: async (peer) => {
     peer.send(systemInit(), assistant(text(CLOSING_TEXT)), result({ result: CLOSING_TEXT }));
   },
-  nothing: (peer) => {
+  nothing: async (peer) => {
     peer.send(systemInit(), result({ result: "" }));
   },
 };
 
-async function judgedTurn(script: TurnScript, tools: FakeTools): Promise<void> {
+async function judgedTurn(
+  script: TurnScript,
+  tools: FakeTools,
+  tool?: { name: string; schema: unknown; handler: () => Promise<unknown>; effect?: unknown },
+): Promise<void> {
   const rigged = rig((peer) => {
     // The CLI scripts its turn after it is handed the prompt; it never sends a
     // `user-prompt` control request, so the prompt frame is the gate.
-    void peer.waitFor((frame) => frame.type === "user").then(() => CONTRACT_TURNS[script](peer));
+    void peer.waitFor((frame) => frame.type === "user").then(() => CONTRACT_TURNS[script](peer, tool));
   });
-  const claude = new ClaudeCliAdapter({ cwd: tmpRoot(), spawnProcess: rigged.spawnProcess });
+  const claude = new ClaudeCliAdapter({
+    cwd: tmpRoot(),
+    spawnProcess: rigged.spawnProcess,
+    ...(tool ? { additionalTools: [tool as never] } : {}),
+  });
   await claude.onStarted("Agent", "desc");
   try {
     await claude.onEvent({ ...(await turnInput(tools)), roomId: ROOM } as never);
