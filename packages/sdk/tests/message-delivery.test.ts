@@ -158,7 +158,49 @@ describe("message delivery", () => {
 
     expect(result).toEqual({ id: "stored-1", success: true });
     expect(room.posts).toHaveLength(1);
+    expect(ownPosts()).toEqual(["stored-1"]);
     expect(room.contextCursors).toEqual([contextCursorAfter(delivery.anchor), undefined]);
+  });
+
+  it("does not take a pre-trigger twin when the cursor fallback walks the whole room", async () => {
+    room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+    room.seed({ id: "ancient-twin", content: STORED_REPLY, senderId: SELF_ID, mentionIds: [USER] });
+    const trigger = room.seed({ id: "trigger", content: "hi", senderId: USER, mentionIds: [SELF_ID] });
+    delivery = {
+      selfId: SELF_ID,
+      anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) },
+      attributed: new AttributedPosts(),
+    };
+    room.refuseForeignCursors();
+
+    const result = await settleThroughRetries(send([{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }]));
+
+    expect(result).toMatchObject({ id: "stored-1" });
+    expect(room.posts).toHaveLength(2);
+    expect(ownPosts()).toEqual(["ancient-twin", "stored-1"]);
+    expect(room.contextCursors).toEqual([contextCursorAfter(delivery.anchor), undefined]);
+  });
+
+  it("keeps credited posts so a later uncertain settle cannot claim an earlier twin", async () => {
+    room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+    const trigger = room.seed({ id: "trigger", content: "hi", senderId: USER, mentionIds: [SELF_ID] });
+    room.seed({ id: "twin-after-trigger", content: STORED_REPLY, senderId: SELF_ID, mentionIds: [USER] });
+    delivery = {
+      selfId: SELF_ID,
+      anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) },
+      attributed: new AttributedPosts(),
+    };
+    delivery.attributed.add("twin-after-trigger");
+    for (let i = 0; i < 1_000; i += 1) {
+      delivery.attributed.add(`flood-${i}`);
+    }
+    expect(delivery.attributed.has("twin-after-trigger")).toBe(true);
+
+    const result = await settleThroughRetries(send([{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }]));
+
+    expect(result).toMatchObject({ id: "stored-1" });
+    expect(room.posts).toHaveLength(2);
+    expect(ownPosts()).toEqual(["twin-after-trigger", "stored-1"]);
   });
 
   it("resends without a read-back when the post has no turn to anchor it", async () => {

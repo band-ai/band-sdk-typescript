@@ -30,11 +30,12 @@ import {
   deliverMessage,
   sameFingerprint,
   sentFingerprint,
+  sortsAfterAnchor,
   storedFingerprint,
   type MessageDelivery,
   type PostFingerprint,
 } from "./messageDelivery";
-import { fetchCursorTail, normalizePaginationMetadata } from "./pagination";
+import { fetchCursorTail, normalizePaginationMetadata, TEXT_MESSAGE } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   FernUserProfile,
@@ -394,7 +395,8 @@ export interface FernRestAdapterOptions {
 }
 
 /** One read per page: a read-back that fails is answered by a resend, not by retrying the read. */
-const READ_BACK_REQUEST_OPTIONS: RestRequestOptions = { maxRetries: 0 };
+/** One attempt with no Fern transport retries: deliverMessage and read-back own resends. */
+const NO_TRANSPORT_RETRIES: RestRequestOptions = { maxRetries: 0 };
 
 /** Band's message, in a 403, for a post refused because it stopped the agent in the room. */
 const EXECUTION_STOPPED_MESSAGE = "execution is stopped";
@@ -501,7 +503,7 @@ export class FernRestAdapter implements RestApi {
       },
     };
     // Each attempt is seen by deliverMessage, which owns the resends.
-    const attemptOptions = { ...mergeOptions(requestOptions), maxRetries: 0 };
+    const attemptOptions = { ...mergeOptions(requestOptions), ...NO_TRANSPORT_RETRIES };
     const findPosted = delivery
       ? () => this.findPosted(chatId, sentFingerprint(message.content, message.mentions ?? []), delivery)
       : undefined;
@@ -531,11 +533,12 @@ export class FernRestAdapter implements RestApi {
   ): Promise<PlatformChatMessage | null> {
     const isThisPost = (message: PlatformChatMessage) =>
       message.sender_id === delivery.selfId
-      && message.message_type === "text"
+      && message.message_type === TEXT_MESSAGE
+      && sortsAfterAnchor(message, delivery.anchor)
       && !delivery.attributed.has(message.id)
       && sameFingerprint(storedFingerprint(message), fingerprint);
     const walkFrom = async (from: string | undefined) => (await fetchCursorTail(
-      (page) => this.getChatContext({ chatId, ...page }, READ_BACK_REQUEST_OPTIONS),
+      (page) => this.getChatContext({ chatId, ...page }, NO_TRANSPORT_RETRIES),
       { keep: 1, where: isThisPost, from },
     )).items[0] ?? null;
     try {
@@ -543,6 +546,8 @@ export class FernRestAdapter implements RestApi {
         return await walkFrom(contextCursorAfter(delivery.anchor));
       } catch (error) {
         // A cursor Band no longer reads this way: the whole room, from its start.
+        // isThisPost still keeps the after-anchor filter so a pre-trigger twin
+        // cannot settle an uncertain post that never committed.
         if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
         this.logger.warn("Band refused the read-back cursor; reading the room from its start", { roomId: chatId });
         return await walkFrom(undefined);

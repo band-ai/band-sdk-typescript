@@ -7,26 +7,21 @@
  * a loss. No decision here reads a clock.
  */
 import {
+  HTTP_BAD_REQUEST,
   HTTP_REQUEST_TIMEOUT,
+  HTTP_SERVER_ERROR,
   HTTP_TOO_MANY_REQUESTS,
   RoomExecutionStoppedError,
   RuntimeStateError,
   statusCodeOf,
 } from "../../core/errors";
-import { MS_PER_SECOND } from "../../core/deadline";
+import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { MESSAGE_SEND_MAX_RETRIES } from "./requestOptions";
 import type { PlatformChatMessage } from "./types";
 
 /** The first pause before a resend; each later one doubles. Latency only, never a decision. */
 const MESSAGE_RESEND_BASE_DELAY_MS = MS_PER_SECOND;
-
-/**
- * Own posts a room keeps credited to deliveries. Only posts newer than a turn's
- * trigger can be mistaken for its reply, so this covers the replies of the
- * turns still queued behind one, with a large margin.
- */
-const ATTRIBUTED_POSTS_PER_ROOM = 1_000;
 
 /** A mention as the agent sends it; Band rewrites the content from these fields. */
 export interface SentMention {
@@ -97,7 +92,11 @@ export interface PostAttribution {
   add(id: string): void;
 }
 
-/** A room's `PostAttribution`, oldest credit dropped first. */
+/**
+ * A room's `PostAttribution`. Credits are kept for the life of the room's
+ * delivery context: dropping one would let a still-in-room twin be claimed
+ * again as a later reply, which loses that reply under at-least-once settle.
+ */
 export class AttributedPosts implements PostAttribution {
   private readonly ids = new Set<string>();
 
@@ -106,12 +105,7 @@ export class AttributedPosts implements PostAttribution {
   }
 
   public add(id: string): void {
-    this.ids.delete(id);
     this.ids.add(id);
-    for (const oldest of this.ids) {
-      if (this.ids.size <= ATTRIBUTED_POSTS_PER_ROOM) break;
-      this.ids.delete(oldest);
-    }
   }
 }
 
@@ -137,7 +131,7 @@ function classifyFailedAttempt(error: unknown): FailedAttempt {
   if (error instanceof RoomExecutionStoppedError) return "refused";
   const status = statusCodeOf(error);
   if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
-  if (status !== undefined && status >= 400 && status < 500) return "refused";
+  if (status !== undefined && status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR) return "refused";
   return "uncertain";
 }
 
@@ -188,12 +182,14 @@ function resendDelayMs(attempt: number, failure: unknown): number {
   return retryAfterMs(failure) ?? MESSAGE_RESEND_BASE_DELAY_MS * 2 ** attempt;
 }
 
-/** The pause a `Retry-After` header in seconds asks for. */
+/** The pause a `Retry-After` header in seconds asks for, capped for `setTimeout`. */
 function retryAfterMs(failure: unknown): number | undefined {
   const headers = (failure as { rawResponse?: { headers?: Headers } } | undefined)?.rawResponse?.headers;
   const value = headers?.get?.("retry-after");
   const seconds = value === null || value === undefined ? Number.NaN : Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * MS_PER_SECOND : undefined;
+  return Number.isFinite(seconds) && seconds >= 0
+    ? Math.min(seconds * MS_PER_SECOND, MAX_SETTIMEOUT_DELAY_MS)
+    : undefined;
 }
 
 function pause(ms: number, stopped?: AbortSignal): Promise<void> {
@@ -222,4 +218,11 @@ function pause(ms: number, stopped?: AbortSignal): Promise<void> {
  */
 export function contextCursorAfter(anchor: MessageDelivery["anchor"]): string {
   return Buffer.from(JSON.stringify({ t: anchor.createdAt.toISOString(), i: anchor.id })).toString("base64url");
+}
+
+/** Whether `message` sorts strictly after `anchor` under Band's `(inserted_at, id)` keyset. */
+export function sortsAfterAnchor(message: PlatformChatMessage, anchor: MessageDelivery["anchor"]): boolean {
+  const at = Date.parse(message.inserted_at);
+  const anchorAt = anchor.createdAt.getTime();
+  return at > anchorAt || (at === anchorAt && message.id > anchor.id);
 }

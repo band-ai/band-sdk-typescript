@@ -278,7 +278,8 @@ export async function fetchContextPage(
   return { messages: data, nextCursor };
 }
 
-const TEXT_MESSAGE: ChatMessageType = "text";
+/** Band's chat message type for ordinary agent text posts. */
+export const TEXT_MESSAGE: ChatMessageType = "text";
 /** How many messages `getRecentMessages` returns by default; `MAX_CURSOR_PAGE` at most. */
 export const DEFAULT_RECENT_MESSAGES = 20;
 
