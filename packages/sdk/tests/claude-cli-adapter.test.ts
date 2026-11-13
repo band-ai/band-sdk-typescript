@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentEvent } from "../src/contracts/events";
+import { MCP_SERVER_NAME } from "../src/contracts/toolSchemas";
 import { createDeferred } from "../src/core/deferred";
 import { Agent } from "../src/agent/Agent";
 import { ClaudeCliAdapter, DENIED_CLAUDE_CLI_TOOLS, validateClaudeArgs } from "../src/adapters/claude-cli";
@@ -132,6 +133,20 @@ function mcpConfig(peer: FakeClaude): { mcpServers: Record<string, { type: strin
   return JSON.parse(peer.options.command[index + 1]!) as {
     mcpServers: Record<string, { type: string; url: string; headers?: Record<string, string> }>;
   };
+}
+
+/** The values passed to one list flag, up to the next flag. */
+function approvedTools(peer: FakeClaude, flag = "--allowedTools"): string[] {
+  const index = peer.options.command.indexOf(flag);
+  if (index === -1) {
+    return [];
+  }
+  const values: string[] = [];
+  for (const argument of peer.options.command.slice(index + 1)) {
+    if (argument.startsWith("--")) break;
+    values.push(argument);
+  }
+  return values;
 }
 
 function argPair(command: string[], flag: string): string | undefined {
@@ -472,6 +487,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "run it");
       const peer = await rigged.nextPeer();
+      await waitForPrompt(peer);
       const frames = turnFrames("interrupt-pending-permission");
       peer.send(frames[0]!, frames[1]!);
       await new Promise((resolve) => setImmediate(resolve));
@@ -606,6 +622,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
+      await waitForPrompt(peer);
       useSession("SESSION-A");
       peer.send(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
       await prompted;
@@ -621,11 +638,12 @@ describe("ClaudeCliAdapter", () => {
   it("reports a resume the CLI answered with another session, and does not quietly start over", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
-    const { agent, room } = await started(claude);
+    const { agent, room, events } = await started(claude);
     try {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "one");
       const peerOne = await rigged.nextPeer();
+      await waitForPrompt(peerOne);
       useSession("SESSION-A");
       peerOne.send(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
       await first;
@@ -634,13 +652,15 @@ describe("ClaudeCliAdapter", () => {
       const secondDone = turnSettled(agent);
       const second = room.say("owner", "two");
       const peerTwo = await rigged.nextPeer();
+      await waitForPrompt(peerTwo);
       expect(argPair(peerTwo.options.command, "--resume")).toBe("SESSION-A");
       useSession("SESSION-B");
       peerTwo.send(systemInit("SESSION-B"), assistant(text("wrong session")), result({ result: "wrong session", session_id: "SESSION-B" }));
       await second;
       await secondDone;
-      // Reported, not swallowed: the room is told the resume failed...
-      expect(room.events("error").some((event) => event.content.includes("session"))).toBe(true);
+      // Reported, not swallowed: the room is told the resume failed, as a room
+      // error event and as a failed turn the host can see.
+      expect(JSON.stringify(room.events("error")) + JSON.stringify(events)).toContain("session");
       // ...and only then is the session cleared, so a later turn bootstraps from history.
       expect(claude.sessionId(ROOM)).toBeNull();
     } finally {
@@ -804,19 +824,48 @@ describe("ClaudeCliAdapter", () => {
     expect(() => new ClaudeCliAdapter({ command: ["claude", "--dangerously-skip-permissions"] })).toThrow(ValidationError);
   });
 
-  it("serves Band over one authenticated loopback server and appends extra servers beside it", async () => {
+  it("serves Band over one authenticated loopback server and appends authorized servers beside it", async () => {
     const rigged = rig();
-    const claude = adapter(rigged, { extraMcpServers: { linear: { type: "http", url: "http://127.0.0.1:9/mcp" } } });
+    const claude = adapter(rigged, {
+      extraMcpServers: [
+        {
+          name: "linear",
+          type: "http",
+          url: "https://mcp.linear.test/sse",
+          headers: [{ name: "Authorization", value: "Bearer linear-token" }],
+        },
+        // A server named like Band's must not be able to shadow it.
+        { name: MCP_SERVER_NAME, type: "sse", url: "http://127.0.0.1:1/shadow", headers: [] },
+        { name: "local-tools", command: "npx", args: ["-y", "local-mcp"], env: [{ name: "KEY", value: "v" }] },
+      ],
+    });
     const { agent, room } = await started(claude);
     try {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
       const config = mcpConfig(peer);
-      expect(Object.keys(config.mcpServers).sort()).toEqual(["band", "linear"]);
-      expect(config.mcpServers.band!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+/);
-      expect(config.mcpServers.band!.headers?.Authorization).toMatch(/^Bearer .{16,}$/);
-      expect(config.mcpServers.linear).toEqual({ type: "http", url: "http://127.0.0.1:9/mcp" });
+      // Given order kept, Band's own server last and unshadowed.
+      expect(Object.keys(config.mcpServers)).toEqual(["linear", "local-tools", "band"]);
+      expect(config.mcpServers.linear).toEqual({
+        type: "http",
+        url: "https://mcp.linear.test/sse",
+        headers: { Authorization: "Bearer linear-token" },
+      });
+      expect(config.mcpServers["local-tools"]).toEqual({
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "local-mcp"],
+        env: { KEY: "v" },
+      });
+      expect(config.mcpServers.band?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+/);
+      expect(config.mcpServers.band?.headers?.Authorization).toMatch(/^Bearer .{16,}$/);
+      // An authorized server's tools are never pre-approved: every call to one
+      // reaches the permission callback.
+      const approved = approvedTools(peer);
+      expect(approved).toContain("mcp__band__band_send_message");
+      expect(approved.filter((name) => name.includes("linear") || name.includes("local-tools"))).toEqual([]);
+      await waitForPrompt(peer);
       peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
@@ -835,6 +884,7 @@ describe("ClaudeCliAdapter", () => {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "one");
       const peerOne = await rigged.nextPeer();
+      await waitForPrompt(peerOne);
       useSession("SESSION-A");
       peerOne.send(systemInit("SESSION-A"), assistant(text("reply a")), result({ result: "reply a", session_id: "SESSION-A" }));
       await first;
@@ -842,6 +892,7 @@ describe("ClaudeCliAdapter", () => {
       const secondDone = turnSettled(agent);
       const second = other.say("owner", "two");
       const peerTwo = await rigged.nextPeer();
+      await waitForPrompt(peerTwo);
       useSession("SESSION-B");
       peerTwo.send(systemInit("SESSION-B"), assistant(text("reply b")), result({ result: "reply b", session_id: "SESSION-B" }));
       await second;
