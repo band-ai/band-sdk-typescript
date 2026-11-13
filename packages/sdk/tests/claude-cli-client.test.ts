@@ -457,6 +457,9 @@ describe("ClaudeCliClient", () => {
 
     it("stops a process that ignores stdin closing, and says it had to", async () => {
       const { client, peer } = await online(rig, log);
+      // A CLI that leaves when its stdin closes would be drained, not stopped:
+      // this test is about the one that does not.
+      peer.exitsOnEof = false;
       const report = await client.close({ drainMs: 20 });
       expect(peer.stdinEnded).toBe(true);
       expect(peer.stopped).toBe(true);
