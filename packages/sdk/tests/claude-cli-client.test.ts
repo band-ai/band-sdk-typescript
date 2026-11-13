@@ -463,4 +463,29 @@ describe("ClaudeCliClient", () => {
       expect(report).toMatchObject({ drained: false, signalCode: "SIGKILL" });
     });
   });
+
+
+  it("warns about, counts and drops a turn frame that arrives with no turn subscribed", async () => {
+    const pending = ClaudeCliClient.start(rig.spawnProcess, processOptions(log));
+    const peer = await rig.nextPeer();
+    const request = await peer.controlRequest("initialize");
+    peer.send(addressed(captured("initialize")[0]!, String(request.request_id)));
+    const client = await pending;
+    // The real CLI writes none of these before it is handed a prompt.
+    peer.send(
+      { type: "result", subtype: "success", result: "unasked", session_id: "SESSION-1", is_error: false },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "unasked" }] }, session_id: "SESSION-1" },
+      { type: "rate_limit_event", session_id: "SESSION-1" },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    const warned = log.warn.mock.calls
+      .filter(([message]) => message === "claude_cli.stray_turn_frame")
+      .map(([, context]) => (context as { frameType?: string }).frameType);
+    expect(warned).toEqual(["result", "assistant"]);
+    expect(client.strayTurnFrameCount).toBe(2);
+    // Dropped, not queued: there is no turn to settle, and the informational
+    // frame beside them is ignored rather than counted.
+    expect(client.turnRunning).toBe(false);
+    await client.close({ drainMs: 10 });
+  });
 });

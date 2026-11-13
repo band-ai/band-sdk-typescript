@@ -197,8 +197,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "check the deploy");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(
+      await peer.scriptTurn(
         systemInit(),
         assistant(toolUse("toolu-1", "Bash", { command: "ls" })),
         userFrame(toolResult("toolu-1", "file list")),
@@ -223,8 +222,7 @@ describe("ClaudeCliAdapter", () => {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "one");
       const peerOne = await rigged.nextPeer();
-      await waitForPrompt(peerOne);
-      peerOne.send(systemInit(), assistant(text("reply one")), result({ result: "reply one" }));
+      await peerOne.scriptTurn(systemInit(), assistant(text("reply one")), result({ result: "reply one" }));
       await first;
       await firstDone;
 
@@ -252,8 +250,7 @@ describe("ClaudeCliAdapter", () => {
     try {
       await room.say("owner", "earlier question");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       const secondTurnDone = turnSettled(agent);
       const secondTurn = room.say("owner", "and now?");
       const second = await rigged.nextPeer();
@@ -281,8 +278,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "greet them");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(toolUse("toolu-1", "mcp__band__band_send_message", { content: "hello there", mentions: ["@owner"] })));
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "mcp__band__band_send_message", { content: "hello there", mentions: ["@owner"] })));
       const called = await callBand(peer, "band_send_message", { content: "hello there", mentions: ["@owner"] });
       expect(called.isError).not.toBe(true);
       peer.send(userFrame(toolResult("toolu-1", "sent")), assistant(text("said it")), result({ result: "said it" }));
@@ -306,8 +302,7 @@ describe("ClaudeCliAdapter", () => {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "one");
       const old = await rigged.nextPeer();
-      await waitForPrompt(old);
-      old.send(systemInit(), assistant(text("done one")), result({ result: "done one" }));
+      await old.scriptTurn(systemInit(), assistant(text("done one")), result({ result: "done one" }));
       await first;
       await firstDone;
 
@@ -354,8 +349,7 @@ describe("ClaudeCliAdapter", () => {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "run it");
       const old = await rigged.nextPeer();
-      await waitForPrompt(old);
-      old.send(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
+      await old.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
       const pending = callBand(old, PERMISSION_TOOL, { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu-1" });
       await asked;
       // The host cancels, the room moves on, and only then does the held answer arrive.
@@ -386,8 +380,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "list files");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
       const answer = await callBand(peer, PERMISSION_TOOL, { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu-1" });
       // The CLI rejects any answer that is not exactly one text block holding the
       // decision, so the shape is part of the contract.
@@ -414,8 +407,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "list files");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
       const answer = await callBand(peer, PERMISSION_TOOL, { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu-1" });
       expect(JSON.parse((answer.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ behavior: "deny" });
       peer.send(userFrame(toolResult("toolu-1", "denied", true)), assistant(text("no")), result({ result: "no" }));
@@ -441,8 +433,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "do it");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(toolUse("toolu-1", "Bash")));
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash")));
       const args = { tool_name: "Bash", input: {}, tool_use_id: "toolu-1" };
       await callBand(peer, PERMISSION_TOOL, args);
       const again = await callBand(peer, PERMISSION_TOOL, args);
@@ -467,8 +458,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "do it");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(toolUse("toolu-1", "Bash")));
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash")));
       const answer = await callBand(peer, PERMISSION_TOOL, { tool_name: "Bash", input: {}, tool_use_id: "toolu-1" });
       expect(JSON.parse((answer.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ behavior: "deny" });
       peer.send(result({ result: "ok" }));
@@ -517,8 +507,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "do it");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), result({ subtype: "error_during_execution", is_error: true, errors: ["model overloaded"], result: null, terminal_reason: "failed" }));
+      await peer.scriptTurn(systemInit(), result({ subtype: "error_during_execution", is_error: true, errors: ["model overloaded"], result: null, terminal_reason: "failed" }));
       await prompted;
       await promptedDone;
       expect(room.messages).toEqual([]);
@@ -536,8 +525,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "do it");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit());
+      await peer.scriptTurn(systemInit());
       peer.exit(1);
       await prompted;
       await promptedDone;
@@ -546,8 +534,7 @@ describe("ClaudeCliAdapter", () => {
       const nextDone = turnSettled(agent);
       const next = room.say("owner", "again");
       const peerTwo = await rigged.nextPeer();
-      await waitForPrompt(peerTwo);
-      peerTwo.send(systemInit(), assistant(text("back")), result({ result: "back" }));
+      await peerTwo.scriptTurn(systemInit(), assistant(text("back")), result({ result: "back" }));
       await next;
       await nextDone;
       expect(room.messages.map((message) => message.content)).toEqual(["back"]);
@@ -676,8 +663,7 @@ describe("ClaudeCliAdapter", () => {
       const firstDone = turnSettled(agent);
       const first = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(
+      await peer.scriptTurn(
         systemInit(),
         assistant(text("ok")),
         result({
@@ -695,8 +681,7 @@ describe("ClaudeCliAdapter", () => {
       const nextDone = turnSettled(agent);
       const next = room.say("owner", "two");
       const peerTwo = await rigged.nextPeer();
-      await waitForPrompt(peerTwo);
-      peerTwo.send(
+      await peerTwo.scriptTurn(
         systemInit(),
         assistant(text("ok two")),
         result({
@@ -722,8 +707,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
       expect(claude.turnUsage(ROOM)).toMatchObject({ available: false, byModel: null });
@@ -741,8 +725,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "think about it");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(
+      await peer.scriptTurn(
         systemInit(),
         {
           type: "assistant",
@@ -777,8 +760,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
       const command = peer.options.command;
@@ -806,8 +788,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
       expect(argPair(peer.options.command, "--permission-mode")).toBe("default");
@@ -865,8 +846,7 @@ describe("ClaudeCliAdapter", () => {
       const approved = approvedTools(peer);
       expect(approved).toContain("mcp__band__band_send_message");
       expect(approved.filter((name) => name.includes("linear") || name.includes("local-tools"))).toEqual([]);
-      await waitForPrompt(peer);
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
     } finally {
@@ -937,8 +917,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await waitForPrompt(peer);
-      peer.send(
+      await peer.scriptTurn(
         systemInit(),
         assistant(toolUse("toolu-1", "Bash", { command: "ls" })),
         userFrame(toolResult("toolu-1", "files")),

@@ -102,6 +102,16 @@ export class FakeClaude {
     }
   }
 
+  /**
+   * Script one turn's frames, but only once the CLI has been handed its prompt:
+   * the real CLI writes no turn frame before it receives one, so a test cannot
+   * script a turn early and have its frames land on an unsubscribed client.
+   */
+  public async scriptTurn(...frames: Frame[]): Promise<void> {
+    await this.waitFor((frame) => frame.type === "user");
+    this.send(...frames);
+  }
+
   /** Writes raw bytes, so a test can split a frame where the OS might. */
   public sendRaw(chunk: string | Buffer): void {
     this.toClient.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
