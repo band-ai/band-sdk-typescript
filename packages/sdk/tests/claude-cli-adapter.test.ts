@@ -152,6 +152,21 @@ async function callBand(peer: FakeClaude, name: string, args: Record<string, unk
   }
 }
 
+/**
+ * A call to a generation's Band server, bounded: a generation that has been
+ * closed is refused by its transport dying as much as by its tools answering
+ * "this turn is closed", and a test must not wait on either.
+ */
+async function tryCallBand(peer: FakeClaude, name: string, args: Record<string, unknown>, budgetMs = 3_000) {
+  const attempt = callBand(peer, name, args).then(
+    (result) => ({ refused: false as const, result }),
+    () => ({ refused: true as const, result: undefined }),
+  );
+  const budget = new Promise<"late">((resolve) => setTimeout(() => resolve("late"), budgetMs));
+  const outcome = await Promise.race([attempt, budget]);
+  return outcome === "late" ? { refused: true as const, result: undefined } : outcome;
+}
+
 describe("ClaudeCliAdapter", () => {
   it("replies once with the model's closing text and records its own tool use", async () => {
     const rigged = rig();
@@ -252,10 +267,11 @@ describe("ClaudeCliAdapter", () => {
       peer.send(userFrame(toolResult("toolu-1", "sent")), assistant(text("said it")), result({ result: "said it" }));
       await prompted;
       await promptedDone;
-      // The tool's post is the room action; the model's closing text is relayed
-      // once, and no Band tool record is posted as the model's own work.
-      expect(room.messages.map((message) => message.content)).toEqual(["hello there", "said it"]);
-      expect(room.events("tool_call")).toEqual([]);
+      // The tool's post is the reply; the model's closing text is not relayed a
+      // second time. The Band call is still reported as tool activity, under the
+      // CLI's own tool name.
+      expect(room.messages.map((message) => message.content)).toEqual(["hello there"]);
+      expect(room.events("tool_call").map((event) => event.content)).toEqual(["mcp__band__band_send_message"]);
     } finally {
       await agent.stop();
     }
@@ -277,16 +293,20 @@ describe("ClaudeCliAdapter", () => {
       const secondDone = turnSettled(agent);
       const second = room.say("owner", "two");
       const next = await rigged.nextPeer();
-      const stale = await callBand(old, "band_send_message", { content: "from the old turn", mentions: ["@owner"] });
-      expect(stale.isError).toBe(true);
-      expect(JSON.stringify(stale.content)).toContain("closed");
+      const stale = await tryCallBand(old, "band_send_message", { content: "from the old turn", mentions: ["@owner"] });
+      expect(stale.refused, "the closed generation still served a Band call").toBe(true);
 
-      const fresh = await callBand(next, "band_send_message", { content: "from the live turn", mentions: ["@owner"] });
-      expect(fresh.isError).not.toBe(true);
+      const fresh = await tryCallBand(next, "band_send_message", { content: "from the live turn", mentions: ["@owner"] });
+      expect(fresh.refused, "the live turn's Band server refused its own call").toBe(false);
+      expect(fresh.result?.isError).not.toBe(true);
       next.send(systemInit(), assistant(text("done two")), result({ result: "done two" }));
       await second;
       await secondDone;
-      expect(room.messages.map((message) => message.content)).toEqual(["done two"]);
+      // Turn one's relay and the live generation's Band post; turn two's closing
+      // text is not relayed a second time because its turn already replied.
+      // Nothing at all came from the closed generation.
+      expect(room.messages.map((message) => message.content)).toEqual(["done one", "from the live turn"]);
+      expect(room.messages.map((message) => message.content)).not.toContain("from the old turn");
     } finally {
       await agent.stop();
     }
@@ -459,7 +479,7 @@ describe("ClaudeCliAdapter", () => {
       // The CLI's error-shaped result and exit 1 are a stop, not a failure: no
       // message, no failure event, and the turn is settled.
       expect(room.messages).toEqual([]);
-      expect(room.events("failure")).toEqual([]);
+      expect(room.events("error")).toEqual([]);
       expect(events.filter((event) => event.type === "turn.failed")).toEqual([]);
       expect(events.some((event) => event.type === "turn.stopped")).toBe(true);
     } finally {
@@ -480,7 +500,7 @@ describe("ClaudeCliAdapter", () => {
       await prompted;
       await promptedDone;
       expect(room.messages).toEqual([]);
-      expect(room.events("failure").some((event) => event.content.includes("model overloaded"))).toBe(true);
+      expect(room.events("error").some((event) => event.content.includes("model overloaded"))).toBe(true);
     } finally {
       await agent.stop();
     }
@@ -499,13 +519,15 @@ describe("ClaudeCliAdapter", () => {
       peer.exit(1);
       await prompted;
       await promptedDone;
-      expect(room.events("failure").length).toBe(1);
+      expect(room.events("error").length).toBe(1);
 
+      const nextDone = turnSettled(agent);
       const next = room.say("owner", "again");
       const peerTwo = await rigged.nextPeer();
       await waitForPrompt(peerTwo);
       peerTwo.send(systemInit(), assistant(text("back")), result({ result: "back" }));
       await next;
+      await nextDone;
       expect(room.messages.map((message) => message.content)).toEqual(["back"]);
     } finally {
       await agent.stop();
@@ -612,7 +634,7 @@ describe("ClaudeCliAdapter", () => {
       await second;
       await secondDone;
       // Reported, not swallowed: the room is told the resume failed...
-      expect(room.events("failure").some((event) => event.content.includes("session"))).toBe(true);
+      expect(room.events("error").some((event) => event.content.includes("session"))).toBe(true);
       // ...and only then is the session cleared, so a later turn bootstraps from history.
       expect(claude.sessionId(ROOM)).toBeNull();
     } finally {
@@ -644,6 +666,7 @@ describe("ClaudeCliAdapter", () => {
       expect(claude.turnUsage(ROOM)).toMatchObject({ available: true });
       expect(JSON.stringify(claude.turnUsage(ROOM))).not.toContain("0.107");
 
+      const nextDone = turnSettled(agent);
       const next = room.say("owner", "two");
       const peerTwo = await rigged.nextPeer();
       await waitForPrompt(peerTwo);
@@ -658,6 +681,7 @@ describe("ClaudeCliAdapter", () => {
         }),
       );
       await next;
+      await nextDone;
       expect(claude.turnUsage(ROOM)?.byModel).toEqual({ "claude-opus-5-5": { inputTokens: 4, costUSD: 0.052 } });
     } finally {
       await agent.stop();
