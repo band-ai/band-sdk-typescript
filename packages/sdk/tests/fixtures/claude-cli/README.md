@@ -35,3 +35,7 @@ show the protocol's shape, not one account's transcript. Their ids are placehold
 that still correlate (`toolu-2` in a `tool_use` is the `toolu-2` its `tool_result`
 names), so a test can follow a tool call through its result. They are read by
 `tests/claude-cli-client.test.ts`; do not hand-edit them.
+
+`overhead.json` records the launch cost measured against the same CLI: what one
+process per turn actually costs on this machine, so the design is judged on a
+measured number rather than a guess about it.
