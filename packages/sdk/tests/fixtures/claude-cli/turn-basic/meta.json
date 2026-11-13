@@ -1,0 +1,36 @@
+{
+  "scenario": "turn-basic",
+  "title": "system init and a plain turn",
+  "note": "one user envelope, its system/init frame and the terminal result",
+  "cliVersion": "2.1.319",
+  "invocation": [
+    "<claude-cli>",
+    "--print",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "<mcp-config.json>",
+    "--permission-prompts",
+    "host",
+    "--permission-prompt-tool",
+    "mcp__probe__permission"
+  ],
+  "cwd": "<workspace>",
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "at": 4178
+  },
+  "capturedWith": "a local stdio MCP probe server (tools: echo, permission); no Anthropic package is used",
+  "sanitized": [
+    "account data and pids removed",
+    "host paths replaced with <home>, <claude-home>, <workspace> and <socket>",
+    "session, message, tool-use and request ids replaced by stable placeholders",
+    "thinking text and every thinking signature removed",
+    "ambient-config lists (commands, agents, skills, plugins, slash commands, models) reduced to their shape, never their names"
+  ]
+}

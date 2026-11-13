@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"cap-init-1","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with exactly this text and nothing else: PONG"}]},"parent_tool_use_id":null}
