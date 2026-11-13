@@ -220,6 +220,35 @@ export async function fetchCursorTail<T>(
   return { items, truncated: true };
 }
 
+
+export interface CursorFirstOptions<T> {
+  /** Which item counts as a hit. */
+  where: (item: T) => boolean;
+  /** Where the walk starts; the first item Band holds when unset. */
+  from?: string;
+}
+
+/**
+ * The first item passing `where` from a forward cursor walk. Stops paging as
+ * soon as one matches, so a settle that only needs existence does not pay a
+ * full walk to the newest end.
+ */
+export async function fetchCursorFirst<T>(
+  fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
+  { where, from }: CursorFirstOptions<T>,
+): Promise<T | null> {
+  let cursor = from;
+  for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
+    const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
+    const hit = data.find(where);
+    if (hit !== undefined) return hit;
+    const next = nextCursorOf(metadata);
+    if (next === null) return null;
+    cursor = next;
+  }
+  return null;
+}
+
 /** The cursor of the page after this one; null when Band has no more, or has more but handed back no cursor. */
 function nextCursorOf(metadata: PaginationMetadata | undefined): string | null {
   const next = metadata?.next_cursor;

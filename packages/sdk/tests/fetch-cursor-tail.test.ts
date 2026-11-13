@@ -1,7 +1,7 @@
 /** Which items `fetchCursorTail` keeps from a scripted run of cursor pages, where it stops walking, and whether it stopped short. */
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE, fetchCursorTail, type CursorPageRequest } from "../src/client/rest/pagination";
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE, fetchCursorFirst, fetchCursorTail, type CursorPageRequest } from "../src/client/rest/pagination";
 import type { PaginatedResponse } from "../src/client/rest/types";
 
 interface Item {
@@ -84,3 +84,26 @@ describe("fetchCursorTail", () => {
     expect(requests).toEqual(cursors.map((cursor) => ({ cursor, limit: DEFAULT_PAGE_SIZE })));
   });
 });
+
+describe("fetchCursorFirst", () => {
+  it("returns the first where hit and stops paging", async () => {
+    const { fetchPage, requests } = scriptedFetcher([
+      page(range(1, 4), "c1"),
+      page(range(5, 8), "c2"),
+      page(range(9, 10)),
+    ]);
+
+    const hit = await fetchCursorFirst(fetchPage, { where: (item) => item.id === 5 });
+
+    expect(hit).toEqual({ id: 5, kind: "text" });
+    expect(requests.map(({ cursor }) => cursor)).toEqual([undefined, "c1"]);
+  });
+
+  it("returns null when no item matches", async () => {
+    const { fetchPage, requests } = scriptedFetcher([page(range(1, 3), "c1"), page(range(4, 5))]);
+
+    await expect(fetchCursorFirst(fetchPage, { where: (item) => item.id === 99 })).resolves.toBeNull();
+    expect(requests).toHaveLength(2);
+  });
+});
+

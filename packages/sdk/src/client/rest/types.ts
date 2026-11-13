@@ -95,8 +95,13 @@ export interface AgentProfileRestApi {
   getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity>;
 }
 
-/** A message post's options: with `delivery`, a post whose outcome is unknown is read back before any resend. */
-export interface MessagePostOptions extends RestRequestOptions {
+/**
+ * A message post's options: with `delivery`, a post whose outcome is unknown is
+ * read back before any resend. Omits `maxRetries` — delivery owns the attempt
+ * budget (`MESSAGE_SEND_MAX_RETRIES`), and each HTTP attempt is made with
+ * transport retries disabled.
+ */
+export interface MessagePostOptions extends Omit<RestRequestOptions, "maxRetries"> {
   delivery?: MessageDelivery;
 }
 

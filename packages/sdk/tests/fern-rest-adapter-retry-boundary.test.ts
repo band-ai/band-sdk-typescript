@@ -65,12 +65,14 @@ describe("FernRestAdapter retry boundary (real generated client)", () => {
     expect(calls).toHaveLength(3);
   });
 
-  it("createChatMessage: each delivery attempt is one request, whatever maxRetries the caller passes", async () => {
+  it("createChatMessage: each delivery attempt is one request even if maxRetries leaks at runtime", async () => {
     const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
     await expect(
       settleThroughRetries(
-        rest.createChatMessage("room-1", { content: "hello", messageType: "text" }, { maxRetries: 5 }),
+        // Public MessagePostOptions omits maxRetries; a leaked runtime value must
+        // still be overridden by NO_TRANSPORT_RETRIES so delivery owns the budget.
+        rest.createChatMessage("room-1", { content: "hello", messageType: "text" }, { maxRetries: 5 } as never),
       ),
     ).rejects.toMatchObject({ statusCode: 429 });
 

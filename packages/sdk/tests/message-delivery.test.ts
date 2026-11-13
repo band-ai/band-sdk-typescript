@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AttributedPosts, contextCursorAfter, type MessageDelivery } from "../src/client/rest/messageDelivery";
+import { AttributedPosts, contextCursorAfter, sortsAfterAnchor, type MessageDelivery } from "../src/client/rest/messageDelivery";
+import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
 import { RoomExecutionStoppedError, RuntimeStateError } from "../src/core/errors";
 import { FakeBandRoom, SELF_ID, type PostStep } from "./support/fakeBandRoom";
 import { settleThroughRetries } from "./support/settleThroughRetries";
@@ -131,6 +132,23 @@ describe("message delivery", () => {
     expect(room.contextCursors).toEqual([]);
   });
 
+  it("clamps a huge Retry-After so the resend waits the setTimeout ceiling", async () => {
+    const retryAfterSeconds = Math.floor(MAX_SETTIMEOUT_DELAY_MS / 1000) + 100;
+    const sent = send([
+      { kind: "refused", status: 408, headers: { "retry-after": String(retryAfterSeconds) } },
+      { kind: "created" },
+    ]);
+    await room.posted(1);
+
+    await vi.advanceTimersByTimeAsync(MAX_SETTIMEOUT_DELAY_MS - 1);
+    expect(room.posts).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(sent).resolves.toMatchObject({ id: "stored-1" });
+    expect(room.posts).toHaveLength(2);
+    expect(room.contextCursors).toEqual([]);
+  });
+
   it.each([
     { where: "after the trigger, already credited", place: "after" },
     { where: "before the trigger", place: "before" },
@@ -201,6 +219,52 @@ describe("message delivery", () => {
     expect(result).toMatchObject({ id: "stored-1" });
     expect(room.posts).toHaveLength(2);
     expect(ownPosts()).toEqual(["twin-after-trigger", "stored-1"]);
+  });
+
+  it("credits a twin left by a failed read-back so a later queued turn cannot false-found it", async () => {
+    const attributed = new AttributedPosts();
+    room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+    const m1 = room.seed({ id: "m1", content: "ping-1", senderId: USER, mentionIds: [SELF_ID] });
+    // M2 already in the room before M1's reply POST — as when two user messages
+    // are queued and the room holds the second turn until the first ends.
+    const m2 = room.seed({ id: "m2", content: "ping-2", senderId: USER, mentionIds: [SELF_ID] });
+    const body = { content: REPLY, mentions: [{ id: USER, handle: USER }] as [{ id: string; handle: string }] };
+
+    const deliveryM1: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m1.id, createdAt: new Date(m1.inserted_at) },
+      attributed,
+    };
+    room.failContext(1);
+    room.script({ kind: "committedThen", status: UNAVAILABLE }, { kind: "created" });
+    const m1Result = await settleThroughRetries(
+      room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM1 }),
+    );
+
+    expect(m1Result).toMatchObject({ id: "stored-2" });
+    expect(room.posts).toHaveLength(2);
+    expect(ownPosts()).toEqual(["stored-1", "stored-2"]);
+    // R1 must not stay claimable after M1's accepted failed-read-back duplicate.
+    expect(attributed.has("stored-1")).toBe(true);
+    expect(attributed.has("stored-2")).toBe(true);
+
+    const r1 = room.stored.find((message) => message.id === "stored-1")!;
+    expect(sortsAfterAnchor(r1, { id: m2.id, createdAt: new Date(m2.inserted_at) })).toBe(true);
+    expect(Date.parse(m2.inserted_at)).toBeLessThan(Date.parse(r1.inserted_at));
+
+    const deliveryM2: MessageDelivery = {
+      selfId: SELF_ID,
+      anchor: { id: m2.id, createdAt: new Date(m2.inserted_at) },
+      attributed,
+    };
+    room.script({ kind: "refused", status: UNAVAILABLE }, { kind: "created" });
+    const m2Result = await settleThroughRetries(
+      room.adapter().createChatMessage(ROOM, body, { delivery: deliveryM2 }),
+    );
+
+    expect(m2Result).toMatchObject({ id: "stored-3" });
+    expect(room.posts).toHaveLength(4);
+    expect(ownPosts()).toEqual(["stored-1", "stored-2", "stored-3"]);
   });
 
   it("resends without a read-back when the post has no turn to anchor it", async () => {

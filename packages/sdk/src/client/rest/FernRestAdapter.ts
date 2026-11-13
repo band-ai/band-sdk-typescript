@@ -35,7 +35,7 @@ import {
   type MessageDelivery,
   type PostFingerprint,
 } from "./messageDelivery";
-import { fetchCursorTail, normalizePaginationMetadata, TEXT_MESSAGE } from "./pagination";
+import { fetchCursorFirst, fetchCursorTail, normalizePaginationMetadata, TEXT_MESSAGE } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   FernUserProfile,
@@ -503,8 +503,24 @@ export class FernRestAdapter implements RestApi {
     };
     // Each attempt is seen by deliverMessage, which owns the resends.
     const attemptOptions = { ...mergeOptions(requestOptions), ...NO_TRANSPORT_RETRIES };
+    const fingerprint = sentFingerprint(message.content, message.mentions ?? []);
+    // Set when a settle read-back failed: credit twins before (and after) any
+    // resend so a twin committed under that failure cannot be claimed later.
+    let creditTwins = false;
     const findPosted = delivery
-      ? () => this.findPosted(chatId, sentFingerprint(message.content, message.mentions ?? []), delivery)
+      ? async () => {
+        try {
+          return await this.findPosted(chatId, fingerprint, delivery);
+        } catch (error) {
+          this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
+          creditTwins = true;
+          // Before any resend: credit every own after-anchor match already in the
+          // room so a twin committed under a failed read-back cannot be claimed
+          // by a later turn's settle.
+          await this.creditMatchingPosts(chatId, fingerprint, delivery);
+          return null;
+        }
+      }
       : undefined;
     const delivered = await deliverMessage({
       post: () => postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions)),
@@ -517,13 +533,17 @@ export class FernRestAdapter implements RestApi {
       ? { id: delivered.found.id, success: true }
       : normalizeToolOperationResult(delivered.posted);
     if (typeof result.id === "string") delivery?.attributed.add(result.id);
+    // Retry the credit walk after a post that followed a failed read-back, in
+    // case the pre-resend walk could not see the room either.
+    if (delivery && creditTwins) await this.creditMatchingPosts(chatId, fingerprint, delivery);
     return result;
   }
 
   /**
    * This agent's text message matching `fingerprint` that Band stored after
    * the delivery's anchor and no other delivery was credited with, read from
-   * the anchor on. Null when absent or unreadable: either way, a resend.
+   * the anchor on. Null when absent. Throws when the room cannot be read —
+   * the caller credits any matches it can see, then treats settle as a miss.
    */
   private async findPosted(
     chatId: string,
@@ -536,24 +556,54 @@ export class FernRestAdapter implements RestApi {
       && sortsAfterAnchor(message, delivery.anchor)
       && !delivery.attributed.has(message.id)
       && sameFingerprint(storedFingerprint(message), fingerprint);
-    const walkFrom = async (from: string | undefined) => (await fetchCursorTail(
+    const walkFrom = async (from: string | undefined) => fetchCursorFirst(
       (page) => this.getChatContext({ chatId, ...page }, NO_TRANSPORT_RETRIES),
-      { keep: 1, where: isThisPost, from },
-    )).items[0] ?? null;
+      { where: isThisPost, from },
+    );
+    try {
+      return await walkFrom(contextCursorAfter(delivery.anchor));
+    } catch (error) {
+      // A cursor Band no longer reads this way: the whole room, from its start.
+      // isThisPost still keeps the after-anchor filter so a pre-trigger twin
+      // cannot settle an uncertain post that never committed.
+      if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
+      this.logger.warn("Band refused the read-back cursor; reading the room from its start", { roomId: chatId });
+      return await walkFrom(undefined);
+    }
+  }
+
+  /**
+   * Credits every own after-anchor fingerprint match already in the room.
+   * Best-effort: a read failure leaves attribution unchanged so delivery can
+   * still resend under at-least-once.
+   */
+  private async creditMatchingPosts(
+    chatId: string,
+    fingerprint: PostFingerprint,
+    delivery: MessageDelivery,
+  ): Promise<void> {
+    const isMatch = (message: PlatformChatMessage) =>
+      message.sender_id === delivery.selfId
+      && message.message_type === TEXT_MESSAGE
+      && sortsAfterAnchor(message, delivery.anchor)
+      && sameFingerprint(storedFingerprint(message), fingerprint);
+    const creditFrom = async (from: string | undefined) => {
+      const { items } = await fetchCursorTail(
+        (page) => this.getChatContext({ chatId, ...page }, NO_TRANSPORT_RETRIES),
+        { keep: Number.MAX_SAFE_INTEGER, where: isMatch, from },
+      );
+      for (const message of items) delivery.attributed.add(message.id);
+    };
     try {
       try {
-        return await walkFrom(contextCursorAfter(delivery.anchor));
+        await creditFrom(contextCursorAfter(delivery.anchor));
       } catch (error) {
-        // A cursor Band no longer reads this way: the whole room, from its start.
-        // isThisPost still keeps the after-anchor filter so a pre-trigger twin
-        // cannot settle an uncertain post that never committed.
         if (!hasStatusCode(error, HTTP_UNPROCESSABLE)) throw error;
-        this.logger.warn("Band refused the read-back cursor; reading the room from its start", { roomId: chatId });
-        return await walkFrom(undefined);
+        this.logger.warn("Band refused the credit-walk cursor; reading the room from its start", { roomId: chatId });
+        await creditFrom(undefined);
       }
     } catch (error) {
-      this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
-      return null;
+      this.logger.warn("Could not credit matching posts after a failed read-back", { roomId: chatId, error });
     }
   }
 
