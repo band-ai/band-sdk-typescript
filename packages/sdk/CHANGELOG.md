@@ -1,6 +1,23 @@
 # Changelog
 
 
+## [2.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.1.0...sdk-v2.2.0) (2026-11-13)
+
+
+### Features
+
+* **agent:** report turns, tools, approvals, rooms and link locally ([#407](https://github.com/band-ai/band-sdk-typescript/issues/407)) ([d67d9d9](https://github.com/band-ai/band-sdk-typescript/commit/d67d9d90337f48fcb52c3d76d32f95ad74b89ac0))
+* **runtime:** honour Band's agent.control stop, play and interrupt ([#423](https://github.com/band-ai/band-sdk-typescript/issues/423)) ([57df2c4](https://github.com/band-ai/band-sdk-typescript/commit/57df2c4fe88c1a73e23e6999f7dff1b2d1c84b58))
+* **runtime:** journal turn ends so a restart does not answer again ([#413](https://github.com/band-ai/band-sdk-typescript/issues/413)) ([526e99d](https://github.com/band-ai/band-sdk-typescript/commit/526e99dad8ed7b5d1b859e49eaa29669a4405020))
+* **runtime:** page the agent's room context, as the Python SDK does ([#408](https://github.com/band-ai/band-sdk-typescript/issues/408)) ([221ad55](https://github.com/band-ai/band-sdk-typescript/commit/221ad5558668ca3a1d43424629a16e12891fe458))
+* **runtime:** read a room back before resending an uncertain message post ([#424](https://github.com/band-ai/band-sdk-typescript/issues/424)) ([498aa25](https://github.com/band-ai/band-sdk-typescript/commit/498aa252b99715743a1fb6dbef1696425fccd240))
+
+
+### Bug Fixes
+
+* **adapters:** pass room tools to host tools on room-scoped servers ([#409](https://github.com/band-ai/band-sdk-typescript/issues/409)) ([6624971](https://github.com/band-ai/band-sdk-typescript/commit/662497138806363e79daffeebb41d6c990ebb267))
+* **sdk:** give Letta peers' /context messages as input and prove recall uses /context ([#422](https://github.com/band-ai/band-sdk-typescript/issues/422)) ([4252d73](https://github.com/band-ai/band-sdk-typescript/commit/4252d73603241701933a5fce85c812df142a6735))
+
 ## [2.1.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.1...sdk-v2.1.0) (2026-11-10)
 
 
