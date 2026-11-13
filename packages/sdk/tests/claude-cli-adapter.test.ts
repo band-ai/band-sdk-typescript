@@ -234,7 +234,7 @@ describe("ClaudeCliAdapter", () => {
       // The first process is gone: its stdin closed and it was stopped.
       expect(peerOne.stdinEnded).toBe(true);
       expect(peerOne.stopped).toBe(true);
-      peerTwo.send(systemInit(), assistant(text("reply two")), result({ result: "reply two" }));
+      await peerTwo.scriptTurn(systemInit(), assistant(text("reply two")), result({ result: "reply two" }));
       await second;
       await secondDone;
       expect(room.messages.map((message) => message.content)).toEqual(["reply one", "reply two"]);
@@ -315,7 +315,7 @@ describe("ClaudeCliAdapter", () => {
       const fresh = await tryCallBand(next, "band_send_message", { content: "from the live turn", mentions: ["@owner"] });
       expect(fresh.refused, "the live turn's Band server refused its own call").toBe(false);
       expect(fresh.result?.isError).not.toBe(true);
-      next.send(systemInit(), assistant(text("done two")), result({ result: "done two" }));
+      await next.scriptTurn(systemInit(), assistant(text("done two")), result({ result: "done two" }));
       await second;
       await secondDone;
       // Turn one's relay and the live generation's Band post; turn two's closing
@@ -611,7 +611,7 @@ describe("ClaudeCliAdapter", () => {
       const peer = await rigged.nextPeer();
       await waitForPrompt(peer);
       useSession("SESSION-A");
-      peer.send(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
+      await peer.scriptTurn(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
       await prompted;
       await promptedDone;
       expect(claude.sessionId(ROOM)).toBe("SESSION-A");
@@ -632,7 +632,7 @@ describe("ClaudeCliAdapter", () => {
       const peerOne = await rigged.nextPeer();
       await waitForPrompt(peerOne);
       useSession("SESSION-A");
-      peerOne.send(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
+      await peerOne.scriptTurn(systemInit("SESSION-A"), assistant(text("ok")), result({ result: "ok", session_id: "SESSION-A" }));
       await first;
       await firstDone;
 
@@ -642,7 +642,7 @@ describe("ClaudeCliAdapter", () => {
       await waitForPrompt(peerTwo);
       expect(argPair(peerTwo.options.command, "--resume")).toBe("SESSION-A");
       useSession("SESSION-B");
-      peerTwo.send(systemInit("SESSION-B"), assistant(text("wrong session")), result({ result: "wrong session", session_id: "SESSION-B" }));
+      await peerTwo.scriptTurn(systemInit("SESSION-B"), assistant(text("wrong session")), result({ result: "wrong session", session_id: "SESSION-B" }));
       await second;
       await secondDone;
       // Reported, not swallowed: the room is told the resume failed, as a room
@@ -866,7 +866,7 @@ describe("ClaudeCliAdapter", () => {
       const peerOne = await rigged.nextPeer();
       await waitForPrompt(peerOne);
       useSession("SESSION-A");
-      peerOne.send(systemInit("SESSION-A"), assistant(text("reply a")), result({ result: "reply a", session_id: "SESSION-A" }));
+      await peerOne.scriptTurn(systemInit("SESSION-A"), assistant(text("reply a")), result({ result: "reply a", session_id: "SESSION-A" }));
       await first;
       await firstDone;
       const secondDone = turnSettled(agent);
@@ -874,7 +874,7 @@ describe("ClaudeCliAdapter", () => {
       const peerTwo = await rigged.nextPeer();
       await waitForPrompt(peerTwo);
       useSession("SESSION-B");
-      peerTwo.send(systemInit("SESSION-B"), assistant(text("reply b")), result({ result: "reply b", session_id: "SESSION-B" }));
+      await peerTwo.scriptTurn(systemInit("SESSION-B"), assistant(text("reply b")), result({ result: "reply b", session_id: "SESSION-B" }));
       await second;
       await secondDone;
       expect(peerOne).not.toBe(peerTwo);
@@ -897,7 +897,7 @@ describe("ClaudeCliAdapter", () => {
       const peer = await rigged.nextPeer();
       await waitForPrompt(peer);
       peer.writeStderr("stuck before exit");
-      peer.send(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
       // A process that ignores stdin closing: the drain has to escalate to a stop.
       peer.exitsOnEof = false;
       await prompted;
