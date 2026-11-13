@@ -6,6 +6,11 @@ import type { ClaudeExitInfo, ClaudeProcessFactory, ClaudeProcessHandle, ClaudeP
 type Frame = Record<string, unknown>;
 
 /** The `initialize` answer Claude Code 2.1.319 writes, as the capture recorded it. */
+/** The CLI's plain acceptance of a control request the host sent (interrupt, set-mode, …). */
+export function controlSuccess(requestId: string): Frame {
+  return { type: "control_response", response: { subtype: "success", request_id: requestId, response: {} } };
+}
+
 export function initResponse(requestId: string, cliVersion = "2.1.319"): Frame {
   return {
     type: "control_response",
@@ -37,6 +42,8 @@ export class FakeClaude {
   public exitsOnEof = true;
   public exitCalls = 0;
   public hasExited = false;
+  /** True while a test is keeping the process alive. */
+  private exitHeld = false;
   public readonly exited = createDeferred<ClaudeExitInfo>();
   private readonly toClient = new PassThrough();
   private readonly fromClient = new PassThrough();
@@ -86,13 +93,29 @@ export class FakeClaude {
     };
   }
 
+  /**
+   * Report the process gone. Held while a test says the process is still alive,
+   * so a drain can be observed mid-flight and a caller that claims to have
+   * finished closing can be caught doing so.
+   */
   private settle(exit: ClaudeExitInfo): void {
-    if (this.hasExited) {
+    if (this.hasExited || this.exitHeld) {
       return;
     }
     this.hasExited = true;
     this.exited.resolve(exit);
     this.toClient.end();
+  }
+
+  /** Keep the process alive: its exit is reported only when the test releases it. */
+  public holdExit(): void {
+    this.exitHeld = true;
+  }
+
+  /** Let the held process go, as the OS finally taking it down would. */
+  public releaseExit(code: number | null = 0): void {
+    this.exitHeld = false;
+    this.settle({ code, signal: null });
   }
 
   /** Writes frames to the client's stdout, as the CLI would. */
@@ -110,6 +133,17 @@ export class FakeClaude {
   public async scriptTurn(...frames: Frame[]): Promise<void> {
     await this.waitFor((frame) => frame.type === "user");
     this.send(...frames);
+  }
+
+  /**
+   * Script one turn and hand back the prompt text the CLI was given for it: the
+   * test checks what the adapter actually sent, not what it meant to send.
+   */
+  public async scriptTurnAndRead(...frames: Frame[]): Promise<string> {
+    const prompt = await this.waitFor((frame) => frame.type === "user");
+    this.send(...frames);
+    const content = (prompt.message as { content?: Array<{ text?: string }> } | undefined)?.content ?? [];
+    return content.map((block) => block.text ?? "").join("\n");
   }
 
   /** Writes raw bytes, so a test can split a frame where the OS might. */

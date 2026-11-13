@@ -211,7 +211,12 @@ interface Generation {
   /** Tool uses this generation has already answered; a second ask is refused. */
   readonly settled: Set<string>;
   endReason: ClaudePermissionEndReason;
-  closed: boolean;
+  /**
+   * The teardown every caller awaits. A boolean only prevents a second one from
+   * starting; a caller that saw it set walked away while the first was still
+   * draining the process. Sharing the promise joins them.
+   */
+  closing?: Promise<void>;
 }
 
 /** The turn holding the room. */
@@ -431,7 +436,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   public async onCleanup(_roomId: string): Promise<void> {
     const generation = this.live;
     this.activeTurn = undefined;
-    if (generation) this.retire(generation, "room-closed");
+    if (generation) await this.retire(generation, "room-closed");
     this.turns.release(this.roomId);
   }
 
@@ -448,7 +453,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     this.starting = null;
     this.sessionId = null;
     this.owesReplay = true;
-    if (generation) this.retire(generation, "adapter-stopped");
+    if (generation) await this.retire(generation, "adapter-stopped");
     this.turns.clear();
   }
 
@@ -523,7 +528,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
         return;
       }
       await this.postEvents(turn);
-      if (generation) this.retire(generation, "connection-lost");
+      if (generation) await this.retire(generation, "connection-lost");
       if (error instanceof ClaudeTurnTimeoutError) {
         await reportTurnFailure(
           turn.tools,
@@ -604,7 +609,9 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
 
   /** The room's live process, starting one when the room has none. */
   private async ensureGeneration(): Promise<Generation> {
-    if (this.live) {
+    // A generation whose teardown has begun is not the room's process, even while
+    // it waits for the drain: it is revoked, and its tools are gone.
+    if (this.live && !this.live.closing) {
       return this.live;
     }
     if (!this.started) {
@@ -631,7 +638,6 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       permissions: new Set(),
       settled: new Set(),
       endReason: "no-answer",
-      closed: false,
     };
     let client: ClaudeCliClient | undefined;
     let backend: BandMcpBackend | undefined;
@@ -872,27 +878,45 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     }
   }
 
-  /** Ends the generation's access and takes its process down, reporting a drain that had to be forced. */
-  private retire(generation: Generation, reason: ClaudePermissionEndReason): void {
-    if (this.live === generation) {
-      this.live = null;
+  /**
+   * Ends the generation's access and takes its process down, reporting a drain
+   * that had to be forced. Every caller waits on the same teardown: the room's
+   * turn, the engine's stop and a retirement all resolve only when the process
+   * has really gone.
+   */
+  private close(generation: Generation): Promise<void> {
+    if (!generation.closing) {
+      generation.closing = this.closeGeneration(generation);
     }
-    this.revoke(generation, reason);
-    this.endPermissions(generation, reason);
-    void this.close(generation);
+    return generation.closing;
   }
 
-  private async close(generation: Generation): Promise<void> {
-    if (generation.closed) {
-      return;
-    }
-    generation.closed = true;
-    // One process per turn: whatever else happens, this generation is no longer
-    // the room's live one, so the next turn starts a fresh process and resumes.
-    if (this.live === generation) {
-      this.live = null;
-    }
+  /**
+   * Ends a generation's access at once — revoked, its pending approvals given
+   * up — and hands back the teardown every other caller is waiting on, so a
+   * retirement cannot report success while the process is still draining.
+   */
+  private retire(generation: Generation, reason: ClaudePermissionEndReason): Promise<void> {
+    this.revoke(generation, reason);
+    this.endPermissions(generation, reason);
+    return this.close(generation);
+  }
+
+  private async closeGeneration(generation: Generation): Promise<void> {
+    // Revocation is immediate, and never waits on the drain; the generation stops
+    // being the room's live one only once its process is really gone, so a second
+    // caller finds it and joins this teardown instead of declaring it finished.
     this.revoke(generation, generation.endReason);
+    try {
+      await this.drainGeneration(generation);
+    } finally {
+      if (this.live === generation) {
+        this.live = null;
+      }
+    }
+  }
+
+  private async drainGeneration(generation: Generation): Promise<void> {
     const report = await generation.client.close({ drainMs: DRAIN_TIMEOUT_MS });
     // A Band server that will not close must not hold the room hostage: its stop
     // gets its own bound, shorter than the process drain, and a server that
