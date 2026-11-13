@@ -394,8 +394,7 @@ export interface FernRestAdapterOptions {
   logger?: Logger;
 }
 
-/** One read per page: a read-back that fails is answered by a resend, not by retrying the read. */
-/** One attempt with no Fern transport retries: deliverMessage and read-back own resends. */
+/** No Fern transport retries: deliverMessage owns post resends; a failed read-back is answered by a resend. */
 const NO_TRANSPORT_RETRIES: RestRequestOptions = { maxRetries: 0 };
 
 /** Band's message, in a 403, for a post refused because it stopped the agent in the room. */
