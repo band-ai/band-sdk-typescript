@@ -11,7 +11,7 @@ import type { ClaudeCliAdapterOptions, ClaudePermissionDecision } from "../src/a
 import { ValidationError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
+import { controlSuccess, fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
 import { turnFrames, addressed } from "./support/claudeCaptures";
 import { FakeTools, tmpRoot } from "./testUtils";
 import { ACT_ARGS, ACT_TOOL, CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
@@ -79,9 +79,20 @@ const result = (over: Record<string, unknown> = {}) => ({
 /** A process that answers `initialize` as soon as it is asked, like a real CLI. */
 function rig(onSpawn?: (peer: FakeClaude) => void) {
   return fakeClaudeProcesses((peer) => {
-    void peer.controlRequest("initialize").then((request) => {
-      peer.send(initResponse(String(request.request_id)));
-    });
+    // A real CLI answers every control request the host sends: initialize, and the
+    // interrupt a cancellation waits on. A fake that answers only the handshake
+    // leaves the adapter waiting out its ACK timeout for a reply no one will write.
+    const answered = new Set<string>();
+    const answerNextRequest = (): void => {
+      void peer.waitFor((frame) => frame.type === "control_request" && !answered.has(String(frame.request_id))).then((request) => {
+        const requestId = String(request.request_id);
+        answered.add(requestId);
+        const subtype = (request.request as { subtype?: string } | undefined)?.subtype;
+        peer.send(subtype === "initialize" ? initResponse(requestId) : controlSuccess(requestId));
+        answerNextRequest();
+      });
+    };
+    answerNextRequest();
     onSpawn?.(peer);
   });
 }
@@ -254,17 +265,12 @@ describe("ClaudeCliAdapter", () => {
       const secondTurnDone = turnSettled(agent);
       const secondTurn = room.say("owner", "and now?");
       const second = await rigged.nextPeer();
-      await waitForPrompt(second);
-      await secondTurn;
-      await secondTurnDone;
-      const sent = second.received.find((frame) => frame.type === "user");
-      const content = (sent?.message as { content: Array<{ text?: string }> }).content[0]?.text ?? "";
-      // The first turn of a session carries the transcript framing; the replay header
-      // tells the model those messages are already handled.
-      const firstSent = peer.received.find((frame) => frame.type === "user");
-      const firstContent = (firstSent?.message as { content: Array<{ text?: string }> }).content[0]?.text ?? "";
-      expect(firstContent).toContain("[Conversation History]");
+      const content = await second.scriptTurnAndRead();
+      // Turn two continues the session the CLI named, so nothing is replayed at it:
+      // the room's history framing appears only on a turn that owes a replay.
       expect(content).not.toContain("[Conversation History]");
+      void secondTurn;
+      void secondTurnDone;
     } finally {
       await agent.stop();
     }
@@ -488,12 +494,14 @@ describe("ClaudeCliAdapter", () => {
       peer.send(...frames.slice(2));
       await prompted;
       await promptedDone;
-      // The CLI's error-shaped result and exit 1 are a stop, not a failure: no
-      // message, no failure event, and the turn is settled.
+      // The CLI's error-shaped result and exit 1 are a cancellation the host asked
+      // for, not a failure: nothing posted, nothing reported failed, and the turn
+      // settled. `turn.stopped` is a platform Stop's event, not an adapter
+      // cancellation's, so it is not asserted here.
       expect(room.messages).toEqual([]);
       expect(room.events("error")).toEqual([]);
       expect(events.filter((event) => event.type === "turn.failed")).toEqual([]);
-      expect(events.some((event) => event.type === "turn.stopped")).toBe(true);
+      expect(events.some((event) => event.type === "turn.completed" && event.roomId === ROOM)).toBe(true);
     } finally {
       await agent.stop();
     }
