@@ -217,6 +217,8 @@ export class ClaudeCliClient {
   private readonly pending = new Map<string, PendingControl>();
   private readonly buffered: Buffer[] = [];
   private turn: TurnRun | null = null;
+  /** Turn frames seen while no turn was subscribed; see {@link noteStrayTurnFrame}. */
+  private strayTurnFrames = 0;
   private nextId = 0;
   private bufferedBytes = 0;
   private identity: ClaudeIdentity | null = null;
@@ -486,6 +488,10 @@ export class ClaudeCliClient {
       return false;
     }
     try {
+      if (this.noteStrayTurnFrame(frame)) {
+        // Dropped as an anomaly, not a transport failure: the stream stays open.
+        return !this.error;
+      }
       this.dispatch(frame);
     } catch (error) {
       this.fail(
@@ -496,6 +502,37 @@ export class ClaudeCliClient {
       return false;
     }
     return !this.error;
+  }
+
+  /**
+   * A turn frame is something the CLI only writes while a turn is running: it
+   * answers a prompt, carries its assistant output, opens its tool results, or
+   * ends it. One arriving while no turn is subscribed is a protocol anomaly — the
+   * real CLI cannot produce it — so it is counted and warned about by frame type,
+   * and never delivered to a later turn. Additive informational frames (rate
+   * limits, partial messages, hooks) are not turn frames and stay ignored.
+   */
+  private noteStrayTurnFrame(frame: Record<string, unknown>): boolean {
+    if (this.turn) {
+      return false;
+    }
+    const type = frame.type;
+    const isTurnFrame =
+      type === CLAUDE_FRAME.assistant ||
+      type === CLAUDE_FRAME.user ||
+      type === CLAUDE_FRAME.result ||
+      (type === CLAUDE_FRAME.system && parseSystemInit(frame) !== null);
+    if (!isTurnFrame) {
+      return false;
+    }
+    this.strayTurnFrames += 1;
+    this.logger.warn("claude_cli.stray_turn_frame", { frameType: String(type) });
+    return true;
+  }
+
+  /** How many turn frames arrived while no turn was subscribed; see {@link noteStrayTurnFrame}. */
+  public get strayTurnFrameCount(): number {
+    return this.strayTurnFrames;
   }
 
   private dispatch(frame: Record<string, unknown>): void {
