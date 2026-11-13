@@ -11,6 +11,7 @@
  * documented wire format.
  */
 
+import type { McpServer } from "@agentclientprotocol/sdk";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { asOptionalRecord } from "../shared/coercion";
 
@@ -439,22 +440,66 @@ export function parsePermissionRequest(args: unknown): ClaudePermissionRequest |
 
 // -- launch configuration -----------------------------------------------------
 
-/** One MCP server as `--mcp-config` names it. Only what the adapter writes is typed. */
+/**
+ * One MCP server as `--mcp-config` names it. Only what the adapter writes is
+ * typed: Band's own entry is always remote, and a granted server is remote or a
+ * local command.
+ */
 export interface ClaudeMcpServerConfig {
-  type: "http";
-  url: string;
+  type: "http" | "sse" | "stdio";
+  url?: string;
   headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/** ACP carries headers and environment as `{name, value}` lists; the CLI wants records. */
+function toRecord(items: readonly { name: string; value: string }[] | undefined): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const item of items ?? []) {
+    if (item?.name) {
+      record[item.name] = item.value ?? "";
+    }
+  }
+  return record;
 }
 
 /**
- * The `--mcp-config` document for one process generation. Band's server is
- * always present; any further servers are appended beside it, each under its own
- * name, so a host that grants access to another server cannot do it by editing
- * Band's entry.
+ * One granted server, as the CLI names it, or null when it cannot run one:
+ * an empty name, a name that would shadow Band's own entry, or an `acp`
+ * server, which speaks to a client rather than to a command line.
+ */
+function claudeServerEntry(server: McpServer): [string, ClaudeMcpServerConfig] | null {
+  const name = typeof server.name === "string" ? server.name.trim() : "";
+  if (!name || name === MCP_SERVER_NAME) {
+    return null;
+  }
+  if ("command" in server) {
+    return [name, { type: "stdio", command: server.command, args: [...server.args ?? []], env: toRecord(server.env) }];
+  }
+  if (server.type === "http" || server.type === "sse") {
+    return [name, { type: server.type, url: server.url, headers: toRecord(server.headers) }];
+  }
+  return null;
+}
+
+/**
+ * The `--mcp-config` document for one process generation. Granted servers keep
+ * the order they were given in, and Band's own server is appended last under its
+ * own name and cannot be shadowed: an extra that collides with it is dropped.
  */
 export function encodeMcpConfig(
   band: ClaudeMcpServerConfig,
-  extra: Readonly<Record<string, ClaudeMcpServerConfig>> = {},
+  extra: readonly McpServer[] = [],
 ): { mcpServers: Record<string, ClaudeMcpServerConfig> } {
-  return { mcpServers: { [MCP_SERVER_NAME]: band, ...extra } };
+  const mcpServers: Record<string, ClaudeMcpServerConfig> = {};
+  for (const server of extra) {
+    const entry = server ? claudeServerEntry(server) : null;
+    if (entry) {
+      mcpServers[entry[0]] = entry[1];
+    }
+  }
+  mcpServers[MCP_SERVER_NAME] = band;
+  return { mcpServers };
 }

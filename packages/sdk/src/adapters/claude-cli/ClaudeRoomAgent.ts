@@ -14,6 +14,7 @@ import type { McpToolRegistration, McpToolResult } from "../../mcp/registrations
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import { trackNativeActivity } from "../../runtime/workingState";
+import type { McpServer } from "@agentclientprotocol/sdk";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { asErrorMessage } from "../shared/coercion";
 import { systemUpdateParts } from "../shared/conversationPrompt";
@@ -163,8 +164,13 @@ export interface ClaudeCliAdapterOptions {
   turnTimeoutMs?: number;
   /** Overrides the CLI version floor, for a host that pins its own CLI. */
   minimumVersion?: string;
-  /** Extra MCP servers beside Band's, each under its own name. Never overrides Band's entry. */
-  extraMcpServers?: Record<string, ClaudeMcpServerConfig>;
+  /**
+   * MCP servers the person authorized, in order, using ACP's own shape. Band's
+   * server is always appended last under its own name and cannot be shadowed, so
+   * an entry named like it is dropped. Their tools are never pre-approved: they
+   * go through the permission callback like any other tool.
+   */
+  extraMcpServers?: readonly McpServer[];
   logger?: Logger;
   /** Starts the CLI process; must start one dedicated to this room's turn. */
   spawnProcess?: ClaudeProcessFactory;
@@ -258,7 +264,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   private readonly permissionTimeoutMs: number;
   private readonly turnTimeoutMs: number;
   private readonly minimumVersion?: string;
-  private readonly extraMcpServers: Record<string, ClaudeMcpServerConfig>;
+  private readonly extraMcpServers: readonly McpServer[];
   private readonly spawnProcess: ClaudeProcessFactory;
   private readonly mcpBackendFactory: typeof createBandMcpBackend;
   private readonly startConfig: ClaudeCliStartConfig;
@@ -302,7 +308,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     assertTurnTimeoutMs(turnTimeoutMs);
     this.turnTimeoutMs = turnTimeoutMs;
     this.minimumVersion = options.minimumVersion;
-    this.extraMcpServers = options.extraMcpServers ?? {};
+    this.extraMcpServers = options.extraMcpServers ?? [];
     this.spawnProcess = options.spawnProcess ?? spawnClaudeProcess;
     this.mcpBackendFactory = options.mcpBackendFactory ?? createBandMcpBackend;
     this.startConfig = options.startConfig ?? {};
@@ -895,8 +901,13 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   private observeEvent(turn: ActiveTurn, generation: Generation, event: ClaudeEvent): void {
     switch (event.type) {
       case "system_init":
-        // The session the CLI named is this room's; a mismatch is the client's to refuse.
-        this.sessionId = event.init.sessionId;
+        // A room with no session yet takes the one the CLI named. A resumed turn
+        // must not quietly move the room to another session: leaving the id as
+        // held lets the turn's terminal check compare them and report the resume
+        // as failed.
+        if (this.sessionId === null) {
+          this.sessionId = event.init.sessionId;
+        }
         return;
       case "text":
         if (event.text.trim()) turn.texts.push(event.text);
