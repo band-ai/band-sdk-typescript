@@ -918,6 +918,38 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("makes every caller wait for one teardown while the process drains", async () => {
+    const rigged = rig();
+    const claude = adapter(rigged);
+    const { agent, room } = await started(claude);
+    try {
+      const turnDone = turnSettled(agent);
+      const posted = room.say("owner", "one");
+      const peer = await rigged.nextPeer();
+      // The OS is slow to take the process down: its exit is held back.
+      peer.holdExit();
+      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+
+      // The turn's own teardown is draining. A second caller - the agent stopping
+      // the room - must join that drain, not report that the process is gone.
+      const stopping = agent.stop();
+      const raced = await Promise.race([
+        stopping.then(() => "resolved" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 250)),
+      ]);
+      expect(raced, "the stop returned while the first drain was still running").toBe("pending");
+
+      peer.releaseExit(0);
+      await stopping;
+      await posted;
+      await turnDone;
+      expect(peer.hasExited, "the held process never actually went").toBe(true);
+      expect(peer.exitCalls, "the same process was torn down twice").toBeLessThanOrEqual(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("settles each observer event once per turn", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
