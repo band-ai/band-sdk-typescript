@@ -62,7 +62,6 @@ export {
   type ClaudeEvent,
   type ClaudeInboundRequest,
   type ClaudeInitReport,
-  type ClaudeMcpServerConfig,
   type ClaudePermissionDecision,
   type ClaudePermissionRequest,
   type ClaudeResultFrame,

@@ -74,6 +74,8 @@ export const TURN_OUTCOME_ADAPTERS: Readonly<Record<string, string>> = {
   LangGraphAdapter: "langgraph-adapter.test.ts",
   GoogleADKAdapter: "google-adk-adapter.test.ts",
   LettaAdapter: "letta-adapter.test.ts",
+  ClaudeCliAdapter: "claude-cli-adapter.test.ts",
+  ClaudeCliRoomAgent: "claude-cli-adapter.test.ts",
   ClaudeSDKAdapter: "claude-sdk-adapter.test.ts",
   CodexAdapter: "codex-adapter.test.ts",
   ACPClientAdapter: "acp-client-adapter.test.ts",
