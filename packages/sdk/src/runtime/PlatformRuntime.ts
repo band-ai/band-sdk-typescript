@@ -286,10 +286,11 @@ export class PlatformRuntime implements AsyncDisposable {
    * Lets the agent handle `roomId` again, for the host: lifts the pause
    * `denyRoom` put on it, and admits it even where `roomFilter` declines it,
    * at once if Band lists the agent in it, otherwise when Band adds the agent.
-   * A pause Band put on the room stays until Band plays it. A room whose
-   * session a reset replaced replays what Band kept on its next message, as a
-   * play does. Kept across restarts of this runtime. Resolves true when the
-   * room is admitted on return.
+   * The allow sticks as a filter override for this runtime; a later deny
+   * pauses turns but leaves that override. A pause Band put on the room stays
+   * until Band plays it. A room whose session a reset replaced replays what
+   * Band kept on its next message, as a play does. Kept across restarts of
+   * this runtime. Resolves true when the room is admitted on return.
    */
   public async allowRoom(roomId: string): Promise<boolean> {
     this.allowedRooms.add(roomId);
@@ -310,9 +311,10 @@ export class PlatformRuntime implements AsyncDisposable {
    * Stops the agent taking turns in `roomId`, for the host: pauses it with
    * source `host`, cutting its running turn short and leaving its messages
    * on Band, until `allowRoom`. The room stays subscribed and keeps its
-   * session; a room not yet admitted starts paused when it is. Band is not
-   * told, and the pause lasts only as long as this runtime object. Resolves
-   * true when it paused a room the agent handles.
+   * session; a room not yet admitted starts paused when it is. Does not drop
+   * an earlier allow's filter override. Band is not told, and the pause lasts
+   * only as long as this runtime object. Resolves true when it paused a room
+   * the agent handles.
    */
   public async denyRoom(roomId: string): Promise<boolean> {
     if (this.hostPausedRooms.has(roomId)) {

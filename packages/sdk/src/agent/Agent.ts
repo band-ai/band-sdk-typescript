@@ -20,7 +20,12 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   shutdownTimeoutMs?: number | null;
 }
 
-/** {@link Agent.rooms}: which rooms the agent takes turns in, changed while it runs. */
+/**
+ * {@link Agent.rooms}: which rooms the agent takes turns in, changed while it
+ * runs. Local to this process: Band is not told. An `allow` sticks as a
+ * filter override for that room until this `Agent` is discarded; a later
+ * `deny` pauses turns but does not drop that override.
+ */
 export interface AgentRooms {
   /** See {@link PlatformRuntime.allowRoom}. */
   allow(roomId: string): Promise<boolean>;
@@ -46,7 +51,8 @@ export class Agent {
   /**
    * Which rooms the agent takes turns in, for the process hosting it: see
    * {@link AgentRooms}. Decisions last as long as this `Agent`, across
-   * `stop()`/`start()`, and may be made before `start()`.
+   * `stop()`/`start()`, and may be made before `start()`. They are not
+   * shared with Band or with a new process.
    */
   public readonly rooms: AgentRooms;
 
