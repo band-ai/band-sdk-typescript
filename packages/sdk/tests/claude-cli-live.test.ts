@@ -18,13 +18,15 @@ import { tmpRoot } from "./testUtils";
  * Opt-in check against the installed Claude Code CLI. The offline suites replay
  * captured frames; this one drives the real program, so it is skipped unless
  * `BAND_CLAUDE_LIVE=1`, and a missing CLI or login fails the run as unavailable
- * rather than passing quietly - an untested adapter is not a working one.
+ * rather than passing quietly - an untested adapter is not a working one. The CLI
+ * is resolved from PATH unless `BAND_CLAUDE_BIN` names it, so the check runs on
+ * any machine with a logged-in Claude Code installed.
  *
  * What the CLI decides to do is not scriptable, so a turn that ends without the
  * asked-for tool use is reported as such, with the events recorded, instead of
  * waiting out the turn timeout for a callback that was never going to come.
  */
-const CLAUDE_BIN = process.env.BAND_CLAUDE_BIN ?? "/Users/cozmonat/.local/bin/claude";
+const CLAUDE_BIN = process.env.BAND_CLAUDE_BIN ?? "claude";
 const LIVE = process.env.BAND_CLAUDE_LIVE === "1";
 const ROOM = "room-1";
 
