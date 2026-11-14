@@ -291,6 +291,41 @@ describe("OmpRpcAdapter", () => {
     expect(await room.outcome(message)).toBe("processed");
   });
 
+  it("refuses a host tool call that arrives after its turn ended, and never reaches the tool", async () => {
+    const omp = fakeOmpProcesses();
+    let reached = 0;
+    const { room } = await startAgent(ompAdapter(omp, {
+      additionalTools: [
+        {
+          name: "band_probe",
+          description: "Records whether it was reached.",
+          inputSchema: { type: "object", properties: {}, required: [] },
+          execute: async () => {
+            reached += 1;
+            return { content: [{ type: "text", text: "probe ran" }] };
+          },
+        },
+      ],
+    }));
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "say hello");
+    const { peer, prompt } = await prompted;
+    peer.send(assistant(text("Hello.")));
+    peer.finish(prompt.id);
+    expect(await room.outcome(message)).toBe("processed");
+
+    // A guard for behaviour that holds today, not a fix. The RPC client answers a host tool call that
+    // arrives with no run in flight (OmpRpcClient.onHostToolCall's `if (!run)`) straight from the
+    // client, without dispatching it: a call that outlived its turn can neither reach a host tool
+    // nor speak in the room. Proven to bite by deleting that branch, which lets the call through to a
+    // dispatch that has no turn to answer on.
+    const late = toolText(await peer.callHostTool("tool-late", "band_probe", {}));
+
+    expect(late).toBe("No turn is running.");
+    expect(reached).toBe(0);
+    expect(room.messages.map((posted) => posted.content)).not.toContain("probe ran");
+  });
+
   it("grants an approval once by default", async () => {
     const omp = fakeOmpProcesses();
     const { room } = await startAgent(ompAdapter(omp));
