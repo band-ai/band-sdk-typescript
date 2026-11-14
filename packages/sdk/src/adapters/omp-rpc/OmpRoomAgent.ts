@@ -97,6 +97,14 @@ export interface OmpRpcAdapterOptions {
   enableTaskTools?: boolean;
   /** More tools OMP may call, run in this process with the room's tools. */
   additionalTools?: McpToolRegistration[];
+  /**
+   * More tools OMP may call, built for one room rather than shared by all of them. Called once per
+   * room, where the room is created, with that room's id; what it returns is appended after
+   * {@link additionalTools}. A host tool whose answer depends on which room called it — one that asks
+   * the person to approve something **in that room**, say — belongs here: the shared set is the same
+   * objects in every room, so it cannot tell them apart. Names may not collide across the two sets.
+   */
+  additionalToolsForRoom?: (roomId: string) => McpToolRegistration[];
   // Omitted ⇒ a tool approval is granted once ("Approve") when OMP offers
   // that, else cancelled. Set ⇒ each approval is handed to this callback; an
   // offered label is answered verbatim ("Deny" is a real refusal), anything
@@ -113,7 +121,7 @@ export interface OmpRpcAdapterOptions {
 }
 
 /** What one room's engine is built from: the adapter's options, bound to that room. */
-export interface OmpRoomAgentOptions extends Omit<OmpRpcAdapterOptions, "command" | "cwd" | "workspaceForRoom"> {
+export interface OmpRoomAgentOptions extends Omit<OmpRpcAdapterOptions, "command" | "cwd" | "workspaceForRoom" | "additionalToolsForRoom"> {
   command: string[];
   /** The room's claimed workspace; its process runs here. */
   cwd: string;
