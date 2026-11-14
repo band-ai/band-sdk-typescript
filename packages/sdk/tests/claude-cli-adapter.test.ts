@@ -254,23 +254,61 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
-  it("seeds a room's first turn with its history and never again", async () => {
+  it("replays the room's history only when its session has to be rebuilt", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
     const { agent, room } = await started(claude);
     try {
-      await room.say("owner", "earlier question");
-      const peer = await rigged.nextPeer();
-      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
-      const secondTurnDone = turnSettled(agent);
-      const secondTurn = room.say("owner", "and now?");
-      const second = await rigged.nextPeer();
-      const content = await second.scriptTurnAndRead();
-      // Turn two continues the session the CLI named, so nothing is replayed at it:
-      // the room's history framing appears only on a turn that owes a replay.
-      expect(content).not.toContain("[Conversation History]");
-      void secondTurn;
-      void secondTurnDone;
+      // Turn one opens the session: the room has no earlier message to replay.
+      const oneDone = turnSettled(agent);
+      const one = room.say("owner", "first question");
+      const peerOne = await rigged.nextPeer();
+      const firstPrompt = await peerOne.scriptTurnAndRead(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await one;
+      await oneDone;
+      expect(firstPrompt).not.toContain("[Conversation History]");
+
+      // Turn two continues that session, so still nothing is replayed at it.
+      const twoDone = turnSettled(agent);
+      const two = room.say("owner", "second question");
+      const peerTwo = await rigged.nextPeer();
+      const secondPrompt = await peerTwo.scriptTurnAndRead(systemInit(), assistant(text("ok two")), result({ result: "ok two" }));
+      await two;
+      await twoDone;
+      expect(secondPrompt).not.toContain("[Conversation History]");
+      expect(secondPrompt).toContain("second question");
+
+      // The resume fails: the CLI answers with another session, so the room's
+      // session is cleared rather than quietly replaced. The next turn has to be
+      // built from the room's history, and says so in its framing.
+      const threeDone = turnSettled(agent);
+      const three = room.say("owner", "third question");
+      const peerThree = await rigged.nextPeer();
+      useSession("SESSION-OTHER");
+      const thirdPrompt = await peerThree.scriptTurnAndRead(
+        systemInit("SESSION-OTHER"),
+        assistant(text("wrong session")),
+        result({ result: "wrong session", session_id: "SESSION-OTHER" }),
+      );
+      await three;
+      await threeDone;
+      // The turn that came back with another session is the one that reported the
+      // resume failed; it was still under the old session, so it was not replayed.
+      expect(thirdPrompt).not.toContain("[Conversation History]");
+
+      // The turn after it has no session to continue, so it is built from the
+      // room's history - and names the live message as the one to answer.
+      const fourDone = turnSettled(agent);
+      const four = room.say("owner", "fourth question");
+      const peerFour = await rigged.nextPeer();
+      useSession(SESSION_DEFAULT);
+      const fourthPrompt = await peerFour.scriptTurnAndRead(systemInit(), assistant(text("ok four")), result({ result: "ok four" }));
+      await four;
+      await fourDone;
+      expect(fourthPrompt).toContain("[Conversation History]");
+      expect(fourthPrompt).toContain("first question");
+      expect(fourthPrompt).toContain("third question");
+      expect(fourthPrompt).toContain("fourth question");
     } finally {
       await agent.stop();
     }
