@@ -43,6 +43,7 @@ export {
   validateClaudeArgs,
   validateClaudeCliOptions,
   type ClaudeCliAdapterOptions,
+  type ClaudePermissionDecision,
   type ClaudePermissionEndReason,
   type ClaudePermissionPrompt,
   type ClaudeTurnUsage,
