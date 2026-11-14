@@ -12,7 +12,7 @@ import { ValidationError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { controlSuccess, fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
-import { turnFrames, addressed } from "./support/claudeCaptures";
+import { turnFrames } from "./support/claudeCaptures";
 import { FakeTools, tmpRoot } from "./testUtils";
 import { ACT_ARGS, ACT_TOOL, CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
@@ -777,6 +777,52 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("relays only the model's assistant text: not thinking, notices, tool output or diagnostics", async () => {
+    const rigged = rig();
+    const claude = adapter(rigged);
+    const { agent, room, events } = await started(claude);
+    try {
+      const turnDone = turnSettled(agent);
+      const posted = room.say("owner", "do all of it");
+      const peer = await rigged.nextPeer();
+      const prompt = "do all of it";
+      await peer.scriptTurnAndRead(
+        systemInit(),
+        // A reasoning block with its attestation signature, never a reply.
+        assistant({ type: "thinking", thinking: "PRIVATE-REASONING", signature: "PRIVATE-SIGNATURE" }),
+        assistant(toolUse("toolu-1", "Bash", { command: "ls" })),
+        userFrame(
+          toolResult("toolu-1", "PRIVATE-TOOL-OUTPUT"),
+          // The CLI speaking for the host, in the transcript as a user block.
+          { type: "text", text: "[Request interrupted by user for tool use] PRIVATE-NOTICE" },
+        ),
+        assistant(text("the only real reply")),
+        // Diagnostics the CLI reports with its result are not model text either.
+        result({ result: "the only real reply", errors: ["PRIVATE-DIAGNOSTIC"] }),
+      );
+      expect(prompt).toBe("do all of it");
+      await posted;
+      await turnDone;
+
+      // The room's answer is exactly the model's assistant text, once.
+      expect(room.messages.map((message) => message.content)).toEqual(["the only real reply"]);
+      // Nothing but assistant text reached a reply or a room record: not the
+      // thinking block, the host's notice, the CLI's diagnostics, or the result
+      // framing. Reasoning may reach the host as a `thought` observer event - that
+      // is its channel, not a reply - but its signature never reaches anything.
+      const roomSide = JSON.stringify([room.messages, room.events("tool_call"), room.events("tool_result"), room.events("error")]);
+      for (const secret of ["PRIVATE-REASONING", "PRIVATE-NOTICE", "PRIVATE-DIAGNOSTIC", "Request interrupted"]) {
+        expect(roomSide, `${secret} reached a reply or a room record`).not.toContain(secret);
+      }
+      const everything = JSON.stringify([room.messages, room.events("tool_call"), room.events("tool_result"), room.events("error"), events]);
+      expect(everything, "a reasoning block's attestation signature left the process").not.toContain("PRIVATE-SIGNATURE");
+      // A tool's output is reported as tool activity, which is its own record.
+      expect(JSON.stringify(room.events("tool_result"))).toContain("PRIVATE-TOOL-OUTPUT");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("keeps reasoning out of the reply and never carries its signature", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
@@ -1084,6 +1130,6 @@ async function judgedTurn(
   }
 }
 
-describe("ClaudeCliAdapter turn outcome", () => {
-  describeTurnOutcomeContract([{ adapter: "ClaudeCliAdapter", turn: judgedTurn }]);
+describe("ClaudeCliRoomAgent turn outcome", () => {
+  describeTurnOutcomeContract([{ adapter: "ClaudeCliRoomAgent", turn: judgedTurn }]);
 });

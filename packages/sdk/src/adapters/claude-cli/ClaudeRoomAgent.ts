@@ -37,7 +37,6 @@ import {
   encodePermissionDecision,
   parsePermissionRequest,
   type ClaudeEvent,
-  type ClaudeMcpServerConfig,
   type ClaudePermissionDecision,
   type ClaudePermissionRequest,
   type ClaudeResultFrame,
