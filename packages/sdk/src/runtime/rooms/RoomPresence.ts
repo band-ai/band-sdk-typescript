@@ -324,8 +324,8 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   /** The rooms among `roomIds` that Band lists the agent in, as it lists them. */
-  public async memberRooms(roomIds: ReadonlySet<string>): Promise<Map<string, MetadataMap>> {
-    return await listExistingRooms({
+  public memberRooms(roomIds: ReadonlySet<string>): Promise<Map<string, MetadataMap>> {
+    return listExistingRooms({
       link: this.link,
       roomFilter: (room) => {
         const roomId = roomIdOf(room);

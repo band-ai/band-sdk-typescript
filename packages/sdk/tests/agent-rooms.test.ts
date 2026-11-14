@@ -93,16 +93,13 @@ describe("agent.rooms", () => {
   });
 
   it("cuts a denied room's running turn short, refuses its late reply, and answers once on allow", async () => {
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    onTestFinished(() => release());
+    const released = createDeferred();
+    onTestFinished(() => released.resolve());
     const attempts = new RecordLog<string>();
     const adapter = new GenericAdapter(async ({ tools }) => {
       const first = attempts.entries.length === 0;
       attempts.record("started");
-      if (first) await released;
+      if (first) await released.promise;
       await tools.sendMessage(first ? "late reply" : "reply", ["owner"]).then(
         () => attempts.record("posted"),
         () => attempts.record("refused"),
@@ -114,7 +111,7 @@ describe("agent.rooms", () => {
 
     await agent.rooms.deny(ROOM_A);
     await reported("turn.stopped", ROOM_A);
-    release();
+    released.resolve();
     await attempts.until(() => attempts.entries.length === 2);
     await agent.rooms.allow(ROOM_A);
 
@@ -368,6 +365,7 @@ describe("agent.rooms", () => {
     expect(turns.entries).toEqual([ROOM_A]);
     expect(roomB.outcomes(backlog)).toEqual([]);
   });
+
   it("resolves true for an allow whose listing a restart overtook, once the restarted agent admitted the room", async () => {
     const { adapter } = turnRecorder();
     const { agent, platform, subscribed } = await startAgent(adapter, [ROOM_A]);

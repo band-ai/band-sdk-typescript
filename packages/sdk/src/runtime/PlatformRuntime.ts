@@ -279,7 +279,10 @@ export class PlatformRuntime implements AsyncDisposable {
   /** Whether the agent handles `room`: one the host allowed, else one `roomFilter` admits, else every room. */
   private admitsRoom(room: MetadataMap): boolean {
     const roomId = roomIdOf(room);
-    return (roomId !== undefined && this.allowedRooms.has(roomId)) || (this._roomFilter?.(room) ?? true);
+    if (roomId !== undefined && this.allowedRooms.has(roomId)) {
+      return true;
+    }
+    return this._roomFilter?.(room) ?? true;
   }
 
   /**
@@ -335,12 +338,17 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * Admits each of `roomIds` the agent is a member of and still allowed in,
-   * unless it is already handled. Best-effort, as start-up's own listing is:
-   * a room it cannot list now is admitted when Band adds the agent to it.
+   * Admits each of `roomIds` the agent is a member of, unless it is already
+   * handled. Best-effort, as start-up's own listing is: a room it cannot list
+   * now is admitted when Band adds the agent to it.
    */
   private async admitAllowedMemberRooms(runtime: AgentRuntime, roomIds: ReadonlySet<string>): Promise<void> {
-    const pending = new Set([...roomIds].filter((roomId) => !runtime.presence.isAdmitted(roomId)));
+    const pending = new Set<string>();
+    for (const roomId of roomIds) {
+      if (!runtime.presence.isAdmitted(roomId)) {
+        pending.add(roomId);
+      }
+    }
     if (pending.size === 0) {
       return;
     }
