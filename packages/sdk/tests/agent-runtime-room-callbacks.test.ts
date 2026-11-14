@@ -39,4 +39,35 @@ describe("AgentRuntime room callbacks", () => {
     // The stop owned room-b: its join started no turn-taking there.
     expect(handled.entries).not.toContain("room-b");
   });
+
+  it("reports a room joined while stop overtakes start, without starting turn-taking", async () => {
+    const platform = BandPlatform.host([person("owner")]);
+    await platform.room("room-a");
+    await platform.room("room-b");
+    const joined = new RecordLog<string>();
+    const admitted = new RecordLog<string>();
+    const handled = new RecordLog<string>();
+    const runtime = new AgentRuntime({
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+      agentId: AGENT_ID,
+      onExecute: async (context) => {
+        handled.record(context.roomId);
+      },
+      onRoomJoined: (roomId) => joined.record(roomId),
+      onRoomAdmitted: (roomId) => admitted.record(roomId),
+    });
+    // Start lists both rooms then joins one at a time; hold B so stop lands mid-start.
+    const releaseB = platform.transport.gateJoin(chatRoomTopic("room-b"));
+    const starting = runtime.start();
+    await platform.transport.joining.next((topic) => topic === chatRoomTopic("room-b"));
+
+    const stopping = runtime.stop();
+    releaseB();
+    await starting.catch(() => undefined);
+    await stopping;
+
+    expect(joined.entries).toContain("room-b");
+    expect(admitted.entries).not.toContain("room-b");
+    expect(handled.entries).not.toContain("room-b");
+  });
 });

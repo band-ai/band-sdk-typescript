@@ -128,9 +128,10 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {
-      if (this.lifecycle.is("stopping")) {
-        // A join a stop overtook (a host's allow still joining) starts no turn-taking: the stop
-        // tears the room down. It is still reported, so the room's later leave has its join.
+      // A join a stop overtook (a host's allow still joining, or a join mid-start)
+      // starts no turn-taking: the stop tears the room down. Skip announce/create
+      // so Agent.observe sees no room.joined; still call onRoomJoined so leave has a join.
+      if (this.lifecycle.is("stopping") || this.stopMidStart !== null) {
         this.logger.debug("Not handling a room joined while the runtime stops", { roomId });
       } else {
         // The execution may predate admission (a contact hub event), so report it now.

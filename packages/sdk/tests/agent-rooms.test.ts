@@ -219,6 +219,40 @@ describe("agent.rooms", () => {
     expect(turns.entries).toHaveLength(2);
   });
 
+  it("keeps an allow's filter override when that room is later denied, across a reconnect", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, platform, roomA, roomB, subscribed } = await startAgent(adapter, [ROOM_A]);
+    await agent.rooms.allow(ROOM_B);
+    await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
+
+    await platform.transport.triggerReconnect({ generation: 1, joinedTopics: new Set(platform.transport.bound.entries) });
+
+    expect(subscribed(ROOM_B)).toBe(true);
+    const held = await roomB.say("owner", "still paused after reconnect");
+    expect((await roomA.sayAndSettle("owner", "A still runs")).outcome).toBe("processed");
+    expect(roomB.outcomes(held)).toEqual([]);
+    await agent.rooms.allow(ROOM_B);
+    expect(await roomB.outcome(held)).toBe("processed");
+    expect(turns.entries).toHaveLength(2);
+  });
+
+  it("keeps a denied room paused when Band removes and re-adds it", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, platform, roomA, roomB, subscribed } = await startAgent(adapter);
+    await agent.rooms.deny(ROOM_B);
+    await roomB.remove();
+    expect(subscribed(ROOM_B)).toBe(false);
+
+    const again = await platform.room(ROOM_B);
+    await platform.transport.bound.until(() => subscribed(ROOM_B));
+    const held = await again.say("owner", "still denied after re-add");
+    expect((await roomA.sayAndSettle("owner", "A still runs")).outcome).toBe("processed");
+    expect(again.outcomes(held)).toEqual([]);
+    await agent.rooms.allow(ROOM_B);
+    expect(await again.outcome(held)).toBe("processed");
+    expect(turns.entries).toHaveLength(2);
+  });
+
   it("admits a member room allowed while start is joining the rooms before it", async () => {
     const { adapter } = turnRecorder();
     const platform = BandPlatform.host([person("owner")]);
