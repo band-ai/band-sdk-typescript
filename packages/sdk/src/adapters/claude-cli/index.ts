@@ -7,6 +7,8 @@ export {
   RESERVED_CLAUDE_FLAGS,
   validateClaudeArgs,
   validateClaudeCliOptions,
+  type ClaudeAuthorizedServersResolver,
+  AUTHORIZED_SERVERS_TIMEOUT_MS,
   type ClaudeCliAdapterOptions,
   type ClaudePermissionEndReason,
   type ClaudePermissionPrompt,

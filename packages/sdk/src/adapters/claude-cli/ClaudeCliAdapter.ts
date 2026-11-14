@@ -71,6 +71,7 @@ export function validateClaudeCliOptions(options: ClaudeCliAdapterOptions): stri
 }
 
 export {
+  AUTHORIZED_SERVERS_TIMEOUT_MS,
   CLAUDE_PERMISSION_TOOL,
   DEFAULT_CLAUDE_CLI_COMMAND,
   DENIED_CLAUDE_CLI_TOOLS,
@@ -79,6 +80,7 @@ export {
   validateClaudeArgs,
 } from "./ClaudeRoomAgent";
 export type {
+  ClaudeAuthorizedServersResolver,
   ClaudeCliAdapterOptions,
   ClaudePermissionEndReason,
   ClaudePermissionPrompt,
