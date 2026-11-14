@@ -1,6 +1,7 @@
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { OmpRpcAdapter, type OmpPermissionRequest, type OmpRpcAdapterOptions } from "../src/adapters/omp-rpc";
+import type { McpToolRegistration } from "../src/mcp/registrations";
 import { Agent } from "../src/agent/Agent";
 import { TASK_TOOL_NAMES } from "../src/contracts/toolSchemas";
 import type { AgentEvent } from "../src/contracts/events";
@@ -31,7 +32,7 @@ function ompAdapter(processes: ReturnType<typeof fakeOmpProcesses>, options: Par
 async function startAgent(adapter: OmpRpcAdapter, admit: (roomId: string) => boolean = () => true) {
   const platform = BandPlatform.host([person("owner")]);
   const room = await platform.room(ROOM);
-  await platform.room(OTHER_ROOM);
+  const otherRoom = await platform.room(OTHER_ROOM);
   const agent = Agent.create({
     adapter,
     agentId: AGENT_ID,
@@ -43,7 +44,7 @@ async function startAgent(adapter: OmpRpcAdapter, admit: (roomId: string) => boo
   agent.observe((event) => { events.push(event); });
   await agent.start();
   onTestFinished(async () => { if (agent.isRunning) await agent.stop(); });
-  return { agent, platform, room, events };
+  return { agent, platform, room, otherRoom, events };
 }
 
 /** Resolves with the next event `matches` reports. */
@@ -289,6 +290,80 @@ describe("OmpRpcAdapter", () => {
     peer.send(assistant(text("Ada.")));
     peer.finish(prompt.id);
     expect(await room.outcome(message)).toBe("processed");
+  });
+
+  /** A host tool that names the room whose registration build produced it. */
+  function roomProbe(marker: string): McpToolRegistration {
+    return {
+      name: "room_probe",
+      description: "Names the room it was built for.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      execute: async () => ({ content: [{ type: "text", text: `built-for:${marker}` }] }),
+    };
+  }
+
+  describe("additionalToolsForRoom", () => {
+    it("binds each room's proxied host tool to that room, never to another's", async () => {
+      const omp = fakeOmpProcesses();
+      const built: string[] = [];
+      const { room, otherRoom } = await startAgent(
+        ompAdapter(omp, {
+          additionalToolsForRoom: (roomId: string) => {
+            built.push(roomId);
+            return [roomProbe(roomId)];
+          },
+        }),
+      );
+
+      const promptedA = omp.nextPrompt();
+      const messageA = await room.say("owner", "in room one");
+      const { peer: peerA, prompt: promptA } = await promptedA;
+
+      // Each room runs its own process, so the second one must be awaited by identity: asking for
+      // "the next prompt" without naming a peer would hand back the first room's process again.
+      const peerBSpawned = omp.nextProcess();
+      const messageB = await otherRoom.say("owner", "in room two");
+      const peerB = await peerBSpawned;
+      const promptedB = omp.nextPrompt(peerB);
+      const { prompt: promptB } = await promptedB;
+
+      // The same tool name, answered by two rooms' processes. Each answer has to carry the room whose
+      // build produced it: one shared registration would answer both with whichever room came first.
+      expect(toolText(await peerA.callHostTool("tool-a", "room_probe", {}))).toBe("built-for:room-1");
+      expect(toolText(await peerB.callHostTool("tool-b", "room_probe", {}))).toBe("built-for:room-2");
+      expect(built.sort()).toEqual(["room-1", "room-2"]);
+
+      peerA.send(assistant(text("One.")));
+      peerA.finish(promptA.id);
+      peerB.send(assistant(text("Two.")));
+      peerB.finish(promptB.id);
+      expect(await room.outcome(messageA)).toBe("processed");
+      expect(await otherRoom.outcome(messageB)).toBe("processed");
+    });
+
+    it("refuses to create a room whose own tool collides with a shared one", async () => {
+      const omp = fakeOmpProcesses();
+      const { room } = await startAgent(
+        ompAdapter(omp, {
+          additionalTools: [roomProbe("shared")],
+          additionalToolsForRoom: () => [roomProbe("per-room")],
+        }),
+      );
+
+      let refusal = "";
+      try {
+        const message = await room.say("owner", "hello");
+        refusal = `outcome:${String(await room.outcome(message))}`;
+      } catch (error) {
+        refusal = error instanceof Error ? error.message : String(error);
+      }
+
+      // The collision is refused where the room is made, so the room never gets a process and its turn
+      // cannot run. Without the seam this is unreachable: no per-room set, so no collision, and the
+      // turn processes normally — which is what makes these two lines a test rather than a tautology.
+      expect(refusal).toBe("outcome:failed");
+      expect(omp.peers).toHaveLength(0);
+    });
   });
 
   it("refuses a host tool call that arrives after its turn ended, and never reaches the tool", async () => {
