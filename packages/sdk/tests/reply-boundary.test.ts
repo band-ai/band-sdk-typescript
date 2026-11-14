@@ -27,6 +27,7 @@ const ALLOWED: Record<string, { calls: number; why: string }> = {
   "adapters/google-adk/GoogleADKAdapter.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/langgraph/LangGraphAdapter.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/letta/LettaAdapter.ts": { calls: 1, why: "relays the model's closing text" },
+  "adapters/omp-rpc/OmpRoomAgent.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/opencode/OpencodeAdapter.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/tool-calling/ToolCallingAdapter.ts": { calls: 1, why: "relays the model's closing text" },
 };

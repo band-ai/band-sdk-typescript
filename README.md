@@ -67,13 +67,13 @@ Copilot CLI authentication and BYOK remain CLI configuration; supply their envir
 
 ### Coding agents: one process per room
 
-The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band MCP server. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
+The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
 
 - **Lazy start.** Nothing is spawned when the agent starts. A room's process starts on its first message, so a missing binary or bad credentials are reported in that room. The process stops when the room is left, and every process stops when the agent stops.
 - **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
 - **Not a sandbox.** A workspace is the process's working directory, not an OS boundary. With Codex's `sandboxMode: "workspace-write"`, the writable workspace is now the room's folder rather than one shared `cwd`.
-- **Factories.** `connectionFactory` (ACP) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
-- **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
+- **Factories.** `connectionFactory` (ACP), `spawnProcess` (OMP RPC) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
+- **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. With `OmpRpcAdapter`, a prompt in flight gets OMP's `abort`, and its tool approvals are answered the same way; the turn still ends only when OMP reports the prompt `aborted` and its session settles, not when OMP acknowledges the `abort`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
 ### Reading the agent's room context
@@ -254,6 +254,31 @@ await agent.run();
 ```
 
 It launches `omp acp`. OMP performs `read`/`write`/`bash` itself — this SDK's ACP client doesn't implement `fs`/`terminal` handlers, so `clientCapabilities` is left unset — but OMP still gates `bash`/`edit`/`delete`/`move` through `session/request_permission` under its default (non-yolo) ACP approval mode; don't configure OMP with `tools.approvalMode: yolo` if you want that gate to stay active. OMP resolves its own provider credentials (a stored login or one of 60+ provider-specific environment variables — see [OMP's provider docs](https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md)); pass any needed values through `env`. The SDK never reads or logs them.
+
+### OMP native RPC
+
+`OmpRpcAdapter` runs [OMP](https://omp.sh/) in its native RPC mode, `omp --mode rpc`, one process per room. It needs OMP itself, not the ACP peer.
+
+```ts
+import { Agent, OmpRpcAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new OmpRpcAdapter({
+    cwd: process.cwd(),
+    command: ["omp", "--mode", "rpc", "--approval-mode", "always-ask"],
+    resolvePermission: async ({ title }) => (title.startsWith("Allow tool: bash") ? "Deny" : "Approve"),
+  }),
+  config: loadAgentConfig("my_agent"),
+});
+
+await agent.run();
+```
+
+- **Start.** A room's process starts on its first message, or with `agent.rooms.allow(roomId, { warm: true })`, which waits for OMP's own `ready` and sends no prompt. The adapter needs RPC protocol v2, which OMP 18 offers. Each process serves one session for its life; a process that dies fails its turn and reports `room.failed`, and the room's next message starts a new process whose first prompt carries the room's history.
+- **Band tools.** The Band tools, with the board and task tools under `enableTaskTools` and memory tools under `enableMemoryTools`, are given to OMP as host tools and run in this process against the turn in flight. `additionalTools` adds your own.
+- **Approvals.** Under an approval mode that asks, OMP's tool approvals (`Allow tool: <name>`, with options such as `Approve`, `Approve <name> for this session` and `Deny`) go to `resolvePermission({ roomId, sessionId, title, options }, signal)`, which answers one of the offered labels. Anything else cancels the approval. Without `resolvePermission`, an approval is granted once when OMP offers `Approve`. Band's own tools are host tools, so OMP asks about them too.
+- **What the room sees.** The model's closing text is relayed as the reply unless it replied or declined through a Band tool. OMP's own tool calls and results are posted at the end of the turn as `tool_call` and `tool_result` events, with credential-shaped values masked, just before the closing text; as with the ACP adapters, a reply the model sent through `band_send_message` during the turn appears above them. Reasoning is never posted: it reaches only `agent.observe` listeners as `thought` events.
+- **Credentials.** OMP resolves its own provider credentials; pass any needed values through `env`. The SDK never reads or logs them.
 
 ### LangGraph
 

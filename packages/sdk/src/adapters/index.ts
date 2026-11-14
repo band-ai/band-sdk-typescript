@@ -24,6 +24,16 @@ export {
   type OmpACPAdapterOptions,
 } from "./omp-acp";
 export {
+  OmpRpcAdapter,
+  DEFAULT_OMP_RPC_COMMAND,
+  type OmpPermissionEndReason,
+  type OmpPermissionRequest,
+  type OmpProcessFactory,
+  type OmpProcessHandle,
+  type OmpProcessOptions,
+  type OmpRpcAdapterOptions,
+} from "./omp-rpc";
+export {
   CopilotACPAdapter,
   DEFAULT_COPILOT_ACP_COMMAND,
   type CopilotACPAdapterOptions,

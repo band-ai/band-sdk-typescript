@@ -69,6 +69,7 @@ export { OpencodeAdapter } from "./adapters/opencode";
 export { ClaudeSDKAdapter } from "./adapters/claude-sdk";
 export { CodexAdapter } from "./adapters/codex";
 export { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "./adapters/omp-acp";
+export { OmpRpcAdapter, DEFAULT_OMP_RPC_COMMAND } from "./adapters/omp-rpc";
 export {
   ACPClientAdapter,
   AcpSessionConfigError,
@@ -137,6 +138,9 @@ export type {
   CodexWebSearchMode,
   ToolCallingModel,
   OmpACPAdapterOptions,
+  OmpRpcAdapterOptions,
+  OmpPermissionRequest,
+  OmpPermissionEndReason,
   ACPClientAdapterOptions,
   ACPClientAdapterBaseOptions,
   ACPClientStdioOptions,

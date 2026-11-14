@@ -38,6 +38,31 @@ export function resolveReplayLineContent(entry: Record<string, unknown>): Replay
   return { content, sender };
 }
 
+/** One room message rendered as a `[sender]: content` replay line, with its id. */
+export interface ReplayMessage {
+  id: string;
+  line: string;
+}
+
+// Non-text messages (task/tool/thought events) are skipped; used by the
+// coding-agent adapters to seed a fresh session from platform history when
+// the previous one cannot be resumed.
+export function buildReplayMessages(raw: Array<Record<string, unknown>>): ReplayMessage[] {
+  const replayMessages: ReplayMessage[] = [];
+  for (const entry of raw) {
+    if (entry.message_type !== "text") {
+      continue;
+    }
+    const id = typeof entry.id === "string" ? entry.id : null;
+    const line = resolveReplayLineContent(entry);
+    if (!line || !id) {
+      continue;
+    }
+    replayMessages.push({ id, line: `[${line.sender}]: ${line.content}` });
+  }
+  return replayMessages;
+}
+
 export function parseDate(value: unknown): Date | null {
   if (typeof value !== "string" || value.length === 0) {
     return null;
