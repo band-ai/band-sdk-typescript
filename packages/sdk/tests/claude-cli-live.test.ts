@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
 
 import { Agent } from "../src/agent/Agent";
 import { BandLink } from "../src/platform/BandLink";
@@ -143,6 +145,88 @@ async function live(): Promise<Live> {
         });
       }),
   };
+}
+
+
+interface Advertised {
+  commands: Array<{ name: string; description?: string }>;
+  skills: string[];
+  mcpServers: string[];
+}
+
+/**
+ * Launch the installed CLI directly in `cwd` and report what it advertises about
+ * the configuration it loaded. The isolated run replays the argv the adapter
+ * itself launched, so the comparison is with the adapter's real flags, not a
+ * hand-written copy that could drift.
+ */
+function advertise(cwd: string, argv: string[], budgetMs = 90_000): Promise<Advertised> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(argv[0]!, argv.slice(1), { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+    const frames: Array<Record<string, unknown>> = [];
+    let buffer = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) break;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        try {
+          frames.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          /* not a frame */
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    const finish = (ok: boolean) => {
+      const control = frames.find((frame) => frame.type === "control_response");
+      const response = (control?.response as { response?: Record<string, unknown> } | undefined)?.response ?? {};
+      const init = frames.find((frame) => frame.type === "system" && frame.subtype === "init") ?? {};
+      const commands = (response.commands ?? []) as Array<{ name: string; description?: string }>;
+      resolve({
+        commands,
+        skills: (init.skills ?? []) as string[],
+        mcpServers: ((init.mcp_servers ?? []) as Array<{ name: string }>).map((server) => server.name),
+      });
+      if (!ok) {
+        reject(new Error(`the CLI produced no advertisement: ${stderr.slice(0, 300)}`));
+      }
+    };
+    child.on("close", () => finish(frames.length > 0));
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(frames.length > 0);
+    }, budgetMs);
+    child.on("close", () => clearTimeout(timer));
+    child.stdin.write(`${JSON.stringify({ type: "control_request", request_id: "probe-1", request: { subtype: "initialize" } })}\n`);
+    child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Reply with the single word OK." }] }, parent_tool_use_id: null })}\n`);
+  });
+}
+
+/** Project-scope configuration the test owns, in a directory of its own. */
+function projectFixtures(root: string, marker: string) {
+  mkdirSync(join(root, ".claude", "commands"), { recursive: true });
+  mkdirSync(join(root, ".claude", "skills", "probe-skill"), { recursive: true });
+  writeFileSync(join(root, ".claude", "commands", "probe-cmd.md"), "# Probe command\n\nSay OK.\n");
+  writeFileSync(join(root, ".claude", "skills", "probe-skill", "SKILL.md"), "---\nname: probe-skill\ndescription: A skill the isolation check owns.\n---\n\nUse when probing.\n");
+  writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { probe: { command: "node", args: ["-e", "0"] } } }));
+  writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${marker}` }] }] },
+  }));
+}
+
+/** A role plugin as task 9 ships one: a directory with a plugin manifest and a command. */
+function rolePlugin(root: string) {
+  mkdirSync(join(root, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(root, "commands"), { recursive: true });
+  writeFileSync(join(root, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "band-role", version: "0.0.1" }));
+  writeFileSync(join(root, "commands", "bandrole.md"), "# Band role\n\nSay OK.\n");
 }
 
 async function unavailable(): Promise<string | null> {
@@ -306,4 +390,105 @@ describe.skipIf(!LIVE)("Claude CLI adapter against the installed CLI", () => {
     const leftovers = readdirSync(tmpdir()).filter((name) => name.startsWith("band-approval-") || name.startsWith("band-stop-"));
     expect(leftovers, `probe directories survived: ${leftovers.join(", ")}`).toEqual([]);
   });
+  it("discriminates project-scope configuration from the CLI's own, in a room the test owns", async () => {
+    const run = await liveOrReport();
+    const root = mkdtempSync(join(tmpdir(), "band-isolation-"));
+    const marker = join(root, "hook-ran.marker");
+    const roleRoot = join(root, "role");
+    rolePlugin(roleRoot);
+    projectFixtures(root, marker);
+    try {
+      // The adapter runs the room in this directory, and its argv is what the
+      // isolated launch replays.
+      const isolatedAdapter = new ClaudeCliAdapter({
+        // The room's workspace is the fixture directory, so the CLI's own project
+        // scope is exactly what the test planted.
+        workspaceForRoom: () => root,
+        command: [CLAUDE_BIN],
+        spawnProcess: async (options) => {
+          isolatedArgv.push([...options.command]);
+          const child = spawn(options.command[0]!, options.command.slice(1), {
+            cwd: options.cwd,
+            env: { ...process.env, ...(options.env ?? {}) } as NodeJS.ProcessEnv,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          let stderr = "";
+          child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString("utf8");
+          });
+          return {
+            stdin: child.stdin,
+            stdout: child.stdout,
+            stderr: child.stderr,
+            exited: new Promise<ClaudeExitInfo>((resolve) => child.on("close", (code, signal) => resolve({ code, signal }))),
+            endStdin: () => child.stdin.end(),
+            stderrTail: () => stderr.slice(-1000),
+            stop: async () => {
+              child.kill("SIGKILL");
+            },
+          };
+        },
+        turnTimeoutMs: 120_000,
+      });
+      const isolatedArgv: string[][] = [];
+      const platform = BandPlatform.host([person("owner")]);
+      const isoRoom = await platform.room(ROOM);
+      const isoAgent = Agent.create({
+        adapter: isolatedAdapter,
+        agentId: AGENT_ID,
+        apiKey: AGENT_API_KEY,
+        link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+        roomFilter: () => true,
+      });
+      await isoAgent.start();
+      try {
+        // Await the turn's own end: the post resolves before the CLI is even
+        // launched, and stopping early would leave nothing to replay.
+        const ended = new Promise<void>((resolve) => {
+          const stop = isoAgent.observe((event) => {
+            if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.stopped") {
+              stop();
+              resolve();
+            }
+          });
+        });
+        await isoRoom.say("owner", "Reply with the single word OK.");
+        await ended;
+      } finally {
+        await isoAgent.stop();
+      }
+      expect(isolatedArgv.length, "the adapter never launched the CLI in the test's room").toBeGreaterThan(0);
+
+      // Positive control: with the host's own defaults, the fixtures are loaded.
+      const base = [CLAUDE_BIN, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"];
+      const host = await advertise(root, base);
+      const hostNames = host.commands.map((command) => command.name);
+      expect(hostNames, "the project command never appeared, so its later absence would prove nothing").toContain("probe-cmd");
+      expect(host.skills, "the project skill never appeared").toContain("probe-skill");
+      expect(host.mcpServers, "the project MCP server never appeared").toContain("probe");
+      expect(existsSync(marker), "the project hook never ran, so its later absence would prove nothing").toBe(true);
+
+      // The adapter's flags: none of the project's configuration reaches the room.
+      rmSync(marker, { force: true });
+      const isolated = await advertise(root, isolatedArgv[0]!);
+      const isolatedNames = isolated.commands.map((command) => command.name);
+      expect(isolatedNames, "a project-scope command reached the room").not.toContain("probe-cmd");
+      expect(isolated.skills, "a project-scope skill reached the room").not.toContain("probe-skill");
+      expect(isolated.mcpServers, "anything but the server the adapter passed reached the room").toEqual(["band"]);
+      expect(existsSync(marker), "a project-scope hook ran").toBe(false);
+      // No advertised command claims user, project or local scope.
+      for (const command of isolated.commands) {
+        expect(`${command.name} ${command.description ?? ""}`, "a scoped command reached the isolated room").not.toMatch(/\((user|project|local)\)/);
+      }
+
+      // And an explicitly passed role plugin still loads under those flags.
+      const withRole = await advertise(root, [...isolatedArgv[0]!, "--plugin-dir", roleRoot]);
+      const roleNames = withRole.commands.map((command) => command.name).filter((name) => name.startsWith("band-role:"));
+      expect(roleNames, "the role plugin's commands did not survive isolation").toEqual(["band-role:bandrole"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      await run.agent.stop();
+    }
+  }, 600_000);
+
 });
