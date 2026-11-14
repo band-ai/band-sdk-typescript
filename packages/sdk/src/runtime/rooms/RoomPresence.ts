@@ -12,7 +12,7 @@ import {
 } from "../../platform/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
-import { hydrateExistingRooms, listExistingRooms } from "./subscriptions";
+import { hydrateExistingRooms, listExistingRooms, roomIdOf } from "./subscriptions";
 import { Serializer } from "../../core/singleFlight";
 
 interface RoomPresenceOptions {
@@ -106,7 +106,7 @@ export class RoomPresence implements AsyncDisposable {
     // instead of a hardcoded false, so every racing caller learns the truth
     // rather than only the winner.
     const inFlight = this.admissionInFlight.get(roomId);
-    return inFlight ? await inFlight : this.roster.roomMembership(roomId) === "admitted";
+    return inFlight ? await inFlight : this.isAdmitted(roomId);
   }
 
   private async performAdmission(roomId: string, ticket: bigint): Promise<boolean> {
@@ -140,7 +140,7 @@ export class RoomPresence implements AsyncDisposable {
     // roomId, not by ticket) — only release the transport subscription when
     // nobody currently holds the room, or this would tear down the newer
     // ticket's live subscription out from under it.
-    const roomIsAdmitted = admitted || this.roster.roomMembership(roomId) === "admitted";
+    const roomIsAdmitted = admitted || this.isAdmitted(roomId);
     if (succeeded && !admitted && !roomIsAdmitted) {
       this.logger.debug("RoomPresence admission ticket went stale", { roomId });
       await this.unsubscribeRoom(roomId);
@@ -284,7 +284,7 @@ export class RoomPresence implements AsyncDisposable {
 
   /** Hands `event` to its room's handler, or drops it, with a debug line, if that room is not admitted. */
   private async forwardToAdmittedRoom(event: RoomEvent): Promise<void> {
-    if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
+    if (event.roomId && this.isAdmitted(event.roomId)) {
       await this.onRoomEvent?.(event.roomId, event);
       return;
     }
@@ -316,6 +316,23 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
     await this.onRoomLeft?.(roomId, "removed");
+  }
+
+  /** Whether the agent handles `roomId` now: its admission finished and holds. */
+  public isAdmitted(roomId: string): boolean {
+    return this.roster.roomMembership(roomId) === "admitted";
+  }
+
+  /** The rooms among `roomIds` that Band lists the agent in, as it lists them. */
+  public async memberRooms(roomIds: ReadonlySet<string>): Promise<Map<string, MetadataMap>> {
+    return await listExistingRooms({
+      link: this.link,
+      roomFilter: (room) => {
+        const roomId = roomIdOf(room);
+        return roomId !== undefined && roomIds.has(roomId);
+      },
+      requestOptions: DEFAULT_REQUEST_OPTIONS,
+    });
   }
 
   /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */

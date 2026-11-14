@@ -128,8 +128,14 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.presence.onRoomJoined = async (roomId, payload) => {
-      // The execution may predate admission (a contact hub event), so report it now.
-      this.announceExecution(roomId, this.getOrCreateExecution(roomId));
+      if (this.lifecycle.is("stopping")) {
+        // A join a stop overtook (a host's allow still joining) starts no turn-taking: the stop
+        // tears the room down. It is still reported, so the room's later leave has its join.
+        this.logger.debug("Not handling a room joined while the runtime stops", { roomId });
+      } else {
+        // The execution may predate admission (a contact hub event), so report it now.
+        this.announceExecution(roomId, this.getOrCreateExecution(roomId));
+      }
       await this.onRoomJoined?.(roomId, payload);
     };
     this.presence.onRoomLeft = async (roomId, reason) => {
@@ -492,7 +498,7 @@ export class AgentRuntime {
 
   /** Reports `execution` as handling `roomId` once the room is admitted; unadmitted rooms are not news. */
   private announceExecution(roomId: string, execution: Execution): void {
-    if (this.announced.has(execution) || this.presence.roster.roomMembership(roomId) !== "admitted") {
+    if (this.announced.has(execution) || !this.presence.isAdmitted(roomId)) {
       return;
     }
     this.announced.add(execution);

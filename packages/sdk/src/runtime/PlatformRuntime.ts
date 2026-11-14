@@ -3,6 +3,7 @@ import { isSyntheticTurn, type FrameworkAdapter, type FrameworkAdapterInput, typ
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
+import { roomIdOf } from "./rooms/subscriptions";
 import { stopModeOf } from "./Execution";
 import {
   parseSessionConfig,
@@ -13,7 +14,7 @@ import {
 } from "./types";
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
-import { RuntimeStateError, ValidationError } from "../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { toPlatformMessage } from "./formatters";
 import { ContactEventHandler } from "./ContactEventHandler";
@@ -94,6 +95,10 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   private readonly _onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
+  /** Rooms the host allowed: handled even where `roomFilter` declines them. Kept across restarts. */
+  private readonly allowedRooms = new Set<string>();
+  /** Rooms the host denied: paused with source `host` until allowed. Kept across restarts. */
+  private readonly hostPausedRooms = new Set<string>();
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
   private readonly events: AgentEventHub;
@@ -282,6 +287,90 @@ export class PlatformRuntime implements AsyncDisposable {
       .catch((error: unknown) => {
         this.logger.warn("Adapter failed to cancel a stopped turn", { roomId, error });
       });
+  }
+
+  /** Whether the agent handles `room`: one the host allowed, else one `roomFilter` admits, else every room. */
+  private admitsRoom(room: MetadataMap): boolean {
+    const roomId = roomIdOf(room);
+    return (roomId !== undefined && this.allowedRooms.has(roomId)) || (this._roomFilter?.(room) ?? true);
+  }
+
+  /**
+   * Lets the agent handle `roomId` again, for the host: lifts the pause
+   * `denyRoom` put on it, and admits it even where `roomFilter` declines it,
+   * at once if Band lists the agent in it, otherwise when Band adds the agent.
+   * A pause Band put on the room stays until Band plays it. A room whose
+   * session a reset replaced replays what Band kept on its next message, as a
+   * play does. Kept across restarts of this runtime. Resolves true when the
+   * room is admitted on return.
+   */
+  public async allowRoom(roomId: string): Promise<boolean> {
+    this.allowedRooms.add(roomId);
+    if (this.hostPausedRooms.delete(roomId)) {
+      this.runtime?.resumeRoom(roomId, "host");
+      this.events.emit({ type: "room.resumed", roomId, source: "host" });
+    }
+    const runtime = this.runtime;
+    // A runtime still starting admits it once its start-up has listed its rooms.
+    if (runtime?.state.status === "running") {
+      await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
+    }
+    // Whatever runtime there is now: a stop meanwhile left none, a restart its own admission.
+    return this.runtime?.presence.isAdmitted(roomId) ?? false;
+  }
+
+  /**
+   * Stops the agent taking turns in `roomId`, for the host: pauses it with
+   * source `host`, cutting its running turn short and leaving its messages
+   * on Band, until `allowRoom`. The room stays subscribed and keeps its
+   * session; a room not yet admitted starts paused when it is. Band is not
+   * told, and the pause lasts only as long as this runtime object. Resolves
+   * true when it paused a room the agent handles.
+   */
+  public async denyRoom(roomId: string): Promise<boolean> {
+    if (this.hostPausedRooms.has(roomId)) {
+      return false;
+    }
+    this.hostPausedRooms.add(roomId);
+    this.events.emit({ type: "room.paused", roomId, source: "host" });
+    const runtime = this.runtime;
+    const adapter = this.activeAdapter;
+    if (!runtime) {
+      return false;
+    }
+    runtime.pauseRoom(roomId, "host");
+    if (adapter) {
+      this.cancelAdapterTurn(adapter, roomId);
+    }
+    return runtime.presence.isAdmitted(roomId);
+  }
+
+  /**
+   * Admits each of `roomIds` the agent is a member of and still allowed in,
+   * unless it is already handled. Best-effort, as start-up's own listing is:
+   * a room it cannot list now is admitted when Band adds the agent to it.
+   */
+  private async admitAllowedMemberRooms(runtime: AgentRuntime, roomIds: ReadonlySet<string>): Promise<void> {
+    const pending = new Set([...roomIds].filter((roomId) => !runtime.presence.isAdmitted(roomId)));
+    if (pending.size === 0) {
+      return;
+    }
+    let members: Map<string, MetadataMap>;
+    try {
+      members = await runtime.presence.memberRooms(pending);
+    } catch (error: unknown) {
+      if (!(error instanceof UnsupportedFeatureError)) {
+        this.logger.warn("Failed to list the rooms the host allowed; admitting them on the next reconnect, restart or allow, or when Band adds the agent", { rooms: pending.size, error });
+      }
+      return;
+    }
+    for (const [roomId, payload] of members) {
+      // A stop since the listing owns the room now.
+      if (this.runtime !== runtime) {
+        return;
+      }
+      await runtime.presence.admitRoom(roomId, payload);
+    }
   }
 
   /** Current lifecycle state of this runtime. */
@@ -487,11 +576,17 @@ export class PlatformRuntime implements AsyncDisposable {
         onContactEvent: (event) => this.handleContactEvent(event),
         onParticipantAdded: this._onParticipantAdded,
         onParticipantRemoved: this._onParticipantRemoved,
-        roomFilter: this._roomFilter,
+        roomFilter: (room) => this.admitsRoom(room),
         contextFactory: this._contextFactory,
       });
+      for (const roomId of this.hostPausedRooms) {
+        this.runtime.pauseRoom(roomId, "host");
+      }
 
       await this.runtime.start();
+      assertNotSuperseded();
+      // Start-up listed its rooms before any allow made while it ran.
+      await this.admitAllowedMemberRooms(this.runtime, this.allowedRooms);
       assertNotSuperseded();
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
