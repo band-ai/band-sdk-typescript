@@ -1,0 +1,38 @@
+{
+  "scenario": "resume-turn-2",
+  "title": "the same session resumed in a new process",
+  "note": "--resume keeps the session id and its context; cost fields stay cumulative",
+  "cliVersion": "2.1.319",
+  "invocation": [
+    "<claude-cli>",
+    "--print",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "<mcp-config.json>",
+    "--permission-prompts",
+    "host",
+    "--permission-prompt-tool",
+    "mcp__probe__permission",
+    "--resume",
+    "SESSION-1"
+  ],
+  "cwd": "<workspace>",
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "at": 2321
+  },
+  "capturedWith": "a local stdio MCP probe server (tools: echo, permission); no Anthropic package is used",
+  "sanitized": [
+    "account data and pids removed",
+    "host paths replaced with <home>, <claude-home>, <workspace> and <socket>",
+    "session, message, tool-use and request ids replaced by stable placeholders",
+    "thinking text and every thinking signature removed",
+    "ambient-config lists (commands, agents, skills, plugins, slash commands, models) reduced to their shape, never their names"
+  ]
+}

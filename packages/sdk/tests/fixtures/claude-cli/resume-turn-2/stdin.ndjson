@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"cap-init-1","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"What code word did I ask you to remember in my previous message? Reply with just the code word."}]},"parent_tool_use_id":null}

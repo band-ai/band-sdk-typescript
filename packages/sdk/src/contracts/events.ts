@@ -6,7 +6,9 @@
  */
 export type RoomAgentIdentity =
   | { protocol: "acp"; protocolVersion: number; agentInfo: { name: string; version: string } | null }
-  | { protocol: "omp-rpc"; protocolVersion: number };
+  | { protocol: "omp-rpc"; protocolVersion: number }
+  /** The installed Claude Code CLI: no numeric protocol version is negotiated, only its own version. */
+  | { protocol: "claude-stream-json"; cliVersion: string };
 
 /**
  * Why a live Band link is down: `dropped` while it retries on its own,

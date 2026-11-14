@@ -771,7 +771,9 @@ export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
 }
 
 /** A `Logger` whose every level is a spy. */
-export function makeLoggerSpy(): Record<keyof Logger, Mock> {
+export type LoggerSpy = Record<keyof Logger, Mock>;
+
+export function makeLoggerSpy(): LoggerSpy {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 

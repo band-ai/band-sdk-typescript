@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"cap-init-1","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"You MUST run this exact Bash command, character for character, without changing or retrying it, and then tell me what it printed: mkdir -p ./probe-native-deny && echo probe-native-tool"}]},"parent_tool_use_id":null}
