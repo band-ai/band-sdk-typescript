@@ -75,7 +75,7 @@ describe("agent.rooms", () => {
 
   it("pauses a denied room without leaving it, and replays what Band kept once it is allowed", async () => {
     const { adapter, turns } = turnRecorder();
-    const { agent, roomA, roomB, subscribed, of } = await startAgent(adapter);
+    const { agent, roomA, roomB, subscribed, of, events } = await startAgent(adapter);
 
     await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
     // A repeat changes nothing: one pause reported, the turn not cancelled again.
@@ -89,6 +89,12 @@ describe("agent.rooms", () => {
     await expect(agent.rooms.allow(ROOM_B)).resolves.toBe(true);
     expect(await roomB.outcome(held)).toBe("processed");
     expect(of(ROOM_B)).toEqual(["room.joined", "room.paused", "room.resumed", "turn.started", "turn.completed"]);
+    expect(events.entries.filter((event) => event.type === "room.paused" && event.roomId === ROOM_B)).toEqual([
+      { type: "room.paused", roomId: ROOM_B, source: "host" },
+    ]);
+    expect(events.entries.filter((event) => event.type === "room.resumed" && event.roomId === ROOM_B)).toEqual([
+      { type: "room.resumed", roomId: ROOM_B, source: "host" },
+    ]);
     expect(turns.entries).toHaveLength(2);
   });
 
@@ -191,6 +197,25 @@ describe("agent.rooms", () => {
     expect(roomA.outcomes(held)).toEqual([]);
     await agent.rooms.allow(ROOM_A);
     expect(await roomA.outcome(held)).toBe("processed");
+    expect(turns.entries).toHaveLength(2);
+  });
+
+  it("keeps an allow's filter override when that room is later denied, across a restart", async () => {
+    const { adapter, turns } = turnRecorder();
+    const { agent, roomA, roomB, subscribed } = await startAgent(adapter, [ROOM_A]);
+    await agent.rooms.allow(ROOM_B);
+    await expect(agent.rooms.deny(ROOM_B)).resolves.toBe(true);
+    await agent.stop();
+
+    await agent.start();
+
+    // The allow stuck: B is still admitted despite the filter, but host-paused.
+    expect(subscribed(ROOM_B)).toBe(true);
+    const held = await roomB.say("owner", "still paused after restart");
+    expect((await roomA.sayAndSettle("owner", "A still runs")).outcome).toBe("processed");
+    expect(roomB.outcomes(held)).toEqual([]);
+    await agent.rooms.allow(ROOM_B);
+    expect(await roomB.outcome(held)).toBe("processed");
     expect(turns.entries).toHaveLength(2);
   });
 
