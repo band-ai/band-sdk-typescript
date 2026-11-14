@@ -310,6 +310,12 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   private activeTurn: ActiveTurn | undefined;
   private live: Generation | null = null;
   private starting: Promise<Generation> | null = null;
+  /**
+   * The generation whose start has not finished. A caller cannot await it - that
+   * is the wait being cancelled - so `stop` needs the object itself to release
+   * whatever the start is still sitting on.
+   */
+  private startingGeneration: Generation | null = null;
   /** Bumped by `stop()`, so a start still in flight installs nothing. */
   private generation = 0;
   private started = false;
@@ -477,6 +483,14 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     const generation = this.live;
     this.live = null;
     this.starting = null;
+    // A start in flight is reachable from neither `live` nor this caller's await,
+    // so it is released by hand: whatever it is sitting on - above all the
+    // resolver's bound - belongs to a turn nobody is waiting for any more.
+    const pendingStart = this.startingGeneration;
+    this.startingGeneration = null;
+    if (pendingStart !== null && !pendingStart.startAbort.signal.aborted) {
+      pendingStart.startAbort.abort("adapter-stopped");
+    }
     this.sessionId = null;
     this.owesReplay = true;
     if (generation) await this.retire(generation, "adapter-stopped");
@@ -666,6 +680,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       settled: new Set(),
       endReason: "no-answer",
     };
+    this.startingGeneration = generation;
     let client: ClaudeCliClient | undefined;
     let backend: BandMcpBackend | undefined;
     try {
@@ -709,6 +724,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       }
       Object.assign(generation, { client, backend });
       this.live = generation;
+      if (this.startingGeneration === generation) this.startingGeneration = null;
       void client.failed.then(() => {
         // Still live means nothing here retired it: the process failed on its own.
         if (this.live === generation) {
@@ -718,6 +734,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       });
       return generation;
     } catch (error) {
+      if (this.startingGeneration === generation) this.startingGeneration = null;
       await client?.close({ drainMs: DRAIN_TIMEOUT_MS }).catch((closeError: unknown) => {
         this.logger.warn("claude_cli.close_after_start_failure", { roomId: this.roomId, error: asErrorMessage(closeError) });
       });
@@ -735,7 +752,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
    * This generation's authorized servers. A static list is used as given; a
    * resolver is awaited under its own bound, and any failure - rejection, abort,
    * or the bound expiring - costs the turn its extra servers alone. The CLI still
-   * starts, because Band's own server does not depend on the host's token host.
+   * starts, because Band's own server does not depend on the resolver.
    */
   private async resolveAuthorizedServers(generation: Generation): Promise<readonly McpServer[]> {
     const configured = this.extraMcpServers;
@@ -747,24 +764,47 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     const controller = new AbortController();
     const onEnd = (): void => controller.abort("stopped");
     generation.startAbort.signal.addEventListener("abort", onEnd, { once: true });
-    const timer = setTimeout(() => controller.abort("timeout"), AUTHORIZED_SERVERS_TIMEOUT_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort("timeout");
+    }, AUTHORIZED_SERVERS_TIMEOUT_MS);
     try {
       const servers = await configured(controller.signal);
+      // The bound ended this, not the host: whether the resolver settled on the way
+      // out or not, an answer that arrives after the deadline is one the turn cannot
+      // vouch for, and the person is owed a line saying the servers went missing.
+      if (timedOut) {
+        this.warnAuthorizedServers("abandoned-at-bound");
+        return [];
+      }
       // Superseded or closed while the host thought about it: the caller's own
       // check rejects this start, so hand back nothing rather than a list nobody
       // will use, and never start a process on an answer nobody asked for again.
       if (generation.id !== this.generation || generation.revoked) return [];
       return servers;
     } catch (error: unknown) {
-      this.logger.warn("claude_cli.authorized_servers_failed", {
-        roomId: this.roomId,
-        error: asErrorMessage(error),
-      });
+      // Only the kind of failure is named, never its message: a token host that
+      // quotes the credential it could not refresh would otherwise put that bearer
+      // in a log line, and a log is not where one belongs.
+      this.warnAuthorizedServers(timedOut ? "abandoned-at-bound" : error instanceof Error ? error.name : "unknown");
       return [];
     } finally {
       clearTimeout(timer);
       generation.startAbort.signal.removeEventListener("abort", onEnd);
     }
+  }
+
+  /**
+   * Says a turn is starting without the person's servers. Fixed words only: no
+   * server name, no URL, no host text. Whatever failed, the reason the host gave
+   * may itself be a credential, and a log line is not where one belongs.
+   */
+  private warnAuthorizedServers(cause: string): void {
+    this.logger.warn("claude_cli.authorized_servers_failed", {
+      roomId: this.roomId,
+      cause,
+    });
   }
 
   /** The CLI's argv: the transport flags, then the session's policy, then the host's. */
