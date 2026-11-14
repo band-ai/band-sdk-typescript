@@ -40,6 +40,8 @@ import {
 export const CLAUDE_START_TIMEOUT_MS = 30_000;
 /** How long a process gets to leave on its own after stdin closes, before it is killed. */
 export const CLAUDE_DRAIN_TIMEOUT_MS = 5_000;
+/** How long a reported exit waits for stdout to end before it is judged anyway. */
+export const EXIT_DRAIN_GRACE_MS = 1_000;
 /** How many lines of stderr a dying process's diagnostic carries. */
 const STDERR_TAIL_LINES = 20;
 
@@ -226,6 +228,14 @@ export class ClaudeCliClient {
   private sessionId: string | null = null;
   private error: ClaudeProcessError | null = null;
   private closing = false;
+  /**
+   * True once a turn's terminal `result` frame has been read, until the next turn
+   * starts. A CLI that answers its turn and leaves is the normal one-turn
+   * lifecycle, not a dead harness: without this, the process's own exit can be
+   * judged before the reader has finished with what the CLI wrote, and the room
+   * is told its harness died on a turn that had already been answered.
+   */
+  private lastTurnEndedWithResult = false;
 
   private constructor(
     private readonly handle: ClaudeProcessHandle,
@@ -233,11 +243,30 @@ export class ClaudeCliClient {
     private readonly maxFrameBytes: number,
   ) {
     this.failed = this.failure.promise;
+    // Node can report `exit` while lines the CLI already wrote are still on their
+    // way through the pipe, so the exit is judged only once stdout has ended and
+    // every delivered frame has been parsed - bounded, so a wedged pipe cannot
+    // hold a turn open forever.
+    const stdoutSettled = new Promise<void>((resolve) => {
+      handle.stdout.once("end", () => resolve());
+      handle.stdout.once("close", () => resolve());
+    });
+    const stdoutDrained = Promise.race([
+      stdoutSettled,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, EXIT_DRAIN_GRACE_MS);
+        timer.unref();
+      }),
+    ]);
     handle.stdout.on("data", (data: Buffer) => this.receive(data));
     handle.stdout.on("error", (error) => this.fail(new ClaudeProcessError(`Claude CLI stdout failed: ${error.message}`)));
     handle.stdin.on("error", (error) => this.fail(new ClaudeProcessError(`Claude CLI stdin failed: ${error.message}`)));
-    void handle.exited.then((exit) => {
-      if (this.closing) {
+    void handle.exited.then(async (exit) => {
+      await stdoutDrained;
+      if (this.closing || this.lastTurnEndedWithResult || this.error) {
+        // Either we asked it to leave, it answered its turn and left the way a
+        // finished CLI does, or something else already ended this transport.
+        // None of those is a harness that died on the room.
         return;
       }
       this.logger.warn("claude_cli.process_exited", {
@@ -317,6 +346,7 @@ export class ClaudeCliClient {
     }
     const run: TurnRun = { handlers, interrupted: false, outcome: createDeferred(), settled: false };
     this.turn = run;
+    this.lastTurnEndedWithResult = false;
     try {
       // A frame the CLI never received would otherwise wait for a result that
       // cannot arrive, so the write reports the break instead of swallowing it.
@@ -356,7 +386,6 @@ export class ClaudeCliClient {
   public async close(options: { drainMs?: number } = {}): Promise<ClaudeDrainReport> {
     this.closing = true;
     this.handle.endStdin();
-    this.fail(new ClaudeProcessError("the Claude CLI process was stopped"));
     const drained = await Promise.race([
       this.handle.exited.then(() => true),
       new Promise<boolean>((resolve) => {
@@ -366,6 +395,16 @@ export class ClaudeCliClient {
     ]);
     await this.handle.stop();
     const exit = await this.handle.exited;
+    // A CLI that saw its stdin close, wrote everything it had and left is a
+    // transport that finished its work, not one that broke: no failure is recorded
+    // for it, so a caller that closes a generation in order never looks to the room
+    // like a harness that died. Anything still waiting on the process is released
+    // either way; only a process we had to kill is reported as stopped.
+    if (drained) {
+      this.release(new ClaudeProcessError("the Claude CLI process ended"));
+    } else {
+      this.fail(new ClaudeProcessError("the Claude CLI process was stopped"));
+    }
     return { drained, exitCode: exit.code, signalCode: exit.signal, stderr: this.handle.stderrTail() };
   }
 
@@ -429,6 +468,17 @@ export class ClaudeCliClient {
       return;
     }
     this.error = error;
+    this.release(error);
+    this.failure.resolve(error);
+  }
+
+  /**
+   * Releases everything still waiting on the process - a control request that will
+   * never be answered, a turn whose terminal frame never arrived - without marking
+   * the transport broken. An orderly close has obligations to settle and no
+   * failure to report.
+   */
+  private release(error: ClaudeProcessError): void {
     for (const pending of this.pending.values()) {
       pending.answer.resolve(error);
     }
@@ -438,7 +488,6 @@ export class ClaudeCliClient {
       run.settled = true;
       run.outcome.resolve(error);
     }
-    this.failure.resolve(error);
   }
 
   /**
@@ -561,6 +610,7 @@ export class ClaudeCliClient {
         }
         run.result = parseResult(frame);
         run.settled = true;
+        this.lastTurnEndedWithResult = true;
         run.outcome.resolve({ result: run.result, interrupted: run.interrupted, sessionId: this.sessionId });
         return;
       }

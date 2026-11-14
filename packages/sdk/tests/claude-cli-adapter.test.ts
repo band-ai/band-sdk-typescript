@@ -338,6 +338,53 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("settles a turn whose reply posted through the Band tool when the CLI then answers and leaves", async () => {
+    // The one-turn lifecycle a real installation has: the model posts through the
+    // room's Band tool, the CLI writes its terminal `result`, and the process
+    // exits in the same breath. The turn must still complete - usage recorded,
+    // session kept for the next `--resume`, generation closed in order - and the
+    // room must never hear that its harness died.
+    const rigged = rig();
+    const claude = adapter(rigged);
+    const { agent, room } = await started(claude);
+    const events: AgentEvent[] = [];
+    const observe = agent.observe((event) => events.push(event));
+    try {
+      const promptedDone = turnSettled(agent);
+      const prompted = room.say("owner", "greet them");
+      const peer = await rigged.nextPeer();
+      await peer.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "mcp__band__band_send_message", { content: "hello there", mentions: ["@owner"] })));
+      await callBand(peer, "band_send_message", { content: "hello there", mentions: ["@owner"] });
+      // Terminal frame and exit in the same tick: no chance for the reader to
+      // finish before the process is reported gone.
+      peer.send(
+        userFrame(toolResult("toolu-1", "sent")),
+        assistant(text("said it")),
+        result({
+          result: "said it",
+          total_cost_usd: 0.02,
+          modelUsage: { "claude-opus-5-5": { inputTokens: 3, costUSD: 0.02 } },
+          model_usage_since_last_result: { "claude-opus-5-5": { inputTokens: 3, costUSD: 0.02 } },
+        }),
+      );
+      peer.exit(0);
+      await prompted;
+      await promptedDone;
+
+      expect(room.messages.map((message) => message.content)).toEqual(["hello there"]);
+      expect(events.filter((event) => event.type === "turn.failed")).toEqual([]);
+      expect(events.filter((event) => event.type === "room.failed")).toEqual([]);
+      expect(events.some((event) => event.type === "turn.completed" && event.roomId === ROOM)).toBe(true);
+      // The result was read, not skipped: the session it named is what the next
+      // turn would resume, and the turn's usage is the CLI's own.
+      expect(claude.sessionId(ROOM)).toBeTruthy();
+      expect(claude.turnUsage(ROOM)?.byModel).toEqual({ "claude-opus-5-5": { inputTokens: 3, costUSD: 0.02 } });
+    } finally {
+      observe();
+      await agent.stop();
+    }
+  });
+
   it("refuses the previous turn's MCP call while the new turn's succeeds", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
