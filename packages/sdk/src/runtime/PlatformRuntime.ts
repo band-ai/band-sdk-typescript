@@ -299,24 +299,67 @@ export class PlatformRuntime implements AsyncDisposable {
    * Lets the agent handle `roomId` again, for the host: lifts the pause
    * `denyRoom` put on it, and admits it even where `roomFilter` declines it,
    * at once if Band lists the agent in it, otherwise when Band adds the agent.
-   * A pause Band put on the room stays until Band plays it. A room whose
-   * session a reset replaced replays what Band kept on its next message, as a
-   * play does. Kept across restarts of this runtime. Resolves true when the
-   * room is admitted on return.
+   * With `warm`, a room Band lists the agent in has its agent process started
+   * first, and `room.ready` or `room.failed` is reported before the room's
+   * messages are handled; a room not listed yet starts lazily when it is
+   * admitted. A pause Band put on the room stays until Band plays it. A room
+   * whose session a reset replaced replays what Band kept on its next
+   * message, as a play does. Kept across restarts of this runtime. Resolves
+   * true when the room is admitted on return.
    */
-  public async allowRoom(roomId: string): Promise<boolean> {
+  public async allowRoom(roomId: string, options: { warm?: boolean } = {}): Promise<boolean> {
     this.allowedRooms.add(roomId);
     if (this.hostPausedRooms.delete(roomId)) {
       this.runtime?.resumeRoom(roomId, "host");
       this.events.emit({ type: "room.resumed", roomId, source: "host" });
     }
     const runtime = this.runtime;
+    // A warm allow starts the process before the room takes any message; one
+    // Band does not list the agent in yet is warmed when it is admitted, not now.
+    if (options.warm && runtime && runtime.state.status === "running" && (await this.isMemberRoom(runtime, roomId))) {
+      const adapter = this.activeAdapter;
+      if (adapter) {
+        await this.warmRoom(adapter, roomId);
+      }
+    }
     // A runtime still starting admits it once its start-up has listed its rooms.
     if (runtime?.state.status === "running") {
       await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
     }
     // Whatever runtime there is now: a stop meanwhile left none, a restart its own admission.
     return this.runtime?.presence.isAdmitted(roomId) ?? false;
+  }
+
+  /** Whether Band lists the agent in `roomId`; a listing that failed counts as no. */
+  private async isMemberRoom(runtime: AgentRuntime, roomId: string): Promise<boolean> {
+    try {
+      return (await runtime.presence.memberRooms(new Set([roomId]))).has(roomId);
+    } catch (error: unknown) {
+      this.logger.debug("Could not list the warm room's membership; it starts on its first admission", { roomId, error });
+      return false;
+    }
+  }
+
+  /** Starts the room's agent; reports `room.ready` with what it said about itself, or `room.failed` once whether or not the adapter did. */
+  private async warmRoom(adapter: FrameworkAdapter, roomId: string): Promise<void> {
+    if (!adapter.warmRoom) {
+      this.events.emit({ type: "room.ready", roomId, agent: null });
+      return;
+    }
+    let reported = false;
+    const unobserve = this.events.observe((event) => {
+      if (event.type === "room.failed" && event.roomId === roomId) reported = true;
+    });
+    try {
+      const agent = await adapter.warmRoom(roomId);
+      this.events.emit({ type: "room.ready", roomId, agent });
+    } catch (error) {
+      if (!reported) {
+        this.events.emit({ type: "room.failed", roomId, error: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      unobserve();
+    }
   }
 
   /**

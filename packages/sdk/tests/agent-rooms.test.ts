@@ -1,7 +1,9 @@
 import { chatRoomTopic } from "@band-ai/band-sdk-core";
+import type { Agent as AcpAgent } from "@agentclientprotocol/sdk";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
+import { ACPClientAdapter } from "../src/adapters/acp";
 import { Agent } from "../src/agent/Agent";
 import type { MetadataMap } from "../src/contracts/dtos";
 import type { AgentEvent } from "../src/contracts/events";
@@ -9,7 +11,8 @@ import type { FrameworkAdapter } from "../src/contracts/protocols";
 import { BandLink } from "../src/platform/BandLink";
 import { createDeferred } from "../src/core/deferred";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { RecordLog } from "./testUtils";
+import { inMemoryAgent } from "./support/inMemoryAcpAgent";
+import { RecordLog, tmpRoot } from "./testUtils";
 
 const ROOM_A = "room-a";
 const ROOM_B = "room-b";
@@ -22,6 +25,19 @@ function turnRecorder() {
     tools.turn.settle();
   });
   return { adapter, turns };
+}
+
+/** A `turnRecorder` adapter whose `warmRoom` records each call; `fail` rejects the start. */
+function warmRecorder(result: "identity" | "null" | "fail") {
+  const warms = new RecordLog<string>();
+  const { adapter: generic } = turnRecorder();
+  const adapter: FrameworkAdapter = generic;
+  adapter.warmRoom = async (roomId: string) => {
+    warms.record(roomId);
+    if (result === "fail") throw new Error("cannot start the room process");
+    return result === "identity" ? { protocol: "omp-rpc" as const, protocolVersion: 2 } : null;
+  };
+  return { adapter, warms };
 }
 
 /** An agent on `platform`, observed from its first event; not started. */
@@ -223,6 +239,112 @@ describe("agent.rooms", () => {
     await platform.room("room-c");
 
     await platform.transport.bound.until(() => subscribed("room-c"));
+  });
+
+  it("warms a member room on allow, reporting room.ready with its identity before the room joins", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const { agent, subscribed, of } = await startAgent(adapter, [ROOM_A]);
+
+    await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(true);
+
+    expect(warms.entries).toEqual([ROOM_B]);
+    expect(of(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+    expect(subscribed(ROOM_B)).toBe(true);
+  });
+
+  it("reports room.ready with no agent identity when the adapter starts nothing ahead", async () => {
+    const { adapter, warms } = warmRecorder("null");
+    const { agent, events } = await startAgent(adapter, [ROOM_A]);
+
+    await agent.rooms.allow(ROOM_B, { warm: true });
+
+    expect(warms.entries).toEqual([ROOM_B]);
+    expect(events.entries.find((event) => event.type === "room.ready")).toEqual({
+      type: "room.ready",
+      roomId: ROOM_B,
+      agent: null,
+    });
+  });
+
+  it("reports room.failed once for a warm that cannot start, and still admits the room", async () => {
+    const { adapter, warms } = warmRecorder("fail");
+    const { agent, of, roomB } = await startAgent(adapter, [ROOM_A]);
+
+    await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(true);
+
+    expect(warms.entries).toEqual([ROOM_B]);
+    expect(of(ROOM_B)).toEqual(["room.failed", "room.joined"]);
+    // Still allowed: the room's messages take turns even though its warm failed.
+    expect((await roomB.sayAndSettle("owner", "after a failed warm")).outcome).toBe("processed");
+  });
+
+  it("does not warm a room Band has not added the agent to; its later admit starts lazily", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const { agent, platform, subscribed } = await startAgent(adapter, [ROOM_A]);
+
+    await expect(agent.rooms.allow("room-c", { warm: true })).resolves.toBe(false);
+    expect(warms.entries).toEqual([]);
+
+    await platform.room("room-c");
+    await platform.transport.bound.until(() => subscribed("room-c"));
+    expect(warms.entries).toEqual([]);
+  });
+
+  it("warms a room's ACP agent on allow, reporting what its handshake named", async () => {
+    let initialized = 0;
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((): AcpAgent => ({
+        initialize: async () => {
+          initialized += 1;
+          return {
+            protocolVersion: 1,
+            agentCapabilities: {},
+            agentInfo: { name: "fixture-acp", title: "Fixture", version: "1.2.3" },
+          };
+        },
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: async () => ({ stopReason: "end_turn" }),
+      })),
+    });
+    const { agent, events, subscribed, of } = await startAgent(adapter, [ROOM_A]);
+
+    await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(true);
+
+    expect(initialized).toBe(1);
+    expect(of(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+    expect(events.entries.find((event) => event.type === "room.ready")).toEqual({
+      type: "room.ready",
+      roomId: ROOM_B,
+      agent: { protocol: "acp", protocolVersion: 1, agentInfo: { name: "fixture-acp", version: "1.2.3" } },
+    });
+    expect(subscribed(ROOM_B)).toBe(true);
+  });
+
+  it("reports a warm ACP room whose agent names no implementation with agentInfo null", async () => {
+    const adapter = new ACPClientAdapter({
+      command: ["acp-fixture"],
+      cwd: tmpRoot(),
+      enableMcpTools: false,
+      connectionFactory: inMemoryAgent((): AcpAgent => ({
+        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+        authenticate: async () => ({}),
+        newSession: async () => ({ sessionId: "session-1" }),
+        cancel: async () => {},
+        prompt: async () => ({ stopReason: "end_turn" }),
+      })),
+    });
+    const { agent, events } = await startAgent(adapter, [ROOM_A]);
+
+    await agent.rooms.allow(ROOM_B, { warm: true });
+
+    expect(events.entries.find((event) => event.type === "room.ready")).toMatchObject({
+      agent: { protocol: "acp", protocolVersion: 1, agentInfo: null },
+    });
   });
 
   it("keeps a denied room paused across a reset of its session", async () => {

@@ -20,10 +20,15 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   shutdownTimeoutMs?: number | null;
 }
 
+export interface AllowRoomOptions {
+  /** Start the room's agent process now, reporting `room.ready` or `room.failed`, rather than on its first message. */
+  warm?: boolean;
+}
+
 /** {@link Agent.rooms}: which rooms the agent takes turns in, changed while it runs. */
 export interface AgentRooms {
   /** See {@link PlatformRuntime.allowRoom}. */
-  allow(roomId: string): Promise<boolean>;
+  allow(roomId: string, options?: AllowRoomOptions): Promise<boolean>;
   /** See {@link PlatformRuntime.denyRoom}. */
   deny(roomId: string): Promise<boolean>;
 }
@@ -61,7 +66,7 @@ export class Agent {
       isLegalTransition: isLegalRuntimeTransition,
     });
     this.rooms = {
-      allow: (roomId) => runtime.allowRoom(roomId),
+      allow: (roomId, options) => runtime.allowRoom(roomId, options),
       deny: (roomId) => runtime.denyRoom(roomId),
     };
   }

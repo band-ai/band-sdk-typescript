@@ -19,7 +19,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/acp-client";
-import type { AgentEventListener } from "../../contracts/events";
+import type { AgentEventListener, RoomAgentIdentity } from "../../contracts/events";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -328,6 +328,24 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       includeBaseInstructions: false,
       customSection: this.customSection,
     })
+  }
+
+  /**
+   * Spawns the room's ACP agent and completes its handshake now, rather than
+   * on the first turn, resolving with what its `initialize` response named.
+   */
+  public async warm(): Promise<RoomAgentIdentity> {
+    const { initializeResult } = await this.ensureConnection()
+    const info = initializeResult.agentInfo
+    return {
+      protocol: "acp",
+      protocolVersion: initializeResult.protocolVersion,
+      // The ACP client does not validate responses at runtime; an unreadable
+      // implementation is reported as none rather than passed on.
+      agentInfo: typeof info?.name === "string" && typeof info.version === "string"
+        ? { name: info.name, version: info.version }
+        : null,
+    }
   }
 
   public async onMessage(
