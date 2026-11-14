@@ -491,4 +491,42 @@ describe("ClaudeCliClient", () => {
     expect(client.turnRunning).toBe(false);
     await client.close({ drainMs: 10 });
   });
+
+  describe("a CLI that writes its terminal frame and leaves in the same breath", () => {
+    /**
+     * The real CLI writes its `result` and exits right after it. Node can report
+     * `exit` before the last stdout chunk reaches the reader, so a client that
+     * judges the process on `exit` alone loses a turn that had already finished:
+     * the room is told the harness died, with no completed turn, no usage and no
+     * session to resume. The extension child hit exactly this against an
+     * installed CLI, where the SDK's own live check did not. The ordering is
+     * reproduced here by writing the frames and reporting the exit in the same
+     * tick - no timers, no sleeps.
+     */
+    it("settles the turn on the result the CLI wrote instead of failing the process", async () => {
+      const { client, peer } = await online(rig, log);
+      const frames = turnFrames("turn-basic");
+      const assistant = frames.find((frame) => frame.type === "assistant")!;
+      const result = frames.find((frame) => frame.type === "result")!;
+      const events: ClaudeEvent[] = [];
+
+      const turn = client.runTurn("ping", { onEvent: (event) => events.push(event) });
+      await peer.waitFor((frame) => frame.type === "user");
+      peer.send(assistant, result);
+      peer.exit(0);
+
+      const outcome = await turn;
+      expect(outcome.result.subtype).toBe("success");
+      expect(outcome.result.sessionId).toBeTruthy();
+      expect(events.filter((event) => event.type === "text").length).toBeGreaterThan(0);
+      // The process left as a finished CLI does: no failure recorded, and no
+      // exit warning for a turn the CLI had already answered.
+      await expect(Promise.race([
+        client.failed.then(() => "failed"),
+        new Promise((resolve) => setTimeout(() => resolve("clean"), 20)),
+      ])).resolves.toBe("clean");
+      expect(log.warn.mock.calls.filter(([message]) => message === "claude_cli.process_exited")).toEqual([]);
+      expect(client.strayTurnFrameCount).toBe(0);
+    });
+  });
 });
