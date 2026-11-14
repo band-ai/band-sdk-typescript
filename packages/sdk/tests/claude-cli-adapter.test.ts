@@ -1364,6 +1364,53 @@ describe("ClaudeCliAdapter authorized-servers resolver hardening", () => {
     }
   });
 
+  it("keeps a closing generation from taking the next turn's servers down with it", async () => {
+    const rigged = rig();
+    const calls: { abortedAtCall: boolean }[] = [];
+    const claude = adapter(rigged, {
+      extraMcpServers: async (signal) => {
+        // Recorded at the moment the host is asked. A start that was already aborted
+        // by another generation's teardown could not bring the person's servers to
+        // its own turn, whatever the resolver then answered.
+        calls.push({ abortedAtCall: signal.aborted });
+        return [github()];
+      },
+    });
+    const { agent, room } = await started(claude);
+    try {
+      // Turn one is cancelled while its process is still starting, so its generation
+      // is closed without anyone waiting on that teardown - the one window in which a
+      // second generation really begins beside a closing first one.
+      const firstDone = turnSettled(agent);
+      const firstPosted = room.say("owner", "one");
+      const peer1 = await rigged.nextPeer();
+      peer1.holdExit();
+      const handshake = await peer1.controlRequest("initialize");
+      expect(await agent.cancelTurn(ROOM)).toBe(true);
+      peer1.send(initResponse(String(handshake.request_id)));
+      await firstPosted;
+      await firstDone;
+
+      // Generation one is still draining here, its exit held; turn two's process
+      // starts beside it.
+      const secondDone = turnSettled(agent);
+      const secondPosted = room.say("owner", "two");
+      const peer2 = await rigged.nextPeer();
+      await peer2.scriptTurn(systemInit(), assistant(text("two")), result({ result: "two" }));
+      await secondPosted;
+      await secondDone;
+      peer1.releaseExit(0);
+
+      expect(calls.map(({ abortedAtCall }) => abortedAtCall)).toEqual([false, false]);
+      // The next turn kept the servers the host resolved for it; the closing one took
+      // nothing down with it.
+      const config = mcpConfig(peer2);
+      expect(Object.keys(config.mcpServers)).toEqual(["github", MCP_SERVER_NAME]);
+      expect(JSON.stringify(config.mcpServers.github)).toContain("Bearer resolver-bearer");
+    } finally {
+      await agent.stop();
+    }
+  });
 });
 
 const CONTRACT_TURNS: Record<TurnScript, (peer: FakeClaude, tool?: { name: string }) => Promise<void>> = {
