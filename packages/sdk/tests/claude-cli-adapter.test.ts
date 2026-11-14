@@ -358,15 +358,29 @@ describe("ClaudeCliAdapter", () => {
       await old.scriptTurn(systemInit(), assistant(toolUse("toolu-1", "Bash", { command: "ls" })));
       const pending = callBand(old, PERMISSION_TOOL, { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu-1" });
       await asked;
-      // The host cancels, the room moves on, and only then does the held answer arrive.
-      await agent.cancelTurn(ROOM);
-      release({ behavior: "allow", updatedInput: { command: "ls" } });
-      const answered = await pending;
-      expect(JSON.stringify(answered.content)).toContain("closed");
-      old.send(userFrame(toolResult("toolu-1", "refused", true)), result({ subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_tools", errors: ["aborted"], result: null }));
+      // The host never answers this one: the turn is ended with the approval still
+      // waiting, which is what taking the room away from it does.
+      release(undefined);
+      old.send(userFrame(toolResult("toolu-1", "refused", true)), result({ result: "left it" }));
       await first;
       await firstDone;
-      expect(room.messages).toEqual([]);
+      await pending;
+
+      // The room has moved on: a new turn with a generation of its own.
+      const secondDone = turnSettled(agent);
+      const second = room.say("owner", "and now?");
+      const next = await rigged.nextPeer();
+      await next.scriptTurn(systemInit(), assistant(text("onwards")), result({ result: "onwards" }));
+      await second;
+      await secondDone;
+
+      // Only now does a late answer arrive for the closed turn's tool use. It must
+      // not resurrect that turn: the ask is refused however it is refused - the
+      // server is gone, or the answer is a deny - nothing runs, and nothing posts.
+      release({ behavior: "allow", updatedInput: { command: "ls" } });
+      const late = await tryCallBand(old, PERMISSION_TOOL, { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu-1" }, 2_000);
+      expect(late.refused || late.result?.isError === true, "the closed turn's approval was served again").toBe(true);
+      expect(room.messages.map((message) => message.content)).toEqual(["onwards"]);
     } finally {
       await agent.stop();
     }
