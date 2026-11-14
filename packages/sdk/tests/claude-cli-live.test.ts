@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -235,17 +234,14 @@ async function unavailable(): Promise<string | null> {
   if (!LIVE) {
     return "BAND_CLAUDE_LIVE is not set";
   }
-  if (!existsSync(CLAUDE_BIN)) {
-    return `no Claude CLI at ${CLAUDE_BIN}`;
-  }
-  try {
-    accessSync(CLAUDE_BIN, constants.X_OK);
-  } catch {
-    return `${CLAUDE_BIN} is not executable`;
-  }
+  // Resolved by the operating system, so a bare `claude` found on PATH works the
+  // same as an absolute path a caller names in BAND_CLAUDE_BIN.
   const version = spawnSync(CLAUDE_BIN, ["--version"], { encoding: "utf8", timeout: 30_000 });
+  if (version.error) {
+    return `no Claude CLI reachable as \`${CLAUDE_BIN}\`: ${String(version.error)}`;
+  }
   if (version.status !== 0) {
-    return `claude --version failed: ${version.stderr.slice(0, 200)}`;
+    return `\`${CLAUDE_BIN} --version\` failed: ${version.stderr.slice(0, 200)}`;
   }
   const auth = spawnSync(CLAUDE_BIN, ["auth", "status"], { encoding: "utf8", timeout: 30_000, env: process.env });
   if (auth.status !== 0) {
