@@ -15,10 +15,12 @@
         "CODEX_REASONING_EFFORTS",
         "CODEX_REASONING_SUMMARIES",
         "CODEX_WEB_SEARCH_MODES",
+        "ClaudeCliAdapter",
         "ClaudeSDKAdapter",
         "CodexAdapter",
         "CopilotACPAdapter",
         "CursorACPAdapter",
+        "DEFAULT_CLAUDE_CLI_COMMAND",
         "DEFAULT_CONTEXT_CACHE_TTL_SECONDS",
         "DEFAULT_COPILOT_ACP_COMMAND",
         "DEFAULT_CURSOR_ACP_COMMAND",
@@ -72,7 +74,9 @@
         "relayReply",
         "reportTurnFailure",
         "sessionConfigSchema",
-        "toFailureEvent"
+        "toFailureEvent",
+        "validateClaudeArgs",
+        "validateClaudeCliOptions"
       ],
       "declarations": [
         "A2AAdapter",
@@ -109,9 +113,15 @@
         "CODEX_REASONING_EFFORTS",
         "CODEX_REASONING_SUMMARIES",
         "CODEX_WEB_SEARCH_MODES",
+        "ClaudeCliAdapter",
+        "ClaudeCliAdapterOptions",
+        "ClaudePermissionDecision",
+        "ClaudePermissionEndReason",
         "ClaudePermissionMode",
+        "ClaudePermissionPrompt",
         "ClaudeSDKAdapter",
         "ClaudeSDKAdapterOptions",
+        "ClaudeTurnUsage",
         "CodexAdapter",
         "CodexAdapterConfig",
         "CodexApprovalPolicy",
@@ -135,6 +145,7 @@
         "CursorPlanMode",
         "CursorQuestionMode",
         "CustomToolDef",
+        "DEFAULT_CLAUDE_CLI_COMMAND",
         "DEFAULT_CONTEXT_CACHE_TTL_SECONDS",
         "DEFAULT_COPILOT_ACP_COMMAND",
         "DEFAULT_CURSOR_ACP_COMMAND",
@@ -255,7 +266,9 @@
         "relayReply",
         "reportTurnFailure",
         "sessionConfigSchema",
-        "toFailureEvent"
+        "toFailureEvent",
+        "validateClaudeArgs",
+        "validateClaudeCliOptions"
       ]
     },
     "./adapters": {
@@ -358,6 +371,7 @@
         "ClaudeCliAdapter",
         "ClaudeCliAdapterOptions",
         "ClaudeCliRoomAgent",
+        "ClaudePermissionDecision",
         "ClaudePermissionEndReason",
         "ClaudePermissionMode",
         "ClaudePermissionPrompt",

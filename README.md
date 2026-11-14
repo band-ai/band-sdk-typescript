@@ -67,7 +67,7 @@ Copilot CLI authentication and BYOK remain CLI configuration; supply their envir
 
 ### Coding agents: one process per room
 
-The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
+The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ClaudeCliAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
 
 - **Lazy start.** Nothing is spawned when the agent starts. A room's process starts on its first message, so a missing binary or bad credentials are reported in that room. The process stops when the room is left, and every process stops when the agent stops.
 - **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
@@ -279,6 +279,34 @@ await agent.run();
 - **Approvals.** Under an approval mode that asks, OMP's tool approvals (`Allow tool: <name>`, with options such as `Approve`, `Approve <name> for this session` and `Deny`) go to `resolvePermission({ roomId, sessionId, title, options }, signal)`, which answers one of the offered labels. Anything else cancels the approval. Without `resolvePermission`, an approval is granted once when OMP offers `Approve`. Band's own tools are host tools, so OMP asks about them too.
 - **What the room sees.** The model's closing text is relayed as the reply unless it replied or declined through a Band tool. OMP's own tool calls and results are posted at the end of the turn as `tool_call` and `tool_result` events, with credential-shaped values masked, just before the closing text; as with the ACP adapters, a reply the model sent through `band_send_message` during the turn appears above them. Reasoning is never posted: it reaches only `agent.observe` listeners as `thought` events.
 - **Credentials.** OMP resolves its own provider credentials; pass any needed values through `env`. The SDK never reads or logs them.
+
+### Claude Code CLI
+
+`ClaudeCliAdapter` runs the Claude Code CLI the user already installed and signed into — `claude --print` with stream-JSON in and out. It needs that CLI (2.1.319 or newer) and imports nothing from Anthropic's packages.
+
+```ts
+import { Agent, ClaudeCliAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new ClaudeCliAdapter({
+    cwd: process.cwd(),
+    model: "sonnet",
+    permissionMode: "manual",
+    resolvePermission: async ({ toolName }, signal) =>
+      toolName === "Bash" ? { behavior: "deny", message: "Shell use is not allowed here." } : undefined,
+  }),
+  config: loadAgentConfig("my_agent"),
+});
+
+await agent.run();
+```
+
+- **Start.** A room's process starts on its first message, or with `agent.rooms.allow(roomId, { warm: true })`, which starts and initializes it without sending a prompt and reports `room.ready` with `{ protocol: "claude-stream-json", cliVersion }`. Each turn runs its own process, resumed with `--resume` so the room keeps one conversation across turns: nothing carries between turns through a live handle, and a turn whose resume did not hold is reported and rebuilt from history rather than quietly replaced.
+- **Band tools.** The Band tools reach the CLI through an MCP server that belongs to the turn in flight, created before its process starts and closed with it, so a call that arrives from a turn the host already cancelled or replaced is refused instead of run against someone else's turn. Band's own tools are pre-approved by name and never prompt. `additionalTools` adds host tools that run in this process, `extraMcpServers` adds MCP servers the person authorized (their tools are never pre-approved), and the board and task tools appear under `enableTaskTools`.
+- **Approvals.** With `resolvePermission`, every tool use — native or MCP — is asked about through the CLI's permission tool: `resolvePermission({ roomId, sessionId, toolName, input, toolUseId }, signal)` answers `{ behavior: "allow", updatedInput }` or `{ behavior: "deny", message }`, and an answer after the signal aborted is discarded. It is allow-once only: nothing is granted for the rest of the session. Without it, every request is declined, because a Band agent never approves its own tool calls by default.
+- **Isolation.** The CLI is launched with `--setting-sources ""`, `--strict-mcp-config` and an inline `--mcp-config`, so no user, project or local settings, commands, skills, hooks or MCP servers are loaded — only what the adapter passes. A role plugin given through `pluginDirs` still loads, and the CLI's own agent, message and file-sharing tools are always passed as `--disallowedTools`, because Band serves those. The transport's flags are reserved, so a host argument cannot replace them.
+- **What the room sees.** The model's closing text is relayed as the reply unless it replied or declined through a Band tool. Its tool calls and results are reported to `agent.observe` and posted as `tool_call` / `tool_result` activity; reasoning reaches only observers, never the room. `turnUsage(roomId)` reports what the room's last completed turn spent.
+- **Cancellation.** `agent.cancelTurn(roomId)` revokes that turn's Band access, gives up any approval it was holding and interrupts its process; the turn settles as cancelled and posts nothing. A real failure — an older CLI, a process that dies, a malformed stream — fails the turn with a reason instead of hanging the room.
 
 ### LangGraph
 
