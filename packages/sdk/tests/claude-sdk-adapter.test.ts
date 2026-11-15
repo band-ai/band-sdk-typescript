@@ -1399,7 +1399,11 @@ describe("ClaudeSDKAdapter", () => {
     });
 
     it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
-      const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "native result" }] }));
+      let receivedArgs: Record<string, unknown> | undefined;
+      const execute = vi.fn(async (args: Record<string, unknown>) => {
+        receivedArgs = args;
+        return { content: [{ type: "text" as const, text: "native result" }] };
+      });
       const tools = new FakeTools();
       let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({
@@ -1417,7 +1421,7 @@ describe("ClaudeSDKAdapter", () => {
       expect(result?.content).toEqual([{ type: "text", text: "native result" }]);
       expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
       expect(execute).toHaveBeenCalledOnce();
-      expect(execute.mock.calls[0]![0]).toEqual({});
+      expect(receivedArgs).toEqual({});
     });
 
     it("hands a host tool the turn's tools for the room it names, and refuses another room", async () => {
