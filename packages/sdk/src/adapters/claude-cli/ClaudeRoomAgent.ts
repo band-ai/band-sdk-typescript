@@ -1,6 +1,5 @@
 import type { ClaudeCliSessionState } from "../../converters/claude-cli";
 import type { AgentEventListener, RoomAgentIdentity } from "../../contracts/events";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
