@@ -40,6 +40,16 @@ function warmRecorder(result: "identity" | "null" | "fail") {
   return { adapter, warms };
 }
 
+/** In-memory ACP adapter for warm-on-allow tests. */
+function acpWarmAdapter(factory: () => AcpAgent) {
+  return new ACPClientAdapter({
+    command: ["acp-fixture"],
+    cwd: tmpRoot(),
+    enableMcpTools: false,
+    connectionFactory: inMemoryAgent(factory),
+  });
+}
+
 /** An agent on `platform`, observed from its first event; not started. */
 function createAgent(adapter: FrameworkAdapter, platform: BandPlatform, roomFilter?: (room: MetadataMap) => boolean) {
   const agent = Agent.create({
@@ -348,25 +358,20 @@ describe("agent.rooms", () => {
 
   it("warms a room's ACP agent on allow, reporting what its handshake named", async () => {
     let initialized = 0;
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((): AcpAgent => ({
-        initialize: async () => {
-          initialized += 1;
-          return {
-            protocolVersion: 1,
-            agentCapabilities: {},
-            agentInfo: { name: "fixture-acp", title: "Fixture", version: "1.2.3" },
-          };
-        },
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async () => ({ stopReason: "end_turn" }),
-      })),
-    });
+    const adapter = acpWarmAdapter((): AcpAgent => ({
+      initialize: async () => {
+        initialized += 1;
+        return {
+          protocolVersion: 1,
+          agentCapabilities: {},
+          agentInfo: { name: "fixture-acp", title: "Fixture", version: "1.2.3" },
+        };
+      },
+      authenticate: async () => ({}),
+      newSession: async () => ({ sessionId: "session-1" }),
+      cancel: async () => {},
+      prompt: async () => ({ stopReason: "end_turn" }),
+    }));
     const { agent, events, subscribed, of } = await startAgent(adapter, [ROOM_A]);
 
     await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(true);
@@ -382,18 +387,13 @@ describe("agent.rooms", () => {
   });
 
   it("reports a warm ACP room whose agent names no implementation with agentInfo null", async () => {
-    const adapter = new ACPClientAdapter({
-      command: ["acp-fixture"],
-      cwd: tmpRoot(),
-      enableMcpTools: false,
-      connectionFactory: inMemoryAgent((): AcpAgent => ({
-        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-        authenticate: async () => ({}),
-        newSession: async () => ({ sessionId: "session-1" }),
-        cancel: async () => {},
-        prompt: async () => ({ stopReason: "end_turn" }),
-      })),
-    });
+    const adapter = acpWarmAdapter((): AcpAgent => ({
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+      authenticate: async () => ({}),
+      newSession: async () => ({ sessionId: "session-1" }),
+      cancel: async () => {},
+      prompt: async () => ({ stopReason: "end_turn" }),
+    }));
     const { agent, events } = await startAgent(adapter, [ROOM_A]);
 
     await agent.rooms.allow(ROOM_B, { warm: true });

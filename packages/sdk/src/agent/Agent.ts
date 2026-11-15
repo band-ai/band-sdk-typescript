@@ -4,7 +4,7 @@ import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger } from "../core/logger";
-import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
+import { PlatformRuntime, type AllowRoomOptions, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
@@ -20,10 +20,7 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   shutdownTimeoutMs?: number | null;
 }
 
-export interface AllowRoomOptions {
-  /** Start the room's agent process now, reporting `room.ready` or `room.failed`, rather than on its first message. */
-  warm?: boolean;
-}
+export type { AllowRoomOptions };
 
 /**
  * {@link Agent.rooms}: which rooms the agent takes turns in, changed while it

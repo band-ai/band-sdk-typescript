@@ -40,6 +40,11 @@ import { bestEffort, TurnJournal, type RoomJournal } from "./journal/TurnJournal
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
 
+export interface AllowRoomOptions {
+  /** Start the room's agent process now, reporting `room.ready` or `room.failed`, rather than on its first message. */
+  warm?: boolean;
+}
+
 export interface PlatformRuntimeOptions {
   agentId: string;
   apiKey: string;
@@ -305,29 +310,29 @@ export class PlatformRuntime implements AsyncDisposable {
    * The allow sticks as a filter override for this runtime; a later deny
    * pauses turns but leaves that override. With `warm`, a room Band lists the
    * agent in has its agent process started first, and `room.ready` or
-   * `room.failed` is reported before the room's messages are handled; a room
-   * not listed yet starts lazily when it is admitted. A pause Band put on the
-   * room stays until Band plays it. A room whose session a reset replaced
-   * replays what Band kept on its next message, as a play does. Kept across
-   * restarts of this runtime. Resolves true when the room is admitted on return.
+   * `room.failed` is reported before the room joins; a room not listed yet is
+   * not warmed on allow, and its process starts on the first message after it
+   * is admitted. A pause Band put on the room stays until Band plays it. A room
+   * whose session a reset replaced replays what Band kept on its next message,
+   * as a play does. Kept across restarts of this runtime. Resolves true when
+   * the room is admitted on return.
    */
-  public async allowRoom(roomId: string, options: { warm?: boolean } = {}): Promise<boolean> {
+  public async allowRoom(roomId: string, options: AllowRoomOptions = {}): Promise<boolean> {
     this.allowedRooms.add(roomId);
     if (this.hostPausedRooms.delete(roomId)) {
       this.runtime?.resumeRoom(roomId, "host");
       this.events.emit({ type: "room.resumed", roomId, source: "host" });
     }
     const runtime = this.runtime;
-    // A warm allow starts the process before the room takes any message; one
-    // Band does not list the agent in yet is warmed when it is admitted, not now.
-    if (options.warm && runtime && runtime.state.status === "running" && (await this.isMemberRoom(runtime, roomId))) {
-      const adapter = this.activeAdapter;
-      if (adapter) {
-        await this.warmRoom(adapter, roomId);
-      }
-    }
     // A runtime still starting admits it once its start-up has listed its rooms.
     if (runtime?.state.status === "running") {
+      // A warm allow starts the process before the room joins. A room Band has
+      // not listed the agent in yet is not warmed here; its process starts on
+      // the first message after a later admit, as a non-warm room would.
+      if (options.warm && (await this.isMemberRoom(runtime, roomId))) {
+        const adapter = this.activeAdapter;
+        if (adapter) await this.warmRoom(adapter, roomId);
+      }
       await this.admitAllowedMemberRooms(runtime, new Set([roomId]));
     }
     // Whatever runtime there is now: a stop meanwhile left none, a restart its own admission.
@@ -359,7 +364,7 @@ export class PlatformRuntime implements AsyncDisposable {
       this.events.emit({ type: "room.ready", roomId, agent });
     } catch (error) {
       if (!reported) {
-        this.events.emit({ type: "room.failed", roomId, error: error instanceof Error ? error.message : String(error) });
+        this.events.emit({ type: "room.failed", roomId, error: turnFailureLabel(error) });
       }
     } finally {
       unobserve();
