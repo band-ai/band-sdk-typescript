@@ -307,6 +307,38 @@ describe("agent.rooms", () => {
     await platform.transport.bound.until(() => subscribed("room-c"));
   });
 
+  it("warms a member room allowed with warm before start when start admits it", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const platform = BandPlatform.host([person("owner")]);
+    await platform.room(ROOM_A);
+    await platform.room(ROOM_B);
+    const { agent, subscribed, of } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
+    await agent.rooms.allow(ROOM_B, { warm: true });
+    await agent.start();
+    expect(warms.entries).toEqual([ROOM_B]);
+    expect(of(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+    expect(subscribed(ROOM_B)).toBe(true);
+  });
+
+  it("warms a member room allowed with warm while start is joining an earlier room", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const platform = BandPlatform.host([person("owner")]);
+    const roomA = await platform.room(ROOM_A);
+    await platform.room(ROOM_B);
+    const { agent, subscribed, of } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
+    const releaseA = roomA.holdJoin();
+
+    const starting = agent.start();
+    await platform.transport.joining.next((topic) => topic === chatRoomTopic(ROOM_A));
+    await agent.rooms.allow(ROOM_B, { warm: true });
+    releaseA();
+    await starting;
+
+    expect(warms.entries).toEqual([ROOM_B]);
+    expect(of(ROOM_B)).toEqual(["room.ready", "room.joined"]);
+    expect(subscribed(ROOM_B)).toBe(true);
+  });
+
   it("warms a member room on allow, reporting room.ready with its identity before the room joins", async () => {
     const { adapter, warms } = warmRecorder("identity");
     const { agent, subscribed, of } = await startAgent(adapter, [ROOM_A]);

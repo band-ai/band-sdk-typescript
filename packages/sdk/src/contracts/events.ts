@@ -43,7 +43,8 @@ export type TurnStopMode = "stop" | "interrupt";
  * - Rooms: each time a joined room's handling starts, one `room.joined`; when
  *   that handling ends, one `room.stopped`. `room.left` follows `room.stopped`
  *   only when membership was lost. Per pause source, `room.paused` and
- *   `room.resumed` alternate.
+ *   `room.resumed` alternate. A warm allow reports `room.ready` or, on
+ *   failure, `room.failed`, before the first `room.joined` that follows.
  * - Link: per connection, one `link.connected`; while down, one
  *   `link.disconnected` per distinct reason (a drop, then a local stop,
  *   reports both); then `link.connected` with `reconnected` once it is back.

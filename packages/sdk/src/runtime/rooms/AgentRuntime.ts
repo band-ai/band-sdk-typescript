@@ -44,6 +44,7 @@ interface AgentRuntimeOptions {
   onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
   onError?: (error: unknown, event: PlatformEvent) => void;
   roomFilter?: (room: MetadataMap) => boolean;
+  listingRoomFilter?: (room: MetadataMap) => boolean;
   contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
   sessionConfig?: SessionConfig;
   agentConfig?: AgentConfig;
@@ -124,6 +125,7 @@ export class AgentRuntime {
     this.presence = new RoomPresence({
       link: this.link,
       roomFilter: options.roomFilter,
+      listingRoomFilter: options.listingRoomFilter,
       autoSubscribeExistingRooms: options.agentConfig?.autoSubscribeExistingRooms,
       logger: this.logger,
     });
