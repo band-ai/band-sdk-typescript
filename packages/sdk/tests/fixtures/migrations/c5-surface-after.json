@@ -96,6 +96,7 @@
         "AgentEventType",
         "AgentFailure",
         "AgentInput",
+        "AgentRooms",
         "AgentRuntime",
         "AgentToolsProtocol",
         "AnthropicAdapter",

@@ -1,5 +1,5 @@
 export { Agent } from "./agent/Agent";
-export type { AgentCreateOptions } from "./agent/Agent";
+export type { AgentCreateOptions, AgentRooms } from "./agent/Agent";
 
 export { BandLink, deriveDefaultRestUrl } from "./platform/BandLink";
 export type { PlatformEvent, ContactEvent, ReconnectedEvent } from "./platform/events";

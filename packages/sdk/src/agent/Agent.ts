@@ -21,6 +21,19 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
 }
 
 /**
+ * {@link Agent.rooms}: which rooms the agent takes turns in, changed while it
+ * runs. Local to this process: Band is not told. An `allow` sticks as a
+ * filter override for that room until this `Agent` is discarded; a later
+ * `deny` pauses turns but does not drop that override.
+ */
+export interface AgentRooms {
+  /** See {@link PlatformRuntime.allowRoom}. */
+  allow(roomId: string): Promise<boolean>;
+  /** See {@link PlatformRuntime.denyRoom}. */
+  deny(roomId: string): Promise<boolean>;
+}
+
+/**
  * Top-level handle for a Band agent.
  *
  * Use {@link Agent.create} to build an instance from config + adapter,
@@ -35,6 +48,14 @@ export class Agent {
   private readonly stopGate = new SingleFlight<boolean>();
   private shutdownTimeoutMs: number | null = 30_000;
 
+  /**
+   * Which rooms the agent takes turns in, for the process hosting it: see
+   * {@link AgentRooms}. Decisions last as long as this `Agent`, across
+   * `stop()`/`start()`, and may be made before `start()`. They are not
+   * shared with Band or with a new process.
+   */
+  public readonly rooms: AgentRooms;
+
   public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter, logger?: Logger) {
     this.platformRuntime = runtime;
     this.adapter = adapter;
@@ -45,6 +66,10 @@ export class Agent {
       logger: this.logger,
       isLegalTransition: isLegalRuntimeTransition,
     });
+    this.rooms = {
+      allow: (roomId) => runtime.allowRoom(roomId),
+      deny: (roomId) => runtime.denyRoom(roomId),
+    };
   }
 
   /** Build an Agent from credentials and a framework adapter. */

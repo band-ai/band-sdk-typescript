@@ -334,6 +334,8 @@ export class FakeTransport implements StreamingTransport {
   public readonly bound = new RecordLog<string>();
   /** Every topic left, in order; await it to act once an unsubscribe has begun. */
   public readonly left = new RecordLog<string>();
+  /** Every topic a join was asked for, as it was asked, before any gate holds it. */
+  public readonly joining = new RecordLog<string>();
   public disconnectCount = 0;
   /** What `getDisconnectReason()` reports; a test sets it as a retried failure would. */
   public disconnectReason: WebSocketDisconnectReason | null = null;
@@ -428,6 +430,7 @@ export class FakeTransport implements StreamingTransport {
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
     this.joinCalls.push(topic);
+    this.joining.record(topic);
     // Mirrors the real transport's `if (this.channels.has(topic)) { return; }`
     // fast path: once a topic is bound, a later join() call must not silently
     // rebind it to different handlers.
