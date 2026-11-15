@@ -326,7 +326,13 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
     this.generation += 1;
     this.started = false;
     const turn = this.activeTurn;
-    if (turn) this.endPermissions(turn, "adapter-stopped");
+    if (turn) {
+      // Same as onCleanup: mark cancelled before close so a mid-turn stop
+      // quiet-settles instead of reportTurnFailure when the client drops.
+      turn.cancelled = true;
+      turn.cancellation.resolve();
+      this.endPermissions(turn, "adapter-stopped");
+    }
     this.turns.clear();
     const live = this.live;
     this.live = null;

@@ -188,6 +188,69 @@ describe("OmpRpcAdapter", () => {
     expect(room.messages.map((posted) => posted.content), "leave must not relay a reply").toEqual([]);
   });
 
+  it("quietly settles an in-flight turn when the adapter stops", async () => {
+    const omp = fakeOmpProcesses();
+    const adapter = ompAdapter(omp);
+    const { room } = await startAgent(adapter);
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "write a long reply");
+    await prompted;
+
+    await adapter.stop();
+
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.failures, "stop mid-turn is not a turn failure").toEqual([]);
+    expect(room.posted, "a stopped turn posts nothing").toEqual([]);
+  });
+
+  it("quietly settles a cancel that arrives while ensureProcess is still in flight", async () => {
+    const gate = createDeferred<void>();
+    const entered = createDeferred<void>();
+    const omp = fakeOmpProcesses();
+    const { agent, room } = await startAgent(new OmpRpcAdapter({
+      cwd: tmpRoot(),
+      spawnProcess: async (options) => {
+        entered.resolve();
+        await gate.promise;
+        return omp.spawnProcess(options);
+      },
+    }));
+    const message = await room.say("owner", "hello while starting");
+    await entered.promise;
+
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    gate.resolve();
+
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.failures, "cancel during ensureProcess is not a turn failure").toEqual([]);
+    expect(room.posted).toEqual([]);
+  });
+
+  it("seeds a replacement process with bootstrap and turn-one history after a successful turn's peer dies", async () => {
+    const omp = fakeOmpProcesses();
+    const { room } = await startAgent(ompAdapter(omp));
+    const prompted = omp.nextPrompt();
+    const first = await room.say("owner", "first question");
+    const { peer, prompt } = await prompted;
+    peer.send(assistant(text("first answer")));
+    peer.finish(prompt.id);
+    expect(await room.outcome(first)).toBe("processed");
+
+    peer.die(1);
+
+    const replaced = omp.nextProcess();
+    const second = await room.say("owner", "second question");
+    const next = await replaced;
+    const nextPrompt = await next.next((frame) => frame.type === "prompt");
+    expect(next).not.toBe(peer);
+    expect(nextPrompt.message).toContain("[Conversation History]");
+    expect(nextPrompt.message).toContain("[owner]: first question");
+    next.send(assistant(text("answered")));
+    next.finish(nextPrompt.id);
+    expect(await room.outcome(second)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["first answer", "answered"]);
+  });
+
   it("fails the turn when its OMP process dies, and seeds the room's next process with the room's history", async () => {
     const omp = fakeOmpProcesses();
     const { room, events } = await startAgent(ompAdapter(omp));
@@ -531,6 +594,29 @@ describe("OmpRpcAdapter", () => {
     peer.finish(prompt.id, "aborted");
     expect(await room.outcome(message)).toBe("processed");
     expect(room.posted).toEqual([]);
+  });
+
+  it("cancels a permission that never settles after permissionTimeoutMs", async () => {
+    const omp = fakeOmpProcesses();
+    const reasons: unknown[] = [];
+    const { room } = await startAgent(ompAdapter(omp, {
+      permissionTimeoutMs: 50,
+      resolvePermission: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          reasons.push(signal.reason);
+          resolve(undefined);
+        });
+      }),
+    }));
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "list the files");
+    const { peer, prompt } = await prompted;
+
+    expect(await peer.ask("ui-1", APPROVAL)).toEqual({ type: "extension_ui_response", id: "ui-1", cancelled: true });
+    expect(reasons).toEqual(["timeout"]);
+    peer.send(assistant(text("timed out")));
+    peer.finish(prompt.id);
+    expect(await room.outcome(message)).toBe("processed");
   });
 
   it("reassembles a frame OMP splits into rpc_chunk frames", async () => {
