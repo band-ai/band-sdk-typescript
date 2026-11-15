@@ -71,6 +71,12 @@ export { CodexAdapter } from "./adapters/codex";
 export { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "./adapters/omp-acp";
 export { OmpRpcAdapter, DEFAULT_OMP_RPC_COMMAND } from "./adapters/omp-rpc";
 export {
+  ClaudeCliAdapter,
+  DEFAULT_CLAUDE_CLI_COMMAND,
+  validateClaudeArgs,
+  validateClaudeCliOptions,
+} from "./adapters/claude-cli";
+export {
   ACPClientAdapter,
   AcpSessionConfigError,
   FAILURE_CODE_SESSION_CONFIG,
@@ -142,6 +148,11 @@ export type {
   OmpRpcAdapterOptions,
   OmpPermissionRequest,
   OmpPermissionEndReason,
+  ClaudeCliAdapterOptions,
+  ClaudePermissionPrompt,
+  ClaudePermissionDecision,
+  ClaudePermissionEndReason,
+  ClaudeTurnUsage,
   ACPClientAdapterOptions,
   ACPClientAdapterBaseOptions,
   ACPClientStdioOptions,

@@ -1,0 +1,84 @@
+{
+  "title": "Cost of one CLI process per turn",
+  "measured": "2026-11-13, macOS (arm64), Apple silicon, Node 24",
+  "cliVersion": "2.1.319",
+  "method": "5 runs each of: spawn the process, send control/initialize, send one short user envelope, await its terminal result frame. \"initialized\" is spawn to the initialize answer; \"systemInit\" is spawn to the session's first frame; \"result\" is spawn to the turn's terminal result, so it includes one model round trip. The resumed column passes --resume <session id> from the first fresh run.",
+  "note": "A resumed turn is not slower to launch than a fresh one; --resume costs no measurable start time here. The per-turn process cost the adapter pays is the launch (initialized), about half a second, not the model.",
+  "unit": "milliseconds",
+  "fresh": {
+    "initialized": {
+      "median": 497,
+      "worst": 1040,
+      "best": 482,
+      "values": [
+        482,
+        488,
+        497,
+        516,
+        1040
+      ]
+    },
+    "systemInit": {
+      "median": 552,
+      "worst": 1110,
+      "best": 536,
+      "values": [
+        536,
+        545,
+        552,
+        591,
+        1110
+      ]
+    },
+    "result": {
+      "median": 2280,
+      "worst": 2834,
+      "best": 1655,
+      "values": [
+        1655,
+        1668,
+        2280,
+        2454,
+        2834
+      ]
+    }
+  },
+  "resumed": {
+    "initialized": {
+      "median": 499,
+      "worst": 538,
+      "best": 495,
+      "values": [
+        495,
+        495,
+        499,
+        528,
+        538
+      ]
+    },
+    "systemInit": {
+      "median": 534,
+      "worst": 572,
+      "best": 530,
+      "values": [
+        530,
+        532,
+        534,
+        559,
+        572
+      ]
+    },
+    "result": {
+      "median": 1711,
+      "worst": 1865,
+      "best": 1619,
+      "values": [
+        1619,
+        1677,
+        1711,
+        1738,
+        1865
+      ]
+    }
+  }
+}

@@ -94,6 +94,41 @@ describe("createBandMcpBackend", () => {
     expect(backend.server).toHaveProperty("url");
   });
 
+  it("gives every generation's listener back when the room turns again", async () => {
+    // One process per turn means one backend per turn. A stopped generation that
+    // keeps its listener — because Node waits for the keep-alive its client left
+    // open — would make a long-lived room accumulate ports until the machine runs
+    // out, so each stop must finish promptly and its port must refuse again.
+    const generations = [];
+    for (let turn = 0; turn < 3; turn += 1) {
+      generations.push(await createBandMcpBackend({
+        kind: "http",
+        enableMemoryTools: false,
+        getToolsForRoom: () => new FakeTools(),
+      }));
+    }
+    const urls = generations.map((backend) => (backend.server as { url: string }).url);
+
+    // The last turn's client leaves its connection open, as the CLI's does.
+    const client = new Client({ name: "lingering-client", version: "1.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(urls[2]!), {
+        requestInit: { headers: { authorization: `Bearer ${generations[2]!.authToken}` } },
+      }),
+    );
+    await client.listTools();
+
+    const stoppedAt = Date.now();
+    for (const backend of generations) {
+      await backend.stop();
+    }
+    expect(Date.now() - stoppedAt, "a stopped generation held its listener open").toBeLessThan(1_000);
+
+    for (const url of urls) {
+      await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
+    }
+  });
+
   it("issues an auth token for the http backend and rejects unauthenticated requests", async () => {
     const backend = await createBandMcpBackend({
       kind: "http",

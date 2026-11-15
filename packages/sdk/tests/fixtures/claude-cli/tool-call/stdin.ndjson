@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"cap-init-1","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Call the mcp__probe__echo tool once with text=\"ping-probe\", then reply with exactly what the tool returned and nothing else."}]},"parent_tool_use_id":null}

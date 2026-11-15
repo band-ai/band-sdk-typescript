@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"cap-bad-1","request":{"subtype":"not_a_real_subtype"}}
+{"type":"control_request","request_id":"cap-init-2","request":{"subtype":"initialize"}}
