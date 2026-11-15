@@ -427,6 +427,11 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!(error instanceof UnsupportedFeatureError)) {
         this.logger.warn("Failed to list the rooms the host allowed; admitting them on the next reconnect, restart or allow, or when Band adds the agent", { rooms: pending.size, error });
       }
+      // Abandon warm: a later reconnect or room_added admit starts the process
+      // on the first message, as a non-warm room would.
+      for (const roomId of pending) {
+        this.warmRooms.delete(roomId);
+      }
       return;
     }
     const adapter = this.activeAdapter;

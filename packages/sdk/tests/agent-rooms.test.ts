@@ -525,6 +525,32 @@ describe("agent.rooms", () => {
     await platform.transport.bound.until(() => subscribed(ROOM_B));
   });
 
+  it("abandons warm when allow's listing fails, so reconnect admits without room.ready", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const { agent, platform, roomB, subscribed, of } = await startAgent(adapter, [ROOM_A]);
+    platform.rest.listHolds.hold(() => true, { error: new Error("Band is unavailable") }).release();
+
+    await expect(agent.rooms.allow(ROOM_B, { warm: true })).resolves.toBe(false);
+    expect(warms.entries).toEqual([]);
+
+    await platform.transport.triggerReconnect({ generation: 1, joinedTopics: new Set(platform.transport.bound.entries) });
+    await platform.transport.bound.until(() => subscribed(ROOM_B));
+    expect(of(ROOM_B)).not.toContain("room.ready");
+    expect(warms.entries).toEqual([]);
+    expect((await roomB.sayAndSettle("owner", "after reconnect")).outcome).toBe("processed");
+  });
+
+  it("re-warms an already joined room without a new room.joined", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const { agent, of } = await startAgent(adapter, [ROOM_A]);
+    expect(of(ROOM_A)).toEqual(["room.joined"]);
+
+    await expect(agent.rooms.allow(ROOM_A, { warm: true })).resolves.toBe(true);
+
+    expect(warms.entries).toEqual([ROOM_A]);
+    expect(of(ROOM_A)).toEqual(["room.joined", "room.ready"]);
+  });
+
   it("keeps an allowed room the filter declines across a reconnect", async () => {
     const { adapter, turns } = turnRecorder();
     const { agent, platform, roomB, subscribed, of } = await startAgent(adapter, [ROOM_A]);
