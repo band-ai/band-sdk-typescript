@@ -66,8 +66,8 @@ export function validateClaudeCliOptions(options: ClaudeCliAdapterOptions): stri
   if (argv.length === 0 || !argv[0]) {
     throw new ValidationError("the Claude CLI command must name an executable");
   }
-  const extra = validateClaudeArgs(argv.slice(1));
-  return extra.length > 0 ? [argv[0], ...extra] : argv;
+  validateClaudeArgs(argv.slice(1));
+  return argv;
 }
 
 export {

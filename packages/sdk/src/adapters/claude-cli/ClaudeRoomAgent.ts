@@ -8,7 +8,7 @@ import { REDACTED_VALUE, SENSITIVE_KEY_TERMS, redactCredentialText } from "../..
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createBandMcpBackend, type BandMcpBackend } from "../../mcp/backends";
-import { assertPermissionTimeoutMs } from "../acp/ACPRoomAgent";
+import { assertPermissionTimeoutMs, DEFAULT_PERMISSION_TIMEOUT_MS } from "../shared/permissionTimeout";
 import type { McpToolRegistration, McpToolResult } from "../../mcp/registrations";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
@@ -24,6 +24,7 @@ import type { WorkspaceForRoom } from "../shared/roomWorkspace";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { withTimeout } from "../shared/withTimeout";
 import {
+  CLAUDE_DRAIN_TIMEOUT_MS,
   ClaudeCliClient,
   ClaudeProcessError,
   spawnClaudeProcess,
@@ -80,16 +81,12 @@ export const RESERVED_CLAUDE_FLAGS = [
   "--bare",
   "--dangerously-skip-permissions",
   "--allow-dangerously-skip-permissions",
-  "--permission-mode",
   "--tools",
 ] as const;
 
-const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // The CLI acknowledging an interrupt; the turn itself ends on its own result frame.
 const INTERRUPT_ACK_TIMEOUT_MS = 10_000;
-// How long a process gets to leave after its stdin closes before it is killed.
-const DRAIN_TIMEOUT_MS = 5_000;
 
 /** How long a closed generation's Band server may take to stop before the room moves on. */
 const BACKEND_STOP_TIMEOUT_MS = 1_000;
@@ -734,7 +731,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       return generation;
     } catch (error) {
       if (this.startingGeneration === generation) this.startingGeneration = null;
-      await client?.close({ drainMs: DRAIN_TIMEOUT_MS }).catch((closeError: unknown) => {
+      await client?.close({ drainMs: CLAUDE_DRAIN_TIMEOUT_MS }).catch((closeError: unknown) => {
         this.logger.warn("claude_cli.close_after_start_failure", { roomId: this.roomId, error: asErrorMessage(closeError) });
       });
       await backend?.stop().catch((stopError: unknown) => {
@@ -891,7 +888,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       return refused("The permission request was malformed.");
     }
     if (generation.revoked || generation.settled.has(request.toolUseId)) {
-      return refused("This turn is closed; the request was refused.");
+      return refused(CLOSED_GENERATION);
     }
     generation.settled.add(request.toolUseId);
     const turn = this.activeTurn;
@@ -1028,7 +1025,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   }
 
   private async drainGeneration(generation: Generation): Promise<void> {
-    const report = await generation.client.close({ drainMs: DRAIN_TIMEOUT_MS });
+    const report = await generation.client.close({ drainMs: CLAUDE_DRAIN_TIMEOUT_MS });
     // A Band server that will not close must not hold the room hostage: its stop
     // gets its own bound, shorter than the process drain, and a server that
     // overruns it is logged and left to settle behind the next turn.
