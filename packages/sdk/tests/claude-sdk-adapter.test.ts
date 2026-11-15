@@ -1416,7 +1416,8 @@ describe("ClaudeSDKAdapter", () => {
       await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
       expect(result?.content).toEqual([{ type: "text", text: "native result" }]);
       expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
-      expect(execute).toHaveBeenCalledExactlyOnceWith({}, expect.anything());
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]![0]).toEqual({});
     });
 
     it("hands a host tool the turn's tools for the room it names, and refuses another room", async () => {
