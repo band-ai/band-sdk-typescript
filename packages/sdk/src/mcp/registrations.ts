@@ -33,7 +33,12 @@ export interface McpToolRegistration {
    * and keeps them only while the server's room resolver still returns that
    * same instance, so a resolver must return one instance per room turn.
    */
-  execute: (args: Record<string, unknown>, tools?: AdapterToolsProtocol) => Promise<McpToolResult>;
+  execute: (
+    args: Record<string, unknown>,
+    tools?: AdapterToolsProtocol,
+    /** Aborts when the host withdraws the call (e.g. OMP `host_tool_cancel`). */
+    signal?: AbortSignal,
+  ) => Promise<McpToolResult>;
 }
 
 export interface McpToolInputSchema {
@@ -188,8 +193,8 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
     return {
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
-      execute: (args: Record<string, unknown>) =>
-        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver))),
+      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) =>
+        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
     };
   });
 }
@@ -200,7 +205,10 @@ export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterTo
 }
 
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
-  return { ...tool, execute: (args: Record<string, unknown>) => tool.execute(args, tools) };
+  return {
+    ...tool,
+    execute: (args, _tools, signal) => tool.execute(args, tools, signal),
+  };
 }
 
 // A host tool can outlive its turn, so each property access checks that the
@@ -248,7 +256,7 @@ export function buildSingleContextRegistrations(
 
 function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegistrationsOptions["execute"]): McpToolRegistration[] {
   return execute ? registrations.map((registration) => ({
-    ...registration, execute: (args) => execute(() => registration.execute(args)),
+    ...registration, execute: (args, tools, signal) => execute(() => registration.execute(args, tools, signal)),
   })) : registrations;
 }
 

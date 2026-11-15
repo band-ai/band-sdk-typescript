@@ -153,6 +153,41 @@ describe("OmpRpcAdapter", () => {
     expect(omp.peers, "the room kept its process").toHaveLength(1);
   });
 
+  it("quietly settles a cancelled turn when its process dies before the aborted prompt_result", async () => {
+    const omp = fakeOmpProcesses();
+    const { agent, room } = await startAgent(ompAdapter(omp));
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "count to a million");
+    const { peer } = await prompted;
+    peer.send(assistant(text("1, 2, 3")));
+
+    expect(await agent.cancelTurn(ROOM)).toBe(true);
+    peer.die(1);
+
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.failures, "process loss after cancel is not a turn failure").toEqual([]);
+    expect(room.posted, "a cancelled turn posts nothing").toEqual([]);
+  });
+
+  it("does not postEvents or relayReply after onCleanup while a detached turn finishes", async () => {
+    const omp = fakeOmpProcesses();
+    const adapter = ompAdapter(omp);
+    const { room } = await startAgent(adapter);
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "write a long reply");
+    const { peer, prompt } = await prompted;
+    peer.send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo hi" } });
+    peer.send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: { content: [text("hi")] }, isError: false });
+    peer.send(assistant(text("ghost reply")));
+
+    await adapter.onCleanup(ROOM);
+    peer.finish(prompt.id);
+
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.posted, "leave must not leave a ghost post").toEqual([]);
+    expect(room.messages.map((posted) => posted.content), "leave must not relay a reply").toEqual([]);
+  });
+
   it("fails the turn when its OMP process dies, and seeds the room's next process with the room's history", async () => {
     const omp = fakeOmpProcesses();
     const { room, events } = await startAgent(ompAdapter(omp));
@@ -288,6 +323,65 @@ describe("OmpRpcAdapter", () => {
     expect(ofTypes(events, "approval.requested", "approval.resolved")).toEqual([]);
 
     peer.send(assistant(text("Ada.")));
+    peer.finish(prompt.id);
+    expect(await room.outcome(message)).toBe("processed");
+  });
+
+  it("stops an in-flight host tool on host_tool_cancel and does not send host_tool_result", async () => {
+    const omp = fakeOmpProcesses();
+    const started = createDeferred<AbortSignal>();
+    let completed = false;
+    const { room } = await startAgent(ompAdapter(omp, {
+      additionalTools: [
+        {
+          name: "slow_probe",
+          description: "A host tool that only finishes when withdrawn or after a long wait.",
+          inputSchema: { type: "object", properties: {}, required: [] },
+          execute: async (_args, _tools, signal) => {
+            started.resolve(signal!);
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                clearTimeout(timer);
+                reject(signal!.reason instanceof Error ? signal!.reason : new Error("withdrawn"));
+              };
+              const timer = setTimeout(() => {
+                completed = true;
+                resolve();
+              }, 30_000);
+              if (signal!.aborted) onAbort();
+              else signal!.addEventListener("abort", onAbort, { once: true });
+            });
+            completed = true;
+            return { content: [{ type: "text", text: "should not complete" }] };
+          },
+        },
+      ],
+    }));
+    const prompted = omp.nextPrompt();
+    const message = await room.say("owner", "run the slow tool");
+    const { peer, prompt } = await prompted;
+
+    const result = peer.callHostTool("tool-slow", "slow_probe", {});
+    const signal = await started.promise;
+    peer.cancelHostTool("tool-slow");
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) resolve();
+      else signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unanswered = new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve(`no answer within ${PROBE_WAIT_MS}ms`), PROBE_WAIT_MS);
+    });
+    try {
+      expect(await Promise.race([result.then(() => "answered"), unanswered])).toBe(`no answer within ${PROBE_WAIT_MS}ms`);
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(completed, "withdraw must stop execute side effects").toBe(false);
+    expect(peer.received.some((frame) => frame.type === "host_tool_result" && frame.id === "tool-slow")).toBe(false);
+
+    peer.send(assistant(text("done")));
     peer.finish(prompt.id);
     expect(await room.outcome(message)).toBe("processed");
   });

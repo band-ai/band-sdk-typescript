@@ -32,9 +32,9 @@ import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
 import { framedReplay } from "../shared/historyReplay";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { assertPermissionTimeoutMs, DEFAULT_PERMISSION_TIMEOUT_MS } from "../shared/permissionTimeout";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
-import { MAX_SETTIMEOUT_DELAY_MS } from "../../core/deadline";
-import { assertWithinSetTimeoutBound, withTimeout } from "../shared/withTimeout";
+import { withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { observeNativeToolCalls, recordBandToolCalls } from "./toolCalls";
@@ -67,10 +67,6 @@ import { stopChildProcess } from "../shared/stopChildProcess";
 import { acpModule } from "./loader";
 import type { WorkspaceForRoom } from "../shared/roomWorkspace";
 
-// Same default `OpencodeAdapter` uses for its own manual-approval wait
-// (`approvalWaitTimeoutMs`) — an unanswered request shouldn't hang the
-// agent's turn forever, but should give a human realistic time to notice it.
-const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 const CANCELLED_PERMISSION_RESPONSE: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 
@@ -1891,14 +1887,7 @@ export function validateACPClientOptions(options: ACPClientAdapterOptions): stri
   return command
 }
 
-/** For a subclass that supplies its own per-room `resolvePermission`, which the adapter options never show. */
-export function assertPermissionTimeoutMs(value: number | undefined): void {
-  const permissionTimeoutMs = value ?? DEFAULT_PERMISSION_TIMEOUT_MS
-  if (!Number.isFinite(permissionTimeoutMs) || permissionTimeoutMs <= 0) {
-    throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${value}`)
-  }
-  assertWithinSetTimeoutBound(`permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${value}`, permissionTimeoutMs)
-}
+export { assertPermissionTimeoutMs, DEFAULT_PERMISSION_TIMEOUT_MS } from "../shared/permissionTimeout";
 
 export async function createSubprocessConnection(
   client: BandACPClient,

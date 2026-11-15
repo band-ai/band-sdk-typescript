@@ -11,10 +11,10 @@ import { buildSingleContextRegistrations, resolveSingleRoomTools, type McpToolRe
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import { trackNativeActivity } from "../../runtime/workingState";
-import { assertPermissionTimeoutMs } from "../acp/ACPRoomAgent";
 import { asErrorMessage } from "../shared/coercion";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { framedReplay } from "../shared/historyReplay";
+import { assertPermissionTimeoutMs, DEFAULT_PERMISSION_TIMEOUT_MS } from "../shared/permissionTimeout";
 import { roomContextLines } from "../shared/roomContext";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import type { WorkspaceForRoom } from "../shared/roomWorkspace";
@@ -41,7 +41,6 @@ import {
 
 export const DEFAULT_OMP_RPC_COMMAND = ["omp", "--mode", "rpc"] as const;
 
-const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // A local process acknowledging a command; the turn itself ends on its own result.
 const ABORT_ACK_TIMEOUT_MS = 10_000;
@@ -310,7 +309,12 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
   public async onCleanup(_roomId: string): Promise<void> {
     const turn = this.activeTurn;
     this.activeTurn = undefined;
-    if (turn) this.endPermissions(turn, "room-closed");
+    if (turn) {
+      // Detached `runTurn` must settle quietly and must not post or reply.
+      turn.cancelled = true;
+      turn.cancellation.resolve();
+      this.endPermissions(turn, "room-closed");
+    }
     this.turns.release(this.roomId);
   }
 
@@ -359,7 +363,7 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
       } finally {
         turn.client = undefined;
       }
-      if (outcome.status === "aborted" && turn.cancelled) {
+      if (turn.cancelled) {
         throw new OmpTurnCancelledError();
       }
       await this.postEvents(turn);
@@ -376,9 +380,9 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
       }
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
-      if (error instanceof OmpTurnCancelledError) {
-        // A host's cancel ends the turn quietly: what the agent produced is
-        // dropped, and the process stays for the room's next turn.
+      if (error instanceof OmpTurnCancelledError || turn.cancelled) {
+        // A host's cancel (or leave/cleanup) ends the turn quietly: what the
+        // agent produced is dropped. Process loss after cancel is the same.
         turn.tools.turn.settle();
         return;
       }
@@ -511,7 +515,7 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
   private promptHandlers(turn: ActiveTurn): OmpPromptHandlers {
     return {
       onEvent: (event) => this.observeEvent(turn, event),
-      onHostTool: (call) => this.runHostTool(turn, call),
+      onHostTool: (call, signal) => this.runHostTool(turn, call, signal),
       onUiRequest: (request, signal) => this.answerUiRequest(turn, request, signal),
     };
   }
@@ -588,15 +592,19 @@ export class OmpRoomAgent extends SimpleAdapter<OmpRpcSessionState, TurnTools> {
     }
   }
 
-  private async runHostTool(turn: ActiveTurn, call: OmpHostToolCall): Promise<OmpToolResult> {
-    if (turn.cancelled) {
+  private async runHostTool(turn: ActiveTurn, call: OmpHostToolCall, signal: AbortSignal): Promise<OmpToolResult> {
+    if (turn.cancelled || signal.aborted) {
       return { content: [{ type: "text", text: "The turn was cancelled." }], isError: true };
     }
     const registration = this.hostTools.get(call.toolName);
     if (!registration) {
       return { content: [{ type: "text", text: "Tool is not available in this session" }], isError: true };
     }
-    const result = await registration.execute(call.arguments);
+    const result = await registration.execute(call.arguments, undefined, signal);
+    if (signal.aborted) {
+      // The client already suppresses host_tool_result after withdraw.
+      throw signal.reason instanceof Error ? signal.reason : new Error("Host tool call was withdrawn");
+    }
     return { content: result.content, ...(result.isError ? { isError: true } : {}) };
   }
 

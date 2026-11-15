@@ -94,6 +94,11 @@ export class FakeOmp {
     return result;
   }
 
+  /** Withdraws an in-flight host tool call (`host_tool_cancel`). */
+  public cancelHostTool(targetId: string): void {
+    this.send({ type: "host_tool_cancel", targetId });
+  }
+
   /** Asks a dialog question and resolves with the adapter's answer frame. */
   public async ask(id: string, request: Frame): Promise<Frame> {
     const answer = this.next((frame) => frame.type === "extension_ui_response" && frame.id === id);
