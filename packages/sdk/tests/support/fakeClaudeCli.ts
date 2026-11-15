@@ -5,12 +5,12 @@ import type { ClaudeExitInfo, ClaudeProcessFactory, ClaudeProcessHandle, ClaudeP
 
 type Frame = Record<string, unknown>;
 
-/** The `initialize` answer Claude Code 2.1.319 writes, as the capture recorded it. */
 /** The CLI's plain acceptance of a control request the host sent (interrupt, set-mode, …). */
 export function controlSuccess(requestId: string): Frame {
   return { type: "control_response", response: { subtype: "success", request_id: requestId, response: {} } };
 }
 
+/** The `initialize` answer Claude Code 2.1.319 writes, as the capture recorded it. */
 export function initResponse(requestId: string, cliVersion = "2.1.319"): Frame {
   return {
     type: "control_response",
