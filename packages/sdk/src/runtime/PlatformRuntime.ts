@@ -306,11 +306,16 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
-   * Whether start or reconnect listing should subscribe to `room` now. Allowed
-   * rooms that `roomFilter` alone would decline are admitted later by
-   * `admitAllowedMemberRooms` (and warmed there when requested).
+   * Whether start's existing-room hydration should subscribe to `room` now.
+   * Declined by `roomFilter`, or pending a warm allow, are admitted later by
+   * `admitAllowedMemberRooms` (and warmed there when requested). Reconnect
+   * still uses {@link admitsRoom}.
    */
   private listsRoomOnStart(room: MetadataMap): boolean {
+    const roomId = roomIdOf(room);
+    if (roomId !== undefined && this.warmRooms.has(roomId)) {
+      return false;
+    }
     return this._roomFilter?.(room) ?? true;
   }
 
@@ -321,12 +326,13 @@ export class PlatformRuntime implements AsyncDisposable {
    * The allow sticks as a filter override for this runtime; a later deny
    * pauses turns but leaves that override. With `warm`, a member room has its
    * agent process started when start (or a running `allow`) admits it, and
-   * `room.ready` or `room.failed` is reported before the room joins; a room
-   * not listed yet keeps the warm request until then, and is not warmed on a
-   * later `room_added` admit. A pause Band put on the room stays until Band plays it. A room
-   * whose session a reset replaced replays what Band kept on its next message,
-   * as a play does. Kept across restarts of this runtime. Resolves true when
-   * the room is admitted on return.
+   * `room.ready` or `room.failed` is reported before the room joins. A warm
+   * allow before or during start is kept until that admission; a room Band
+   * has not listed the agent in yet is not warmed, and a later `room_added`
+   * admit starts its process on the first message. A pause Band put on the
+   * room stays until Band plays it. A room whose session a reset replaced
+   * replays what Band kept on its next message, as a play does. Kept across
+   * restarts of this runtime. Resolves true when the room is admitted on return.
    */
   public async allowRoom(roomId: string, options: AllowRoomOptions = {}): Promise<boolean> {
     this.allowedRooms.add(roomId);

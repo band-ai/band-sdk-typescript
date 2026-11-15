@@ -320,6 +320,18 @@ describe("agent.rooms", () => {
     expect(subscribed(ROOM_B)).toBe(true);
   });
 
+  it("warms a filter-admitted room allowed with warm before start before that room joins", async () => {
+    const { adapter, warms } = warmRecorder("identity");
+    const platform = BandPlatform.host([person("owner")]);
+    await platform.room(ROOM_A);
+    const { agent, subscribed, of } = createAgent(adapter, platform, (room) => room.id === ROOM_A);
+    await agent.rooms.allow(ROOM_A, { warm: true });
+    await agent.start();
+    expect(warms.entries).toEqual([ROOM_A]);
+    expect(of(ROOM_A)).toEqual(["room.ready", "room.joined"]);
+    expect(subscribed(ROOM_A)).toBe(true);
+  });
+
   it("warms a member room allowed with warm while start is joining an earlier room", async () => {
     const { adapter, warms } = warmRecorder("identity");
     const platform = BandPlatform.host([person("owner")]);
