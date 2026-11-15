@@ -1,6 +1,27 @@
 # Changelog
 
 
+## [2.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.1.0...sdk-v2.2.0) (2026-11-15)
+
+
+### Features
+
+* **adapters:** run OMP over its native RPC mode, one process per room ([#414](https://github.com/band-ai/band-sdk-typescript/issues/414)) ([76471e5](https://github.com/band-ai/band-sdk-typescript/commit/76471e5bef48dea9f794eb0f9c329a7a5a8abac8))
+* **adapters:** run the installed Claude CLI with turn-scoped tools ([#426](https://github.com/band-ai/band-sdk-typescript/issues/426)) ([741ec8e](https://github.com/band-ai/band-sdk-typescript/commit/741ec8e7afe463d091fd22dcb52e54823c9cdcd4))
+* **agent:** allow and deny rooms while the agent runs ([#410](https://github.com/band-ai/band-sdk-typescript/issues/410)) ([45a7ec1](https://github.com/band-ai/band-sdk-typescript/commit/45a7ec18dd428f660d9a2523c1284f8b4252e999))
+* **agent:** report turns, tools, approvals, rooms and link locally ([#407](https://github.com/band-ai/band-sdk-typescript/issues/407)) ([d67d9d9](https://github.com/band-ai/band-sdk-typescript/commit/d67d9d90337f48fcb52c3d76d32f95ad74b89ac0))
+* **agent:** report what a warm room's agent said about itself on room.ready ([#415](https://github.com/band-ai/band-sdk-typescript/issues/415)) ([8bf2c3a](https://github.com/band-ai/band-sdk-typescript/commit/8bf2c3a1738ae853737c95f84c49be5c51f2f215))
+* **runtime:** honour Band's agent.control stop, play and interrupt ([#423](https://github.com/band-ai/band-sdk-typescript/issues/423)) ([57df2c4](https://github.com/band-ai/band-sdk-typescript/commit/57df2c4fe88c1a73e23e6999f7dff1b2d1c84b58))
+* **runtime:** journal turn ends so a restart does not answer again ([#413](https://github.com/band-ai/band-sdk-typescript/issues/413)) ([526e99d](https://github.com/band-ai/band-sdk-typescript/commit/526e99dad8ed7b5d1b859e49eaa29669a4405020))
+* **runtime:** page the agent's room context, as the Python SDK does ([#408](https://github.com/band-ai/band-sdk-typescript/issues/408)) ([221ad55](https://github.com/band-ai/band-sdk-typescript/commit/221ad5558668ca3a1d43424629a16e12891fe458))
+* **runtime:** read a room back before resending an uncertain message post ([#424](https://github.com/band-ai/band-sdk-typescript/issues/424)) ([498aa25](https://github.com/band-ai/band-sdk-typescript/commit/498aa252b99715743a1fb6dbef1696425fccd240))
+
+
+### Bug Fixes
+
+* **adapters:** pass room tools to host tools on room-scoped servers ([#409](https://github.com/band-ai/band-sdk-typescript/issues/409)) ([6624971](https://github.com/band-ai/band-sdk-typescript/commit/662497138806363e79daffeebb41d6c990ebb267))
+* **sdk:** give Letta peers' /context messages as input and prove recall uses /context ([#422](https://github.com/band-ai/band-sdk-typescript/issues/422)) ([4252d73](https://github.com/band-ai/band-sdk-typescript/commit/4252d73603241701933a5fce85c812df142a6735))
+
 ## [2.1.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.0.1...sdk-v2.1.0) (2026-11-10)
 
 
