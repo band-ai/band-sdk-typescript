@@ -4,7 +4,7 @@ import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger } from "../core/logger";
-import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
+import { PlatformRuntime, type AllowRoomOptions, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
@@ -20,6 +20,8 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
   shutdownTimeoutMs?: number | null;
 }
 
+export type { AllowRoomOptions };
+
 /**
  * {@link Agent.rooms}: which rooms the agent takes turns in, changed while it
  * runs. Local to this process: Band is not told. An `allow` sticks as a
@@ -28,7 +30,7 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
  */
 export interface AgentRooms {
   /** See {@link PlatformRuntime.allowRoom}. */
-  allow(roomId: string): Promise<boolean>;
+  allow(roomId: string, options?: AllowRoomOptions): Promise<boolean>;
   /** See {@link PlatformRuntime.denyRoom}. */
   deny(roomId: string): Promise<boolean>;
 }
@@ -67,7 +69,7 @@ export class Agent {
       isLegalTransition: isLegalRuntimeTransition,
     });
     this.rooms = {
-      allow: (roomId) => runtime.allowRoom(roomId),
+      allow: (roomId, options) => runtime.allowRoom(roomId, options),
       deny: (roomId) => runtime.denyRoom(roomId),
     };
   }

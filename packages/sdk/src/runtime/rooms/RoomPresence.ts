@@ -18,6 +18,8 @@ import { Serializer } from "../../core/singleFlight";
 interface RoomPresenceOptions {
   link: BandLink;
   roomFilter?: (room: MetadataMap) => boolean;
+  /** Listing/hydration filter; defaults to `roomFilter`. */
+  listingRoomFilter?: (room: MetadataMap) => boolean;
   autoSubscribeExistingRooms?: boolean;
   logger?: Logger;
 }
@@ -39,6 +41,7 @@ export class RoomPresence implements AsyncDisposable {
 
   private readonly link: BandLink;
   private readonly roomFilter?: RoomPresenceOptions["roomFilter"];
+  private readonly listingRoomFilter: (room: MetadataMap) => boolean;
   private readonly autoSubscribeExistingRooms: boolean;
   private readonly logger: Logger;
   private eventController: AbortController | null = null;
@@ -54,6 +57,7 @@ export class RoomPresence implements AsyncDisposable {
   public constructor(options: RoomPresenceOptions) {
     this.link = options.link;
     this.roomFilter = options.roomFilter;
+    this.listingRoomFilter = options.listingRoomFilter ?? options.roomFilter ?? (() => true);
     this.autoSubscribeExistingRooms = options.autoSubscribeExistingRooms ?? true;
     this.logger = resolveLogger(options.logger);
   }
@@ -425,7 +429,7 @@ export class RoomPresence implements AsyncDisposable {
   private async subscribeExistingRooms(): Promise<void> {
     await hydrateExistingRooms({
       link: this.link,
-      roomFilter: this.roomFilter,
+      roomFilter: this.listingRoomFilter,
       requestOptions: DEFAULT_REQUEST_OPTIONS,
       onRoom: async (roomId, payload) => {
         await this.admitRoom(roomId, payload);
