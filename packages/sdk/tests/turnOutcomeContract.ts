@@ -80,6 +80,7 @@ export const TURN_OUTCOME_ADAPTERS: Readonly<Record<string, string>> = {
   CopilotACPAdapter: "acp-client-adapter.test.ts",
   KiroACPAdapter: "acp-client-adapter.test.ts",
   OmpACPAdapter: "acp-client-adapter.test.ts",
+  OmpRpcAdapter: "omp-rpc-adapter.test.ts",
   CursorACPAdapter: "flows/cursor.flow.test.ts",
   OpencodeAdapter: "flows/opencode.flow.test.ts",
   GenericAdapter: "generic-adapter.test.ts",

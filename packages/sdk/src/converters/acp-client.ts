@@ -1,5 +1,5 @@
 import type { HistoryConverter } from "../contracts/protocols";
-import { resolveReplayLineContent } from "./shared";
+import { buildReplayMessages, type ReplayMessage } from "./shared";
 
 /**
  * The task event `ACPClientAdapter` posts once per turn to record which ACP
@@ -11,11 +11,6 @@ export const ACP_SESSION_EVENT = {
   roomIdKey: "acp_client_room_id",
 } as const;
 
-export interface ACPClientReplayMessage {
-  id: string;
-  line: string;
-}
-
 export interface ACPClientSessionState {
   roomToSession: Record<string, string>;
   // Rendered `[sender]: content` lines for the room's text history — the
@@ -25,26 +20,7 @@ export interface ACPClientSessionState {
   // or not it was already excluded upstream. Optional so a hand-built test
   // fixture unconcerned with replay doesn't have to state it; the real
   // converter always populates it (possibly empty).
-  replayMessages?: ACPClientReplayMessage[];
-}
-
-// Non-text messages (task/tool/thought events) are skipped; used by
-// `ACPClientAdapter` to re-seed a fresh session from platform history when
-// the previous one cannot be resumed.
-function buildReplayMessages(raw: Array<Record<string, unknown>>): ACPClientReplayMessage[] {
-  const replayMessages: ACPClientReplayMessage[] = []
-  for (const entry of raw) {
-    if (entry.message_type !== "text") {
-      continue
-    }
-    const id = typeof entry.id === "string" ? entry.id : null
-    const line = resolveReplayLineContent(entry)
-    if (!line || !id) {
-      continue
-    }
-    replayMessages.push({ id, line: `[${line.sender}]: ${line.content}` })
-  }
-  return replayMessages
+  replayMessages?: ReplayMessage[];
 }
 
 export class ACPClientHistoryConverter implements HistoryConverter<ACPClientSessionState> {

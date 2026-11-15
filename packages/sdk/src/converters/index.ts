@@ -69,3 +69,8 @@ export {
   extractOpencodeSessionId,
   type OpencodeSessionState,
 } from "./opencode";
+
+export {
+  OmpRpcHistoryConverter,
+  type OmpRpcSessionState,
+} from "./omp-rpc";
