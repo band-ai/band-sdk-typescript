@@ -1,5 +1,6 @@
 import { bindWorkingCycle } from "./workingState";
-import { isSyntheticTurn, type FrameworkAdapter, type FrameworkAdapterInput, type Preprocessor } from "../contracts/protocols";
+import { isSyntheticTurn, type AdapterToolsProtocol, type FrameworkAdapter, type FrameworkAdapterInput, type PlatformMessageLike, type Preprocessor } from "../contracts/protocols";
+import { overrideTools } from "../core/overrideTools";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
@@ -888,7 +889,8 @@ export class PlatformRuntime implements AsyncDisposable {
         if (journal) this.reportRepeat(journal, roomId, messageId);
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
-        const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
+        const pinned = pinTurnInbound(input.tools, input.message);
+        const cycled = lease ? bindWorkingCycle(pinned, lease) : pinned;
         // Journaled under the revocation, so a reply refused at its call records nothing.
         const journaled = journal && this.journals
           ? journalingTools(cycled, this.journals, roomId, messageId, stopped, this.logger)
@@ -1094,4 +1096,15 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.contactHandler.handle(event);
     }
   }
+}
+
+/** `tools` whose room-history reads pin `inbound`, so a turn always sees the message it is answering. */
+function pinTurnInbound(tools: AdapterToolsProtocol, inbound: PlatformMessageLike): AdapterToolsProtocol {
+  const readRoomHistory = tools.readRoomHistory;
+  if (!readRoomHistory) {
+    return tools;
+  }
+  return overrideTools(tools, {
+    readRoomHistory: (args = {}) => readRoomHistory.call(tools, { ...args, pinned: args.pinned ?? inbound }),
+  });
 }

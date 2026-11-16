@@ -37,6 +37,7 @@ import {
 } from "./messageDelivery";
 import { fetchCursorFirst, fetchCursorTail, normalizePaginationMetadata, TEXT_MESSAGE } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
+import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 import type {
   FernUserProfile,
   FernBandClientLike,
@@ -850,6 +851,24 @@ export class FernRestAdapter implements RestApi {
     }
 
     return normalizeToolOperationResult(await refusedWhileStopped(chatId, api(chatId, messageId, { error }, mergeOptions(options))));
+  }
+
+  public async listRoomHistory(
+    request: { chatId: string; cursor?: string; limit: number },
+    options?: RestRequestOptions,
+  ): Promise<PaginatedResponse<PlatformChatMessage>> {
+    const api = this.client.agentApiMessages?.listAgentMessages?.bind(this.client.agentApiMessages);
+    if (!api) {
+      throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
+    }
+    return normalizeFernPaginatedResponse<PlatformChatMessage>(
+      await api(
+        request.chatId,
+        { status: "all", sort_order: "desc", ...(request.cursor === undefined ? {} : { cursor: request.cursor }), limit: request.limit },
+        mergeOptions(options),
+      ),
+      normalizePlatformMessageRecord,
+    );
   }
 
   public async getNextMessage(
