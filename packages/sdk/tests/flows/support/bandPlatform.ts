@@ -679,7 +679,7 @@ export class BandPlatform implements AsyncDisposable {
   public control(
     mode: AgentControlMode,
     roomId: string | null,
-    options: { delivered?: boolean; correlationId?: string } = {},
+    options: { delivered?: boolean; correlationId?: string; executionId?: string | null } = {},
   ): string {
     for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
       if (mode === "stop") this.rest.stoppedRooms.add(room);
@@ -688,7 +688,7 @@ export class BandPlatform implements AsyncDisposable {
     const correlationId = options.correlationId ?? randomUUID();
     if (options.delivered !== false) {
       this.transport.pushControl({
-        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: options.executionId ?? null,
       });
     }
     return correlationId;
