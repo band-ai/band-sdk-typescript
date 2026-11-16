@@ -540,6 +540,53 @@ describe("CodexAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "task" && event.metadata?.codex_thread_id === "thread-1")).toBe(true);
   });
 
+  it.each([
+    { threadId: "obsolete-thread", turnId: "turn-1" },
+    { threadId: "thread-1", turnId: "obsolete-turn" },
+  ])("refuses server requests outside the active native operation ($threadId/$turnId)", async (identity) => {
+    const executed: string[] = [];
+    const client = new FakeCodexClient({
+      events: [
+        {
+          kind: "request", id: 101, method: "item/tool/call",
+          params: { ...identity, callId: "obsolete-reply", tool: SEND_MESSAGE_TOOL_NAME,
+            arguments: { content: "obsolete reply", mentions: ["owner"] } },
+        },
+        {
+          kind: "request", id: 102, method: "item/tool/call",
+          params: { ...identity, callId: "obsolete-custom", tool: "record_action", arguments: { text: "obsolete" } },
+        },
+        {
+          kind: "request", id: 103, method: "item/tool/call",
+          params: { threadId: "thread-1", turnId: "turn-1", callId: "current-custom",
+            tool: "record_action", arguments: { text: "current" } },
+        },
+        {
+          kind: "request", id: 104, method: "item/tool/call",
+          params: { threadId: "thread-1", turnId: "turn-1", callId: "current-reply", tool: SEND_MESSAGE_TOOL_NAME,
+            arguments: { content: "current reply", mentions: ["owner"] } },
+        },
+        TURN_COMPLETED,
+      ],
+    });
+    const adapter = new CodexAdapter({
+      factory: async () => client,
+      config: { cwd: tmpRoot(), enableExecutionReporting: true },
+      customTools: [{
+        name: "record_action", description: "Record an action", schema: z.object({ text: z.string() }),
+        handler: async (args) => { executed.push(String(args.text)); return "recorded"; },
+      }],
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "act"))).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["current reply"]);
+    expect(executed).toEqual(["current"]);
+    expect(client.responses.find(({ id }) => id === 101)).toMatchObject({ error: { code: -32602 } });
+    expect(client.responses.find(({ id }) => id === 102)).toMatchObject({ error: { code: -32602 } });
+    const reports = [...session.room.events("tool_call"), ...session.room.events("tool_result")];
+    expect(reports.map(({ content }) => JSON.parse(content).tool_call_id)).toEqual(["current-custom", "current-custom"]);
+  });
+
   it("falls back to a new thread and injects history when resume fails", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
@@ -1731,13 +1778,7 @@ describe("CodexAdapter", () => {
     );
 
     expect(tools.toolCalls).toEqual([]);
-    expect(fakeClient.responses).toContainEqual({
-      id: 1,
-      error: {
-        code: -32602,
-        message: "Invalid params for item/tool/call",
-      },
-    });
+    expect(fakeClient.responses.find(({ id }) => id === 1)).toMatchObject({ error: { code: -32602 } });
   });
 
   it("reports custom tool failures with structured output while returning compatible text to Codex", async () => {

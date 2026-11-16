@@ -448,6 +448,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
             client,
             tools,
             roomId,
+            threadId,
+            turnId,
             event,
             enableExecutionReporting: config.enableExecutionReporting ?? false,
           });
@@ -986,10 +988,17 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     client: CodexClientLike;
     tools: TurnTools;
     roomId: string;
+    threadId: string;
+    turnId: string;
     event: CodexRpcEvent & { kind: "request" };
     enableExecutionReporting: boolean;
   }): Promise<void> {
     const { client, tools, event } = input;
+    const requestParams = asOptionalRecord(event.params);
+    if (requestParams?.threadId !== input.threadId || requestParams?.turnId !== input.turnId) {
+      await client.respondError(event.id, -32602, "Server request does not belong to the active turn");
+      return;
+    }
 
     if (event.method === "item/tool/call") {
       const params = parseDynamicToolCallParams(event.params);
