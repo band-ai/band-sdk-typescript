@@ -391,7 +391,15 @@ describe.skipIf(!LIVE)("Claude CLI adapter against the installed CLI", () => {
   it("auto runs a workspace edit without asking the room", async () => {
     const ws = mkdtempSync(join(tmpdir(), "band-live-auto-edit-"));
     const target = join(ws, "written-by-auto.txt");
-    const run = await liveOrReport({ permissionMode: "auto", workspaceForRoom: () => ws });
+    let run: Live;
+    try {
+      run = await liveOrReport({ permissionMode: "auto", workspaceForRoom: () => ws });
+    } catch (error) {
+      // The workspace is allocated before the availability check, so the
+      // UNAVAILABLE throw path must release it instead of leaving it behind.
+      rmSync(ws, { recursive: true, force: true });
+      throw error;
+    }
     try {
       const ended = run.turnEnd();
       const posted = run.room.say("owner", `Use the Write tool exactly once to create ${target} with content AUTO-OK. Then reply with the single word DONE.`);
@@ -430,18 +438,28 @@ describe.skipIf(!LIVE)("Claude CLI adapter against the installed CLI", () => {
     });
     await server.start();
     const ws = mkdtempSync(join(tmpdir(), "band-live-auto-granted-"));
-    const run = await liveOrReport({
-      permissionMode: "auto",
-      workspaceForRoom: () => ws,
-      extraMcpServers: [
-        {
-          name: "granted",
-          type: "http",
-          url: server.url!,
-          headers: [{ name: "Authorization", value: "Bearer live-probe-token" }],
-        },
-      ],
-    });
+    let run: Live;
+    try {
+      run = await liveOrReport({
+        permissionMode: "auto",
+        workspaceForRoom: () => ws,
+        extraMcpServers: [
+          {
+            name: "granted",
+            type: "http",
+            url: server.url!,
+            headers: [{ name: "Authorization", value: "Bearer live-probe-token" }],
+          },
+        ],
+      });
+    } catch (error) {
+      // The server and workspace are allocated before the availability check, so
+      // the UNAVAILABLE throw path must release both instead of leaving them
+      // behind.
+      await server.stop();
+      rmSync(ws, { recursive: true, force: true });
+      throw error;
+    }
     try {
       const ended = run.turnEnd();
       const posted = run.room.say("owner", 'Call the tool named mcp__granted__probe_fetch exactly once with argument {"q":"live"}. It answers a short marker string; that is expected. Then reply with the single word DONE.');
