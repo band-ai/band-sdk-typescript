@@ -10,7 +10,7 @@ import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import type { PlatformSnapshot } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
-import { IDENTITY as JOURNAL_IDENTITY, recordTypes, roomFile } from "./turnJournalSupport";
+import { IDENTITY as JOURNAL_IDENTITY, journalLines, recordTypes, roomFile } from "./turnJournalSupport";
 
 const IDENTITY = JOURNAL_IDENTITY;
 const ROOM = "room-1";
@@ -389,6 +389,63 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(successor.handled).toEqual([]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
     expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded")).toHaveLength(1);
+  }, 180_000);
+
+  it("announces the second reply an answered inbound left unresolved when the successor never receives that inbound again", async () => {
+    const journalDir = tmpRoot();
+    const stateFile = path.join(journalDir, "child-state.json");
+    onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
+    // The child settles reply A durably, then posts reply B to the platform with B's settle
+    // record held: both replies stand under the one inbound — A settled, B unresolved.
+    const state = await driveChild(journalDir, "ab-mixed", stateFile);
+    expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
+    const file = roomFile(journalDir, IDENTITY, AGENT_ID, state.room);
+    expect(await recordTypes(file)).toEqual(["reply.intent", "reply.settled", "reply.intent"]);
+    // Both publication intents and A's settlement stand under the single inbound: this is
+    // one inbound with two replies, not two messages — the shape recovery must recover
+    // even when that inbound never arrives at the successor.
+    expect(new Set((await journalLines(file)).map((record) => String(record.messageId)))).toEqual(new Set([state.inboundId]));
+    // The one message still standing unsettled in the child's platform is the inbound
+    // itself; the successor's input removes it, serving the successor nothing.
+    const unsettled = state.platform.unsettled.filter((entry) => entry.item.id !== state.inboundId);
+    expect(unsettled).toEqual([]);
+
+    const platform = BandPlatform.host([person(state.owner)]);
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    platform.rest.restore({ ...state.platform, unsettled });
+    const handled: string[] = [];
+    const events = new RecordLog<AgentEvent>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
+    });
+    runtime.observe((event) => {
+      events.record(event);
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running") await runtime.stop(KILL);
+    });
+    await runtime.start(new GenericAdapter(async (args) => {
+      handled.push(String(args.message.id));
+    }));
+
+    // B's unresolved publication is the admission's own warning: reported when the room's
+    // journal opens, with no inbound to ride on — recovery reads it from the journal, not
+    // from a redelivery of the answered inbound.
+    await events.next((event) => event.type === "delivery.unrecorded");
+    expect(handled).toEqual([]);
+    // No new post: A's reply stands exactly as the child settled it, B's exactly as the
+    // platform admitted it; nothing is answered or posted in the inbound's absence.
+    expect(platform.rest.deliveries.map((delivery) => delivery.content)).toEqual(["reply A", "reply B"]);
+    expect(events.entries.filter((event) => event.type === "delivery.unrecorded")).toEqual([
+      { type: "delivery.unrecorded", roomId: state.room, messageId: state.inboundId },
+    ]);
+    // The announcement stands recorded beneath B's intent, under the same inbound; A's
+    // settled reply stands as the child left it.
+    expect(await recordTypes(file)).toEqual(["reply.intent", "reply.settled", "reply.intent", "publication.reported"]);
   }, 180_000);
 
   it("suppresses a turn killed between its durable settlement and the tool's response: no dispatch, one post", async () => {
