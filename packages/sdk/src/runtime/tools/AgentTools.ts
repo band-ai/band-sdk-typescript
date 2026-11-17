@@ -1,8 +1,9 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
-import { replyPosting } from "../../core/replyGate";
+import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import { currentDelivery } from "../messageDelivery";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
+import type { PublicationEngine } from "../journal/publication";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
@@ -84,6 +85,17 @@ interface AgentToolsOptions {
   roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
   logger?: Logger;
+  /**
+   * The start generation's publication engine for this room's replies: a
+   * reply post settles durably under the room's current inbound message
+   * before it is reported successful. Absent (journal disabled) or when the
+   * room has no inbound message to settle: the post runs unrecorded.
+   */
+  publication?: PublicationEngine;
+  /** The room's in-flight inbound message, if any: the publication a reply settles. */
+  inboundMessageId?: () => string | undefined;
+  /** The room's current turn, if any: a reply interrupted before its post is refused. */
+  publicationStop?: () => AbortSignal | undefined;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -143,12 +155,18 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
   private readonly logger: Logger;
+  private readonly publication: PublicationEngine | undefined;
+  private readonly inboundMessageId: (() => string | undefined) | undefined;
+  private readonly publicationStop: (() => AbortSignal | undefined) | undefined;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
     this.roster = options.roster ?? new ParticipantRoster();
     this.logger = resolveLogger(options.logger);
+    this.publication = options.publication;
+    this.inboundMessageId = options.inboundMessageId;
+    this.publicationStop = options.publicationStop;
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -165,7 +183,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions, replyPosting);
+    return this.postMessage(content, mentions, "reply");
   }
 
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
@@ -173,27 +191,40 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions);
+    return this.postMessage(content, mentions, "notice");
   }
 
   private async postMessage(
     content: string,
     mentions: MentionInput,
-    beforePost?: () => Promise<void>,
+    kind: "reply" | "notice",
   ): Promise<ToolOperationResult> {
-    const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
-    await beforePost?.();
+    const post = async (): Promise<ToolOperationResult> => {
+      const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
 
-    // The REST adapter owns the post's attempts; the turn's delivery lets it read the room back.
-    const delivery = currentDelivery();
-    return this.rest.createChatMessage(
-      this.roomId,
-      {
-        content,
-        mentions: resolvedMentions,
-      },
-      delivery ? { delivery } : undefined,
-    );
+      // The REST adapter owns the post's attempts; the turn's delivery lets it read the room back.
+      const delivery = currentDelivery();
+      return this.rest.createChatMessage(
+        this.roomId,
+        {
+          content,
+          mentions: resolvedMentions,
+        },
+        delivery ? { delivery } : undefined,
+      );
+    };
+
+    // A reply settles under the room's in-flight inbound message: its durable
+    // intent is written before the roster lookup, and its settlement before
+    // the result is returned. A notice (and a reply with nothing in flight)
+    // posts unrecorded, exactly as before the journal existed.
+    if (kind === "reply" && this.publication) {
+      const messageId = this.inboundMessageId?.();
+      if (messageId !== undefined) {
+        return this.publication.publishReply(messageId, post, this.publicationStop?.());
+      }
+    }
+    return post();
   }
 
   public async sendEvent(
@@ -420,6 +451,19 @@ export class AgentTools implements AgentToolsProtocol {
     } catch (error) {
       if (isToolExecutorError(error)) {
         return error;
+      }
+
+      // A delivery that is unknown stays unknown across the tool boundary:
+      // the classification rides in `details`, so an MCP result or a direct
+      // ToolExecutorError tells callers Band may already hold the message.
+      if (error instanceof DeliveryUnknownError) {
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message: error.message,
+          legacyMessage: `Error executing ${toolName}: ${error.message}`,
+          details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
+        });
       }
 
       if (error instanceof ValidationError) {
@@ -835,8 +879,20 @@ export class AgentTools implements AgentToolsProtocol {
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
       [NO_REPLY_TOOL_NAME]: async (arguments_) => {
-        this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
-        return NO_REPLY_RESULT;
+        const declined = async (): Promise<unknown> => {
+          this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
+          return NO_REPLY_RESULT;
+        };
+        // Only a standing decline is settled: the record is durable before the
+        // call reports success, so the declined message can never be
+        // redelivered. A decline the harness refuses records nothing.
+        if (this.publication) {
+          const messageId = this.inboundMessageId?.();
+          if (messageId !== undefined) {
+            return this.publication.publishDecline(messageId, declined);
+          }
+        }
+        return declined();
       },
       band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),

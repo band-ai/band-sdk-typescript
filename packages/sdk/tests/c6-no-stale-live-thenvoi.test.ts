@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, join, basename } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
@@ -27,9 +27,11 @@ const DOC_ENV = /THENVOI_[A-Z]/;
 const RETAINED_ENV = /LINEAR_THENVOI_|\.linear-thenvoi/;
 
 function scopedFiles(): string[] {
+  // Tracked on git but deleted from the working tree (superseded by this branch's work)
+  // cannot carry stale text: guard only what is on disk.
   return execSync("git ls-files", { cwd: REPO_ROOT, encoding: "utf8" })
     .split("\n")
-    .filter((f) => f && !EXCLUDE_PATH.test(f));
+    .filter((f) => f && !EXCLUDE_PATH.test(f) && existsSync(join(REPO_ROOT, f)));
 }
 
 // These files are read from the working tree, so their line endings are whatever

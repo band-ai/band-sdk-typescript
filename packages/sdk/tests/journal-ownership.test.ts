@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { chmod, lstat, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdtempSync as mkdtempSyncSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,8 @@ async function expectContention(file: string): Promise<void> {
   expectKind(error, "contention");
 }
 
+type LockChild = ChildProcessByStdio<null, Readable, null>;
+
 /**
  * A second real process that acquires the lock on `file`. Its `busy_timeout`
  * makes `BEGIN EXCLUSIVE` wait while another process holds the lock, so the
@@ -25,7 +28,7 @@ async function expectContention(file: string): Promise<void> {
  * is its own process clock, not the test's. The interval only keeps the
  * process (and its lock) alive until the parent kills it.
  */
-function holdInChild(file: string): { child: ChildProcessWithoutNullStreams; ready: Promise<void> } {
+function holdInChild(file: string): { child: LockChild; ready: Promise<void> } {
   const child = spawn(
     process.execPath,
     ["-e", `
@@ -55,7 +58,7 @@ function holdInChild(file: string): { child: ChildProcessWithoutNullStreams; rea
 }
 
 /** Kills `child` and resolves once it has really exited. */
-function killChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+function killChild(child: LockChild): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   if (child.exitCode !== null || child.signalCode !== null) {
     resolve();

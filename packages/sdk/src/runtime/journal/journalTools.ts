@@ -1,52 +1,77 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isToolExecutorError } from "../../contracts/protocols";
 import { BAND_TOOL_EFFECTS } from "../../contracts/toolSchemas";
-import type { Logger } from "../../core/logger";
 import { overrideTools } from "../../core/overrideTools";
-import { gatingReplies } from "../../core/replyGate";
 import { bandToolOverrides } from "../../core/turn";
-import { cutShort } from "../turnRevocation";
+import { DeliveryUnknownError } from "../../core/deliveryFailedError";
+import type { Logger } from "../../core/logger";
 
-import { bestEffort, type TurnJournal } from "./TurnJournal";
+/** Thrown for a reply or decline made after its turn was cut short: the post must not go out. */
+export class TurnCutShortError extends Error {
+  public constructor() {
+    super("The turn was cut short; its reply must not be posted");
+    this.name = "TurnCutShortError";
+  }
+}
+
+function isDeliveryUnknownToolResult(result: unknown): boolean {
+  return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
+}
 
 /**
- * `tools` whose replies to `messageId` are recorded just before they post:
- * every Band tool whose effect band-sdk-core judges a reply, called by name or
- * through its direct method (`sendMessage`, the path an adapter's relayed
- * closing text takes). A call refused before its post (invalid arguments, an
- * unknown mention) records nothing. The record only lets a later run report
- * that a reply may already be in the room; a journal that cannot write it
- * never stops the reply. A turn cut short before or while the record is
- * written does not post, and one cut short before records nothing.
+ * Wraps the tools a turn runs on, keeping the turn's side of the runtime's
+ * durable publications honest:
  *
- * `roomId`'s journal is resolved at each reply, not once per turn: a turn that
- * outlives its room's handling (a reset or leave that stopped waiting for it)
- * records into the journal the room's next execution reads. Once the runtime
- * stopped, `journals` is closed and the reply posts unrecorded.
+ * - a reply or decline made after the turn was cut short is refused before
+ *   any post, so a reply a turn lost cannot still go out;
+ * - a classified delivery-unknown (thrown, or surfaced as a tool-executor
+ *   error) fences this turn's closing text. The fence stands on the wrapper
+ *   itself — the adapter's turn object reads it through
+ *   `unknownDeliveryFenced` — so a late result fences the turn it ran on and
+ *   cannot reach a successor, which wraps its own tools.
+ *
+ * The durable intent and settlement themselves live in the runtime's
+ * publication engine, which the context's tools already carry; this wrapper
+ * only owns the turn's own behavior around them.
  */
 export function journalingTools<T extends AdapterToolsProtocol>(
   tools: T,
-  journals: TurnJournal,
-  roomId: string,
-  messageId: string,
   stopped: AbortSignal,
-  logger: Logger,
+  logger?: Logger,
 ): T {
-  const refuseIfCutShort = () => {
-    const refused = cutShort(stopped);
-    if (refused) throw refused;
-  };
-  const beforePost = async () => {
-    // Before the record too: a reply refused anyway must not count as begun, nor reopen a released room.
-    refuseIfCutShort();
-    await bestEffort(
-      async () => (await journals.room(roomId)).replyBegun(messageId),
-      logger,
-      "Failed to record a reply in the turn journal; posting it anyway",
-      { roomId, messageId },
+  // Set once this turn had a reply whose delivery stands unknown; the adapter's
+  // turn reads it through the wrapper it runs on.
+  let fenced = false;
+
+  const wrapCall = (call: () => Promise<unknown>): Promise<unknown> => {
+    if (stopped.aborted) {
+      throw new TurnCutShortError();
+    }
+    return call().then(
+      (result) => {
+        if (isDeliveryUnknownToolResult(result)) {
+          fenced = true;
+        }
+        return result;
+      },
+      (error: unknown) => {
+        if (error instanceof DeliveryUnknownError) {
+          fenced = true;
+        } else {
+          logger?.debug("a turn's reply delivery failed", { error });
+        }
+        throw error;
+      },
     );
-    refuseIfCutShort();
   };
-  const overrides = bandToolOverrides(tools, (toolName, call) =>
-    BAND_TOOL_EFFECTS[toolName] === "reply" ? gatingReplies(beforePost, call) : call());
-  return overrideTools(tools, overrides as Partial<T>);
+
+  const overrides = bandToolOverrides(tools, (toolName, call) => {
+    const effect = BAND_TOOL_EFFECTS[toolName];
+    return effect === "reply" || effect === "decline" ? wrapCall(call) : call();
+  });
+
+  return overrideTools(tools, {
+    ...overrides,
+    unknownDeliveryFenced: () => fenced,
+  } as unknown as Partial<T>);
 }

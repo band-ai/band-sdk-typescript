@@ -196,5 +196,5 @@
       "default": "https://app.band.ai"
     }
   },
-  "bandSdkCoreVersion": "2.8.0"
+  "bandSdkCoreVersion": "7.0.0"
 }

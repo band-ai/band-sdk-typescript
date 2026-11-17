@@ -20,10 +20,36 @@ export class DeliveryFailedError extends RecoverableTurnError {
   }
 }
 
+/**
+ * A reply whose delivery is unknown: the transport neither accepted nor
+ * refused it (a 5xx, no response, or an unreadable response). It extends the
+ * delivery failure so direct call sites and failure reports keep working, but
+ * its own text states what the state means: Band may already hold the message,
+ * so resending it blindly could post it twice.
+ */
+export class DeliveryUnknownError extends DeliveryFailedError {
+  public static readonly KIND = "delivery_unknown" as const;
+
+  public readonly kind: typeof DeliveryUnknownError.KIND = DeliveryUnknownError.KIND;
+
+  constructor(
+    cause: unknown,
+    public readonly publicationId?: string,
+  ) {
+    super(cause);
+    this.name = "DeliveryUnknownError";
+    this.message =
+      "The reply's delivery is unknown: Band may already hold it. Do not resend it blindly; retry the same publication or read the room to see whether it arrived.";
+  }
+}
+
 async function delivered(post: () => Promise<ToolOperationResult>): Promise<ToolOperationResult> {
   try {
     return await post();
   } catch (error) {
+    // A classified unknown stays classified: flattening it into a plain
+    // DeliveryFailedError would let a caller retry the same content blindly.
+    if (error instanceof DeliveryUnknownError) throw error;
     throw new DeliveryFailedError(error);
   }
 }

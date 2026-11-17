@@ -36,7 +36,7 @@ export interface JournalOwnershipOptions {
  */
 export class JournalOwnership {
   private db?: DatabaseSync;
-  private isReleased = false;
+  private released = false;
 
   private constructor() {}
 
@@ -78,8 +78,8 @@ export class JournalOwnership {
 
   /** Releases the lock; safe to call more than once. */
   public async release(): Promise<void> {
-    if (this.isReleased) return;
-    this.isReleased = true;
+    if (this.released) return;
+    this.released = true;
     const db = this.db;
     this.db = undefined;
     if (!db) return;
@@ -92,7 +92,7 @@ export class JournalOwnership {
 
   /** Whether `release()` has already given the lock back. */
   public get isReleased(): boolean {
-    return this.isReleased;
+    return this.released;
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {

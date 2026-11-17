@@ -8,6 +8,7 @@ import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import { parseSessionConfig, type ConversationContext, type PlatformMessage, type SessionConfig, type ResolvedSessionConfig } from "./types";
+import type { PublicationEngine } from "./journal/publication";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 import { buildParticipantsMessage, resolveMentions, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
@@ -32,6 +33,12 @@ export interface ExecutionContextOptions extends SessionConfig {
   /** Required on direct construction; optional on `SessionConfig` via schema defaults. */
   maxContextMessages: number;
   logger?: Logger;
+  /** The start generation's publication engine for this room's replies, when the journal is enabled. */
+  publication?: PublicationEngine;
+  /** The room's in-flight inbound message, if any: the publication this room's replies settle under. */
+  inboundMessageId?: () => string | undefined;
+  /** The room's current turn, if any: a reply it makes is refused once the turn is cut short. */
+  publicationStop?: () => AbortSignal | undefined;
 }
 
 const DEDUP_CACHE_MAX = 500;
@@ -57,6 +64,8 @@ export class ExecutionContext {
 
   private workingReporter?: WorkingStateReporter;
   private readonly sessionConfig: ResolvedSessionConfig;
+  /** The room's current turn, if any: its replies refuse to post once it is cut short. */
+  private publicationStopSignal: AbortSignal | undefined;
 
   private _state: ExecutionState = "starting";
   private readonly retryTrackerInstance: RetryTracker;
@@ -82,6 +91,9 @@ export class ExecutionContext {
       roster: this.roster,
       capabilities: this.link.capabilities,
       logger: this.logger,
+      publication: options.publication,
+      inboundMessageId: options.inboundMessageId,
+      publicationStop: () => this.publicationStopSignal,
     });
     this.adapterTools = this.tools.getAdapterTools();
   }
@@ -103,6 +115,11 @@ export class ExecutionContext {
 
   public setState(state: ExecutionState): void {
     this._state = state;
+  }
+
+  /** The turn the room is running, if any: its replies refuse to post once it is cut short. */
+  public setPublicationStop(signal: AbortSignal | undefined): void {
+    this.publicationStopSignal = signal;
   }
 
   public getRetryTracker(): RetryTracker {

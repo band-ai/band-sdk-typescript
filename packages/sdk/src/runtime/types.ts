@@ -3,6 +3,7 @@ import type { ParticipantRecord } from "../contracts/dtos";
 import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../core/deadline";
 import { ValidationError } from "../core/errors";
 import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../contracts/activity";
+import { canonicalPlatformIdentity } from "./journal/identity";
 import type {
   AdapterToolsProtocol,
   FrameworkAdapterInput,
@@ -71,8 +72,24 @@ export const sessionConfigSchema = z.object({
    * How long the journal remembers a message after its last record. An older
    * message is answered again if Band still serves it. Expired messages leave
    * a room's file when it opens.
+   *
+   * @deprecated Accepted for compatibility with v1 journal configuration; the
+   * v2 journal keeps its records for the life of the deployment and does not
+   * expire them.
    */
   journalRetentionSeconds: z.number().positive().default(DEFAULT_JOURNAL_RETENTION_SECONDS),
+  /**
+   * The canonical platform endpoint the journal's records are bound to, when
+   * the runtime speaks to Band through a custom REST adapter: such a link's
+   * URL cannot stand for the platform, so the deployment names it. With a
+   * standard link the journal derives the identity from the link's REST
+   * endpoint, and a value set here must match it.
+   */
+  journalPlatformIdentity: z
+    .string()
+    .min(1)
+    .refine((value) => canonicalPlatformIdentity(value) === value, "must be a canonical platform endpoint")
+    .optional(),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
   const cadence = config.workingKeepAliveSeconds;
