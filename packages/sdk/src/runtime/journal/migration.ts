@@ -953,19 +953,37 @@ async function validateBindings(
     const claimingRoom = destinations.get(destination);
     if (claimingRoom !== undefined) {
       // The fold is the journal-and-its-copy case: a compaction copy beside
-      // the journal it is the output of, in either binding order. Anything
+      // the journal it is the output of, in any binding order. Anything
       // else that stands for the same room — two journals, two orphan copies —
       // is two authorities for one room, and one room's journal takes one
-      // migration.
+      // migration. The destination stands anchored on the journal where the
+      // journal is bound, whatever order the attestations arrived in: a copy
+      // that arrived first anchors the destination only until the journal it
+      // is the output of arrives too, and later copies are paired against the
+      // journal, not against the copy they were filed beside.
       const isCopyPair =
         remnantPrimaryOf(binding.sourceFile) === claimingRoom.sourceFile ||
         (remnantPrimaryOf(claimingRoom.sourceFile) !== undefined && remnantPrimaryOf(claimingRoom.sourceFile) === binding.sourceFile);
-      if (isCopyPair && claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
+      // Two copies beside the journal they both stage through are pending that
+      // journal's binding, whatever order they arrived in: one room's journal
+      // is one authority, and the copies are its outputs. Copies whose journal
+      // is gone stage through themselves, and two of them are two authorities.
+      const stagesThrough = (file: string): string => {
+        const primary = remnantPrimaryOf(file);
+        return primary !== undefined && legacy.includes(primary) ? primary : file;
+      };
+      const bothPendingSamePrimary =
+        stagesThrough(claimingRoom.sourceFile) !== claimingRoom.sourceFile &&
+        stagesThrough(claimingRoom.sourceFile) === stagesThrough(binding.sourceFile);
+      if ((isCopyPair || bothPendingSamePrimary) && claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
         // The same room's journal, attested twice (a journal and the copy it
-        // crashed from): one migration, staged through the first attestation.
-        // The copy's attestation still stands in the migration: its surplus,
+        // crashed from): one migration, staged through the journal. The
+        // copy's attestation still stands in the migration: its surplus,
         // where it holds any, is imported only because it is bound.
         normalized.push({ ...binding, stagesFrom, stagingSha256: "", importedFacts: { publicationIds: [], turnDone: [] } });
+        if (remnantPrimaryOf(claimingRoom.sourceFile) === binding.sourceFile) {
+          destinations.set(destination, binding);
+        }
         continue;
       }
       throw new JournalFileError(

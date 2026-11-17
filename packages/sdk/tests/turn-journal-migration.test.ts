@@ -844,4 +844,90 @@ describe("v1 compaction remnants", () => {
     expect(room.answered("b")).toBe(true);
     expect(room.answered("only-in-copy")).toBe(true);
   });
+
+  it("migrates a journal and its copies in any binding order, through the journal they are the output of", async () => {
+    // A copy that arrives before the journal in the binding list used to anchor
+    // the destination on the copy: a later copy was then paired against the
+    // copy it was filed beside, which no copy is, and the migration refused a
+    // set of attestations the journal-first order commits.
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const orderings: ReadonlyArray<readonly [number, number, number]> = [
+      [0, 1, 2],
+      [0, 2, 1],
+      [1, 0, 2],
+      [1, 2, 0],
+      [2, 0, 1],
+      [2, 1, 0],
+    ];
+    for (const ordering of orderings) {
+      const dir = tmpRoot();
+      const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+      const agentDir = path.dirname(source);
+      const copyA = `${V1_ROOM_FILE}.${randomUUID()}.compacting`;
+      const copyB = `${V1_ROOM_FILE}.${randomUUID()}.compacting`;
+      const plain = `${legacy.join("\n")}\n`;
+      const surplus = `${plain}${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
+      await writeFile(path.join(agentDir, copyA), surplus);
+      await writeFile(path.join(agentDir, copyB), plain);
+      const files = [
+        [V1_ROOM_FILE, plain],
+        [copyA, surplus],
+        [copyB, plain],
+      ] as const;
+      const bindings = ordering.map((index) => ({
+        sourceFile: files[index][0],
+        roomId: roomOfLegacyFile(files[index][0]),
+        sourceSha256: sha256(files[index][1]),
+        platformIdentity: IDENTITY,
+        provenance: `operator-attested:${V1_ROOM_FILE}`,
+      })) satisfies MigrationBinding[];
+
+      const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+      expect(result.mode, `binding order [${ordering.join(", ")}]`).toBe("committed");
+      // The surplus the second copy holds stands answered under the journal,
+      // whatever order the three attestations arrived in.
+      const { generation } = await generationIn(dir);
+      const room = await generation.room(ROOM);
+      expect(room.answered("b")).toBe(true);
+      expect(room.answered("only-in-copy")).toBe(true);
+      await generation.close();
+      // A reapply stands on the same committed migration.
+      const again = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+      expect(again.mode).toBe("already-committed");
+      // The migration reads the files it converts; all three stand untouched.
+      expect(await readFile(path.join(agentDir, V1_ROOM_FILE), "utf8")).toBe(plain);
+      expect(await readFile(path.join(agentDir, copyA), "utf8")).toBe(surplus);
+      expect(await readFile(path.join(agentDir, copyB), "utf8")).toBe(plain);
+    }
+  });
+
+  it("refuses an expected hash the bound copy does not stand at, beside a valid journal binding", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
+    const compacting = path.join(path.dirname(source), V1_REMNANT_FILE);
+    await writeFile(compacting, copyText);
+    // The journal's attestation is true; the copy's is not. The fold may not
+    // ride the journal's binding past a hash the copy does not stand at.
+    const journal: MigrationBinding = {
+      sourceFile: V1_ROOM_FILE,
+      roomId: ROOM,
+      sourceSha256: sha256(`${legacy.join("\n")}\n`),
+      platformIdentity: IDENTITY,
+      provenance: `operator-attested:${V1_ROOM_FILE}`,
+    };
+    const copy: MigrationBinding = {
+      sourceFile: V1_REMNANT_FILE,
+      roomId: ROOM,
+      sourceSha256: "0".repeat(64),
+      platformIdentity: IDENTITY,
+      provenance: `operator-attested:${V1_ROOM_FILE}`,
+    };
+
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [journal, copy] })).rejects.toMatchObject({ kind: "corrupt" });
+    // It refused before staging: no manifest, no destination.
+    expect(await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8").catch(() => null)).toBeNull();
+    expect(await readFile(roomFile(dir), "utf8").catch(() => null)).toBeNull();
+  });
 });

@@ -38,8 +38,6 @@ export class Turn {
   private isDetached = false;
   private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
-  private relayFenced = false;
-  private unknownDelivery = false;
   /** The turn's runtime side, when the turn runs on the runtime's tools: it fences the turn when a reply's delivery stands unknown. */
   private fenceSource: (() => boolean) | undefined;
 
@@ -117,29 +115,19 @@ export class Turn {
     return this.isDetached;
   }
 
-  /**
-   * Monotonically prohibits the turn's closing text from being relayed as a
-   * reply. Set once the turn had a reply whose delivery is unknown: Band may
-   * already hold it, and an unkeyed relay would post replacement text on top
-   * of it. The fence belongs to the turn object the call was made against, so
-   * a late result fences the turn it ran on and cannot reach a successor.
+  /** The turn's closing text must not be relayed as a reply: a reply whose
+   * delivery stands unknown may already be in the room, and an unkeyed relay
+   * would post replacement text on top of it. The fence stands on the turn's
+   * runtime side, so a late result fences the turn it ran on and cannot reach
+   * a successor.
    */
-  public prohibitRelay(): void {
-    this.relayFenced = true;
-  }
-
   public get relayProhibited(): boolean {
-    return this.relayFenced || (this.fenceSource?.() ?? false);
+    return this.fenceSource?.() ?? false;
   }
 
-  /** Marks this turn's reply delivery as unknown: the reply may already be in the room. */
-  public noteUnknownDelivery(): void {
-    this.unknownDelivery = true;
-    this.prohibitRelay();
-  }
-
+  /** This turn's reply delivery stands unknown: the reply may already be in the room. */
   public get hasUnknownDelivery(): boolean {
-    return this.unknownDelivery || (this.fenceSource?.() ?? false);
+    return this.fenceSource?.() ?? false;
   }
 
   /** Settles when a turn detached with its end has really ended; never rejects. */

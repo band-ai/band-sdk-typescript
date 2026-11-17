@@ -36,7 +36,7 @@ async function journalRecordsOf(journalDir: string): Promise<string[]> {
  */
 const CHILD = path.join(__dirname, "journalChildRuntime.ts");
 
-type ChildMode = "settled-before-mark" | "decline" | "multiple-replies" | "intent-only" | "remote-accept" | "before-tool-return" | "reset" | "ab-mixed";
+type ChildMode = "settled-before-mark" | "decline" | "multiple-replies" | "intent-only" | "remote-accept" | "before-tool-return" | "reset" | "ab-mixed" | "durable-ack" | "ab-unresolved";
 
 const CHILD_BOUNDARY: Record<ChildMode, string> = {
   "settled-before-mark": "settled",
@@ -47,6 +47,8 @@ const CHILD_BOUNDARY: Record<ChildMode, string> = {
   "before-tool-return": "paused",
   reset: "reset-failed",
   "ab-mixed": "mixed",
+  "durable-ack": "durable-ack",
+  "ab-unresolved": "ab-unresolved",
 };
 
 interface ChildState {
@@ -57,6 +59,12 @@ interface ChildState {
   owner: string;
   mention: string;
   platform: PlatformSnapshot;
+  /** Durable-ack only: the tool's response had not returned when the child was killed. */
+  toolReturned?: boolean;
+  /** Durable-ack only: the reply stood settled in the journal at the child's boundary. */
+  answered?: boolean;
+  /** Ab-unresolved only: the settled message the successor's input never contains. */
+  secondInboundId?: string;
 }
 
 interface ChildMessage {
@@ -283,7 +291,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "publication.reported", "reply.intent", "reply.settled", "turn.done"]);
   }, 180_000);
 
-  it("neither reposts nor reruns for a reply the platform accepted and the journal never settled: it stands unknown, announced", async () => {
+  it("reruns the turn for a reply the platform accepted and the journal never settled, without reposting it: the reply stands unknown, announced", async () => {
     const journalDir = tmpRoot();
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
@@ -307,6 +315,9 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
     expect(platform.rest.posted.entries.map((posted) => posted.content)).toHaveLength(2);
     expect(platform.rest.posted.entries[0].content).toBe("answer");
+    // The child's admitted reply is the uncertainty, not a settlement: it stands
+    // unrecorded in the journal, and the successor announces it exactly once.
+    expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded")).toHaveLength(1);
   }, 180_000);
 
   it("keeps a killed process's reply standing as the platform admitted it when it dies with its publication paused before the tool returns", async () => {
@@ -378,5 +389,85 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(successor.handled).toEqual([]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
     expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded")).toHaveLength(1);
+  }, 180_000);
+
+  it("suppresses a turn killed between its durable settlement and the tool's response: no dispatch, one post", async () => {
+    const journalDir = tmpRoot();
+    const stateFile = path.join(journalDir, "child-state.json");
+    onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
+    // The child's reply settles for real — append, datasync, in-memory settlement — and the
+    // cut stands before the settle call returns to the engine: the reply is durably settled
+    // on disk, the tool's response still stands outstanding, and the turn does not end.
+    const state = await driveChild(journalDir, "durable-ack", stateFile);
+    // The child proved the seam at its boundary, not after the fact: the tool response was
+    // still outstanding when the process stood with its settlement flushed.
+    expect(state.toolReturned).toBe(false);
+    expect(state.answered).toBe(true);
+    expect(state.platform.posted.map((posted) => posted.content)).toEqual(["durable pending-tool reply"]);
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
+
+    const platform = rebuildPlatform(state);
+    const successor = await startSuccessor(platform, journalDir, state.inboundId);
+    // The kill landed inside the tool call's own publication, after the durable settlement:
+    // the journal settles the message from its settled reply. The turn is never redispatched
+    // to the adapter, and the reply the child settled stands posted exactly once.
+    expect(successor.handled).toEqual([]);
+    expect(successor.posted).toEqual(["durable pending-tool reply"]);
+    expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
+    // The repair is a mark, not a record: the journal stands exactly as the child left it.
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
+  }, 180_000);
+
+  it("settles nothing and posts nothing when the successor serves neither message: the settled reply's message is absent, the unresolved one is announced", async () => {
+    const journalDir = tmpRoot();
+    const stateFile = path.join(journalDir, "child-state.json");
+    onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
+    // The child settles reply A durably and lets A's turn complete — A's processed mark
+    // lands in the child's platform — then posts reply B to the platform with B's settle
+    // record held: A stands settled, B stands unresolved.
+    const state = await driveChild(journalDir, "ab-unresolved", stateFile);
+    expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done", "reply.intent"]);
+
+    // The successor's input serves neither message again: A's processed mark stands in the
+    // child's snapshot, and B's unsettled entry is the one the platform does not serve.
+    const platform = BandPlatform.host([person(state.owner)]);
+    onTestFinished(() => platform[Symbol.asyncDispose]());
+    platform.rest.restore({
+      ...state.platform,
+      unsettled: state.platform.unsettled.filter((entry) => entry.item.id !== state.inboundId),
+    });
+    const handled: string[] = [];
+    const events = new RecordLog<AgentEvent>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
+    });
+    runtime.observe((event) => {
+      events.record(event);
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running") await runtime.stop(KILL);
+    });
+    await runtime.start(new GenericAdapter(async (args) => {
+      handled.push(String(args.message.id));
+    }));
+
+    // B's unresolved reply is the admission's own warning: reported when the room's journal
+    // opens, with no inbound to ride on.
+    await events.next((event) => event.type === "delivery.unrecorded");
+    expect(handled).toEqual([]);
+    // No new post: A's reply stands exactly as the child settled it, B's exactly as the
+    // platform admitted it; the settled reply's message never returns, and nothing is
+    // answered or posted in its absence.
+    expect(platform.rest.deliveries.map((delivery) => delivery.content)).toEqual(["reply A", "reply B"]);
+    const unrecorded = events.entries.filter((event) => event.type === "delivery.unrecorded");
+    expect(unrecorded).toHaveLength(1);
+    expect(unrecorded[0]).toEqual({ type: "delivery.unrecorded", roomId: state.room, messageId: state.inboundId });
+    // The announcement stands recorded beneath B's intent; A's settled reply stands as the child left it.
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done", "reply.intent", "publication.reported"]);
   }, 180_000);
 });

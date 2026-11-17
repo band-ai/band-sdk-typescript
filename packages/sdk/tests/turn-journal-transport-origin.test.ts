@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import { readFile } from "node:fs/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 
 import type { AgentToolsRestApi } from "../src/client/rest/types";
 import type { AdapterToolsProtocol } from "../src/contracts/protocols";
@@ -98,6 +98,7 @@ describe("a journaled reply made through a long-lived transport settles under th
       sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
     });
     const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, async () => undefined)));
+    stopRuntimeAtEnd(runtime);
     const completed = turnCompleted(runtime);
     await room.say(OWNER, `${MENTION} hello`);
     await started.promise;
@@ -125,8 +126,14 @@ describe("a journaled reply made through a long-lived transport settles under th
     });
     const events: string[] = [];
     successor.observe((event) => events.push(event.type));
+    // A warm allow is kept until start's admission, which reports room.ready:
+    // the barrier that the room's process, and its journal recovery, have stood.
+    await successor.allowRoom(ROOM, { warm: true });
+    const ready = roomReady(successor, ROOM);
     const successorStop = successor.start(new GenericAdapter(async () => undefined));
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    stopRuntimeAtEnd(successor);
+    // The room standing ready is the barrier: its journal recovery has run, whatever it decided.
+    await ready;
     await successorStop;
     await successor.stop();
     expect(room.posted.length).toBe(postedBefore);
@@ -144,6 +151,10 @@ describe("a journaled reply made through a long-lived transport settles under th
     // turn's scope, as every loop a turn opens does.
     let tick: ReturnType<typeof setInterval> | undefined;
     let pendingCall: (() => Promise<unknown>) | undefined;
+    // Settle of the bridge's reply: the loop's dispatch resolves it with the
+    // call's outcome once the platform accepted the post and the journal
+    // recorded the settlement (or with the call's error, which the test rethrows).
+    const replyCallDone = createDeferred<unknown>();
 
     const runtime = new PlatformRuntime({
       agentId: AGENT_ID,
@@ -175,17 +186,24 @@ describe("a journaled reply made through a long-lived transport settles under th
           if (pendingCall !== undefined && inSecondTurn) {
             const call = pendingCall;
             pendingCall = undefined;
-            void call().catch(() => undefined);
+            void call().then((outcome) => replyCallDone.resolve(outcome), (error) => replyCallDone.resolve(error));
           }
         }, 5);
         await args.tools.sendMessage("first answer", ["@owner"]);
       }
     }));
+    stopRuntimeAtEnd(runtime);
+    onTestFinished(() => {
+      if (tick !== undefined) {
+        clearInterval(tick);
+        tick = undefined;
+      }
+    });
 
     const firstReplyHeld = platform.rest.messageHolds.hold((roomId, content) => roomId === ROOM && content === "second answer");
     const messageOne = await room.say(OWNER, `${MENTION} one`);
-    // Wait for the first turn to stand its answer and end.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The first turn ends on its answer: its processed mark is the barrier.
+    await platform.rest.settled.next((settled) => settled.messageId === messageOne && settled.outcome === "processed");
     expect(bridge).toBeDefined();
     // The second turn's reply goes out the bridge, dispatched by the loop the
     // first turn created.
@@ -194,13 +212,19 @@ describe("a journaled reply made through a long-lived transport settles under th
       arguments: { room_id: ROOM, content: "second answer", mentions: ["@owner"] },
     });
     const messageTwo = await room.say(OWNER, `${MENTION} two`);
+    // The reply stands at the platform's hold before its turn's end is judged.
     await firstReplyHeld.sending;
     firstReplyHeld.release();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The platform's acceptance settles the reply in the journal; the call's
+    // completion is the barrier, whatever its turn's missing-reply verdict.
+    const replyOutcome = await replyCallDone.promise;
+    if (replyOutcome instanceof Error) throw replyOutcome;
     await stop;
     await runtime.stop();
-    tick?.unref();
-    clearInterval(tick);
+    if (tick !== undefined) {
+      clearInterval(tick);
+      tick = undefined;
+    }
 
     // Both answers stand in the journal, and the second under the second
     // message — not the first, whose scope the bridge's dispatch kept.
@@ -236,6 +260,8 @@ describe("a journaled reply made through a long-lived transport settles under th
       sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
     });
     const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, async () => undefined)));
+    stopRuntimeAtEnd(runtime);
+    onTestFinished(() => server.stop().catch(() => undefined));
     const completed = turnCompleted(runtime);
     await room.say(OWNER, `${MENTION} hello`);
     await started.promise;
@@ -245,12 +271,21 @@ describe("a journaled reply made through a long-lived transport settles under th
     });
     const client = new Client({ name: "transport-origin-http", version: "1.0.0" });
     await client.connect(transport);
+    let httpClosed = false;
+    onTestFinished(async () => {
+      if (!httpClosed) {
+        await transport.close().catch(() => undefined);
+        await client.close().catch(() => undefined);
+      }
+    });
     const result = await client.callTool({
       name: "band_send_message",
       arguments: { room_id: ROOM, content: "http bridge reply", mentions: ["@owner"] },
     });
     expect(result.isError ?? false).toBe(false);
+    httpClosed = true;
     await transport.close();
+    await client.close();
     held.resolve();
     await completed;
     await stop;
@@ -284,6 +319,7 @@ describe("a journaled reply made through a long-lived transport settles under th
       sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
     });
     const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, async () => undefined)));
+    stopRuntimeAtEnd(runtime);
     const completed = turnCompleted(runtime);
     await room.say(OWNER, `${MENTION} hello`);
     await started.promise;
@@ -309,8 +345,12 @@ describe("a journaled reply made through a long-lived transport settles under th
     });
     const events: string[] = [];
     successor.observe((event) => events.push(event.type));
+    // A warm allow is kept until start's admission, which reports room.ready.
+    await successor.allowRoom(ROOM, { warm: true });
+    const ready = roomReady(successor, ROOM);
     const successorStop = successor.start(new GenericAdapter(async () => undefined));
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    stopRuntimeAtEnd(successor);
+    await ready;
     await successorStop;
     await successor.stop();
     expect(room.posted.length).toBe(postedBefore);
@@ -351,9 +391,15 @@ describe("a journaled reply made through a long-lived transport settles under th
         await args.tools.sendMessage("first answer", ["@owner"]);
       }
     }));
+    stopRuntimeAtEnd(runtime);
+    onTestFinished(() => {
+      const server = backend?.server as { stop(): Promise<void> } | undefined;
+      return server !== undefined ? server.stop().catch(() => undefined) : undefined;
+    });
 
     const messageOne = await room.say(OWNER, `${MENTION} one`);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The first turn ends on its answer: its processed mark is the barrier.
+    await platform.rest.settled.next((settled) => settled.messageId === messageOne && settled.outcome === "processed");
     expect(backend).toBeDefined();
     const server = backend!.server as { url: string };
 
@@ -363,6 +409,13 @@ describe("a journaled reply made through a long-lived transport settles under th
     });
     const client = new Client({ name: "warm-http-bridge", version: "1.0.0" });
     await client.connect(transport);
+    let httpClosed = false;
+    onTestFinished(async () => {
+      if (!httpClosed) {
+        await transport.close().catch(() => undefined);
+        await client.close().catch(() => undefined);
+      }
+    });
     const messageTwo = await room.say(OWNER, `${MENTION} two`);
     await turnTwoReady.promise;
     const call = client.callTool({
@@ -374,8 +427,11 @@ describe("a journaled reply made through a long-lived transport settles under th
     hold.release();
     const result = await call;
     expect(result.isError ?? false).toBe(false);
+    // The call's completion is the barrier: the platform accepted the post,
+    // and the journal recorded the settlement, whatever the turn's end verdict.
+    httpClosed = true;
     await transport.close();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await client.close();
     await stop;
     await runtime.stop();
     await (backend!.server as { stop(): Promise<void> }).stop();
@@ -410,6 +466,7 @@ describe("a journaled reply made through a long-lived transport settles under th
       sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
     });
     const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, async () => undefined)));
+    stopRuntimeAtEnd(runtime);
     const completed = turnCompleted(runtime);
     const messageOne = await room.say(OWNER, `${MENTION} hello`);
     await started.promise;
@@ -457,6 +514,24 @@ function turnCompleted(runtime: PlatformRuntime): Promise<void> {
     runtime.observe((event) => {
       if (event.type === "turn.completed") resolve();
     });
+  });
+}
+
+/** Resolves once the runtime's room is ready: its startup, including the room's journal recovery, has stood. */
+function roomReady(runtime: PlatformRuntime, roomId: string): Promise<void> {
+  return new Promise((resolve) => {
+    runtime.observe((event) => {
+      if (event.type === "room.ready" && event.roomId === roomId) resolve();
+    });
+  });
+}
+
+/** Stops a runtime at the test's end if it is still running: a thrown assertion must not leave it up. */
+function stopRuntimeAtEnd(runtime: PlatformRuntime): void {
+  onTestFinished(async () => {
+    if (runtime.state.status === "running") {
+      await runtime.stop(0).catch(() => undefined);
+    }
   });
 }
 
