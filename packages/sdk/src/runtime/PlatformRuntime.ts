@@ -571,7 +571,12 @@ export class PlatformRuntime implements AsyncDisposable {
       ...defaults,
       publication: generation
         ? PublicationEngine.create({
-            room: () => generation.room(roomId).then((room) => (room.accepting ? room : undefined), () => undefined),
+            // The room's authority, as it stands: a journal that will not open
+            // fails the reply rather than deliver it unjournaled, and a handle
+            // that opened but no longer admits records refuses it as poisoned.
+            // Only a room whose generation is closed — the runtime stopped its
+            // handling — posts as it would without a journal.
+            room: () => generation.room(roomId),
             generation,
             logger: this.logger,
           })
@@ -701,7 +706,15 @@ export class PlatformRuntime implements AsyncDisposable {
         sessionConfig: this.sessionConfig,
         agentConfig: this.agentConfig,
         logger: this.logger,
-        onRoomAdmitted: (roomId) => this.events.emit({ type: "room.joined", roomId }),
+        onRoomAdmitted: (roomId) => {
+          this.events.emit({ type: "room.joined", roomId });
+          // A room that reopens reports what its journal stands unresolved
+          // whether or not Band serves it another message: the report does not
+          // ride on an inbound that may never come.
+          void this.announceUnresolvedForRoom(roomId).catch((error: unknown) => {
+            this.logger.warn("Failed to announce a reopened room's unresolved publications", { roomId, error });
+          });
+        },
         onRoomRemoved: (roomId) => this.events.emit({ type: "room.left", roomId }),
         onRoomStopped: (roomId) => {
           this.releaseJournal(roomId);
@@ -811,20 +824,28 @@ export class PlatformRuntime implements AsyncDisposable {
     const errors: unknown[] = [];
 
     if (runtime) {
+      // Quiesce, not tear down: the rooms stop taking turns (and the stop may
+      // time out on them), but the platform connection stays up. A stop that
+      // timed out can still owe its generation's in-flight posts their
+      // transport; disconnecting first would turn their outcomes from
+      // "accepted" into "unknown". The connection goes down only after the
+      // drain below, with `finishStop`.
       await isolateTeardown(errors, async () => {
-        stopOutcome.graceful = await runtime.stop(timeoutMs);
+        const outcome = await runtime.quiesce(timeoutMs);
+        stopOutcome.graceful = outcome.graceful;
+        if (outcome.error !== null) {
+          errors.push(outcome.error);
+        }
       });
     }
 
     await isolateTeardown(errors, () => Promise.resolve(adapter?.onRuntimeStop?.()));
-    // After the runtime stop above, so its `link.disconnected` is still relayed.
-    this.unobserveLink();
 
     // The start generation's publications run to their durable outcomes before
     // its ownership releases: the state stays "stopping" (a new start is
     // refused, and ownership is held) while its last posts complete, so a stop
     // that timed out on the rooms' work still lands every admitted reply's
-    // outcome on disk before the journal is closed.
+    // outcome on disk before the journal is closed and the connection drops.
     const generation = this.generation;
     if (generation) {
       if (stopOutcome.graceful === false) {
@@ -836,6 +857,16 @@ export class PlatformRuntime implements AsyncDisposable {
       await isolateTeardown(errors, () => generation.close());
       this.generation = undefined;
     }
+
+    if (runtime) {
+      // Only now does the platform connection go down: every publication the
+      // generation admitted has run to its durable outcome, so the disconnect
+      // cannot orphan a post or a receipt still owed.
+      await isolateTeardown(errors, () => runtime.finishStop());
+    }
+    // The relay stops only after the disconnect above: observers must still
+    // receive the final `link.disconnected`.
+    this.unobserveLink();
 
     if (errors.length > 0) {
       throw this.recordStopFailure(
@@ -1172,6 +1203,20 @@ export class PlatformRuntime implements AsyncDisposable {
     }
     for (const publication of unresolved) {
       this.events.emit({ type: "delivery.unrecorded", roomId, messageId: publication.messageId });
+    }
+  }
+
+  /**
+   * Announces what a room's journal stands unresolved when the room comes
+   * back: the report rides on the room's admission, not on an inbound that
+   * may never come, and is independent of whether its earlier inbounds
+   * settled. A room without a journal, or one that cannot be opened, announces
+   * nothing.
+   */
+  private async announceUnresolvedForRoom(roomId: string): Promise<void> {
+    const journal = await this.openJournal(roomId);
+    if (journal) {
+      await this.announceUnresolvedPublications(journal, roomId);
     }
   }
 

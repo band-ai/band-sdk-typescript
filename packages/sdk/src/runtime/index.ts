@@ -35,6 +35,25 @@ export { ExecutionContext } from "./ExecutionContext";
 export { PlatformRuntime } from "./PlatformRuntime";
 export { RoomPresence } from "./rooms/RoomPresence";
 
+// The runtime's turn journal layer: the identity-bound room journals a start
+// generation opens, one owner of a journal at a time, and the publication
+// engine that settles a reply before its caller sees it. A host that embeds
+// the runtime can open and drive a journal directly, or open one read-only to
+// see what a stopped process settled.
+export {
+  TurnJournal,
+  agentJournalDir,
+  legacyAgentDir,
+  roomFileName,
+  roomJournalFile,
+  type JournalGeneration,
+  type TurnJournalOptions,
+} from "./journal/TurnJournal";
+export { RoomJournal, type RoomJournalOptions, type UnresolvedPublication } from "./journal/RoomJournal";
+export { PublicationEngine } from "./journal/publication";
+export { JournalOwnership } from "./journal/ownership";
+export { canonicalPlatformIdentity } from "./journal/identity";
+
 export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
 

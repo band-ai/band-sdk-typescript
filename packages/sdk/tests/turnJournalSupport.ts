@@ -6,7 +6,7 @@ import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
-import { TurnJournal, agentJournalDir, roomFileName, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { TurnJournal, agentJournalDir, legacyAgentDir, roomFileName, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import type { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { RoomJournal as RoomJournalCtor } from "../src/runtime/journal/RoomJournal";
 import { tmpRoot } from "./testUtils";
@@ -64,6 +64,9 @@ export function roomFile(
   return path.join(agentJournalDir(dir, agentId), identityDirectoryComponent(identity), roomFileName(roomId));
 }
 
+/** The file name a v1 process gave `roomId`'s journal: its id, percent-encoded. */
+export const legacyRoomFile = (roomId: string = ROOM) => `${encodeURIComponent(roomId)}.jsonl`;
+
 /** The records of a journal file, header excluded, in file order. */
 export async function journalLines(file: string): Promise<Array<Record<string, unknown>>> {
   const text = await readFile(file, "utf8");
@@ -118,9 +121,9 @@ export async function writeRawFile(dir: string, identity: string, lines: string[
   return file;
 }
 
-/** Writes what a legacy (v1) process of `agentId` journaled at the agent's top level. */
+/** Writes what a legacy (v1) process of `agentId` journaled, under the pre-v2 (percent-encoded) layout. */
 export async function seedLegacyFile(dir: string, agentId: string, fileName: string, lines: string[]): Promise<string> {
-  const agentDir = agentJournalDir(dir, agentId);
+  const agentDir = legacyAgentDir(dir, agentId);
   await mkdir(agentDir, { recursive: true });
   const file = path.join(agentDir, fileName);
   await writeFile(file, lines.map((line) => (line.endsWith("\n") ? line : `${line}\n`)).join(""));

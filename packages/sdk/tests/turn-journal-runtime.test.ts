@@ -16,7 +16,6 @@ import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { PlatformRuntime } from "../src/runtime";
-import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
@@ -388,6 +387,97 @@ describe("an unresolved publication through a restart", () => {
   });
 });
 
+describe("a reply whose delivery cannot stand", () => {
+  it("records a settled-but-unrecordable reply as unknown, and the room stops admitting replies", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    // Band takes the post, but the disk will not take the settlement that records the yes.
+    await failJournalAppends((line) => line.includes("reply.settled"));
+    await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]).catch(() => undefined);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+
+    // The transport took the reply; the record that says so cannot stand. The reply stands
+    // unknown — reported, not resent — and the writer that lost the write it owes stops
+    // admitting: a second reply in the room is refused without a second post.
+    expect(await room.outcome(inbound)).toBe("failed");
+    expect(room.messages).toHaveLength(1);
+    expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
+
+    const again = await room.say(OWNER, `${MENTION} again`);
+    expect(await room.outcome(again)).toBe("failed");
+    expect(room.messages).toHaveLength(1);
+  });
+
+  it("keeps the delivery-unknown classification across a registered MCP call, sanitized", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    // The platform answers the post with 503: it may hold the reply, and cannot say.
+    const posts: string[] = [];
+    const original = platform.rest.createChatMessage.bind(platform.rest);
+    const spy = vi.spyOn(platform.rest, "createChatMessage").mockImplementation(async (roomId, message, options) => {
+      posts.push(message.content);
+      if (message.content === "may be held") {
+        throw new BandError({ statusCode: 503, body: { error: { code: "server_error", message: "Service unavailable", request_id: "req-1" } } });
+      }
+      return original(roomId, message, options);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const seen: string[] = [];
+    await startProcess(platform, journalDir, async ({ tools }) => {
+      // As the Claude SDK and ACP adapters reply: a registered client on the in-process Band MCP server.
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      await bridge.serverConfig.instance.connect(serverTransport);
+      const client = new Client({ name: "unknown-delivery-test", version: "1.0.0" });
+      await client.connect(clientTransport);
+      try {
+        const result = await client.callTool({ name: "band_send_message", arguments: { room_id: ROOM, content: "may be held", mentions: ["@owner"] } });
+        // A registered call keeps the classification: the result says the delivery is
+        // unknown, sanitized — no adapter text, no status, no recovery advice.
+        expect(result.isError).toBe(true);
+        const block = (result.content as Array<{ type: string; text: string }>)[0];
+        const text = block.text;
+        seen.push(text);
+        expect(JSON.parse(text)).toEqual({ delivery: "unknown" });
+      } finally {
+        await client.close();
+      }
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await platform.rest.settled.next((settled) => settled.messageId === inbound);
+
+    expect(posts).toEqual(["may be held"]);
+    expect(seen).toEqual([JSON.stringify({ delivery: "unknown" })]);
+    expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
+  });
+});
+
+describe("an unresolved publication with no inbound to ride on", () => {
+  it("reports a room's unresolved publications when the room is admitted, without any inbound", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    // An earlier process posted a reply and died mid-settlement: the reply stands unknown on disk.
+    await seedRoomRecords(journalDir, ROOM, async (room) => {
+      const publicationId = await room.beginReply("m-old");
+      await room.markUnknown("m-old", publicationId);
+    });
+
+    const { events } = await startProcess(platform, journalDir, async () => undefined);
+    // No message is ever served to the room: the report rides on the room's admission.
+    await events.next((event) => event.type === "delivery.unrecorded");
+    expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: "m-old" }]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
+  });
+});
+
 describe("the turn journal when Band serves a message again", () => {
   it("settles a failed turn's message from its settled reply after a restart, without running its adapter again", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
@@ -500,11 +590,11 @@ describe("the turn journal while a room's handling stops and starts", () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const opened = vi.spyOn(RoomJournal, "open");
+    onTestFinished(() => opened.mockRestore());
     const { handled, events } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
     });
-    const opened = vi.spyOn(RoomJournal, "open");
-    onTestFinished(() => opened.mockRestore());
     // The turn finishes but Band never hears it was processed.
     const mark = room.holdNextProcessed({ error: new Error("503 from Band") });
     const inbound = await room.say(OWNER, `${MENTION} hello`);
@@ -747,29 +837,30 @@ describe("the turn journal against a failed start and a stale generation", () =>
 });
 
 describe("a turn journal that fails", () => {
-  it("handles a turn without the journal when its room's journal cannot be opened, and uses it once it can be", async () => {
+  it("refuses a reply whose room's journal will not open, and serves it once the journal opens", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const other = await platform.room(OTHER_ROOM);
     const journalDir = tmpRoot();
-    // The room's journal path is taken by a directory: opening it fails.
+    // The room's journal path is taken by a directory: its authority cannot be opened,
+    // and the room serves no reply it cannot record.
     await mkdir(journalFile(journalDir), { recursive: true });
-    const bootstraps: boolean[] = [];
-    const { runtime, handled } = await startProcess(platform, journalDir, async ({ tools, isSessionBootstrap, roomId }) => {
-      if (roomId === ROOM) bootstraps.push(isSessionBootstrap);
+    const { runtime, handled } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
     });
 
-    const unjournaled = await room.say(OWNER, `${MENTION} one`);
-    expect(await room.outcome(unjournaled)).toBe("processed");
+    const blocked = await room.say(OWNER, `${MENTION} one`);
+    // The room's authority stands it cannot open: the reply is refused, nothing posts, and the turn fails.
+    expect(await room.outcome(blocked)).toBe("failed");
+    expect(room.messages).toEqual([]);
+    // The runtime keeps serving: another room whose journal opens runs as usual.
     const fine = await other.say(OWNER, `${MENTION} hello`);
     expect(await other.outcome(fine)).toBe("processed");
     await rm(journalFile(journalDir), { recursive: true });
     const journaled = await room.say(OWNER, `${MENTION} two`);
     expect(await room.outcome(journaled)).toBe("processed");
 
-    expect(handled).toEqual([unjournaled, fine, journaled]);
-    expect(bootstraps).toEqual([true, false]);
+    expect(handled).toEqual([blocked, fine, journaled]);
     expect(runtime.state.status).toBe("running");
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done"]);
   });

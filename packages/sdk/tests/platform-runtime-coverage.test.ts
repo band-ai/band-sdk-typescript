@@ -101,7 +101,7 @@ describe("PlatformRuntime coverage", () => {
         throw new Error("adapter cleanup failed");
       }),
     };
-    vi.spyOn(AgentRuntime.prototype, "stop").mockRejectedValue(new Error("runtime stop failed"));
+    vi.spyOn(AgentRuntime.prototype, "quiesce").mockRejectedValue(new Error("runtime stop failed"));
 
     await runtime.start(adapter as never);
     expect(runtime.state).toEqual({ status: "running" });

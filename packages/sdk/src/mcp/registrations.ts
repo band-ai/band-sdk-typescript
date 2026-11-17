@@ -1,6 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { DeliveryUnknownError } from "../core/deliveryFailedError";
 import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
@@ -306,12 +307,35 @@ async function executeToolCall(
   try {
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
+      // A classified delivery-unknown keeps its classification across the MCP
+      // boundary: the result says the post's delivery is unknown and Band may
+      // already hold it — nothing to call a plain tool failure, and no
+      // adapter text or recovery advice is carried with it.
+      if (result.details?.kind === DeliveryUnknownError.KIND) {
+        return unknownDeliveryResult();
+      }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
+    if (error instanceof DeliveryUnknownError) {
+      return unknownDeliveryResult();
+    }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
+}
+
+/**
+ * The MCP result for a post whose delivery is unknown: a stable, sanitized
+ * classifier — no adapter text, no error cause, no advice to retry or read
+ * the room, which no caller here can act on safely. Callers that need more
+ * detail than the classifier get it from the SDK, not from this result.
+ */
+function unknownDeliveryResult(): McpToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify({ delivery: "unknown" }) }],
+    isError: true,
+  };
 }
 
 function asNonEmptyString(value: unknown): string | null {

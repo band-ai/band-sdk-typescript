@@ -1,17 +1,17 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 
-import { identityDirectoryComponent } from "./records";
+import { identityDirectoryComponent, roomFileComponent } from "./records";
 import { JournalOwnership } from "./ownership";
-import { hasErrorCode, rewriteFile, syncDirectory } from "./RoomJournal";
+import { hasErrorCode, rewriteFile } from "./RoomJournal";
 import { JournalFileError } from "./errors";
 import { canonicalPlatformIdentity } from "./identity";
-import { agentJournalDir } from "./TurnJournal";
+import { agentJournalDir, legacyAgentDir } from "./TurnJournal";
 
 const MIGRATION_DIR = "migration";
 const MANIFEST_FILE = "manifest.json";
@@ -19,6 +19,8 @@ const MANIFEST_FILE = "manifest.json";
 export interface MigrationBinding {
   /** The legacy file under the agent's journal directory, by its file name. */
   sourceFile: string;
+  /** The room the file's records belong to; the file's name encodes the same room, and the two must agree. */
+  roomId: string;
   /** The exact SHA-256 of the source, so a changed original is refused, not imported. */
   sourceSha256: string;
   /** The platform identity the source's records belong to, attested by the operator. */
@@ -58,6 +60,8 @@ export interface MigrateTurnJournalsOptions {
 
 const bindingSchema = z.strictObject({
   sourceFile: z.string().min(1),
+  /** The room the file's records belong to; must name the room the file's own name encodes. */
+  roomId: z.string().min(1),
   sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
   platformIdentity: z.string().min(1),
   provenance: z.string().min(1),
@@ -127,8 +131,8 @@ async function sha256File(file: string): Promise<string> {
   return createHash("sha256").update(text).digest("hex");
 }
 
-async function legacyFiles(agentDir: string): Promise<string[]> {
-  const names = await readdir(agentDir, { withFileTypes: true }).catch((error: unknown) => {
+async function legacyFiles(legacyDir: string): Promise<string[]> {
+  const names = await readdir(legacyDir, { withFileTypes: true }).catch((error: unknown) => {
     if (hasErrorCode(error, "ENOENT")) return [] as Array<{ name: string; isFile: () => boolean }>;
     throw error;
   });
@@ -138,11 +142,92 @@ async function legacyFiles(agentDir: string): Promise<string[]> {
 }
 
 /** The agent's legacy files no committed migration bound: they may belong to any deployment. */
-export async function unboundLegacyFiles(agentDir: string): Promise<string[]> {
-  const [legacy, manifest] = await Promise.all([legacyFiles(agentDir), readManifest(agentDir)]);
+export async function unboundLegacyFiles(legacyDir: string, agentDir: string): Promise<string[]> {
+  const [legacy, manifest] = await Promise.all([legacyFiles(legacyDir), readManifest(agentDir)]);
   if (manifest === null || manifest.state !== "committed") return legacy;
   const bound = new Set(manifest.bindings.map((binding) => binding.sourceFile));
   return legacy.filter((file) => !bound.has(file));
+}
+
+/**
+ * The room a legacy file's name encodes: v1 named the file
+ * `encodeURIComponent(roomId).jsonl`. A name that is not a valid
+ * percent-encoding was never written by a v1 journal, so it encodes no room.
+ */
+function roomIdOfSourceFile(sourceFile: string): string | undefined {
+  const name = path.basename(sourceFile);
+  if (!name.endsWith(".jsonl")) return undefined;
+  try {
+    return decodeURIComponent(name.slice(0, -".jsonl".length));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where a binding's v2 journal lives: under the attested identity's directory, named by the room's id hash. */
+function destinationOf(agentDir: string, binding: MigrationBinding): string {
+  const identityDir = path.join(agentDir, identityDirectoryComponent(binding.platformIdentity));
+  return path.join(identityDir, `${roomFileComponent(binding.roomId)}.jsonl`);
+}
+
+/**
+ * A staged destination must still be the journal it claims to be: a v2 file
+ * bound to the binding's identity, agent and room. Anything else — an empty
+ * file, a v1 file, a file bound elsewhere — is not that room's authority.
+ */
+async function validateDestination(destination: string, binding: MigrationBinding, agentId: string): Promise<void> {
+  const text = await readFile(destination, "utf8");
+  const headerLine = text.split("\n")[0];
+  let json: unknown;
+  try {
+    json = JSON.parse(headerLine ?? "");
+  } catch {
+    throw new JournalFileError(
+      `The migration's destination for ${binding.sourceFile} has no readable header; it is not a journal the runtime would accept. Restore the destination from backup, or re-run the migration from its preserved source.`,
+      "corrupt",
+      destination,
+    );
+  }
+  const header = json as { t?: unknown; v?: unknown; platformIdentity?: unknown; agentId?: unknown; roomId?: unknown };
+  if (
+    header.t !== "header"
+    || header.v !== 2
+    || header.platformIdentity !== binding.platformIdentity
+    || header.agentId !== agentId
+    || header.roomId !== binding.roomId
+  ) {
+    throw new JournalFileError(
+      `The migration's destination for ${binding.sourceFile} is bound to a different identity, agent or room than the migration committed it as; it cannot stand for the migrated journal. Restore the destination from backup, or re-run the migration from its preserved source.`,
+      "corrupt",
+      destination,
+    );
+  }
+}
+
+/**
+ * Every destination a committed migration named must still stand and still be
+ * the journal it committed: a start over a missing or untrustworthy
+ * destination would otherwise open an empty file where an authority used to
+ * be, and settle no one.
+ */
+export async function validateCommittedDestinations(agentDir: string, agentId: string): Promise<void> {
+  const manifest = await readManifest(agentDir);
+  if (manifest === null || manifest.state !== "committed") return;
+  for (const binding of manifest.bindings) {
+    const destination = destinationOf(agentDir, binding);
+    const text = await readFile(destination, "utf8").catch((error: unknown) => {
+      if (hasErrorCode(error, "ENOENT")) return null;
+      throw error;
+    });
+    if (text === null) {
+      throw new JournalFileError(
+        `The migration committed ${binding.sourceFile} to a journal that is no longer on disk; its authority must not open as an empty file and settle no one. Restore the journal from backup, or re-run the migration from the preserved source.`,
+        "corrupt",
+        destination,
+      );
+    }
+    await validateDestination(destination, binding, agentId);
+  }
 }
 
 function parseLegacyRecords(file: string, text: string): LegacyRecord[] {
@@ -182,8 +267,9 @@ function parseLegacyRecords(file: string, text: string): LegacyRecord[] {
  */
 function convertLegacy(sourceFile: string, text: string, binding: MigrationBinding, agentId: string, headerAt: number): string {
   const records = parseLegacyRecords(path.join("<agent>", sourceFile), text);
+  const roomId = binding.roomId;
   const lines: string[] = [
-    `${JSON.stringify({ t: "header", v: 2, platformIdentity: binding.platformIdentity, agentId, at: headerAt })}\n`,
+    `${JSON.stringify({ t: "header", v: 2, platformIdentity: binding.platformIdentity, agentId, roomId, at: headerAt })}\n`,
   ];
   const seenIntent = new Map<string, number>();
   const stableId = (messageId: string, n: number): string =>
@@ -208,43 +294,71 @@ function convertLegacy(sourceFile: string, text: string, binding: MigrationBindi
   return lines.join("");
 }
 
+/**
+ * Makes the binding's v2 destination stand: if it already stands and is the
+ * journal it claims, it is kept as is — records appended to it since the
+ * migration (a settlement an earlier process recorded) are the current
+ * authority, and restaging from the source would silently lose them. If it
+ * does not stand, a prepared migration restages it from the preserved source
+ * (a crash between the manifest's write and the file's); a committed
+ * migration's missing destination is refused — its authority is gone, and
+ * nothing here may guess it back.
+ */
 async function stageDestination(
   agentDir: string,
+  legacyDir: string,
   agentId: string,
   binding: MigrationBinding,
   headerAt: number,
+  state: "prepared" | "committed",
   logger: Logger,
 ): Promise<void> {
-  const identityDir = path.join(agentDir, identityDirectoryComponent(binding.platformIdentity));
-  const sourceFile = path.join(agentDir, binding.sourceFile);
-  const destination = path.join(identityDir, binding.sourceFile);
-  const expected = convertLegacy(binding.sourceFile, await readFile(sourceFile, "utf8"), binding, agentId, headerAt);
-  const actual = await readFile(destination, "utf8").catch((error: unknown) => {
+  const destination = destinationOf(agentDir, binding);
+  const existing = await readFile(destination, "utf8").catch((error: unknown) => {
     if (hasErrorCode(error, "ENOENT")) return null;
     throw error;
   });
-  if (actual === expected) return;
-  if (actual !== null) {
+  if (existing !== null) {
+    await validateDestination(destination, binding, agentId);
+    return;
+  }
+  if (state === "committed") {
     throw new JournalFileError(
-      `The migration's destination for ${binding.sourceFile} under ${binding.platformIdentity} holds different content than the source converts to; a crash left it partial, or another writer touched it. Re-run the migration so it restages from the source.`,
+      `The migration committed ${binding.sourceFile} to a journal that is no longer on disk; its authority must not be guessed back. Restore the journal from backup, or re-run the migration from the preserved source.`,
       "corrupt",
       destination,
     );
   }
-  await mkdir(identityDir, { recursive: true });
+  const sourceFile = path.join(legacyDir, binding.sourceFile);
+  const expected = convertLegacy(binding.sourceFile, await readFile(sourceFile, "utf8"), binding, agentId, headerAt);
+  await mkdir(path.dirname(destination), { recursive: true });
   await rewriteFile(destination, expected);
   logger.info("Migrated a legacy journal file", { source: binding.sourceFile, identity: binding.platformIdentity, provenance: binding.provenance });
 }
 
+/**
+ * Records the manifest's state durably: the new bytes are written whole to a
+ * copy, synced, and renamed over the old file — a crash leaves the previous
+ * state or the new one, never a truncated manifest. The manifest is written
+ * only after everything it asserts is already durable: the prepared state
+ * lands before any destination is staged, the committed state only after
+ * every destination stands.
+ */
 async function commitManifest(agentDir: string, manifest: Manifest, now: () => number): Promise<void> {
   const committed: Manifest = { ...manifest, state: "committed", committedAt: now() };
-  await writeFile(manifestPath(agentDir), `${JSON.stringify(committed, null, 2)}\n`, { encoding: "utf8", flag: "w" });
-  await syncDirectory(path.join(agentDir, MIGRATION_DIR));
+  await rewriteFile(manifestPath(agentDir), `${JSON.stringify(committed, null, 2)}\n`);
 }
 
-/** Completes a prepared migration a crash left mid-commit; it never initializes empty over one. */
+/**
+ * Completes a prepared migration a crash left mid-commit, under the caller's
+ * ownership: every source is re-verified by hash, every missing destination
+ * is restaged from its preserved source (a destination that stands is kept —
+ * it may hold records appended after the crash), and only then is the
+ * manifest committed. It never initializes empty over a half-migrated journal.
+ */
 export async function resumeInterruptedMigration(
   agentDir: string,
+  legacyDir: string,
   agentId: string,
   _identity: string,
   options: { now?: () => number; logger?: Logger; loadSqlite?: () => Promise<Pick<typeof import("node:sqlite"), "DatabaseSync">> } = {},
@@ -256,16 +370,16 @@ export async function resumeInterruptedMigration(
     throw new JournalFileError("The journal's migration is not in a resumable prepared state.", "corrupt", manifestPath(agentDir));
   }
   for (const binding of manifest.bindings) {
-    await checkSource(agentDir, binding, logger);
+    await checkSource(legacyDir, binding, logger);
   }
   for (const binding of manifest.bindings) {
-    await stageDestination(agentDir, agentId, binding, manifest.createdAt, logger);
+    await stageDestination(agentDir, legacyDir, agentId, binding, manifest.createdAt, "prepared", logger);
   }
   await commitManifest(agentDir, manifest, now);
 }
 
-async function checkSource(agentDir: string, binding: MigrationBinding, logger: Logger): Promise<void> {
-  const source = path.join(agentDir, binding.sourceFile);
+async function checkSource(legacyDir: string, binding: MigrationBinding, logger: Logger): Promise<void> {
+  const source = path.join(legacyDir, binding.sourceFile);
   await stat(source).catch(() => {
     throw new JournalFileError(
       `The migration's source ${binding.sourceFile} is gone from the journal; its records cannot be re-staged. Restore the source from backup and re-run the migration.`,
@@ -293,18 +407,23 @@ async function checkSource(agentDir: string, binding: MigrationBinding, logger: 
  *
  * Preview is the default: it reports what `apply: true` would do, writing
  * nothing. Applying requires a complete, hash-verified binding for every
- * legacy file; the originals are preserved byte-for-byte, and a migration a
- * crash interrupts is resumed on the next apply or start, never reset.
+ * legacy file; the originals are preserved byte-for-byte. The phases are
+ * durable in order — the prepared manifest, each staged destination, then
+ * the committed manifest — so a crash at any point leaves a state the next
+ * apply or start resumes: a destination that stands is kept with whatever
+ * records it has since, and a committed migration's missing destination is
+ * refused, never guessed back.
  */
 export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): Promise<MigrationResult> {
   const now = options.now ?? Date.now;
   const logger = options.logger ?? resolveLogger();
   const agentDir = agentJournalDir(options.journalDir, options.agentId);
-  const legacy = await legacyFiles(agentDir);
+  const legacyDir = legacyAgentDir(options.journalDir, options.agentId);
+  const legacy = await legacyFiles(legacyDir);
   const bindings = validateBindings(options.bindings ?? [], legacy, agentDir);
 
   if (options.apply !== true) {
-    return { mode: "preview", sources: await reportSources(agentDir, legacy, bindings), unbound: legacy.filter((file) => !bindings.some((binding) => binding.sourceFile === file)) };
+    return { mode: "preview", sources: await reportSources(legacyDir, legacy, bindings), unbound: legacy.filter((file) => !bindings.some((binding) => binding.sourceFile === file)) };
   }
 
   const unbound = legacy.filter((file) => !bindings.some((binding) => binding.sourceFile === file));
@@ -313,14 +432,15 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       `Applying the migration requires a binding — its platform identity and provenance — for every legacy file, and none covers: ${unbound.join(", ")}. ` +
         `Name what deployment each of them came from, or remove it only if you accept losing its authority.`,
       "corrupt",
-      agentDir,
+      legacyDir,
     );
   }
 
+  await mkdir(agentDir, { recursive: true });
   const ownership = await JournalOwnership.acquire(path.join(agentDir, ".ownership.sqlite"), { loadSqlite: options.loadSqlite });
-  try {
-    for (const binding of bindings) {
-      await checkSource(agentDir, binding, logger);
+    try {
+      for (const binding of bindings) {
+      await checkSource(legacyDir, binding, logger);
     }
     const existing = await readManifest(agentDir);
     if (existing !== null && existing.state === "committed") {
@@ -332,10 +452,13 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
           manifestPath(agentDir),
         );
       }
+      // Already committed: every destination that stands is kept exactly as it
+      // stands — records appended since the commit are its authority — and the
+      // migration reports that it needs nothing done.
       for (const binding of bindings) {
-        await stageDestination(agentDir, options.agentId, binding, existing.createdAt, logger);
+        await stageDestination(agentDir, legacyDir, options.agentId, binding, existing.createdAt, "committed", logger);
       }
-      return { mode: "already-committed", sources: await reportSources(agentDir, legacy, bindings) };
+      return { mode: "already-committed", sources: await reportSources(legacyDir, legacy, bindings) };
     }
     if (existing !== null) {
       // A prepared manifest from an earlier interrupted run: it must be this same set of bindings.
@@ -350,15 +473,16 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
     }
     const manifest: Manifest = existing !== null ? existing : { v: 1, state: "prepared", createdAt: now(), bindings };
     if (existing === null) {
+      // The prepared manifest is durable before any destination is staged: a
+      // crash afterwards is a resume, never an empty initialization.
       await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
-      await writeFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "w" });
-      await syncDirectory(path.join(agentDir, MIGRATION_DIR));
+      await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
     }
     for (const binding of bindings) {
-      await stageDestination(agentDir, options.agentId, binding, manifest.createdAt, logger);
+      await stageDestination(agentDir, legacyDir, options.agentId, binding, manifest.createdAt, "prepared", logger);
     }
     await commitManifest(agentDir, manifest, now);
-    return { mode: "committed", sources: await reportSources(agentDir, legacy, bindings) };
+    return { mode: "committed", sources: await reportSources(legacyDir, legacy, bindings) };
   } finally {
     await ownership.release().catch(() => undefined);
   }
@@ -366,6 +490,7 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
 
 function validateBindings(bindings: MigrationBinding[], legacy: string[], agentDir: string): MigrationBinding[] {
   const seen = new Set<string>();
+  const destinations = new Map<string, string>();
   for (const raw of bindings) {
     const check = bindingSchema.safeParse(raw);
     if (!check.success) {
@@ -384,17 +509,38 @@ function validateBindings(bindings: MigrationBinding[], legacy: string[], agentD
         agentDir,
       );
     }
+    // A v1 file's name encodes its room; a binding that names another room would
+    // stage the records under a journal whose header binds them elsewhere.
+    const encoded = roomIdOfSourceFile(binding.sourceFile);
+    if (encoded === undefined || encoded !== binding.roomId) {
+      throw new JournalFileError(
+        `A migration binding for ${binding.sourceFile} names room ${binding.roomId}, but the file's name ${encoded === undefined ? "encodes no room" : `encodes ${encoded}`} and the two must agree.`,
+        "corrupt",
+        agentDir,
+      );
+    }
+    // Two sources may not convert into one destination: it is one room's journal.
+    const destination = `${identityDirectoryComponent(binding.platformIdentity)}/${roomFileComponent(binding.roomId)}`;
+    const claiming = destinations.get(destination);
+    if (claiming !== undefined) {
+      throw new JournalFileError(
+        `Two bindings (${claiming} and ${binding.sourceFile}) stand for the same room of the same platform; one room's journal takes one migration.`,
+        "corrupt",
+        agentDir,
+      );
+    }
+    destinations.set(destination, binding.sourceFile);
   }
   return bindings;
 }
 
-async function reportSources(agentDir: string, legacy: string[], bindings: MigrationBinding[]): Promise<MigrationSourceReport[]> {
+async function reportSources(legacyDir: string, legacy: string[], bindings: MigrationBinding[]): Promise<MigrationSourceReport[]> {
   const reports: MigrationSourceReport[] = [];
   for (const file of legacy) {
     const binding = bindings.find((candidate) => candidate.sourceFile === file);
     reports.push({
       sourceFile: file,
-      sourceSha256: await sha256File(path.join(agentDir, file)),
+      sourceSha256: await sha256File(path.join(legacyDir, file)),
       ...(binding !== undefined ? { platformIdentity: binding.platformIdentity, provenance: binding.provenance } : {}),
     });
   }

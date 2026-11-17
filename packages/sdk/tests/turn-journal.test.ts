@@ -6,7 +6,7 @@ import { describe, expect, it, onTestFinished } from "vitest";
 
 import { BandSdkError } from "../src/core/errors";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
-import { identityDirectoryComponent } from "../src/runtime/journal/records";
+import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals } from "../src/runtime/journal/migration";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { TurnJournal, agentJournalDir, roomFileName } from "../src/runtime/journal/TurnJournal";
@@ -25,11 +25,12 @@ import {
   roomFile,
   seedLegacyFile,
   writeRawFile,
+  legacyRoomFile,
 } from "./turnJournalSupport";
 
-/** The v2 file's header line, bound to `identity`. */
-function header(identity: string, agentId = AGENT): string {
-  return `${JSON.stringify({ t: "header", v: 2, platformIdentity: identity, agentId, at: 1 })}\n`;
+/** The v2 file's header line, bound to `identity`, `agentId` and `ROOM`. */
+function header(identity: string, agentId = AGENT, roomId = ROOM): string {
+  return `${JSON.stringify({ t: "header", v: 2, platformIdentity: identity, agentId, roomId, at: 1 })}\n`;
 }
 
 const roomOptions = { platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM } as const;
@@ -119,6 +120,47 @@ describe("strict validation refuses, and never resets", () => {
     await mkdir(roomFile(dir), { recursive: true });
     onTestFinished(() => rm(roomFile(dir), { recursive: true, force: true }));
     await expect(RoomJournal.open(roomFile(dir), roomOptions)).rejects.toMatchObject({ kind: "io" });
+  });
+});
+
+describe("a journal's room binding", () => {
+  it("refuses a file whose header binds another room than its file name stands for", async () => {
+    const other = "room/other";
+    const dir = tmpRoot();
+    // Room A's journal, byte for byte, under room B's file name: a copy of another room's authority.
+    const file = roomFile(dir, IDENTITY, AGENT, other);
+    await mkdir(path.dirname(file), { recursive: true });
+    const copied = `${header(IDENTITY)}${JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })}\n`;
+    await writeFile(file, copied);
+    await expect(RoomJournal.open(file, { platformIdentity: IDENTITY, agentId: AGENT, roomId: other }))
+      .rejects.toBeInstanceOf(JournalFileError);
+    // The copy stands untouched: nothing was rewritten into a journal it is not.
+    expect(await readFile(file, "utf8")).toBe(copied);
+
+    // And the mirror image: room A's file name, a header binding room B.
+    const dir2 = tmpRoot();
+    const file2 = roomFile(dir2);
+    await mkdir(path.dirname(file2), { recursive: true });
+    await writeFile(file2, header(IDENTITY, AGENT, other));
+    await expect(RoomJournal.open(file2, roomOptions)).rejects.toBeInstanceOf(JournalFileError);
+  });
+
+  it("keeps agent, room, and identity names out of paths, whatever they contain", async () => {
+    const dir = tmpRoot();
+    const root = path.resolve(dir);
+    for (const roomId of ["..", "../escape", ".", "a/b"]) {
+      const file = roomFile(dir, IDENTITY, AGENT, roomId);
+      expect(file.startsWith(root)).toBe(true);
+      expect(/^[0-9a-f]{64}\.jsonl$/.test(path.basename(file))).toBe(true);
+    }
+    for (const agentId of ["..", "../escape", "."]) {
+      const agentDir = agentJournalDir(dir, agentId);
+      expect(agentDir.startsWith(root)).toBe(true);
+      expect(/^[0-9a-f]{64}$/.test(path.basename(agentDir))).toBe(true);
+    }
+    // Distinct ids stand for distinct names.
+    expect(roomFileComponent("..")).not.toBe(roomFileComponent("..x"));
+    expect(roomFileComponent("a/b")).not.toBe(roomFileComponent("a" + String.fromCharCode(0) + "b"));
   });
 });
 
@@ -302,7 +344,7 @@ describe("ownership and generations", () => {
 
   it("lets a start over a committed migration run, and refuses one over unbound legacy files", async () => {
     const dir = tmpRoot();
-    const source = await seedLegacyFile(dir, AGENT, roomFileName(ROOM), [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })]);
+    const source = await seedLegacyFile(dir, AGENT, legacyRoomFile(ROOM), [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })]);
     await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "unbound-legacy" });
 
     // The operator binds the legacy file offline; the start then runs over what it staged.
@@ -311,7 +353,7 @@ describe("ownership and generations", () => {
       journalDir: dir,
       agentId: AGENT,
       apply: true,
-      bindings: [{ sourceFile: roomFileName(ROOM), sourceSha256, platformIdentity: IDENTITY, provenance: "operator-attested" }],
+      bindings: [{ sourceFile: legacyRoomFile(ROOM), roomId: ROOM, sourceSha256, platformIdentity: IDENTITY, provenance: "operator-attested" }],
     });
     expect(result.mode).toBe("committed");
 
@@ -324,13 +366,13 @@ describe("ownership and generations", () => {
   it("resumes a migration a crash left prepared, instead of initializing empty", async () => {
     const dir = tmpRoot();
     const otherAgent = "agent/two";
-    const source = await seedLegacyFile(dir, otherAgent, roomFileName(ROOM), [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
+    const source = await seedLegacyFile(dir, otherAgent, legacyRoomFile(ROOM), [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
     const sourceSha256 = createHash("sha256").update(await readFile(source)).digest("hex");
     const manifestDir = path.join(agentJournalDir(dir, otherAgent), "migration");
     await mkdir(manifestDir, { recursive: true });
     await writeFile(
       path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({ v: 1, state: "prepared", createdAt: 1, bindings: [{ sourceFile: roomFileName(ROOM), sourceSha256, platformIdentity: IDENTITY, provenance: "crash" }] }, null, 2)}\n`,
+      `${JSON.stringify({ v: 1, state: "prepared", createdAt: 1, bindings: [{ sourceFile: legacyRoomFile(ROOM), roomId: ROOM, sourceSha256, platformIdentity: IDENTITY, provenance: "crash" }] }, null, 2)}\n`,
     );
 
     const generation = await new TurnJournal(dir, otherAgent).activate(IDENTITY);

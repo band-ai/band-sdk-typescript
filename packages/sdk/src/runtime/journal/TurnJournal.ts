@@ -8,10 +8,14 @@ import { isolateTeardown } from "../../core/teardown";
 import { resolveLogger } from "../../core/logger";
 
 import { JournalFileError } from "./errors";
-import { identityDirectoryComponent } from "./records";
+import {
+  agentDirectoryComponent,
+  identityDirectoryComponent,
+  roomFileComponent,
+} from "./records";
 import { RoomJournal, type RoomJournalOptions } from "./RoomJournal";
 import { JournalOwnership } from "./ownership";
-import { resumeInterruptedMigration, unboundLegacyFiles, migrationState } from "./migration";
+import { resumeInterruptedMigration, unboundLegacyFiles, migrationState, validateCommittedDestinations } from "./migration";
 
 /** A journal operation (a write, a close) whose failure must not stop the runtime: it is logged where it happens. */
 export async function bestEffort(operation: () => Promise<unknown>, logger: Logger, failure: string, context: Record<string, unknown>): Promise<void> {
@@ -22,14 +26,28 @@ export async function bestEffort(operation: () => Promise<unknown>, logger: Logg
   }
 }
 
-/** The directory of one agent's journal under `journalDir`. */
+/**
+ * The directory of one agent's v2 journal under `journalDir`. The agent id is
+ * hashed, never percent-encoded: a caller-controlled id must not reach the
+ * file system as a path component it can steer. The full id stands in every
+ * file's header, which is what is validated on open.
+ */
 export function agentJournalDir(journalDir: string, agentId: string): string {
+  return path.join(journalDir, agentDirectoryComponent(agentId));
+}
+
+/**
+ * The directory a pre-v2 (legacy) process of `agentId` journaled under. Kept
+ * verbatim — percent-encoded, as the legacy layout wrote it — because that
+ * is where legacy files actually live and where the migration reads them.
+ */
+export function legacyAgentDir(journalDir: string, agentId: string): string {
   return path.join(journalDir, encodeURIComponent(agentId));
 }
 
-/** The name of `roomId`'s journal file. */
+/** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
 export function roomFileName(roomId: string): string {
-  return `${encodeURIComponent(roomId)}.jsonl`;
+  return `${roomFileComponent(roomId)}.jsonl`;
 }
 
 /** The path of `roomId`'s journal file under `dir`, whichever directory holds the room's journals. */
@@ -77,10 +95,13 @@ export class TurnJournal {
   readonly agentId: string;
   readonly now: () => number;
   readonly logger: Logger;
+  /** The configured journal root: the legacy (pre-v2) files live under it, not under `dir`. */
+  private readonly root: string;
   /** Set by `prepare()` until a generation activates: rooms open under the generation, not here. */
   private prepared = false;
 
   public constructor(journalDir: string, agentId: string, options: TurnJournalOptions = {}) {
+    this.root = journalDir;
     this.dir = agentJournalDir(journalDir, agentId);
     this.agentId = agentId;
     this.now = options.now ?? Date.now;
@@ -98,12 +119,15 @@ export class TurnJournal {
     this.prepared = true;
   }
 
-  /**
+/**
    * Opens the agent's journal under `identity` for one start generation:
    * acquires the agent's exclusive ownership, resumes a migration a crash
    * left mid-commit, and refuses to start over legacy files no migration
    * bound — they might belong to any deployment, and no legacy record says
-   * which one. The generation owns what it returns and gives it all back.
+   * which — or over a committed migration whose output is missing or untrust-
+   * worthy: that journal's authority would otherwise open as an empty file
+   * and settle no one. The generation owns what it returns and gives it all
+   * back.
    */
   public async activate(identity: string): Promise<JournalGeneration> {
     if (!this.prepared) await this.prepare();
@@ -114,18 +138,27 @@ export class TurnJournal {
       // it never initializes empty over a half-migrated journal.
       const state = await migrationState(this.dir);
       if (state === "prepared") {
-        await resumeInterruptedMigration(this.dir, this.agentId, identity, { now: this.now, logger: this.logger });
+        await resumeInterruptedMigration(this.dir, legacyAgentDir(this.root, this.agentId), this.agentId, identity, { now: this.now, logger: this.logger });
       }
-      // A commit — resumed or already made — binds a set of files; anything the agent's
-      // directory holds beyond it might belong to any deployment, and no record says which.
-      const legacy = await unboundLegacyFiles(this.dir);
+      // A commit — resumed or already made — binds a set of files to their v2
+      // destinations. Every destination it names must still stand and still
+      // be a journal bound where it claims: one missing or unreadable is a
+      // journal whose authority is lost, and an empty file must not open over
+      // it and settle no one.
+      if ((await migrationState(this.dir)) === "committed") {
+        await validateCommittedDestinations(this.dir, this.agentId);
+      }
+      // A commit — resumed or already made — binds a set of files; anything the
+      // agent's legacy directory holds beyond it might belong to any deployment,
+      // and no record says which.
+      const legacy = await unboundLegacyFiles(legacyAgentDir(this.root, this.agentId), this.dir);
       if (legacy.length > 0) {
         throw new JournalFileError(
           `This agent's journal holds legacy records (${legacy.join(", ")}) no offline migration has bound to a platform identity; ` +
             `they might belong to any deployment this agent ever pointed at. Run the exported migrateTurnJournals against them with their ` +
             `provenance before starting; deleting them discards the journal's authority, so do not do that casually.`,
           "unbound-legacy",
-          path.join(this.dir, legacy[0]),
+          path.join(legacyAgentDir(this.root, this.agentId), legacy[0]),
         );
       }
       const identityDir = path.join(this.dir, identityDirectoryComponent(identity));
@@ -252,7 +285,7 @@ class Generation implements JournalGeneration {
   }
 }
 
-class GenerationClosedError extends BandSdkError {
+export class GenerationClosedError extends BandSdkError {
   constructor() {
     super("The journal generation is closed; its start ended");
     this.name = "GenerationClosedError";

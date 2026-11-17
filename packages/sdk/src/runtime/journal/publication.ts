@@ -2,21 +2,23 @@ import type { ToolOperationResult } from "../../contracts/dtos";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
+import { JournalPublicationError } from "./errors";
 import { RoomJournal } from "./RoomJournal";
+import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 import { TurnCutShortError } from "./journalTools";
-import type { JournalGeneration } from "./TurnJournal";
 
 /**
  * The engine that turns a reply post or an accepted decline into the room's
  * durable publication: the intent is recorded before the transport is
  * invoked, and the settlement (accepted, refused, or unknown) is recorded
- * before the post's outcome is returned to the caller. A journal file that
- * will not admit new records refuses the post (fail-closed): the reply is
- * not delivered rather than being delivered unrecorded.
+ * before the post's outcome is returned to the caller.
  *
- * When the room has no journal (the journal is disabled, or its open failed
- * and the runtime kept serving), the post runs unrecorded — the v1 behavior,
- * whose only cost is that the reply can be answered again after a restart.
+ * The engine is fail-closed. When the room's journal stands but no longer
+ * admits records — it owed an outcome it could not write, or its handle
+ * closed — or when it exists but will not open, a new reply is refused
+ * outright: nothing is delivered unrecorded. Only a room whose authority is
+ * gone entirely (the journal is disabled, or the runtime stopped its
+ * handling before the post) posts unjournaled, as it would without one.
  */
 export class PublicationEngine {
   private constructor(
@@ -33,22 +35,40 @@ export class PublicationEngine {
     return new PublicationEngine(options.room, options.generation, options.logger);
   }
 
-  /** The journal for the room this engine serves, or none when serving unjournalled. */
-  private async journal(): Promise<RoomJournal | undefined> {
-    const room = await this.room();
-    return room?.accepting ? room : undefined;
+  private async authority(): Promise<RoomJournal | undefined> {
+    let room: RoomJournal | undefined;
+    try {
+      room = await this.room();
+    } catch (error) {
+      // A closed generation is no authority at all: the runtime stopped the
+      // room's handling, and what is owed goes out as it would unjournaled.
+      if (error instanceof GenerationClosedError) room = undefined;
+      else throw error;
+    }
+    if (room !== undefined && !room.accepting) {
+      throw new JournalPublicationError(
+        "The room's turn journal can no longer record what this reply owes; it refuses the post rather than deliver it unrecorded. Stop the runtime, restore the journal, and start again.",
+        "poisoned",
+      );
+    }
+    return room;
   }
 
-  /**
+/**
    * Posts a reply through the journal: the durable intent is written before
    * `post` runs (a failed write never lets the post out), and the accepted
    * post is settled before its result is returned.
    *
    * - `uncertain` delivery (a 5xx, no response, or an unreadable response):
-   *   the publication is marked unknown, the room's journal is poisoned so no
-   *   further admission can be recorded, and a `DeliveryUnknownError` is
-   *   thrown — it states that Band may already hold the message and that
-   *   resending it blindly is unsafe.
+   *   the publication is marked unknown and a `DeliveryUnknownError` is
+   *   thrown — it states that Band may already hold the message, so resending
+   *   it blindly is unsafe. Where the unknown's record itself fails to land,
+   *   the journal is poisoned: it owed a write it could not make.
+   * - the transport acknowledged but the acknowledgment's record failed:
+   *   the publication stands unknown — the journal cannot prove what the
+   *   transport said — and the journal is poisoned either way: a writer that
+   *   lost the write it owes is not admitted again until it reopens.
+   *   A `DeliveryUnknownError` is thrown, not a storage failure.
    * - `refused`/`notCommitted`: the publication is marked refused (the
    *   record is best-effort where the file will not take it) and the
    *   original failure propagates, so the turn fails and may be retried.
@@ -59,7 +79,7 @@ export class PublicationEngine {
     stopped?: AbortSignal,
   ): Promise<ToolOperationResult> {
     if (stopped?.aborted) throw new TurnCutShortError();
-    const journal = await this.journal();
+    const journal = await this.authority();
     if (!journal) return post();
 
     const publicationId = await journal.beginReply(messageId);
@@ -72,41 +92,63 @@ export class PublicationEngine {
       throw new TurnCutShortError();
     }
     const tracked = (async (): Promise<ToolOperationResult> => {
+      let result: ToolOperationResult;
       try {
-        const result = await post();
-        await journal.settleReply(messageId, publicationId, receiptIdOf(result));
-        return result;
-} catch (error) {
+        result = await post();
+      } catch (error) {
         if (classifyFailedAttempt(error) === "uncertain") {
-          let recorded = false;
-          try {
-            await journal.markUnknown(messageId, publicationId);
-            recorded = true;
-          } catch (recordError) {
-            this.logger.error("delivery unknown, and its journal record failed; the room's journal no longer admits records", {
-              roomId: journal.roomId,
-              error,
-              recordError,
-            });
-          }
-          if (!recorded) {
-            // The record failed but the room kept admitting; make it stop.
-            journal.poison();
-          }
-          this.logger.warn("reply delivery is unknown; the publication is recorded as unknown and the room will not admit further replies until the journal reopens", {
-            roomId: journal.roomId,
-            error,
-          });
-          throw new DeliveryUnknownError(error, publicationId);
+          return await this.settleAsUnknown(journal, messageId, publicationId, error, { poisonWriter: false });
         }
         await journal.markRefused(messageId, publicationId).catch((error: unknown) => {
           this.logger.warn("the refused reply's record could not be written", { roomId: journal.roomId, error });
         });
         throw error;
       }
+      // The transport said yes; the yes must stand on disk before the result
+      // does. The settlement's own failure is not a transport refusal — the
+      // reply stands unknown, and the writer that lost the write it owes
+      // stops admitting.
+      try {
+        await journal.settleReply(messageId, publicationId, receiptIdOf(result));
+      } catch (error) {
+        return await this.settleAsUnknown(journal, messageId, publicationId, error, { poisonWriter: true });
+      }
+      return result;
     })();
     this.generation?.trackInflight(tracked, journal.roomId);
     return tracked;
+  }
+
+  /**
+   * Records that the publication's delivery stands unknown, and throws the
+   * error that says so. When `poisonWriter`, the journal is poisoned
+   * regardless of whether the record landed: it has just failed a write it
+   * owed, and the next post would only start the same argument.
+   */
+  private async settleAsUnknown(
+    journal: RoomJournal,
+    messageId: string,
+    publicationId: string,
+    error: unknown,
+    { poisonWriter }: { poisonWriter: boolean },
+  ): Promise<never> {
+    let recorded = true;
+    try {
+      await journal.markUnknown(messageId, publicationId);
+    } catch (recordError) {
+      recorded = false;
+      this.logger.error("the publication stands unknown, and its record failed to land; the room's journal no longer admits records", {
+        roomId: journal.roomId,
+        error,
+        recordError,
+      });
+    }
+    if (poisonWriter || !recorded) journal.poison();
+    this.logger.warn("reply delivery is unknown; the publication is recorded as unknown and the room reports it instead of reposting it", {
+      roomId: journal.roomId,
+      error,
+    });
+    throw new DeliveryUnknownError(error, publicationId);
   }
 
   /**
@@ -116,7 +158,7 @@ export class PublicationEngine {
    * refuses records no settlement.
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
-    const journal = await this.journal();
+    const journal = await this.authority();
     if (!journal) return run();
 
     const tracked = (async (): Promise<T> => {
@@ -128,9 +170,9 @@ export class PublicationEngine {
     return tracked;
   }
 
-  /** The journal this engine serves, when it admits records; `undefined` while poisoned or closed. */
+  /** The journal this engine stands behind, when it admits records; `undefined` when no authority stands. */
   public async roomJournal(): Promise<RoomJournal | undefined> {
-    return await this.journal();
+    return await this.authority();
   }
 }
 

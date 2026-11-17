@@ -148,7 +148,7 @@ export class BandMcpServer {
 
         session.lastSeenAt = Date.now();
         await session.transport.handleRequest(req, res, req.body);
-      } catch (error) {
+      } catch {
         if (!res.headersSent) {
           sendMcpError(res, 500, "Internal server error");
         }

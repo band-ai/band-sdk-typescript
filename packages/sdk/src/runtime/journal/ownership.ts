@@ -3,6 +3,19 @@ import { BandSdkError } from "../../core/errors";
 
 type SqliteModule = Pick<typeof import("node:sqlite"), "DatabaseSync">;
 
+/**
+ * Loads `node:sqlite` by its official name. Bundled CJS output rewrites a
+ * dynamic `import("node:sqlite")` without the `node:` prefix, where it would
+ * resolve as an (uninstalled) package; asking the process for the builtin
+ * names it correctly in a child process and in the bundle alike.
+ */
+async function loadNodeSqlite(): Promise<SqliteModule> {
+  const builtin =
+    typeof process.getBuiltinModule === "function" ? process.getBuiltinModule("node:sqlite") : undefined;
+  if (builtin !== undefined) return builtin;
+  return await import("node:sqlite");
+}
+
 /** Why a journal's ownership could not be acquired; every kind fails closed. */
 export type JournalOwnershipKind = "contention" | "unsupported" | "corrupt" | "io";
 
@@ -46,7 +59,7 @@ export class JournalOwnership {
     try {
       // Lazy, like the Linear store: without a configured journal no SQLite is loaded, and
       // Node 22.12 only exposes node:sqlite behind --experimental-sqlite.
-      module = await (options.loadSqlite ?? (async () => import("node:sqlite")))();
+      module = await (options.loadSqlite ?? loadNodeSqlite)();
     } catch (error) {
       throw new JournalOwnershipError(
         `The journal lock needs node:sqlite (Node.js 22.13+, or 22.12 with --experimental-sqlite); it is unavailable here. ` +

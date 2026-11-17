@@ -39,7 +39,7 @@ export class DeliveryUnknownError extends DeliveryFailedError {
     super(cause);
     this.name = "DeliveryUnknownError";
     this.message =
-      "The reply's delivery is unknown: Band may already hold it. Do not resend it blindly; retry the same publication or read the room to see whether it arrived.";
+      "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
   }
 }
 

@@ -10,6 +10,7 @@ import {
   identityDirectoryComponent,
   journalHeaderSchema,
   journalRecordSchema,
+  roomFileComponent,
   type JournalHeader,
   type JournalRecord,
   type PublicationState,
@@ -114,8 +115,8 @@ function toLine(record: Record<string, unknown>): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-function headerLine(identity: string, agentId: string, at: number): string {
-  return toLine({ t: "header", v: 2, platformIdentity: identity, agentId, at });
+function headerLine(identity: string, agentId: string, roomId: string, at: number): string {
+  return toLine({ t: "header", v: 2, platformIdentity: identity, agentId, roomId, at });
 }
 
 /**
@@ -130,6 +131,15 @@ function headerLine(identity: string, agentId: string, at: number): string {
  */
 export class RoomJournal {
   private inbounds = new Map<string, InboundIndex>();
+  /**
+   * The publications whose delivery stands unresolved — admitted in the file
+   * with no recorded outcome (a process died mid-post) or recorded as unknown.
+   * Publications this handle admits itself are tracked by the generation, not
+   * here: they are in flight, not a delivery mystery.
+   */
+  private unresolved = new Map<string, { messageId: string; at: number }>();
+  /** The in-flight or last-finished recovery, so callers queue behind one another. */
+  private recovery: Promise<UnresolvedPublication[]> = Promise.resolve([]);
   private readonly writes = new Serializer();
   private readonly now: () => number;
   private readonly logger: Logger;
@@ -173,13 +183,20 @@ export class RoomJournal {
           file,
         );
       }
+      if (path.basename(file) !== `${roomFileComponent(options.roomId)}.jsonl`) {
+        throw new JournalFileError(
+          `The room's journal must live at the file its room id hashes to; this file is not that file, so its records are not this room's`,
+          "corrupt",
+          file,
+        );
+      }
       const text = await readFile(file, "utf8").catch((error: unknown) => {
         if (hasErrorCode(error, "ENOENT")) return null;
         throw error;
       });
       if (text === null) {
         // A new file: its header is durable before its directory entry is not.
-        await rewriteFile(file, headerLine(options.platformIdentity, options.agentId, now()));
+        await rewriteFile(file, headerLine(options.platformIdentity, options.agentId, options.roomId, now()));
         const handle = await open(file, "a");
         try {
           await syncDirectory(path.dirname(file));
@@ -226,13 +243,23 @@ export class RoomJournal {
         const kept = keptTail !== null ? [...records, keptTail] : records;
         await rewriteFile(
           file,
-          headerLine(header.platformIdentity, header.agentId, header.at) + kept.map(({ line }) => `${line}\n`).join(""),
+          headerLine(header.platformIdentity, header.agentId, header.roomId, header.at) + kept.map(({ line }) => `${line}\n`).join(""),
         );
       }
 
       const handle = await open(file, "a");
       const journal = new RoomJournal(handle, options);
       journal.inbounds = index;
+      // Every publication the file left without an outcome is unresolved: this
+      // handle admitted none of them, so each is the leftover of an earlier
+      // process's post that may already be in the room.
+      for (const [messageId, inbound] of index) {
+        for (const [publicationId, publication] of inbound.publications) {
+          if (publication.outcome === "pending" || publication.outcome === "unknown") {
+            journal.unresolved.set(publicationId, { messageId, at: publication.at });
+          }
+        }
+      }
       return journal;
     } catch (error) {
       throw journalFileFailure(error);
@@ -260,21 +287,28 @@ export class RoomJournal {
   }
 
   /**
-   * The room's publications whose delivery stands unresolved — admitted with
-   * no recorded outcome, or recorded as unknown — that this handle has not
-   * announced yet. Announces each, recording the announcement best-effort so
-   * this handle does not announce it again; a record it cannot write is
-   * logged, and the announcement stands in memory.
+   * The room's publications whose delivery stands unresolved — the file left
+   * one admitted with no recorded outcome, or recorded it as unknown — that
+   * this handle has not announced yet. Announces each, recording the
+   * announcement best-effort so this handle does not announce it again; a
+   * record it cannot write is logged, and the announcement stands in memory.
+   * Publications this handle admitted itself are in flight, not unresolved,
+   * and never announced here.
    */
-  public async recoverUnresolved(): Promise<UnresolvedPublication[]> {
+  public recoverUnresolved(): Promise<UnresolvedPublication[]> {
+    // Serialized per handle: an announcement in flight marks what it reports
+    // before a second caller may see the same publications again.
+    this.recovery = this.recovery.catch(() => undefined).then(() => this.runRecovery());
+    return this.recovery;
+  }
+
+  private async runRecovery(): Promise<UnresolvedPublication[]> {
     if (this.closed) return [];
     const found: UnresolvedPublication[] = [];
-    for (const [messageId, inbound] of this.inbounds) {
-      for (const [publicationId, publication] of inbound.publications) {
-        if ((publication.outcome === "pending" || publication.outcome === "unknown") && !publication.reported) {
-          found.push({ messageId, publicationId, outcome: publication.outcome, at: publication.at });
-        }
-      }
+    for (const [publicationId, info] of this.unresolved) {
+      const publication = this.inbounds.get(info.messageId)?.publications.get(publicationId);
+      if (publication === undefined || publication.reported) continue;
+      found.push({ messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
     }
     if (found.length === 0) return found;
     this.logger.warn(
@@ -312,6 +346,7 @@ export class RoomJournal {
       publication.at = at;
       if (receiptId !== undefined) publication.receiptId = receiptId;
     }
+    this.unresolved.delete(publicationId);
   }
 
   /** Records that Band answered and saved nothing: the reply is definitely not in the room. */
@@ -324,6 +359,7 @@ export class RoomJournal {
       publication.outcome = "refused";
       publication.at = at;
     }
+    this.unresolved.delete(publicationId);
   }
 
   /** Records that whether Band has the reply is unknown: it may already be in the room. */
@@ -337,6 +373,7 @@ export class RoomJournal {
       publication.reported = true;
       publication.at = at;
     }
+    this.unresolved.set(publicationId, { messageId, at });
   }
 
   /** Records that the inbound's no-reply was accepted: it is answered and answered again never. */
@@ -443,6 +480,13 @@ function parseHeader(file: string, line: string | undefined, options: RoomJourna
   if (check.data.agentId !== options.agentId) {
     throw new JournalFileError(
       `The journal at ${file} belongs to a different agent (${check.data.agentId}) than the one running (${options.agentId}).`,
+      "corrupt",
+      file,
+    );
+  }
+  if (check.data.roomId !== options.roomId) {
+    throw new JournalFileError(
+      `The journal at ${file} records the room ${check.data.roomId}, not the room it is asked to journal (${options.roomId}); a room's records are not another room's authority, so the file is refused rather than adopted.`,
       "corrupt",
       file,
     );

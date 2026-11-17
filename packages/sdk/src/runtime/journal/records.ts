@@ -6,15 +6,17 @@ import { z } from "zod";
 export const JOURNAL_FORMAT_VERSION = 2;
 
 /**
- * The file's first line: who the journal is bound to. The platform identity is
- * hashed into the directory it lives in; both are kept whole here so a file
- * moved or forged into another identity's directory is refused, not adopted.
+ * The file's first line: who the journal is bound to. The platform identity,
+ * the agent, and the room are hashed into the path components the file lives
+ * in; all three are kept whole here so a file moved or forged into another
+ * identity's, agent's, or room's namespace is refused, not adopted.
  */
 export const journalHeaderSchema = z.strictObject({
   t: z.literal("header"),
   v: z.literal(JOURNAL_FORMAT_VERSION),
   platformIdentity: z.string().min(1),
   agentId: z.string().min(1),
+  roomId: z.string().min(1),
   at: z.number(),
 });
 
@@ -50,6 +52,21 @@ export type JournalRecord = z.infer<typeof journalRecordSchema>;
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {
   return createHash("sha256").update(identity, "utf8").digest("hex");
+}
+
+/**
+ * The directory component of an agent id in the journal's file layout. It is
+ * hashed, never percent-encoded: an agent id must not reach the file system
+ * as a path component it can steer (dots, slashes, NULs). The full id stands
+ * in every file's header, which is what is validated on open.
+ */
+export function agentDirectoryComponent(agentId: string): string {
+  return createHash("sha256").update(agentId, "utf8").digest("hex");
+}
+
+/** The file-name component of a room id in the journal's file layout. Hashed, for the same reason. */
+export function roomFileComponent(roomId: string): string {
+  return createHash("sha256").update(roomId, "utf8").digest("hex");
 }
 
 /** How one inbound's records have left it. Settled states never un-settle. */
