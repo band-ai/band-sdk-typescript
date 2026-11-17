@@ -63,8 +63,24 @@ export interface JournalGeneration {
   readonly identity: string;
   /** The room's journal, opened on first use and kept open until its handling stops. */
   room(roomId: string): Promise<RoomJournal>;
-  /** Closes `roomId`'s journal once its handling stopped; it reopens on the room's next turn. */
-  release(roomId: string): Promise<void>;
+  /**
+   * Holds `roomId`'s journal open for a turn: while any hold stands, a release
+   * of the room defers its close until the last hold ends, so a turn never
+   * loses the handle (or the poisoned state of it) it is still writing to.
+   */
+  holdRoom(roomId: string): void;
+  /**
+   * Ends a turn's hold on `roomId`; when the last hold ends, a close a
+   * release deferred while it stood runs then.
+   */
+  endHoldRoom(roomId: string): Promise<void>;
+  /**
+   * Closes `roomId`'s journal once its handling stopped; it reopens on the room's
+   * next turn. A turn's hold defers the close until it ends — except when `force`
+   * says the room's handling stopped for good (the room was left, the runtime
+   * stopped): a turn still settling there must not write to the released journal.
+   */
+  release(roomId: string, force?: boolean): Promise<void>;
   /** Tracks a publication the generation admitted, so its stop waits for the outcome. */
   trackInflight(promise: Promise<unknown>, roomId: string): void;
   /** Waits for publications the generation admitted, their outcomes durable. */
@@ -146,7 +162,7 @@ export class TurnJournal {
       // journal whose authority is lost, and an empty file must not open over
       // it and settle no one.
       if ((await migrationState(this.dir)) === "committed") {
-        await validateCommittedDestinations(this.dir, this.agentId);
+        await validateCommittedDestinations(this.dir, this.agentId, legacyAgentDir(this.root, this.agentId));
       }
       // A commit — resumed or already made — binds a set of files; anything the
       // agent's legacy directory holds beyond it might belong to any deployment,
@@ -179,6 +195,12 @@ class Generation implements JournalGeneration {
   private readonly inflight: Set<Promise<unknown>> = new Set();
   /** The publications in flight per room: a room's release drains its own before closing its file. */
   private readonly roomInflight = new Map<string, Set<Promise<unknown>>>();
+  /** A turn is still using the room: a close owed to it is deferred until the last hold ends. */
+  private readonly turnHolds = new Map<string, number>();
+  /** A release landed on a held room; its close runs when the last hold ends. */
+  private readonly deferredCloses = new Map<string, boolean>();
+  /** What this generation announced, per room: one announcement per publication, across the room's handles. */
+  private readonly announced = new Map<string, Set<string>>();
   private closed = false;
   private ownershipReleased = false;
 
@@ -205,10 +227,47 @@ class Generation implements JournalGeneration {
     return room;
   }
 
-  public async release(roomId: string): Promise<void> {
+  public holdRoom(roomId: string): void {
+    if (this.closed) return;
+    const n = this.turnHolds.get(roomId) ?? 0;
+    this.turnHolds.set(roomId, n + 1);
+  }
+
+  public async endHoldRoom(roomId: string): Promise<void> {
+    const n = (this.turnHolds.get(roomId) ?? 0) - 1;
+    if (n > 0) {
+      this.turnHolds.set(roomId, n);
+      return;
+    }
+    this.turnHolds.delete(roomId);
+    if (!this.deferredCloses.get(roomId)) return;
+    this.deferredCloses.delete(roomId);
     const room = this.rooms.get(roomId);
-    if (!room) return (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
+    if (room) {
+      this.rooms.delete(roomId);
+      await this.closeRoomNow(roomId, room);
+    }
+  }
+
+  public async release(roomId: string, force = false): Promise<void> {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      // A held room's close is owed, but a turn still uses its handle; it runs
+      // when the last hold ends. An already closed room stands behind its close.
+      return (this.deferredCloses.get(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
+    }
+    if (!force && (this.turnHolds.get(roomId) ?? 0) > 0) {
+      // A turn is still writing to the room: its handle stays open, and the
+      // close runs when the turn's hold ends.
+      this.deferredCloses.set(roomId, true);
+      return;
+    }
     this.rooms.delete(roomId);
+    await this.closeRoomNow(roomId, room);
+  }
+
+  /** Closes `roomId`'s handle, once its publications stand on disk. */
+  private async closeRoomNow(roomId: string, room: Promise<RoomJournal>): Promise<void> {
     // A publication still in flight must stand on disk before the file closes, so its
     // outcome is never lost to the close racing the post.
     const held = this.roomInflight.get(roomId);
@@ -255,6 +314,15 @@ class Generation implements JournalGeneration {
     for (const roomId of [...this.rooms.keys()]) {
       await isolateTeardown(errors, () => this.release(roomId));
     }
+    // A close a turn deferred: the generation's close stands behind no turn, so it runs now.
+    for (const roomId of [...this.deferredCloses.keys()]) {
+      this.deferredCloses.delete(roomId);
+      const room = this.rooms.get(roomId);
+      if (room) {
+        this.rooms.delete(roomId);
+        await isolateTeardown(errors, () => this.closeRoomNow(roomId, room));
+      }
+    }
     for (const closing of this.releasing.values()) {
       await isolateTeardown(errors, () => closing.catch(() => undefined));
     }
@@ -277,6 +345,15 @@ class Generation implements JournalGeneration {
       roomId,
       now: this.journal.now,
       logger: this.journal.logger,
+      hasAnnounced: (publicationId: string): boolean => (this.announced.get(roomId)?.has(publicationId) ?? false),
+      markAnnounced: (publicationId: string): void => {
+        let ids = this.announced.get(roomId);
+        if (!ids) {
+          ids = new Set<string>();
+          this.announced.set(roomId, ids);
+        }
+        ids.add(publicationId);
+      },
     };
   }
 

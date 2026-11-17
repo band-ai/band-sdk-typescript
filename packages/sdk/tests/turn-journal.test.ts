@@ -5,11 +5,13 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { BandSdkError } from "../src/core/errors";
+import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
 import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals } from "../src/runtime/journal/migration";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { TurnJournal, agentJournalDir, roomFileName } from "../src/runtime/journal/TurnJournal";
+import { TurnJournal, GenerationClosedError, agentJournalDir, roomFileName, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { PublicationEngine } from "../src/runtime/journal/publication";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { tmpRoot } from "./testUtils";
 import {
@@ -312,7 +314,7 @@ describe("publications", () => {
     await expect(generation.room(ROOM)).rejects.toBeInstanceOf(BandSdkError);
   });
 
-  it("keeps the durable intent when a disk will not take the settlement", async () => {
+  it("keeps the durable intent when a disk will not take the settlement, and the writer stops admitting", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
@@ -321,13 +323,49 @@ describe("publications", () => {
       typeof args[0] === "string" && args[0].includes("reply.settled") ? Promise.reject(diskFull()) : original.apply(self, args));
 
     await expect(room.settleReply("msg-1", publicationId, "posted-1")).rejects.toBeInstanceOf(JournalFileError);
-    // The intent stands on disk; the settlement does not.
+    // The intent stands on disk; the settlement does not. The write that failed may have
+    // left the file torn, so the writer that lost the write it owes stops admitting:
+    // no later append may stand beneath an uncertain write.
+    expect(room.accepting).toBe(false);
+    await expect(room.markUnknown("msg-1", publicationId)).rejects.toMatchObject({ kind: "poisoned" });
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
-    // A later outcome that the file will take still goes out; the engine, not the file,
-    // poisons the room when an owed outcome could not be recorded.
-    await room.markUnknown("msg-1", publicationId);
-    expect(room.accepting).toBe(true);
-    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown"]);
+  });
+
+  it("poisons the writer when an append fails mid-write, and recovers the torn tail on reopen", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const publicationId = await room.beginReply("msg-1");
+    // A write that fails halfway: the file holds part of the settled line, so it no
+    // longer stands as the writer read it.
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.settled")) {
+        const handle = self as unknown as { write: (buffer: Buffer) => Promise<unknown> };
+        await handle.write(Buffer.from(line.slice(0, Math.floor(line.length / 2)), "utf8"));
+        throw diskFull();
+      }
+      return original.apply(self, args);
+    });
+
+    await expect(room.settleReply("msg-1", publicationId, "posted-1")).rejects.toBeInstanceOf(JournalFileError);
+    // The torn line stands on disk; a later record must not stand beneath it.
+    const tornFile = (await readFile(roomFile(dir), "utf8")).split("\n");
+    expect(tornFile[tornFile.length - 1].length).toBeGreaterThan(0);
+    expect(() => JSON.parse(tornFile[tornFile.length - 1])).toThrow();
+    expect(room.accepting).toBe(false);
+    await expect(room.markUnknown("msg-1", publicationId)).rejects.toMatchObject({ kind: "poisoned" });
+    await expect(room.turnDone("msg-1")).rejects.toBeInstanceOf(JournalPublicationError);
+
+    // On reopen the torn tail is dropped, the prefix stands, and the writer is fresh.
+    await generation.close();
+    const reopened = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    onTestFinished(() => reopened.close());
+    const journal = await reopened.room(ROOM);
+    expect(journal.accepting).toBe(true);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
+    // The intent that stands is unresolved: the torn settlement is neither there nor trusted.
+    expect(journal.answered("msg-1")).toBe(false);
   });
 });
 
@@ -420,6 +458,49 @@ describe("a room's journal opened directly", () => {
     const dir = tmpRoot();
     await writeRawFile(dir, IDENTITY, [header(IDENTITY, "agent/other")]);
     await expect(RoomJournal.open(roomFile(dir), roomOptions)).rejects.toBeInstanceOf(JournalFileError);
+  });
+});
+
+describe("a publication against a closed generation", () => {
+  /** A generation whose close beat the publication: every room it opens is gone. */
+  const closedGeneration: JournalGeneration = {
+    identity: IDENTITY,
+    room: async () => {
+      throw new GenerationClosedError();
+    },
+    holdRoom: () => undefined,
+    endHoldRoom: async () => undefined,
+    release: async () => undefined,
+    trackInflight: () => undefined,
+    drain: async () => undefined,
+    close: async () => undefined,
+  };
+
+  it("refuses a reply rather than deliver it unjournaled", async () => {
+    const engine = PublicationEngine.create({
+      room: () => closedGeneration.room(ROOM),
+      generation: closedGeneration,
+      logger: new NoopLogger(),
+    });
+    let posted = false;
+    await expect(engine.publishReply("msg-1", async () => {
+      posted = true;
+      return { success: true };
+    })).rejects.toMatchObject({ kind: "closed" });
+    expect(posted).toBe(false);
+  });
+
+  it("refuses a decline rather than run it unjournaled", async () => {
+    const engine = PublicationEngine.create({
+      room: () => closedGeneration.room(ROOM),
+      generation: closedGeneration,
+      logger: new NoopLogger(),
+    });
+    let ran = false;
+    await expect(engine.publishDecline("msg-1", async () => {
+      ran = true;
+    })).rejects.toMatchObject({ kind: "closed" });
+    expect(ran).toBe(false);
   });
 });
 

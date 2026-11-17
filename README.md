@@ -894,14 +894,40 @@ With `sessionConfig.journalDir` set, the runtime journals each room's replies an
 - **A reply is journaled before it posts.** Once a reply's arguments and mentions are accepted (`band_send_message`, any other reply tool, or a plain `sendMessage`, including calls an in-process Band MCP server makes on the turn's tools), the journal records that the reply began, then its outcome — accepted, refused, or unknown — before the tool call returns. A file that will not admit new records — poisoned by an uncertain outcome, or unable to open at all — refuses the post rather than deliver it unrecorded: a room whose journal is unavailable serves no reply it cannot record.
 - **A turn's end is recorded before its message is marked processed.** That holds for a turn that completes and for one Band interrupts. After a restart, a message Band serves again whose turn the journal shows ended — or whose reply stands settled — is marked without running a new turn; if the processed mark never landed, the journal repairs it.
 - **Anything else runs again, as without the journal.** A turn that failed, was stopped, was killed midway, or handed its reply to later work records no end, so its message is answered again when Band serves it.
-- **An uncertain delivery is unknown, and fences that room's journal.** A reply whose post — or whose outcome record — cannot be confirmed is recorded as unknown: the call throws `DeliveryUnknownError`, the room's journal is poisoned and stops admitting new records until the process reopens it, and the turn's closing text is not relayed, so no replacement post is attempted. A process that reopens the room reports the unresolved reply (`delivery.unrecorded`) without reposting it.
+- **An uncertain delivery is unknown, and fences that room's journal.** A reply whose post — or whose outcome record — cannot be confirmed is recorded as unknown: the call throws `DeliveryUnknownError`, the room's journal is poisoned and stops admitting new records until the process reopens it, and the turn's closing text is not relayed, so no replacement post is attempted. Unknown is not landed: the journal cannot say whether Band holds the reply, and nothing in it claims it does. A process that reopens the room reports the unresolved reply (`delivery.unrecorded`) without reposting it.
 - **A repeat that may duplicate replies is reported.** When a message is answered again and an earlier, unfinished turn for it began replies, the turn that answers it again reports them as `delivery.unrecorded` events, each begun reply once. Notices (`sendNotice`) are not replies and are not recorded, and neither are replies an external Band MCP process posts.
 - **The journal binds to a platform identity, and a room's file to its room.** With a standard link the identity is the canonical form of the link's REST endpoint; a runtime that speaks through a custom REST adapter must name one in `sessionConfig.journalPlatformIdentity`, and a value set that names another platform than the link speaks to refuses the start. A room file bound to a different identity is refused, and a file whose records, header, or path do not name the same room is refused as well: a file copied from another room's journal stands for nothing, in either direction.
-- **Legacy journal files are migrated, never reinterpreted.** A directory holding legacy (pre-v2) journal files refuses to start until they are migrated: run the exported `migrateTurnJournals` against them, binding each file with its room, SHA-256, operator-attested provenance, and platform identity. It previews by default and writes nothing; `apply: true` requires a binding for every legacy file and commits the v2 files atomically, with the v1 originals preserved, so rolling the upgrade back is a matter of removing the v2 tree and manifest. A migration a crash interrupts is resumed on the next apply or start, never reset; re-applying a finished one reports the journal already migrated, keeping any records appended after the commit. The journal's ownership lock uses `node:sqlite` (Node.js 22.13 or newer, or 22.12 with `--experimental-sqlite`); a runtime without it keeps the journal closed rather than running without ownership.
+- **Legacy journal files are migrated, never reinterpreted.** A directory holding legacy (pre-v2) journal files refuses to start until they are migrated: run the exported `migrateTurnJournals` against them, binding each file with its room, SHA-256, operator-attested provenance, and platform identity. Run it with the agent's old writer processes stopped and their auto-restart disabled: a legacy process writes its v1 files without honoring the ownership lock the v2 journals hold. A binding's platform identity is the identity the runtime will serve: a URL is canonicalized (an explicit default port or trailing slash names the same deployment), and a label that is not a URL is taken as given. It previews by default and writes nothing; `apply: true` requires a binding for every legacy file and commits the v2 files atomically, with the v1 originals preserved. Deleting the v2 tree and manifest afterwards is an authority reset — the migrated settlements are gone — not a rollback, and the journal does not support rolling its upgrade back. A compaction output (`<room>.jsonl.compacting`) that stands byte-identical to its journal is that journal, staged once; one that does not is refused until the operator reconciles the two, which the migration preserves and never deletes. A migration a crash interrupts is resumed on the next apply or start, never reset; re-applying a finished one reports the journal already migrated, keeping any records appended after the commit. The journal's ownership lock uses `node:sqlite` (Node.js 22.13 or newer, or 22.12 with `--experimental-sqlite`); a runtime without it keeps the journal closed rather than running without ownership.
 - **A committed migration's output is validated at start.** A journal whose migration stands committed refuses to start if a v2 file it records is missing, unreadable, or bound to another room or identity: reopening an empty journal over a lost authority would settle no one.
-- **A stop settles its replies first.** A stop that times out stays in its stopping state and holds the journal's ownership while the start generation's in-flight replies run to their durable outcomes, so the journal closes only when every admitted reply's outcome stands on disk.
+- **A stop settles its replies first.** A `stop()` with no timeout waits indefinitely for the start generation's in-flight replies to stand on disk before it returns; a `stop(timeoutMs)` that times out stays in its stopping state and holds the journal's ownership while those replies run to their durable outcomes, so the journal closes only when every admitted reply's outcome stands on disk.
 
-A room's file is closed when the room is left or reset, and reopened on its next turn; a reply from a turn left running past that reopens it until the room's next execution or the runtime stops. The journal keeps a message's records for the life of the deployment; `sessionConfig.journalRetentionSeconds` is accepted for compatibility with earlier journal versions but no longer expires anything.
+A room's file is closed when the room is left or reset, and reopened on its next turn; a reply from a turn left running past that reopens it until the room's next execution or the runtime stops. Admitting a room whose process records no journal creates no file and holds no handle for it; only a room whose journal stands, or whose turn records into one, has a file at all. The journal keeps a message's records for the life of the deployment, and a room's file only grows — nothing compacts or expires its records — so plan the directory's filesystem for unbounded growth. `sessionConfig.journalRetentionSeconds` is accepted for compatibility with earlier journal versions but no longer expires anything.
+
+A migration against a journal root, run once from an ordinary Node script:
+
+```ts
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { migrateTurnJournals } from "@band-ai/sdk";
+
+// The agent's legacy directory holds the v1 files; the binding names each with the
+// room its file's name encodes, its bytes, its provenance, and the identity it stood for.
+const source = "/var/lib/band/journals/<agent dir>/room%2Fwith%253Aodd%2520chars.jsonl";
+await migrateTurnJournals({
+  journalDir: "/var/lib/band/journals",
+  agentId: "agent/one",
+  apply: true,
+  bindings: [
+    {
+      sourceFile: "room%2Fwith%253Aodd%2520chars.jsonl",
+      roomId: "room/with:odd chars",
+      sourceSha256: createHash("sha256").update(await readFile(source, "utf8")).digest("hex"),
+      platformIdentity: "https://band.example",
+      provenance: "operator-attested: written by 2.0.x against staging",
+    },
+  ],
+});
+```
 
 ## Automatic working state
 

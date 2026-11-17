@@ -13,12 +13,11 @@ import { TurnCutShortError } from "./journalTools";
  * invoked, and the settlement (accepted, refused, or unknown) is recorded
  * before the post's outcome is returned to the caller.
  *
- * The engine is fail-closed. When the room's journal stands but no longer
- * admits records — it owed an outcome it could not write, or its handle
- * closed — or when it exists but will not open, a new reply is refused
- * outright: nothing is delivered unrecorded. Only a room whose authority is
- * gone entirely (the journal is disabled, or the runtime stopped its
- * handling before the post) posts unjournaled, as it would without one.
+* The engine is fail-closed. It stands behind a configured generation, so a
+ * reply for a room whose journal will not open, whose generation closed, or
+ * whose handle no longer admits records is refused outright: nothing is
+ * delivered unjournaled. Only a runtime that never configured the journal
+ * posts without one, as it would anyway.
  */
 export class PublicationEngine {
   private constructor(
@@ -35,15 +34,28 @@ export class PublicationEngine {
     return new PublicationEngine(options.room, options.generation, options.logger);
   }
 
+  /**
+ * The room's publication authority, as it stands. The engine is fail-closed:
+ * it exists only behind a configured generation, so anything that breaks the
+ * room's handle — a journal that will not open, a generation whose close beat
+ * this reply, or a handle that no longer admits records — refuses the
+ * publication rather than deliver it unjournaled.
+ */
   private async authority(): Promise<RoomJournal | undefined> {
     let room: RoomJournal | undefined;
     try {
       room = await this.room();
     } catch (error) {
-      // A closed generation is no authority at all: the runtime stopped the
-      // room's handling, and what is owed goes out as it would unjournaled.
-      if (error instanceof GenerationClosedError) room = undefined;
-      else throw error;
+      // A closed generation is no authority at all, and it is not the journal
+      // being disabled: the runtime stopped the room's handling, and the
+      // publication is refused rather than delivered unjournaled.
+      if (error instanceof GenerationClosedError) {
+        throw new JournalPublicationError(
+          "The room's handling stopped before this publication could be recorded; it is refused rather than delivered unjournaled",
+          "closed",
+        );
+      }
+      throw error;
     }
     if (room !== undefined && !room.accepting) {
       throw new JournalPublicationError(

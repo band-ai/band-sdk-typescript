@@ -326,14 +326,21 @@ async function executeToolCall(
 }
 
 /**
- * The MCP result for a post whose delivery is unknown: a stable, sanitized
- * classifier — no adapter text, no error cause, no advice to retry or read
- * the room, which no caller here can act on safely. Callers that need more
- * detail than the classifier get it from the SDK, not from this result.
+ * The MCP result for a post whose delivery is unknown: the stable sanitized
+ * `delivery_unknown` discriminator, and the one guidance a caller can act on
+ * safely — do not resend. No adapter text, no status, no cause: the post may
+ * already stand in the room, and a resend could post it twice. Callers that
+ * need more than the discriminator get it from the SDK, not from this result.
  */
 function unknownDeliveryResult(): McpToolResult {
   return {
-    content: [{ type: "text", text: JSON.stringify({ delivery: "unknown" }) }],
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        kind: DeliveryUnknownError.KIND,
+        detail: "The post's delivery is unknown: Band may already hold it. Do not resend it.",
+      }),
+    }],
     isError: true,
   };
 }

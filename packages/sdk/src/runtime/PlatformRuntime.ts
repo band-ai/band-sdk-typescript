@@ -1,3 +1,5 @@
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { bindWorkingCycle } from "./workingState";
 import { isSyntheticTurn, type FrameworkAdapter, type FrameworkAdapterInput, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
@@ -14,7 +16,7 @@ import {
 } from "./types";
 import type { PlatformMessage } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
-import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../core/errors";
+import { RecoverableTurnError, RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { toPlatformMessage } from "./formatters";
 import { ContactEventHandler } from "./ContactEventHandler";
@@ -34,10 +36,11 @@ import { AgentEventHub } from "./agentEvents";
 import { journalingTools } from "./journal/journalTools";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
-import { bestEffort, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
-import type { RoomJournal, UnresolvedPublication } from "./journal/RoomJournal";
+import { bestEffort, GenerationClosedError, roomFileName, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
+import { hasErrorCode, type RoomJournal, type UnresolvedPublication } from "./journal/RoomJournal";
 import { PublicationEngine } from "./journal/publication";
 import { canonicalPlatformIdentity } from "./journal/identity";
+import { identityDirectoryComponent } from "./journal/records";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -94,7 +97,6 @@ export class PlatformRuntime implements AsyncDisposable {
   /** The start in flight's journal generation: its rooms, the ownership it holds, and the publications it admitted. */
   private generation?: JournalGeneration;
   /** Each room's in-flight inbound message, if any: the publication the room's replies settle under. */
-  private readonly currentInbound = new Map<string, string>();
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -562,8 +564,9 @@ export class PlatformRuntime implements AsyncDisposable {
 
   /**
    * The room's execution context: the user's factory, or the default, run over
-   * the start generation's publication engine, so this room's reply posts and
-   * accepted declines settle durably under the room's in-flight inbound.
+   * the start generation's publication engine. Each turn's tools bind to that
+   * turn's inbound via `ExecutionContext.toolsForTurn`, so a reply settles
+   * durably under the message it answers.
    */
   private contextWithJournal(roomId: string, defaults: ExecutionContextOptions): ExecutionContext {
     const generation = this.generation;
@@ -572,16 +575,15 @@ export class PlatformRuntime implements AsyncDisposable {
       publication: generation
         ? PublicationEngine.create({
             // The room's authority, as it stands: a journal that will not open
-            // fails the reply rather than deliver it unjournaled, and a handle
-            // that opened but no longer admits records refuses it as poisoned.
-            // Only a room whose generation is closed — the runtime stopped its
-            // handling — posts as it would without a journal.
+            // fails the reply rather than deliver it unjournaled, a closed
+            // generation refuses it, and a handle that opened but no longer
+            // admits records refuses it as poisoned. Only a runtime that never
+            // configured the journal posts without one.
             room: () => generation.room(roomId),
             generation,
             logger: this.logger,
           })
         : undefined,
-      inboundMessageId: () => this.currentInbound.get(roomId),
     };
     return this._contextFactory ? this._contextFactory(roomId, extended) : new ExecutionContext(extended);
   }
@@ -610,18 +612,21 @@ export class PlatformRuntime implements AsyncDisposable {
     // while I was awaiting?" — a status comparison cannot, because a stop
     // followed by a replacement start is back in `"starting"`, just not this one.
     const startState = this.lifecycle.state;
+    // The generation this start activates, if any: its cleanup must release that
+    // generation alone, never whatever a successor has since installed in the slot.
+    const own: { generation?: JournalGeneration } = {};
 
     try {
-      await this.doStart(adapter, startState);
+      await this.doStart(adapter, startState, own);
     } catch (error) {
       // A superseded start owns nothing, and a cleanup that already reached a
       // terminal state keeps its own outcome.
       if (this.lifecycle.isCurrent(startState)) {
         this.lifecycle.fail(error, START_CLEANUP_TRIGGER);
-      } else if (this.generation !== undefined) {
+      } else if (own.generation !== undefined && this.generation === own.generation) {
         // The superseding stop's generation close may have run before this
-        // start activated its generation; if the slot still holds one, it is
-        // this start's, and it gives back its rooms and ownership here rather
+        // start activated its generation; if the slot still holds this start's
+        // own generation, it gives back its rooms and ownership here rather
         // than leaking them past a successor.
         await this.closeGeneration();
       }
@@ -633,7 +638,7 @@ export class PlatformRuntime implements AsyncDisposable {
     }
   }
 
-  private async doStart(adapter: FrameworkAdapter, startState: RuntimeLifecycleState): Promise<void> {
+  private async doStart(adapter: FrameworkAdapter, startState: RuntimeLifecycleState, own: { generation?: JournalGeneration }): Promise<void> {
     const assertNotSuperseded = (): void => {
       if (!this.lifecycle.isCurrent(startState)) {
         throw new RuntimeStateError("PlatformRuntime start was superseded by stop()");
@@ -647,6 +652,7 @@ export class PlatformRuntime implements AsyncDisposable {
     // its cleanup, so a successor start never finds a stale owner.
     if (this.journals) {
       this.generation = await this.journals.activate(this.journalIdentity());
+      own.generation = this.generation;
     }
     assertNotSuperseded();
     // Relays link changes until `stop()` unsubscribes, since a borrowed link can outlive this runtime.
@@ -943,12 +949,58 @@ export class PlatformRuntime implements AsyncDisposable {
       return false;
     }
 
-    const messageId = String(input.message.id ?? "");
-    const roomId = input.roomId;
     const isSynthetic = isSyntheticTurn(input.message);
-    const message: TurnMessage = { id: messageId, synthetic: isSynthetic, settles: Boolean(messageId) && !isSynthetic };
+    const message: TurnMessage = { id: String(input.message.id ?? ""), synthetic: isSynthetic, settles: Boolean(input.message.id) && !isSynthetic };
+    // A turn that settles a message holds the room's journal open for its whole run,
+    // including the end it records: a release that lands meanwhile — a room reopening
+    // beside it, the runtime stopping — defers the room's close until the turn's hold
+    // ends, so the turn never writes to a handle that is going away.
+    const journalGeneration = message.settles ? this.generation : undefined;
+    if (journalGeneration) journalGeneration.holdRoom(context.roomId);
+    try {
+      return await this.runTurn(context, input, adapter, message, admitted, holdRoomUntil, stopped);
+    } finally {
+      if (journalGeneration) {
+        await journalGeneration.endHoldRoom(context.roomId);
+      }
+    }
+  }
+
+  private async runTurn(
+    context: ExecutionContext,
+    input: FrameworkAdapterInput,
+    adapter: FrameworkAdapter,
+    message: TurnMessage,
+    admitted: () => boolean,
+    holdRoomUntil: (ended: Promise<void>) => void,
+    stopped: AbortSignal,
+  ): Promise<boolean> {
+    const roomId = input.roomId;
+    const messageId = message.id;
     // Not for a turn already cut short: it would open the journal of a room whose handling may have stopped.
-    const journal = message.settles && !stopped.aborted ? await this.openJournal(roomId) : undefined;
+    let journal: RoomJournal | undefined;
+    if (message.settles && !stopped.aborted) {
+      try {
+        journal = await this.openJournal(roomId);
+      } catch (error) {
+        // The generation closed while the journal opened: the turn is cut short,
+        // as if the stop had landed before it started.
+        if (error instanceof GenerationClosedError) {
+          return await this.settleUnstartedTurn(context, input, message, stopModeOf(stopped) ?? "stop", false, undefined);
+        }
+        // A configured journal that will not open fails the turn before its
+        // adapter runs: nothing is delivered unjournaled. The turn never started,
+        // so its end is not recorded; the message settles failed, and the runtime
+        // keeps serving the rooms whose journals stand.
+        const reason = error instanceof Error ? error.message : String(error);
+        const label = `The room's turn journal will not open, so the turn failed rather than answer unjournaled: ${reason}`;
+        this.events.emit({ type: "turn.failed", roomId, messageId, error: label });
+        if (message.settles) {
+          await this.link.markFailed(roomId, messageId, label, TURN_MARK);
+        }
+        throw new RecoverableTurnError(label, error);
+      }
+    }
     if (journal) {
       await this.announceUnresolvedPublications(journal, roomId);
     }
@@ -996,7 +1048,11 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
-        const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
+        // The turn's own tools view: a reply settles under this turn's inbound (a
+        // synthetic turn settles under nothing), even when work the turn hands
+        // off outlives it — never under whatever the room is turning to next.
+        const turnTools = context.toolsForTurn(message.settles ? messageId : undefined);
+        const cycled = lease ? bindWorkingCycle(turnTools, lease) : turnTools;
         // The turn's own side of the runtime's publications: a reply the turn
         // lost is refused at its call, and a delivery-unknown fences this
         // turn's closing text, never a successor's.
@@ -1005,12 +1061,6 @@ export class PlatformRuntime implements AsyncDisposable {
           ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
           : journaled;
         const tools = revokedOnStop(delivering, stopped);
-        // The room's replies now settle under this inbound, until its next turn
-        // or the start's stop: a reply the turn hands to work that outlives it
-        // still settles under the message it answers.
-        if (message.settles) {
-          this.currentInbound.set(roomId, messageId);
-        }
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
         context.setPublicationStop(stopped);
         const turn = adapter.onEvent({
@@ -1137,18 +1187,16 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
 /**
-   * The room's turn journal, or none when it cannot be opened: the turn then
-   * runs as it would without a journal, which can only mean a message is
-   * answered again after a restart, never one left unanswered.
-   */
+ * The room's turn journal. A configured journal that will not open — corrupt,
+ * unreadable, or its path taken — rejects, and the turn fails before its
+ * adapter runs: only a runtime with no generation runs turns without one.
+ */
   private async openJournal(roomId: string): Promise<RoomJournal | undefined> {
     if (!this.generation) return undefined;
-    try {
-      return await this.generation.room(roomId);
-    } catch (error) {
-      this.logger.warn("Failed to open a room's turn journal; handling the turn without it", { roomId, error });
-      return undefined;
-    }
+    // A configured journal that will not open (corrupt, unreadable, refused)
+    // fails the turn rather than letting it run unjournaled: only a runtime
+    // with no generation posts without a journal.
+    return await this.generation.room(roomId);
   }
 
   /**
@@ -1168,9 +1216,13 @@ export class PlatformRuntime implements AsyncDisposable {
     await bestEffort(() => journal.turnDone(messageId), this.logger, "Failed to record a turn's end in the turn journal", { roomId, messageId });
   }
 
-  /** Closes a room's journal once its handling stopped, so a left room holds no file open. */
+  /**
+   * Closes a room's journal once its handling stopped, so a left room holds no
+   * file open. Forced: a turn still settling in the room must not write to the
+   * released journal.
+   */
   private releaseJournal(roomId: string): void {
-    void bestEffort(async () => this.generation?.release(roomId), this.logger, "Failed to close a room's turn journal", { roomId });
+    void bestEffort(async () => this.generation?.release(roomId, true), this.logger, "Failed to close a room's turn journal", { roomId });
   }
 
   /**
@@ -1214,9 +1266,28 @@ export class PlatformRuntime implements AsyncDisposable {
    * nothing.
    */
   private async announceUnresolvedForRoom(roomId: string): Promise<void> {
-    const journal = await this.openJournal(roomId);
-    if (journal) {
+    const generation = this.generation;
+    const journals = this.journals;
+    if (!generation || journals === undefined) return;
+    // A room whose journal does not stand has nothing to recover: admission must
+    // not create the file, and one that stands opens through the generation, so a
+    // turn running in the room shares the same handle rather than a second one.
+    const file = path.join(journals.dir, identityDirectoryComponent(generation.identity), roomFileName(roomId));
+    const stands = stat(file).then(
+      () => true,
+      (error: unknown) => {
+        if (hasErrorCode(error, "ENOENT")) return false;
+        throw error;
+      },
+    );
+    if (!(await stands)) return;
+    const journal = await generation.room(roomId);
+    try {
       await this.announceUnresolvedPublications(journal, roomId);
+    } finally {
+      // An idle room holds no file open: the handle is released once its
+      // publications stand reported, and a turn running in the room reopens it.
+      await generation.release(roomId).catch(() => undefined);
     }
   }
 

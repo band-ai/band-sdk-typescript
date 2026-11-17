@@ -83,6 +83,10 @@ export interface RoomJournalOptions {
   /** The clock records are stamped by; `Date.now` by default. */
   now?: () => number;
   logger?: Logger;
+  /** Whether the generation already announced the publication, on any of the room's handles. */
+  hasAnnounced?: (publicationId: string) => boolean;
+  /** Registers the publication as announced by the generation, so no later handle announces it again. */
+  markAnnounced?: (publicationId: string) => void;
 }
 
 /** How one admitted reply stands in the journal. */
@@ -307,7 +311,10 @@ export class RoomJournal {
     const found: UnresolvedPublication[] = [];
     for (const [publicationId, info] of this.unresolved) {
       const publication = this.inbounds.get(info.messageId)?.publications.get(publicationId);
-      if (publication === undefined || publication.reported) continue;
+      // A publication this generation already announced on another handle of the
+      // room stands announced: this handle reopens the same file after one of its
+      // earlier handles closed, and the operator hears each recovery once.
+      if (publication === undefined || publication.reported || (this.options.hasAnnounced?.(publicationId) ?? false)) continue;
       found.push({ messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
     }
     if (found.length === 0) return found;
@@ -316,6 +323,9 @@ export class RoomJournal {
       { roomId: this.options.roomId, publications: found.length },
     );
     for (const publication of found) {
+      // Stands announced across the room's handles before the record is owed, so a
+      // handle that reopens the file later does not announce it again.
+      this.options.markAnnounced?.(publication.publicationId);
       await this.appendBestEffort({ t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() });
       const record = this.inbounds.get(publication.messageId)?.publications.get(publication.publicationId);
       if (record) record.reported = true;
@@ -427,6 +437,10 @@ export class RoomJournal {
         await this.handle.datasync();
         this.lineCut = false;
       } catch (error) {
+        // The write or its sync failed: the file may hold a torn record, and the
+        // writer that lost the write it owes stops admitting. No later append may
+        // stand beneath an uncertain write; the writer is fresh again on reopen.
+        this.poisoned = true;
         throw journalFileFailure(error);
       }
     });

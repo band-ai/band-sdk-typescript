@@ -131,6 +131,32 @@ async function sha256File(file: string): Promise<string> {
   return createHash("sha256").update(text).digest("hex");
 }
 
+/**
+ * The compaction outputs that stand byte-identical to the journal they are
+ * the renamed form of: `X.jsonl.compacting` next to an identical `X.jsonl` is
+ * one compaction whose rename never ran — one authority, staged once, from
+ * the journal's stable name.
+ */
+async function exactDuplicatePairs(legacyDir: string, legacy: string[]): Promise<Map<string, string>> {
+  const pairs = new Map<string, string>();
+  for (const file of legacy) {
+    if (!file.endsWith(".compacting")) continue;
+    const pair = file.slice(0, -".compacting".length);
+    if (!legacy.includes(pair)) continue;
+    const [output, journal] = await Promise.all([
+      sha256File(path.join(legacyDir, file)),
+      sha256File(path.join(legacyDir, pair)),
+    ]);
+    if (output === journal) pairs.set(file, pair);
+  }
+  return pairs;
+}
+
+function duplicatesBound(file: string, duplicates: Map<string, string>, isBound: (file: string) => boolean): boolean {
+  const pair = duplicates.get(file);
+  return pair !== undefined && isBound(pair);
+}
+
 async function legacyFiles(legacyDir: string): Promise<string[]> {
   const names = await readdir(legacyDir, { withFileTypes: true }).catch((error: unknown) => {
     if (hasErrorCode(error, "ENOENT")) return [] as Array<{ name: string; isFile: () => boolean }>;
@@ -146,21 +172,44 @@ export async function unboundLegacyFiles(legacyDir: string, agentDir: string): P
   const [legacy, manifest] = await Promise.all([legacyFiles(legacyDir), readManifest(agentDir)]);
   if (manifest === null || manifest.state !== "committed") return legacy;
   const bound = new Set(manifest.bindings.map((binding) => binding.sourceFile));
-  return legacy.filter((file) => !bound.has(file));
+  const duplicates = await exactDuplicatePairs(legacyDir, legacy);
+  return legacy.filter((file) => {
+    if (bound.has(file)) return false;
+    // An exact duplicate of a bound journal is not a separate authority.
+    const pair = duplicates.get(file);
+    return pair === undefined || !bound.has(pair);
+  });
 }
 
 /**
  * The room a legacy file's name encodes: v1 named the file
- * `encodeURIComponent(roomId).jsonl`. A name that is not a valid
+ * `encodeURIComponent(roomId).jsonl`, and a compaction in flight wrote its
+ * output to that name suffixed `.compacting`. A name that is not a valid
  * percent-encoding was never written by a v1 journal, so it encodes no room.
  */
 function roomIdOfSourceFile(sourceFile: string): string | undefined {
-  const name = path.basename(sourceFile);
+  let name = path.basename(sourceFile);
+  if (name.endsWith(".compacting")) name = name.slice(0, -".compacting".length);
   if (!name.endsWith(".jsonl")) return undefined;
   try {
     return decodeURIComponent(name.slice(0, -".jsonl".length));
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The platform identity the journal layout and header bind to. A URL resolves
+ * to its canonical spelling, the one the runtime uses, so a binding that
+ * names the same deployment in another spelling (an explicit default port, a
+ * trailing slash) stages where the runtime looks; a label that is not a URL
+ * is kept as given.
+ */
+function normalizeIdentity(value: string): string {
+  try {
+    return canonicalPlatformIdentity(value);
+  } catch {
+    return value;
   }
 }
 
@@ -174,13 +223,20 @@ function destinationOf(agentDir: string, binding: MigrationBinding): string {
  * A staged destination must still be the journal it claims to be: a v2 file
  * bound to the binding's identity, agent and room. Anything else — an empty
  * file, a v1 file, a file bound elsewhere — is not that room's authority.
+ *
+ * And it must still hold what the migration imported from the binding's
+ * source: the source's settlements, under the stable publication ids the
+ * conversion gave them. Records appended since the import (a settlement an
+ * earlier process recorded) stand alongside and are preserved, never restaged
+ * away. A destination that stands by its header alone, with the imported
+ * settlements missing, is not the migrated journal.
  */
-async function validateDestination(destination: string, binding: MigrationBinding, agentId: string): Promise<void> {
+async function validateDestination(destination: string, binding: MigrationBinding, agentId: string, legacyDir?: string): Promise<void> {
   const text = await readFile(destination, "utf8");
-  const headerLine = text.split("\n")[0];
+  const lines = text.split("\n");
   let json: unknown;
   try {
-    json = JSON.parse(headerLine ?? "");
+    json = JSON.parse(lines[0] ?? "");
   } catch {
     throw new JournalFileError(
       `The migration's destination for ${binding.sourceFile} has no readable header; it is not a journal the runtime would accept. Restore the destination from backup, or re-run the migration from its preserved source.`,
@@ -202,6 +258,77 @@ async function validateDestination(destination: string, binding: MigrationBindin
       destination,
     );
   }
+  const actual = parseDestinationFacts(destination, binding.sourceFile, lines);
+  if (legacyDir === undefined) return;
+  const sourceFile = path.join(legacyDir, binding.sourceFile);
+  const sourceText = await readFile(sourceFile, "utf8").catch((error: unknown) => {
+    // The preserved source is gone: its facts cannot be re-checked, and the
+    // header is all this validation can still assert.
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  });
+  if (sourceText === null) return;
+  const expected = expectedImportedFacts(binding.sourceFile, sourceText);
+  for (const publicationId of expected.publicationIds) {
+    if (!actual.publicationIds.has(publicationId)) {
+      throw new JournalFileError(
+        `The migration's destination for ${binding.sourceFile} stands by its header alone: the settlement its source recorded (publication ${publicationId}) is not in it, so the imported authority is lost. Restore the destination from backup, or re-run the migration from its preserved source.`,
+        "corrupt",
+        destination,
+      );
+    }
+  }
+  for (const messageId of expected.turnDone) {
+    if (!actual.turnDone.has(messageId)) {
+      throw new JournalFileError(
+        `The migration's destination for ${binding.sourceFile} stands by its header alone: its source's turn ${messageId} settled, and the destination does not record it. Restore the destination from backup, or re-run the migration from its preserved source.`,
+        "corrupt",
+        destination,
+      );
+    }
+  }
+}
+
+/** The settlement facts a destination holds: every publication it records, and the turns it settled. */
+function parseDestinationFacts(destination: string, sourceFile: string, lines: string[]): { publicationIds: Set<string>; turnDone: Set<string> } {
+  const publicationIds = new Set<string>();
+  const turnDone = new Set<string>();
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(line);
+    } catch {
+      throw new JournalFileError(
+        `The migration's destination for ${sourceFile} holds a line that is not a record at line ${i + 1}; it is not a journal the runtime would accept. Restore the destination from backup, or re-run the migration from its preserved source.`,
+        "corrupt",
+        destination,
+      );
+    }
+    const record = json as { t?: unknown; messageId?: unknown; publicationId?: unknown };
+    if (typeof record.publicationId === "string") publicationIds.add(record.publicationId);
+    if (record.t === "turn.done" && typeof record.messageId === "string") turnDone.add(record.messageId);
+  }
+  return { publicationIds, turnDone };
+}
+
+/** The settlement facts the migration imports from a source file: its stable publication ids and settled turns. */
+function expectedImportedFacts(sourceFile: string, text: string): { publicationIds: Set<string>; turnDone: Set<string> } {
+  const records = parseLegacyRecords(sourceFile, text);
+  const publicationIds = new Set<string>();
+  const turnDone = new Set<string>();
+  const seen = new Map<string, number>();
+  for (const record of records) {
+    if (record.t === "reply.intent") {
+      const n = (seen.get(record.messageId) ?? 0) + 1;
+      seen.set(record.messageId, n);
+      publicationIds.add(createHash("sha256").update(`${sourceFile}:${record.messageId}:${n}`).digest("hex"));
+    } else if (record.t === "turn.done") {
+      turnDone.add(record.messageId);
+    }
+  }
+  return { publicationIds, turnDone };
 }
 
 /**
@@ -210,7 +337,7 @@ async function validateDestination(destination: string, binding: MigrationBindin
  * destination would otherwise open an empty file where an authority used to
  * be, and settle no one.
  */
-export async function validateCommittedDestinations(agentDir: string, agentId: string): Promise<void> {
+export async function validateCommittedDestinations(agentDir: string, agentId: string, legacyDir?: string): Promise<void> {
   const manifest = await readManifest(agentDir);
   if (manifest === null || manifest.state !== "committed") return;
   for (const binding of manifest.bindings) {
@@ -226,7 +353,7 @@ export async function validateCommittedDestinations(agentDir: string, agentId: s
         destination,
       );
     }
-    await validateDestination(destination, binding, agentId);
+    await validateDestination(destination, binding, agentId, legacyDir);
   }
 }
 
@@ -319,7 +446,7 @@ async function stageDestination(
     throw error;
   });
   if (existing !== null) {
-    await validateDestination(destination, binding, agentId);
+    await validateDestination(destination, binding, agentId, legacyDir);
     return;
   }
   if (state === "committed") {
@@ -420,13 +547,15 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
   const agentDir = agentJournalDir(options.journalDir, options.agentId);
   const legacyDir = legacyAgentDir(options.journalDir, options.agentId);
   const legacy = await legacyFiles(legacyDir);
-  const bindings = validateBindings(options.bindings ?? [], legacy, agentDir);
+  const duplicates = await exactDuplicatePairs(legacyDir, legacy);
+  const bindings = await validateBindings(options.bindings ?? [], legacy, legacyDir, agentDir, duplicates);
+  const isBound = (file: string): boolean => bindings.some((binding) => binding.sourceFile === file);
 
   if (options.apply !== true) {
-    return { mode: "preview", sources: await reportSources(legacyDir, legacy, bindings), unbound: legacy.filter((file) => !bindings.some((binding) => binding.sourceFile === file)) };
+    return { mode: "preview", sources: await reportSources(legacyDir, legacy, bindings), unbound: legacy.filter((file) => !isBound(file) && !duplicatesBound(file, duplicates, isBound)) };
   }
 
-  const unbound = legacy.filter((file) => !bindings.some((binding) => binding.sourceFile === file));
+  const unbound = legacy.filter((file) => !isBound(file) && !duplicatesBound(file, duplicates, isBound));
   if (unbound.length > 0) {
     throw new JournalFileError(
       `Applying the migration requires a binding — its platform identity and provenance — for every legacy file, and none covers: ${unbound.join(", ")}. ` +
@@ -488,16 +617,40 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
   }
 }
 
-function validateBindings(bindings: MigrationBinding[], legacy: string[], agentDir: string): MigrationBinding[] {
+async function validateBindings(
+  bindings: MigrationBinding[],
+  legacy: string[],
+  legacyDir: string,
+  agentDir: string,
+  duplicates: Map<string, string>,
+): Promise<MigrationBinding[]> {
   const seen = new Set<string>();
   const destinations = new Map<string, string>();
+  const normalized: MigrationBinding[] = [];
   for (const raw of bindings) {
     const check = bindingSchema.safeParse(raw);
     if (!check.success) {
       throw new JournalFileError(`A migration binding is invalid: ${check.error.issues.map((issue) => issue.message).join(", ")}.`, "corrupt", agentDir);
     }
-    const binding = check.data;
-    canonicalPlatformIdentity(binding.platformIdentity);
+    // The layout and the journal's header bind the canonical identity: a
+    // noncanonical URL spelling names the same deployment the runtime serves,
+    // and a non-URL label stands as given.
+    const binding = { ...check.data, platformIdentity: normalizeIdentity(check.data.platformIdentity) };
+    // A compaction output that stands byte-identical to its journal is that
+    // journal: one authority, staged once, under the journal's stable name.
+    const duplicateOf = duplicates.get(binding.sourceFile);
+    if (duplicateOf !== undefined) {
+      binding.sourceFile = duplicateOf;
+    } else if (binding.sourceFile.endsWith(".compacting")) {
+      const pair = binding.sourceFile.slice(0, -".compacting".length);
+      if (legacy.includes(pair)) {
+        throw new JournalFileError(
+          `A migration binding names ${binding.sourceFile}, whose compaction was interrupted mid-write: it is not an exact duplicate of ${pair}, and its content is not the journal's authority. Reconcile the two files against the SDK that wrote them before migrating; the migration preserves both, it does not choose between them.`,
+          "corrupt",
+          agentDir,
+        );
+      }
+    }
     if (seen.has(binding.sourceFile)) {
       throw new JournalFileError(`Two migration bindings claim the same source file ${binding.sourceFile}; one file has one provenance.`, "corrupt", agentDir);
     }
@@ -530,8 +683,9 @@ function validateBindings(bindings: MigrationBinding[], legacy: string[], agentD
       );
     }
     destinations.set(destination, binding.sourceFile);
+    normalized.push(binding);
   }
-  return bindings;
+  return normalized;
 }
 
 async function reportSources(legacyDir: string, legacy: string[], bindings: MigrationBinding[]): Promise<MigrationSourceReport[]> {

@@ -8,6 +8,7 @@ import { BandError } from "@band-ai/rest-client";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
+import { isSyntheticTurn } from "../src/contracts/protocols";
 import { runUntilReleased } from "../src/adapters/shared/runUntilReleased";
 import type { AgentEvent } from "../src/contracts/events";
 import { createDeferred } from "../src/core/deferred";
@@ -20,6 +21,8 @@ import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
+import { JournalPublicationError } from "../src/runtime/journal/errors";
+import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import type { ContactEventConfig, SessionConfig } from "../src/runtime/types";
 import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
@@ -388,7 +391,7 @@ describe("an unresolved publication through a restart", () => {
 });
 
 describe("a reply whose delivery cannot stand", () => {
-  it("records a settled-but-unrecordable reply as unknown, and the room stops admitting replies", async () => {
+  it("stands a settled-but-unrecordable reply as unknown when the disk will not take the settlement, and the room stops admitting replies", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -400,12 +403,14 @@ describe("a reply whose delivery cannot stand", () => {
     const inbound = await room.say(OWNER, `${MENTION} hello`);
 
     // The transport took the reply; the record that says so cannot stand. The reply stands
-    // unknown — reported, not resent — and the writer that lost the write it owes stops
-    // admitting: a second reply in the room is refused without a second post.
+    // unknown — reported, not resent. The disk that refused the settlement is no longer
+    // trusted, so the unknown's own record cannot stand beneath it either: the
+    // uncertainty stands on the intent, and the writer that lost the write it owes
+    // stops admitting. A second reply in the room is refused without a second post.
     expect(await room.outcome(inbound)).toBe("failed");
     expect(room.messages).toHaveLength(1);
     expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
-    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent"]);
 
     const again = await room.say(OWNER, `${MENTION} again`);
     expect(await room.outcome(again)).toBe("failed");
@@ -438,13 +443,14 @@ describe("a reply whose delivery cannot stand", () => {
       await client.connect(clientTransport);
       try {
         const result = await client.callTool({ name: "band_send_message", arguments: { room_id: ROOM, content: "may be held", mentions: ["@owner"] } });
-        // A registered call keeps the classification: the result says the delivery is
-        // unknown, sanitized — no adapter text, no status, no recovery advice.
+        // A registered call keeps the classification: the result is the stable sanitized
+        // `delivery_unknown` discriminator with no-resend guidance — no adapter text,
+        // no status, no cause.
         expect(result.isError).toBe(true);
         const block = (result.content as Array<{ type: string; text: string }>)[0];
         const text = block.text;
         seen.push(text);
-        expect(JSON.parse(text)).toEqual({ delivery: "unknown" });
+        expect(JSON.parse(text)).toEqual({ kind: DeliveryUnknownError.KIND, detail: "The post's delivery is unknown: Band may already hold it. Do not resend it." });
       } finally {
         await client.close();
       }
@@ -453,7 +459,7 @@ describe("a reply whose delivery cannot stand", () => {
     await platform.rest.settled.next((settled) => settled.messageId === inbound);
 
     expect(posts).toEqual(["may be held"]);
-    expect(seen).toEqual([JSON.stringify({ delivery: "unknown" })]);
+    expect(seen).toEqual([JSON.stringify({ kind: DeliveryUnknownError.KIND, detail: "The post's delivery is unknown: Band may already hold it. Do not resend it." })]);
     expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
   });
@@ -475,6 +481,38 @@ describe("an unresolved publication with no inbound to ride on", () => {
     await events.next((event) => event.type === "delivery.unrecorded");
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: "m-old" }]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
+  });
+
+  it("admits rooms without journals, creating no file and holding no handle for them", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    await platform.room(ROOM);
+    for (const n of [1, 2, 3, 4, 5]) await platform.room(`idle-${n}`);
+    const journalDir = tmpRoot();
+    const { runtime } = await startProcess(platform, journalDir, async () => undefined);
+    // Let every room's admission run, whatever it does for them.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // None of these rooms ever recorded a journal: admission must not create the
+    // file to report from, and must not keep a handle open on one.
+    const files: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => [] as never);
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.name.endsWith(".jsonl")) files.push(full);
+      }
+    };
+    await walk(agentJournalDir(journalDir, AGENT_ID));
+    expect(files).toEqual([]);
+    const fileHandles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles()
+      .filter((handle) => (handle as { constructor?: { name?: string } }).constructor?.name === "FileHandle");
+    expect(fileHandles).toHaveLength(0);
+
+    await runtime.stop(KILL);
+    files.length = 0;
+    await walk(agentJournalDir(journalDir, AGENT_ID));
+    expect(files).toEqual([]);
   });
 });
 
@@ -646,7 +684,7 @@ describe("the turn journal while a room's handling stops and starts", () => {
     expect(turnDone).not.toHaveBeenCalled();
   });
 
-  it("opens no journal for a reply a turn makes after the runtime stopped waiting on it, and posts it", async () => {
+  it("refuses a reply a turn makes after the runtime stopped waiting on it, rather than post it unjournaled", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const keepWorking = createDeferred();
@@ -658,15 +696,24 @@ describe("the turn journal while a room's handling stops and starts", () => {
     });
     await room.say(OWNER, `${MENTION} hello`);
     await events.next((event) => event.type === "turn.started");
+    // The runtime is killed with the turn still owed: its generation closes, and the
+    // turn outlives it, still holding its context.
     expect(await runtime.stop(KILL)).toBe(false);
     const opened = vi.spyOn(RoomJournal, "open");
     onTestFinished(() => opened.mockRestore());
 
     keepWorking.resolve();
-    await sent.promise;
+    const error: unknown = await sent.promise;
 
+    // The generation closed while the reply was owed: the publication is refused
+    // on its closed generation, and nothing is delivered unjournaled.
+    expect(error).toBeInstanceOf(DeliveryFailedError);
+    expect(error).not.toBeInstanceOf(DeliveryUnknownError);
+    const cause = (error as DeliveryFailedError).cause;
+    expect(cause).toBeInstanceOf(JournalPublicationError);
+    expect((cause as JournalPublicationError).kind).toBe("closed");
     expect(opened).not.toHaveBeenCalled();
-    expect(room.messages.map((posted) => posted.content)).toEqual(["late"]);
+    expect(room.messages).toEqual([]);
   });
 
   it("binds its journal to the attested identity and opens nothing for a synthetic contact-hub turn", async () => {
@@ -837,20 +884,21 @@ describe("the turn journal against a failed start and a stale generation", () =>
 });
 
 describe("a turn journal that fails", () => {
-  it("refuses a reply whose room's journal will not open, and serves it once the journal opens", async () => {
+  it("refuses a reply whose room's journal will not open, before its adapter runs, and serves it once the journal opens", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const other = await platform.room(OTHER_ROOM);
     const journalDir = tmpRoot();
     // The room's journal path is taken by a directory: its authority cannot be opened,
-    // and the room serves no reply it cannot record.
+    // and the room's turn fails before its adapter runs.
     await mkdir(journalFile(journalDir), { recursive: true });
     const { runtime, handled } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
     });
 
     const blocked = await room.say(OWNER, `${MENTION} one`);
-    // The room's authority stands it cannot open: the reply is refused, nothing posts, and the turn fails.
+    // The room's authority stands it cannot open: the turn fails on it, its adapter
+    // never runs, and nothing posts unjournaled.
     expect(await room.outcome(blocked)).toBe("failed");
     expect(room.messages).toEqual([]);
     // The runtime keeps serving: another room whose journal opens runs as usual.
@@ -860,7 +908,7 @@ describe("a turn journal that fails", () => {
     const journaled = await room.say(OWNER, `${MENTION} two`);
     expect(await room.outcome(journaled)).toBe("processed");
 
-    expect(handled).toEqual([blocked, fine, journaled]);
+    expect(handled).toEqual([fine, journaled]);
     expect(runtime.state.status).toBe("running");
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done"]);
   });
@@ -881,7 +929,26 @@ describe("a turn journal that fails", () => {
     expect(runtime.state.status).toBe("running");
   });
 
-  it("still answers a message again when its repeat report cannot be recorded", async () => {
+  it("fails the turn before its adapter runs when the configured journal will not open", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    // The room's journal stands, but its header is not one this version can trust.
+    const file = roomFile(journalDir, IDENTITY, AGENT_ID, ROOM);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "not a journal\n", "utf8");
+    const { handled } = await startProcess(platform, journalDir, async () => {
+      throw new Error("the adapter must not run");
+    });
+
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    // The turn fails on the journal it cannot open: the adapter never runs, so
+    // nothing is delivered unjournaled.
+    expect(await room.outcome(inbound)).toBe("failed");
+    expect(handled).toEqual([]);
+  });
+
+  it("refuses a reply whose room's journal will not take its repeat report", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -893,11 +960,14 @@ describe("a turn journal that fails", () => {
       await tools.sendMessage("answered", ["@owner"]);
     });
 
-    expect(await room.outcome(inbound)).toBe("processed");
+    // The unresolved intent is still reported: the operator hears about it whether or
+    // not the report's record lands. But the disk that refused that record is no
+    // longer trusted, so the reply is refused rather than delivered unrecorded.
+    expect(await room.outcome(inbound)).toBe("failed");
     expect(handled).toEqual([inbound]);
+    expect(room.messages).toEqual([]);
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
-    // The report's record could not be written; the uncertainty stands on its intent, and is announced again on the next open.
-    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.intent", "reply.settled", "turn.done"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent"]);
   });
 });
 
@@ -1109,5 +1179,150 @@ describe("what the turn journal records and reports", () => {
 
     expect(opened).not.toHaveBeenCalled();
     expect(runtime.state.status).toBe("stopped");
+  });
+});
+/** A start whose adapter hangs in `onStarted` until released, so a stop can supersede it mid-startup. */
+class HangingStartAdapter extends GenericAdapter {
+  public readonly entered = createDeferred<void>();
+  public constructor(private readonly hang: Promise<void>) {
+    super(async () => undefined);
+  }
+  public override onStarted(_agentName: string, _agentDescription: string): Promise<void> {
+    this.entered.resolve();
+    return this.hang;
+  }
+}
+
+describe("a superseded start's journal cleanup", () => {
+  it("releases its own generation when it gives up, never a successor's", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running" || runtime.state.status === "starting") {
+        await runtime.stop(KILL);
+      }
+    });
+
+    // The first start activates the journal's ownership, then hangs in its startup.
+    const hung = createDeferred<void>();
+    const adapterA = new HangingStartAdapter(hung.promise);
+    const startA = runtime.start(adapterA);
+    await adapterA.entered.promise;
+    // The stop supersedes it and completes — releasing A's generation — while A is
+    // still owed to its hang.
+    await runtime.stop(KILL);
+    // A successor start takes the ownership and runs.
+    await runtime.start(new GenericAdapter(async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]);
+    }));
+    // A's startup settles late, and its superseded start gives up with its cleanup.
+    hung.resolve();
+    await startA.catch(() => undefined);
+
+    expect(runtime.state.status).toBe("running");
+    // B owns the journal its start activated: its reply settles under it, and the
+    // records stand. A late cleanup that released B's generation would have left
+    // the reply unjournaled.
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done"]);
+    await runtime.stop(KILL);
+  });
+});
+
+describe("a reply's origin across turns", () => {
+  it("settles a reply owed to a finished turn under that turn's inbound, never a successor's", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const decided = createDeferred<void>();
+    const { runtime } = await startProcess(platform, journalDir, async (args) => {
+      if (args.message.content.includes(" one")) {
+        // Work that outlives the turn: it decides after the turn has ended, then
+        // replies on the turn's tools. The turn neither awaits it nor holds the room.
+        void (async () => {
+          await decided.promise;
+          await args.tools.sendMessage("answer one", ["@owner"]);
+        })();
+      } else {
+        await args.tools.sendMessage("answer two", ["@owner"]);
+      }
+    });
+
+    const one = await room.say(OWNER, `${MENTION} one`);
+    // The turn ended without its reply reaching the room: the platform side failed it.
+    expect(await room.outcome(one)).toBe("failed");
+    const two = await room.say(OWNER, `${MENTION} two`);
+    expect(await room.outcome(two)).toBe("processed");
+    // Only now does turn ONE's owed reply run, on a room already turned to TWO.
+    decided.resolve();
+    await room.until(() => room.messages.length === 2);
+    await runtime.stop(KILL);
+
+    // The reply stands under the inbound its turn answered: ONE's under ONE, TWO's
+    // under its own answer. Settling ONE's late reply under TWO would leave the
+    // room unable to tell them apart, and a restart would skip TWO unanswered.
+    const lines = await journalLines(journalFile(journalDir));
+    const settledFor = (messageId: string) => lines.filter((line) => line.t === "reply.settled" && line.messageId === messageId);
+    expect(settledFor(one)).toHaveLength(1);
+    expect(settledFor(two)).toHaveLength(1);
+    expect(lines.filter((line) => line.t === "reply.intent").map((line) => String(line.messageId)).sort()).toEqual([one, two].sort());
+
+    const reopened = await new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY);
+    onTestFinished(() => reopened.close());
+    const journal = await reopened.room(ROOM);
+    expect(journal.answered(one)).toBe(true);
+    expect(journal.answered(two)).toBe(true);
+  });
+
+  it("posts a synthetic hub turn's reply unrecorded, without settling under the hub room's last inbound", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const journalDir = tmpRoot();
+    const { runtime, events } = await startProcess(platform, journalDir, async (args) => {
+      if (isSyntheticTurn(args.message)) {
+        await args.tools.sendMessage("synthetic reply", ["@owner"]);
+      } else {
+        await args.tools.sendMessage("real reply", ["@owner"]);
+      }
+    }, { contactConfig: { strategy: "hub_room", hubTaskId: "contacts" } });
+
+    // The first contact event initializes the hub room and runs a synthetic turn in
+    // it. That reply cannot land yet: the auto-created room lists no owner.
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_added", {
+      id: "contact-9", handle: "@alice", name: "Alice", type: "Agent", inserted_at: new Date().toISOString(), is_remote: false,
+    });
+    await vi.waitFor(() => {
+      expect(events.entries.some((event) => event.type === "turn.started")).toBe(true);
+    });
+    const hubRoomId = events.entries.find((event) => event.type === "turn.started")?.roomId;
+    expect(hubRoomId).toBeDefined();
+    const hub = await platform.room(hubRoomId as string);
+
+    // A real inbound to the hub room: its reply settles under it.
+    const one = await hub.say(OWNER, `${MENTION} one`);
+    expect(await hub.outcome(one)).toBe("processed");
+    // A second contact event runs another synthetic turn, after the real one.
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_added", {
+      id: "contact-10", handle: "@bob", name: "Bob", type: "Agent", inserted_at: new Date().toISOString(), is_remote: false,
+    });
+    await hub.until(() => hub.messages.length === 2);
+    await runtime.stop(KILL);
+
+    // The synthetic turn's reply posts into the hub room — the owner's room now —
+    // but records no settlement: a synthetic turn answers no inbound, and it must
+    // not settle under the hub room's last real one.
+    expect(hub.messages.map((posted) => posted.content)).toEqual(["real reply", "synthetic reply"]);
+    const lines = await journalLines(journalFile(journalDir, hubRoomId as string));
+    expect(lines.filter((line) => line.t === "reply.intent").map((line) => String(line.messageId))).toEqual([one]);
+    expect(lines.filter((line) => line.t === "reply.settled").map((line) => String(line.messageId))).toEqual([one]);
   });
 });

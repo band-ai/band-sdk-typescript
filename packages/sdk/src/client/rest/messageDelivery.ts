@@ -177,7 +177,15 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
 
     logger.warn("Message post failed; settling it before any resend", { roomId, attempt, outcome, status: statusCodeOf(failure) });
     // Before the read-back too: a commit still in flight gets the pause to land.
-    await pause(resendDelayMs(attempt, failure), stopped);
+    let cutShort = false;
+    try {
+      await pause(resendDelayMs(attempt, failure), stopped);
+    } catch {
+      // The turn was cut short mid-pause. The cut is not the post's outcome:
+      // the failure it interrupted stands, and the read-back still settles a
+      // commit that may have landed in the pause.
+      cutShort = true;
+    }
     if (outcome === "uncertain" && findPosted) {
       const found = await findPosted();
       if (found) {
@@ -185,8 +193,14 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
         return { found };
       }
     }
-    if (!resendsLeft) throw failure;
-    logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
+    if (!cutShort) {
+      if (!resendsLeft) throw failure;
+      logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
+      continue;
+    }
+    // Cut short: surface the failure the transport itself reported, so the
+    // publication settles on the transport's actual outcome, never on the cut.
+    throw failure;
   }
 }
 
