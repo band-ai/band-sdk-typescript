@@ -2,12 +2,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { readFile } from "node:fs/promises";
+
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { AgentToolsRestApi } from "../src/client/rest/types";
 import type { AdapterToolsProtocol } from "../src/contracts/protocols";
 import type { BandMcpBackend } from "../src/mcp/backends";
 import { createBandMcpBackend } from "../src/mcp/backends";
-import { createBandSdkMcpServer, type BandSdkMcpServer } from "../src/mcp/sdk";
+import type { BandSdkMcpServer } from "../src/mcp/sdk";
+import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { PlatformRuntime } from "../src/runtime";
 import type { GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
@@ -40,8 +44,6 @@ function holdingAnswer(
     await held.promise;
   };
 }
-
-type DeferredFlag = ReturnType<typeof createDeferred>;
 
 /**
  * Drives a long-lived Band MCP bridge from a context that is not the turn's:
@@ -385,6 +387,67 @@ describe("a journaled reply made through a long-lived transport settles under th
     const second = inbounds.find((inbound) => inbound.messageId === messageTwo);
     expect(first?.settled.length).toBe(1);
     expect(second?.settled.length).toBe(1);
+  });
+
+  it("settles a call on the turn's own tools from a context with no turn standing: the stamp the turn bound them with carries", async () => {
+    platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    journalDir = tmpRoot();
+
+    // The adapter keeps the room open and hands the turn's tools to the test:
+    // the test's own call then stands in a context where no turn scope stands
+    // at all — a channel callback the turn registered, a direct call on the
+    // tools the turn was given. Where the reply settles is decided by the
+    // tools, not by the context the call was created in.
+    const tools: { current: AdapterToolsProtocol | undefined } = { current: undefined };
+    const started = createDeferred<void>();
+    const held = createDeferred<void>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
+    });
+    const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, async () => undefined)));
+    const completed = turnCompleted(runtime);
+    const messageOne = await room.say(OWNER, `${MENTION} hello`);
+    await started.promise;
+
+    const before = room.posted.length;
+    await tools.current!.sendMessage("stamped reply", ["@owner"]);
+    expect(room.posted.length).toBe(before + 1);
+    held.resolve();
+    await completed;
+    await stop;
+    await runtime.stop();
+
+    // The reply stands settled under the turn it reached, though the call ran
+    // in a context that knew no turn: one settled publication, under the
+    // turn's inbound.
+    const inbounds = await readJournalInbounds(journalDir);
+    expect(inbounds).toHaveLength(1);
+    expect(inbounds[0].messageId).toBe(messageOne);
+    expect(inbounds[0].settled).toHaveLength(1);
+  });
+
+  it("posts, and settles nothing, from a tool no turn composed: a direct construction carries no attribution", async () => {
+    platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    journalDir = tmpRoot();
+
+    // A tool composed outside a runtime — a direct construction a turn never
+    // handed out — posts like any other, but settles nothing: no turn stands
+    // to attribute it to, and the journal holds no record it could stand on.
+    const tools = new ExecutionContext({ roomId: ROOM, maxContextMessages: 1, link: { rest: platform.rest as unknown as AgentToolsRestApi } }).getTools();
+    const before = room.posted.length;
+    await tools.sendMessage("unattributed reply", ["@owner"]);
+    expect(room.posted.length).toBe(before + 1);
+
+    const file = roomFile(journalDir, IDENTITY, AGENT_ID, ROOM);
+    expect(await readFile(file, "utf8").catch(() => null)).toBeNull();
+    await platform[Symbol.asyncDispose]();
+    platform = undefined;
   });
 });
 

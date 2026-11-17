@@ -615,26 +615,57 @@ describe("v1 compaction remnants", () => {
     expect(room.answered("b")).toBe(true);
   });
 
-  it("preserves a settlement only the compaction copy holds: the journal's binding carries it", async () => {
+  it("refuses a settlement only the unbound compaction copy holds: the name carries no attestation", async () => {
     const dir = tmpRoot();
     const legacy = [
       JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
     ];
     const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
-    // The copy holds a settlement the journal on disk no longer records: the room's
-    // writer settled it, and the journal that was there since lost it. Staging the
-    // journal alone would leave the message unanswered.
+    // The copy holds a settlement the journal on disk no longer records, but
+    // nothing binds the copy: importing it under the journal's identity would
+    // let any file the room name names stand as the room's authority.
     const copy = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
     const compacting = path.join(path.dirname(source), V1_REMNANT_FILE);
     await writeFile(compacting, copy);
     const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
 
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
-    expect(result.mode).toBe("committed");
-    // Both files stand byte for byte: nothing is deleted, and the staging coalesced
-    // the copy's extra settlement into the room's authority.
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
+      .rejects.toMatchObject({ kind: "corrupt" });
+    // It refused before staging: no manifest, no destination, both files untouched.
+    expect(await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8").catch(() => null)).toBeNull();
+    expect(await readFile(roomFile(dir), "utf8").catch(() => null)).toBeNull();
     expect(await readFile(source, "utf8")).toBe(`${legacy.join("\n")}\n`);
     expect(await readFile(compacting, "utf8")).toBe(copy);
+  });
+
+  it("imports a settlement only the compaction copy holds, under a binding of the copy's own", async () => {
+    const dir = tmpRoot();
+    const legacy = [
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
+    ];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
+    const compacting = path.join(path.dirname(source), V1_REMNANT_FILE);
+    await writeFile(compacting, copyText);
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+    // The copy's surplus stands attested by a binding of its own: its hash, the
+    // platform the room stands on, its provenance, and the room its name encodes.
+    // The copy is the journal's output: it attests the same provenance the
+    // journal's binding carries, or the two would stand at odds.
+    bindings.push({
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(copyText),
+      platformIdentity: IDENTITY,
+      provenance: `operator-attested:${V1_ROOM_FILE}`,
+    });
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    expect(result.mode).toBe("committed");
+    // Both files stand byte for byte, and the staging coalesced the copy's extra
+    // settlement into the room's authority under its attested identity.
+    expect(await readFile(source, "utf8")).toBe(`${legacy.join("\n")}\n`);
+    expect(await readFile(compacting, "utf8")).toBe(copyText);
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("b")).toBe(true);
@@ -728,5 +759,89 @@ describe("v1 compaction remnants", () => {
       provenance: "operator-attested",
     };
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [firstBinding, secondBinding] })).rejects.toMatchObject({ kind: "corrupt" });
+  });
+
+  it("refuses a binding whose expected hash is not the file's, whatever it stands for", async () => {
+    const dir = tmpRoot();
+    const legacy = [
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
+    ];
+    await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    // A binding that attests a hash the file does not stand at is a lie, or a
+    // file that moved: either way it may not stage, and an all-zero hash must be
+    // no different from any other hash the file does not bear.
+    const bindings: MigrationBinding[] = [
+      {
+        sourceFile: V1_ROOM_FILE,
+        roomId: ROOM,
+        sourceSha256: "0".repeat(64),
+        platformIdentity: IDENTITY,
+        provenance: "operator-attested:wrong-hash",
+      },
+    ];
+
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
+      .rejects.toMatchObject({ kind: "corrupt" });
+    expect(await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8").catch(() => null)).toBeNull();
+  });
+
+  it("refuses a complete record at the copy's end: no trailing newline does not make it torn", async () => {
+    const dir = tmpRoot();
+    const legacy = [
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
+    ];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    // The copy's last line is a finished record the importer does not know: a torn
+    // tail is a fragment, but a record that parses whole is not torn, whether or
+    // not its writer ended it with the newline.
+    const compacting = path.join(path.dirname(source), V1_REMNANT_FILE);
+    await writeFile(compacting, `${legacy.join("\n")}\n${JSON.stringify({ t: "not.a.record", messageId: "x", at: 3 })}`);
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
+      .rejects.toMatchObject({ kind: "unsupported" });
+  });
+
+  it("stages a journal that ends without its newline beside a bound surplus copy", async () => {
+    const dir = tmpRoot();
+    const legacy = [
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
+    ];
+    // The journal's writer closed without its trailing newline; the bound copy
+    // ends with it. A reader that splits their concatenation at newlines would
+    // splice the last record into a first and stage a record neither file holds.
+    const agentDir = legacyAgentDir(dir, AGENT);
+    await mkdir(agentDir, { recursive: true });
+    const primary = path.join(agentDir, V1_ROOM_FILE);
+    await writeFile(primary, legacy.join("\n")); // no trailing newline
+    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
+    const compacting = path.join(agentDir, V1_REMNANT_FILE);
+    await writeFile(compacting, copyText);
+    const bindings: MigrationBinding[] = [
+      {
+        sourceFile: V1_ROOM_FILE,
+        roomId: ROOM,
+        sourceSha256: sha256(await readFile(primary, "utf8")),
+        platformIdentity: IDENTITY,
+        provenance: `operator-attested:${V1_ROOM_FILE}`,
+      },
+      {
+        sourceFile: V1_REMNANT_FILE,
+        roomId: ROOM,
+        sourceSha256: sha256(copyText),
+        platformIdentity: IDENTITY,
+        provenance: `operator-attested:${V1_ROOM_FILE}`,
+      },
+    ];
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    expect(result.mode).toBe("committed");
+    // The primary stands byte for byte, newline-less end and all.
+    expect(await readFile(primary, "utf8")).toBe(legacy.join("\n"));
+    expect(await readFile(compacting, "utf8")).toBe(copyText);
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
+    expect(room.answered("only-in-copy")).toBe(true);
   });
 });

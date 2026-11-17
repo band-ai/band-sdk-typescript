@@ -263,12 +263,13 @@ function destinationOf(agentDir: string, binding: MigrationBinding): string {
 
 /**
  * The records a v1 compaction copy left behind, the way the runtime reads a
- * journal's tail: every whole line must parse to a record the importer knows,
- * and a final line a crash cut short of its newline held no finished record,
- * so a torn tail is dropped when it is not itself a whole record. A copy that
- * holds anything else — a line that is not a record, a record the importer
- * does not know — stands verified by no one, and is refused, not covered by
- * the name of the journal beside it.
+ * journal's tail: every whole line must parse to a record the importer knows.
+ * A final line a crash cut short of its newline is a torn fragment only while
+ * it is not a whole record — a complete record at the end of the file stands
+ * whether or not its newline is there, and is held to the same rule as any
+ * other line. A copy that holds anything else — a line that is not a record,
+ * a record the importer does not know — stands verified by no one, and is
+ * refused, not covered by the name of the journal beside it.
  */
 function parseRemnantRecords(file: string, text: string): Array<{ line: string; record: LegacyRecord }> {
   const entries: Array<{ line: string; record: LegacyRecord }> = [];
@@ -299,34 +300,37 @@ function parseRemnantRecords(file: string, text: string): Array<{ line: string; 
     }
   });
   if (tornTail !== null && tornTail.trim() !== "") {
-    let record: unknown;
     try {
-      record = JSON.parse(tornTail);
-    } catch {
+      // A whole record at EOF, with or without its newline: it is a record,
+      // and it is held to the record's rule — a record the importer does not
+      // know is refused, not dropped.
+      check(tornTail, lines.length + 1, JSON.parse(tornTail));
+    } catch (error) {
+      if (error instanceof JournalFileError) throw error;
       // A torn tail that is not a whole record: the records above stand.
-      return entries;
     }
-    const parsed = legacyRecordSchema.safeParse(record);
-    if (parsed.success) entries.push({ line: tornTail, record: parsed.data });
   }
   return entries;
 }
 
 /**
  * What the migration stages for a binding: the journal's own records, plus —
- * for every compaction copy that stands beside it — the records the copy holds
- * that the journal does not. A copy is the unrenamed output of a crash of its
- * journal's compaction: normally byte-identical to the journal's records, and
- * nothing more. Where it holds more — a settlement the journal on disk no
- * longer records — that settlement is the room's authority too, and staging
- * the journal alone would lose it. Where the copy holds less, the journal
- * stands whole. The staged text is deterministic in the files as they stand,
- * so its hash is what the manifest records and what activation rechecks.
+ * for every compaction copy that stands beside it — the records the copy
+ * holds that the journal does not. A copy is the unrenamed output of a crash
+ * of its journal's compaction: normally byte-identical to the journal's
+ * records, and nothing more. Where it holds more — a settlement the journal
+ * on disk no longer records — that settlement is authority of the copy's own,
+ * and it stands attested only by a binding of its own (`explicitSources`); a
+ * copy whose surplus is attested by no one is refused, not imported under
+ * the journal beside it. Where the copy holds less, the journal stands whole.
+ * The staged text is deterministic in the files as they stand, so its hash
+ * is what the manifest records and what activation rechecks.
  */
 async function coalescedStaging(
   legacyDir: string,
   binding: { sourceFile: string; stagesFrom: string },
   legacy: string[],
+  explicitSources: Set<string>,
 ): Promise<{ text: string; records: LegacyRecord[] }> {
   const primary = binding.stagesFrom;
   const primaryPath = path.join(legacyDir, primary);
@@ -371,17 +375,64 @@ async function coalescedStaging(
     }
     const entries = parseRemnantRecords(file, copyText);
     const localIntents = new Map<string, number>();
+    let copySurplus = 0;
     for (const { line, record } of entries) {
       if (record.t === "reply.intent") {
         const n = (localIntents.get(record.messageId) ?? 0) + 1;
         localIntents.set(record.messageId, n);
-        if (n > (intentCounts.get(record.messageId) ?? 0)) admit(record, line);
+        if (n > (intentCounts.get(record.messageId) ?? 0)) {
+          admit(record, line);
+          copySurplus++;
+        }
         continue;
       }
-      if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) admit(record, line);
+      if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) {
+        admit(record, line);
+        copySurplus++;
+      }
+    }
+    if (copySurplus > 0 && !explicitSources.has(file)) {
+      // The copy stands for settlements its journal no longer records; a
+      // name is not an attestation, and the journal's binding does not cover
+      // them.
+      throw new JournalFileError(
+        `The compaction copy ${file} beside the journal ${primary} holds records the journal does not; that authority stands on the copy alone, and no binding attests it. Bind the copy — its hash, identity and provenance — so the surplus stands attested, or reconcile it against the v1 writer that produced it.`,
+        "corrupt",
+        copyPath,
+      );
     }
   }
-  return { text: primaryText + surplusLines.map((line) => `${line}\n`).join(""), records: coalesced };
+  // The journal's text and the surplus are whole lines: where the journal
+  // ends without its final newline, the boundary stands between the records,
+  // never inside one. The originals are never rewritten.
+  const base = primaryText.length === 0 || primaryText.endsWith("\n") ? primaryText : `${primaryText}\n`;
+  return { text: base + surplusLines.map((line) => `${line}\n`).join(""), records: coalesced };
+}
+
+/**
+ * The copy's records its journal's do not cover: an intent the journal
+ * records fewer of, a turn.done the journal never recorded. The authority a
+ * copy stands for on its own, beyond the journal beside it.
+ */
+function uncoveredRemnantRecords(primaryRecords: LegacyRecord[], copyRecords: LegacyRecord[]): number {
+  const intentCounts = new Map<string, number>();
+  const doneInbounds = new Set<string>();
+  for (const record of primaryRecords) {
+    if (record.t === "reply.intent") intentCounts.set(record.messageId, (intentCounts.get(record.messageId) ?? 0) + 1);
+    if (record.t === "turn.done") doneInbounds.add(record.messageId);
+  }
+  const localIntents = new Map<string, number>();
+  let uncovered = 0;
+  for (const record of copyRecords) {
+    if (record.t === "reply.intent") {
+      const n = (localIntents.get(record.messageId) ?? 0) + 1;
+      localIntents.set(record.messageId, n);
+      if (n > (intentCounts.get(record.messageId) ?? 0)) uncovered++;
+    } else if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) {
+      uncovered++;
+    }
+  }
+  return uncovered;
 }
 
 /**
@@ -405,6 +456,7 @@ async function validateDestination(
   agentId: string,
   legacyDir: string | undefined,
   options: { checkSources: boolean },
+  explicitSources: Set<string>,
 ): Promise<void> {
   // The destination stands the way the runtime's own reader stands it: the
   // journal's own open validates its header's identity, agent and room binding
@@ -477,7 +529,7 @@ async function validateDestination(
       // checked against what the staging computes from the files as they
       // stand now, so a journal or a copy that moved since the import is
       // refused, not imported past.
-      const staging = await coalescedStaging(legacyDir, binding, legacy);
+      const staging = await coalescedStaging(legacyDir, binding, legacy, explicitSources);
       const stagingSha256 = createHash("sha256").update(staging.text).digest("hex");
       if (stagingSha256 !== binding.stagingSha256) {
         throw new JournalFileError(
@@ -501,6 +553,7 @@ async function validateDestination(
 export async function validateCommittedDestinations(agentDir: string, agentId: string): Promise<void> {
   const manifest = await readManifest(agentDir);
   if (manifest === null || manifest.state !== "committed") return;
+  const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
   for (const binding of manifest.bindings) {
     const destination = destinationOf(agentDir, binding);
     const text = await readFile(destination, "utf8").catch((error: unknown) => {
@@ -509,12 +562,12 @@ export async function validateCommittedDestinations(agentDir: string, agentId: s
     });
     if (text === null) {
       throw new JournalFileError(
-        `The migration committed ${binding.sourceFile} to a journal that is no longer on disk; its authority must not open as an empty file and settle no one. Restore the journal from backup, or re-run the migration from the preserved source.`,
+        `The migration committed ${binding.sourceFile} to a journal that is no longer on disk; its authority must not open as an empty file and settle no one. Restore the journal from backup, or re-run the migration from its preserved source.`,
         "corrupt",
         destination,
       );
     }
-    await validateDestination(destination, binding, agentId, undefined, { checkSources: false });
+    await validateDestination(destination, binding, agentId, undefined, { checkSources: false }, explicit);
   }
 }
 
@@ -612,6 +665,7 @@ async function stageDestination(
   headerAt: number,
   state: "prepared" | "committed",
   logger: Logger,
+  explicitSources: Set<string>,
 ): Promise<void> {
   const destination = destinationOf(agentDir, binding);
   const existing = await readFile(destination, "utf8").catch((error: unknown) => {
@@ -619,7 +673,7 @@ async function stageDestination(
     throw error;
   });
   if (existing !== null) {
-    await validateDestination(destination, binding, agentId, legacyDir, { checkSources: state === "committed" });
+    await validateDestination(destination, binding, agentId, legacyDir, { checkSources: state === "committed" }, explicitSources);
     return;
   }
   if (state === "committed") {
@@ -630,7 +684,7 @@ async function stageDestination(
     );
   }
   const legacy = await legacyFiles(legacyDir);
-  const staging = await coalescedStaging(legacyDir, binding, legacy);
+  const staging = await coalescedStaging(legacyDir, binding, legacy, explicitSources);
   const expected = convertLegacy(binding.stagesFrom, staging.text, binding, agentId, headerAt);
   await mkdir(path.dirname(destination), { recursive: true });
   await rewriteFile(destination, expected);
@@ -674,7 +728,9 @@ export async function resumeInterruptedMigration(
     await checkSource(legacyDir, binding, logger);
   }
   for (const binding of manifest.bindings) {
-    await stageDestination(agentDir, legacyDir, agentId, binding, manifest.createdAt, "prepared", logger);
+    if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
+    const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
+    await stageDestination(agentDir, legacyDir, agentId, binding, manifest.createdAt, "prepared", logger, explicit);
   }
   await commitManifest(agentDir, manifest, now);
 }
@@ -745,14 +801,19 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
   await mkdir(agentDir, { recursive: true });
   const ownership = await JournalOwnership.acquire(path.join(agentDir, ".ownership.sqlite"), { loadSqlite: options.loadSqlite });
   try {
+    // The copies whose surplus stands imported are the ones the operator
+    // attested by a binding of their own: a name beside a journal is not an
+    // attestation.
+    const explicit = new Set(bindings.map((binding) => binding.sourceFile));
     const prepared: PreparedBinding[] = [];
     for (const binding of bindings) {
       await checkSource(legacyDir, binding, logger);
       // What the import records is what the staging holds: the journal's own
       // records plus, where a compaction copy stands beside it, the records
       // the copy holds beyond them — settlements the journal on disk no
-      // longer holds are the room's authority too.
-      const staging = await coalescedStaging(legacyDir, binding, legacy);
+      // longer holds are the room's authority too, and they stand imported
+      // only where a binding of their own attests the copy.
+      const staging = await coalescedStaging(legacyDir, binding, legacy, explicit);
       prepared.push({
         ...binding,
         stagingSha256: createHash("sha256").update(staging.text).digest("hex"),
@@ -773,7 +834,8 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       // stands — records appended since the commit are its authority — and the
       // migration reports that it needs nothing done.
       for (const binding of prepared) {
-        await stageDestination(agentDir, legacyDir, options.agentId, binding, existing.createdAt, "committed", logger);
+        if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
+        await stageDestination(agentDir, legacyDir, options.agentId, binding, existing.createdAt, "committed", logger, explicit);
       }
       return { mode: "already-committed", sources: await reportSources(legacyDir, legacy, prepared) };
     }
@@ -796,7 +858,8 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
     }
     for (const binding of prepared) {
-      await stageDestination(agentDir, legacyDir, options.agentId, binding, manifest.createdAt, "prepared", logger);
+      if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
+      await stageDestination(agentDir, legacyDir, options.agentId, binding, manifest.createdAt, "prepared", logger, explicit);
     }
     await commitManifest(agentDir, manifest, now);
     return { mode: "committed", sources: await reportSources(legacyDir, legacy, prepared) };
@@ -857,6 +920,21 @@ async function validateBindings(
         agentDir,
       );
     }
+    // The expected hash is the operator's attestation that this is the file
+    // it means to migrate: it is checked against the file as it stands, for
+    // every binding — a journal and each copy it names alike — before any of
+    // them is folded into another's destination.
+    {
+      const sourceFile = path.join(legacyDir, binding.sourceFile);
+      const observed = await sha256File(sourceFile);
+      if (observed !== binding.sourceSha256) {
+        throw new JournalFileError(
+          `The binding for ${binding.sourceFile} expects the hash its attestation recorded (${binding.sourceSha256}), but the file stands at ${observed}; it changed since the attestation, or the attestation names a different file. Re-attest the binding against the file as it stands.`,
+          "corrupt",
+          sourceFile,
+        );
+      }
+    }
     // One file has one provenance; two bindings for it agree or are a conflict.
     const claimingFile = claimed.get(binding.sourceFile);
     if (claimingFile !== undefined) {
@@ -874,13 +952,26 @@ async function validateBindings(
     const destination = `${identityDirectoryComponent(binding.platformIdentity)}/${roomFileComponent(binding.roomId)}`;
     const claimingRoom = destinations.get(destination);
     if (claimingRoom !== undefined) {
-      if (claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
+      // The fold is the journal-and-its-copy case: a compaction copy beside
+      // the journal it is the output of, in either binding order. Anything
+      // else that stands for the same room — two journals, two orphan copies —
+      // is two authorities for one room, and one room's journal takes one
+      // migration.
+      const isCopyPair =
+        remnantPrimaryOf(binding.sourceFile) === claimingRoom.sourceFile ||
+        (remnantPrimaryOf(claimingRoom.sourceFile) !== undefined && remnantPrimaryOf(claimingRoom.sourceFile) === binding.sourceFile);
+      if (isCopyPair && claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
         // The same room's journal, attested twice (a journal and the copy it
-        // crashed from): one migration, under the first attestation.
+        // crashed from): one migration, staged through the first attestation.
+        // The copy's attestation still stands in the migration: its surplus,
+        // where it holds any, is imported only because it is bound.
+        normalized.push({ ...binding, stagesFrom, stagingSha256: "", importedFacts: { publicationIds: [], turnDone: [] } });
         continue;
       }
       throw new JournalFileError(
-        `Two bindings (${claimingRoom.sourceFile} and ${binding.sourceFile}) stand for the same room of the same platform with different attestations; one room's journal takes one migration.`,
+        isCopyPair
+          ? `Two bindings (${claimingRoom.sourceFile} and ${binding.sourceFile}) stand for the same room of the same platform with different attestations; one room's journal takes one migration.`
+          : `Two bindings (${claimingRoom.sourceFile} and ${binding.sourceFile}) stand for the same room of the same platform, and neither is the compaction copy of the other; one room's journal takes one migration. Reconcile the two files before applying.`,
         "corrupt",
         agentDir,
       );
@@ -903,15 +994,16 @@ async function validateBindings(
       );
     }
   }
-  // A compaction copy beside a bound journal is that journal's crashed output,
-  // and the journal's binding carries its authority: the copy must stand as a
-  // v1 writer could have left it — every whole line a record the importer
-  // knows (a torn final line a crash cut short holds no finished record and
-  // is dropped, the way the journal's own reader drops one). Anything else is
-  // verified by no one and is refused rather than trusted by the name it
-  // stands under; a copy that holds more than the journal coalesces its extra
-  // records into the staging, so nothing it held is lost.
+  // A compaction copy is its journal's output: where the journal is bound too,
+  // the two attestations must agree, or the copy claims a platform the journal
+  // binds the room to and the room's authority is two files apart. A copy
+  // beside a bound journal that holds nothing its journal does not rides the
+  // journal's binding; one that holds more stands for authority of its own,
+  // and a filename attests nothing — it needs a binding of its own, or it is
+  // reconciled away before the migration commits.
   const stagedPrimaries = new Set(normalized.map((binding) => binding.stagesFrom));
+  const explicit = new Set(bindings.map((binding) => binding.sourceFile));
+  const primaryRecordsCache = new Map<string, LegacyRecord[]>();
   for (const file of legacy) {
     const primary = remnantPrimaryOf(file);
     if (primary === undefined || !stagedPrimaries.has(primary)) continue;
@@ -920,7 +1012,20 @@ async function validateBindings(
       throw error;
     });
     if (text === null) continue;
-    parseRemnantRecords(file, text);
+    const copyRecords = parseRemnantRecords(file, text).map((entry) => entry.record);
+    if (explicit.has(file)) continue;
+    let primaryRecords = primaryRecordsCache.get(primary);
+    if (primaryRecords === undefined) {
+      primaryRecords = parseLegacyRecords(primary, await readFile(path.join(legacyDir, primary), "utf8"));
+      primaryRecordsCache.set(primary, primaryRecords);
+    }
+    if (uncoveredRemnantRecords(primaryRecords, copyRecords) > 0) {
+      throw new JournalFileError(
+        `The compaction copy ${file} beside the journal ${primary} holds records the journal does not; that authority stands on the copy alone, and no binding attests it. Bind the copy — its hash, identity and provenance — so the surplus stands attested, or reconcile it against the v1 writer that produced it.`,
+        "corrupt",
+        path.join(legacyDir, file),
+      );
+    }
   }
   return normalized;
 }

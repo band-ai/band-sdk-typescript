@@ -28,9 +28,11 @@
  *   remote-accept        its reply's post is accepted by the platform, then
  *                        the journal's settle record is held: the platform
  *                        has the reply, the journal stands on the intent.
- *   before-tool-return   durably settles its reply, makes one host tool call
- *                        on the flushed receipt, and hangs before the turn's
- *                        end: the reply stands settled, the turn does not.
+ *   before-tool-return   its reply's post stands admitted by the platform,
+ *                        then the settle record's write is held in flight:
+ *                        publication is paused in its last durable step, the
+ *                        tool's response stands outstanding, the turn does
+ *                        not end.
  *   reset                durably settles its reply, then, on the parent's
  *                        command, runs the room's real reset with its cancel
  *                        budget; the un-cancellable turn detaches, and the
@@ -200,11 +202,26 @@ async function main(): Promise<void> {
           break;
         }
         case "before-tool-return": {
-          // The reply's post and its receipt stand flushed before the tool call: the
-          // crash lands after the publication and the side effect, still mid-turn.
-          await args.tools.sendMessage("tool answer", ["@owner"]);
-          await args.tools.executeToolCall("band_lookup_peers", {});
-          report("tool-called");
+          // Publication stands paused in its last durable step: the reply's
+          // post is admitted by the platform, and its settle record's write is
+          // held in flight at the journal. While that write stands held the
+          // tool's response cannot return — the engine resolves it only once
+          // the settle stands — so the cut lands inside the tool call's own
+          // publication, after the platform's acceptance and before the
+          // response returns.
+          const hold = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
+          const pending = args.tools.sendMessage("tool answer", ["@owner"]);
+          await hold;
+          // The cut's added proof over a post-hoc observation: the tool's
+          // response is still outstanding while its publication stands paused.
+          let resolved = false;
+          void pending.then(() => {
+            resolved = true;
+          });
+          await sleep(150);
+          if (resolved) throw new Error("the tool response returned while its publication stood paused");
+          report("paused");
+          await pending; // never reached: the process dies at the cut
           break;
         }
         case "reset": {

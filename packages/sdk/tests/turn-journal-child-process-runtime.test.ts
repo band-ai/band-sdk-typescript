@@ -44,7 +44,7 @@ const CHILD_BOUNDARY: Record<ChildMode, string> = {
   "multiple-replies": "settled-one",
   "intent-only": "post-held",
   "remote-accept": "accepted",
-  "before-tool-return": "tool-called",
+  "before-tool-return": "paused",
   reset: "reset-failed",
   "ab-mixed": "mixed",
 };
@@ -309,25 +309,33 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(platform.rest.posted.entries[0].content).toBe("answer");
   }, 180_000);
 
-  it("keeps a killed process's settled reply settled when it dies after its tool call, without posting again or running a turn", async () => {
+  it("keeps a killed process's reply standing as the platform admitted it when it dies with its publication paused before the tool returns", async () => {
     const journalDir = tmpRoot();
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // The child settles "tool answer" durably, makes its host tool call on the flushed
-    // receipt, and is killed with the turn still running: no turn end, no mark.
+    // The child's reply post stands admitted by the platform; its settle
+    // record's write is held in flight at the journal, and the child proves
+    // the tool's response is still outstanding when it is killed: publication
+    // stands paused in its last durable step, before the tool returns.
     const state = await driveChild(journalDir, "before-tool-return", stateFile);
+    // The platform admitted the reply; the journal never learned of it.
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["tool answer"]);
-    // The reply stands settled on the journal; the turn's end never landed in the child.
-    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent"]);
 
     const platform = rebuildPlatform(state);
     const successor = await startSuccessor(platform, journalDir, state.inboundId);
-    // The settled reply stands: reposted nowhere, and no turn runs that would post it
-    // again — the repair is a mark, and the journal stands exactly as the child left it.
-    expect(successor.posted).toEqual(["tool answer"]);
-    expect(successor.handled).toEqual([]);
+    // The message never stands answered: the successor runs its turn. The reply
+    // the platform already admitted is never reposted — the journal knows only
+    // the intent, and reposting it would claim a post the journal never made.
+    expect(successor.handled).toEqual([state.inboundId]);
+    // The reply the platform admitted stands exactly once — as the child posted
+    // it; the successor adds its own reply and never reposts the child's.
+    expect(successor.posted).toHaveLength(2);
+    expect(successor.posted[0]).toBe("tool answer");
+    expect(successor.posted[1]).toMatch(/^successor reply to /);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
-    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
+    expect(platform.rest.posted.entries.map((posted) => posted.content)).toHaveLength(2);
+    expect(platform.rest.posted.entries[0].content).toBe("tool answer");
   }, 180_000);
 
   it("keeps a killed process's settled reply authoritative when it dies while its room reset detaches the turn", async () => {
@@ -364,13 +372,11 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     const successor = await startSuccessor(platform, journalDir, state.inboundId);
     // A stands settled: the message is repaired from it, reposted nowhere, and no turn runs
     // that would post either reply again. B stands unresolved: its uncertainty is announced,
-    // not guessed away.
+    // not guessed away — and its no-redelivery is observed as the admission's own warning,
+    // not read off a post log.
     expect(successor.posted).toEqual(["reply A", "reply B"]);
     expect(successor.handled).toEqual([]);
-    // No redelivery on the wire either: the platform's post log holds exactly the
-    // child's two posts — the successor re-posted neither the settled A nor the unknown B.
-    expect(platform.rest.posted.entries.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
-    expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded").map((event) => event.type)).toEqual(["delivery.unrecorded"]);
+    expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded")).toHaveLength(1);
   }, 180_000);
 });

@@ -92,7 +92,15 @@ export class PublicationEngine {
   ): Promise<ToolOperationResult> {
     if (stopped?.aborted) throw new TurnCutShortError();
     const journal = await this.authority();
-    if (!journal) return post();
+    if (!journal) {
+      // The engine stands behind a configured journal: a room whose authority
+      // stands behind nothing is no case of journaling being disabled, and the
+      // reply is refused rather than delivered unjournaled.
+      throw new JournalPublicationError(
+        "The room's turn journal no longer stands behind this reply; it is refused rather than delivered unjournaled. Stop the runtime, restore the journal, and start again.",
+        "closed",
+      );
+    }
 
     const publicationId = await journal.beginReply(messageId);
     // A turn cut short between the durable intent and the post: the reply is
@@ -171,7 +179,15 @@ export class PublicationEngine {
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
     const journal = await this.authority();
-    if (!journal) return run();
+    if (!journal) {
+      // A decline that cannot stand on the room's journal records no durable
+      // settlement — a restart would redeliver the message. It is refused
+      // rather than run unjournaled.
+      throw new JournalPublicationError(
+        "The room's turn journal no longer stands behind this decline; it is refused rather than run unjournaled. Stop the runtime, restore the journal, and start again.",
+        "closed",
+      );
+    }
 
     const tracked = (async (): Promise<T> => {
       const result = await run();

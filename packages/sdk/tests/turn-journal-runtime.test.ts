@@ -1419,9 +1419,9 @@ describe("the recovery resource budget", () => {
   it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async () => {
     const journalDir = tmpRoot();
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // Measured in a child process: its own handle table lists only its open file
-    // handles, on every platform, and a start's recovery is what would open one
-    // journal per standing room.
+    // Measured in a child process: the platform's file-descriptor enumeration
+    // lists only the child's own open files, and a start's recovery is what
+    // would open one journal per standing room.
     const script = path.join(__dirname, "journalFdBudgetChild.ts");
     const child = spawn(process.execPath, ["--import", "tsx", script, journalDir, "300"], {
       cwd: path.join(__dirname, ".."),
@@ -1437,15 +1437,38 @@ describe("the recovery resource budget", () => {
       err += String(chunk);
     });
     const code = await new Promise<number | null>((resolve) => child.once("exit", (exit) => resolve(exit)));
+    if (code === 3) {
+      throw new Error(`the descriptor gauge could not prove itself sensitive on this platform: ${out}${err}`);
+    }
     if (code !== 0) {
       throw new Error(`the budget child failed (exit ${code}): ${err || out}`);
     }
-    const report = JSON.parse(out.trim().split("\n").pop() ?? "{}") as { rooms: number; baseline: number; peak: number; after: number };
+    const report = JSON.parse(out.trim().split("\n").pop() ?? "{}") as {
+      rooms: number;
+      supported: boolean;
+      control?: { seen: number; leaked: number; before: number; withScratch: number; afterClose: number };
+      baseline?: number;
+      peak?: number;
+      after?: number;
+    };
     expect(report.rooms).toBe(300);
+    if (!report.supported || report.control === undefined || report.baseline === undefined || report.peak === undefined || report.after === undefined) {
+      // No file-descriptor enumeration stands on this platform (Windows): the
+      // budget proof's measurement does not reach it. Recorded as a gap.
+      console.warn(`the budget proof's descriptor gauge is unavailable on ${process.platform}; the recovery budget is unmeasured there`);
+      return;
+    }
+    // The enumeration showed the three scratch files the child opened, and
+    // showed them no more once closed: without that positive control its
+    // numbers are blind, and the bound below proves nothing.
+    expect(report.control.seen).toBe(3);
+    expect(report.control.leaked).toBe(0);
     // Recovering 300 standing rooms must not open 300 journals at once: the
     // descriptors a start adds stay bounded by its recovery slots, not by the
-    // number of rooms it recovers.
+    // number of rooms it recovers. The enumeration's own few entries and a
+    // handful of churn on either side do not touch a bound an unbounded
+    // recovery misses by hundreds.
     expect(report.peak - report.baseline).toBeLessThan(64);
-    expect(report.after - report.baseline).toBeLessThan(64);
+    expect(Math.abs(report.after - report.baseline)).toBeLessThanOrEqual(8);
   }, 120_000);
 });
