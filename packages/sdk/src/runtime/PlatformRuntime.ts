@@ -34,6 +34,7 @@ import { untilStopped } from "../core/signals";
 import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 import { journalingTools } from "./journal/journalTools";
+import { runTurnInboundScope } from "./journal/turnScope";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import { bestEffort, GenerationClosedError, roomFileName, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
@@ -75,6 +76,9 @@ export interface PlatformRuntimeOptions {
 /** A turn's claim and acknowledgements: a failed mark is logged, never the turn's failure. */
 const TURN_MARK = { bestEffort: true } as const;
 
+/** How many room journals a start's recovery opens at once; the rest queue. */
+const RECOVERY_SLOTS = 8;
+
 /**
  * A turn's message as settling sees it: Band holds and settles it (`settles`),
  * or the runtime made it itself (`synthetic`) and only the room holds it.
@@ -96,6 +100,14 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly journals?: TurnJournal;
   /** The start in flight's journal generation: its rooms, the ownership it holds, and the publications it admitted. */
   private generation?: JournalGeneration;
+  /**
+   * The room admissions recovering a start open their journals at a bounded
+   * pace: a platform admitting hundreds of rooms at once would otherwise open
+   * hundreds of journal files in the same instant, and a start's recovery is
+   * measured in descriptors, not just in outcomes.
+   */
+  private recoverySlots = RECOVERY_SLOTS;
+  private readonly recoveryQueue: Array<() => void> = [];
   /** Each room's in-flight inbound message, if any: the publication the room's replies settle under. */
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
@@ -564,8 +576,8 @@ export class PlatformRuntime implements AsyncDisposable {
 
   /**
    * The room's execution context: the user's factory, or the default, run over
-   * the start generation's publication engine. Each turn's tools bind to that
-   * turn's inbound via `ExecutionContext.toolsForTurn`, so a reply settles
+   * the start generation's publication engine. Each turn runs on the tools the
+   * preprocessor gave it, inside the turn's inbound scope: a reply settles
    * durably under the message it answers.
    */
   private contextWithJournal(roomId: string, defaults: ExecutionContextOptions): ExecutionContext {
@@ -989,12 +1001,15 @@ export class PlatformRuntime implements AsyncDisposable {
           return await this.settleUnstartedTurn(context, input, message, stopModeOf(stopped) ?? "stop", false, undefined);
         }
         // A configured journal that will not open fails the turn before its
-        // adapter runs: nothing is delivered unjournaled. The turn never started,
-        // so its end is not recorded; the message settles failed, and the runtime
-        // keeps serving the rooms whose journals stand.
+        // adapter runs: nothing is delivered unjournaled. The turn never
+        // started, so its end is not recorded and what preparing it consumed
+        // is given back — the next turn is prepared as this one was, and a
+        // session's first turn still bootstraps. The message settles failed,
+        // and the runtime keeps serving the rooms whose journals stand.
         const reason = error instanceof Error ? error.message : String(error);
         const label = `The room's turn journal will not open, so the turn failed rather than answer unjournaled: ${reason}`;
         this.events.emit({ type: "turn.failed", roomId, messageId, error: label });
+        context.returnTurnPreparation(input);
         if (message.settles) {
           await this.link.markFailed(roomId, messageId, label, TURN_MARK);
         }
@@ -1048,11 +1063,12 @@ export class PlatformRuntime implements AsyncDisposable {
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
-        // The turn's own tools view: a reply settles under this turn's inbound (a
-        // synthetic turn settles under nothing), even when work the turn hands
-        // off outlives it — never under whatever the room is turning to next.
-        const turnTools = context.toolsForTurn(message.settles ? messageId : undefined);
-        const cycled = lease ? bindWorkingCycle(turnTools, lease) : turnTools;
+        // The turn's tools, as the host composed them: the preprocessor's
+        // composition is not replaced. A reply settles under this turn's
+        // inbound through the turn's scope — one the turn's work keeps when it
+        // is handed off and outlives the turn — never under whatever the room
+        // is turning to next.
+        const cycled = lease ? bindWorkingCycle(input.tools, lease) : input.tools;
         // The turn's own side of the runtime's publications: a reply the turn
         // lost is refused at its call, and a delivery-unknown fences this
         // turn's closing text, never a successor's.
@@ -1063,14 +1079,16 @@ export class PlatformRuntime implements AsyncDisposable {
         const tools = revokedOnStop(delivering, stopped);
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
         context.setPublicationStop(stopped);
-        const turn = adapter.onEvent({
-          ...input,
-          tools,
-          holdRoomUntil: (ended) => {
-            detached = true;
-            holdRoomUntil(ended);
-          },
-        });
+        const turn = runTurnInboundScope(message.settles ? messageId : undefined, () =>
+          adapter.onEvent({
+            ...input,
+            tools,
+            holdRoomUntil: (ended) => {
+              detached = true;
+              holdRoomUntil(ended);
+            },
+          }),
+        );
         const cut = await untilStopped(
           turn,
           stopped,
@@ -1281,13 +1299,29 @@ export class PlatformRuntime implements AsyncDisposable {
       },
     );
     if (!(await stands)) return;
-    const journal = await generation.room(roomId);
+    await this.withRecoverySlot(async () => {
+      const journal = await generation.room(roomId);
+      try {
+        await this.announceUnresolvedPublications(journal, roomId);
+      } finally {
+        // An idle room holds no file open: the handle is released once its
+        // publications stand reported, and a turn running in the room reopens it.
+        await generation.release(roomId).catch(() => undefined);
+      }
+    });
+  }
+
+  /** Runs `work` with at most {@link RECOVERY_SLOTS} room recoveries open at once. */
+  private async withRecoverySlot<T>(work: () => Promise<T>): Promise<T> {
+    if (this.recoverySlots <= 0) {
+      await new Promise<void>((resolve) => this.recoveryQueue.push(resolve));
+    }
+    this.recoverySlots -= 1;
     try {
-      await this.announceUnresolvedPublications(journal, roomId);
+      return await work();
     } finally {
-      // An idle room holds no file open: the handle is released once its
-      // publications stand reported, and a turn running in the room reopens it.
-      await generation.release(roomId).catch(() => undefined);
+      this.recoverySlots += 1;
+      this.recoveryQueue.shift()?.();
     }
   }
 

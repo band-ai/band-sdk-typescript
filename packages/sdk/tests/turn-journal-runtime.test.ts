@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -9,6 +10,8 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import { isSyntheticTurn } from "../src/contracts/protocols";
+import type { Preprocessor, PreprocessorContext } from "../src/contracts/protocols";
+import type { PlatformEvent } from "../src/platform/events";
 import { runUntilReleased } from "../src/adapters/shared/runUntilReleased";
 import type { AgentEvent } from "../src/contracts/events";
 import { createDeferred } from "../src/core/deferred";
@@ -16,7 +19,7 @@ import { ValidationError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
-import { PlatformRuntime } from "../src/runtime";
+import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
@@ -47,9 +50,9 @@ async function startProcess(
   platform: BandPlatform,
   journalDir: string | undefined,
   handler: Handler,
-  options: { sessionConfig?: Omit<SessionConfig, "journalDir">; contactConfig?: ContactEventConfig; withIdentity?: boolean } = {},
+  options: { sessionConfig?: Omit<SessionConfig, "journalDir">; contactConfig?: ContactEventConfig; withIdentity?: boolean; preprocessor?: Preprocessor<PlatformEvent> } = {},
 ) {
-  const { sessionConfig = {}, contactConfig, withIdentity = true } = options;
+  const { sessionConfig = {}, contactConfig, withIdentity = true, preprocessor } = options;
   const handled: string[] = [];
   const events = new RecordLog<AgentEvent>();
   const runtime = new PlatformRuntime({
@@ -57,6 +60,7 @@ async function startProcess(
     apiKey: AGENT_API_KEY,
     linkOptions: platform.link,
     agentConfig: { autoSubscribeExistingRooms: true },
+    ...(preprocessor !== undefined ? { preprocessor } : {}),
     sessionConfig:
       journalDir === undefined
         ? sessionConfig
@@ -948,6 +952,71 @@ describe("a turn journal that fails", () => {
     expect(handled).toEqual([]);
   });
 
+  it("gives a blocked first turn's preparation back, so the room's next dispatch still bootstraps the session", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    // The room's journal path is taken by a directory: the first turn fails before
+    // its adapter runs, and would leave the session unbootstrapped were that
+    // turn's preparation not given back.
+    await mkdir(journalFile(journalDir), { recursive: true });
+    const bootstraps: boolean[] = [];
+    await startProcess(platform, journalDir, async (args) => {
+      bootstraps.push(args.isSessionBootstrap);
+      await args.tools.sendMessage("answered", ["@owner"]);
+    });
+
+    const blocked = await room.say(OWNER, `${MENTION} one`);
+    expect(await room.outcome(blocked)).toBe("failed");
+    expect(bootstraps).toEqual([]);
+    // The operator unblocks the room's journal; the room's next turn is the
+    // session's first turn.
+    await rm(journalFile(journalDir), { recursive: true });
+    const served = await room.say(OWNER, `${MENTION} two`);
+    expect(await room.outcome(served)).toBe("processed");
+    // The preparation the blocked turn consumed was returned: the first real
+    // dispatch hydrates the session, instead of running as an ordinary turn.
+    expect(bootstraps).toEqual([true]);
+  });
+
+  it("runs each turn on the tools the host's preprocessor composed, and a reply through them settles under the turn, with and without the journal", async () => {
+    for (const journalDir of [tmpRoot(), undefined]) {
+      const platform = BandPlatform.host([person(OWNER)]);
+      const room = await platform.room(ROOM);
+      const seen: string[] = [];
+      const preprocessor = new class extends DefaultPreprocessor {
+        public async process(context: PreprocessorContext, event: PlatformEvent, agentId: string) {
+          const input = await super.process(context, event, agentId);
+          if (input === null) return null;
+          const base = input.tools;
+          input.tools = {
+            ...base,
+            sendMessage: (content: string, mentions?: Parameters<typeof base.sendMessage>[1]) => {
+              seen.push(content);
+              return base.sendMessage(`host: ${content}`, mentions);
+            },
+          };
+          return input;
+        }
+      };
+      const { handled } = await startProcess(platform, journalDir, async (args) => {
+        await args.tools.sendMessage("answered", ["@owner"]);
+      }, { preprocessor });
+
+      const inbound = await room.say(OWNER, `${MENTION} hello`);
+      expect(await room.outcome(inbound)).toBe("processed");
+      expect(handled).toEqual([inbound]);
+      // The host's composition is what ran: its transformation stands in the
+      // room, and a reply made through it settles under the turn it answers —
+      // with the journal, durably; without one, as the runtime always has.
+      expect(seen).toEqual(["answered"]);
+      expect(room.messages.map((posted) => posted.content)).toEqual(["host: answered"]);
+      if (journalDir !== undefined) {
+        expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done"]);
+      }
+    }
+  });
+
   it("refuses a reply whose room's journal will not take its repeat report", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
@@ -1325,4 +1394,38 @@ describe("a reply's origin across turns", () => {
     expect(lines.filter((line) => line.t === "reply.intent").map((line) => String(line.messageId))).toEqual([one]);
     expect(lines.filter((line) => line.t === "reply.settled").map((line) => String(line.messageId))).toEqual([one]);
   });
+});
+
+describe("the recovery resource budget", () => {
+  it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async () => {
+    const journalDir = tmpRoot();
+    onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
+    // Measured in a child process: /dev/fd lists only that process's descriptors,
+    // and a start's recovery is what would open one journal per standing room.
+    const script = path.join(__dirname, "journalFdBudgetChild.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", script, journalDir, "300"], {
+      cwd: path.join(__dirname, ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      out += String(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      err += String(chunk);
+    });
+    const code = await new Promise<number | null>((resolve) => child.once("exit", (exit) => resolve(exit)));
+    if (code !== 0) {
+      throw new Error(`the budget child failed (exit ${code}): ${err || out}`);
+    }
+    const report = JSON.parse(out.trim().split("\n").pop() ?? "{}") as { rooms: number; baseline: number; peak: number; after: number };
+    expect(report.rooms).toBe(300);
+    // Recovering 300 standing rooms must not open 300 journals at once: the
+    // descriptors a start adds stay bounded by its recovery slots, not by the
+    // number of rooms it recovers.
+    expect(report.peak - report.baseline).toBeLessThan(64);
+    expect(report.after - report.baseline).toBeLessThan(64);
+  }, 120_000);
 });

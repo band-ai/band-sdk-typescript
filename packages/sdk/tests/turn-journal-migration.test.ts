@@ -1,6 +1,6 @@
 import { appendFile, readFile, readdir, rm, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,9 +9,12 @@ import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/jo
 import { migrateTurnJournals, type MigrationBinding } from "../src/runtime/journal/migration";
 import { TurnJournal, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/TurnJournal";
 import { tmpRoot } from "./testUtils";
-import { AGENT, IDENTITY, ROOM, legacyRoomFile, recordTypes, roomFile, seedLegacyFile } from "./turnJournalSupport";
+import { AGENT, IDENTITY, ROOM, generationIn, legacyRoomFile, recordTypes, roomFile, seedLegacyFile } from "./turnJournalSupport";
 
 const V1_ROOM_FILE = legacyRoomFile(ROOM);
+
+/** The name a v1 compaction crash left the output of `V1_ROOM_FILE` under. */
+const V1_REMNANT_FILE = `${V1_ROOM_FILE}.${randomUUID()}.compacting`;
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -27,15 +30,22 @@ async function seedAgent(
   const bindings: MigrationBinding[] = [];
   for (const [fileName, lines] of Object.entries(legacy)) {
     const source = await seedLegacyFile(dir, AGENT, fileName, lines);
+    const room = rooms[fileName] ?? (fileName.endsWith(".jsonl") ? decodeURIComponent(fileName.slice(0, -6)) : fileName);
     bindings.push({
       sourceFile: fileName,
-      roomId: rooms[fileName] ?? (fileName.endsWith(".jsonl") ? decodeURIComponent(fileName.slice(0, -6)) : fileName),
+      roomId: room,
       sourceSha256: sha256(await readFile(source, "utf8")),
       platformIdentity: identities[fileName] ?? IDENTITY,
       provenance: `operator-attested:${fileName}`,
     });
   }
   return { bindings };
+}
+
+/** The room a legacy file's name encodes, including a v1 compaction remnant's. */
+function roomOfLegacyFile(fileName: string): string {
+  const base = fileName.replace(/\.jsonl\..+\.compacting$/, ".jsonl");
+  return decodeURIComponent(base.slice(0, -".jsonl".length));
 }
 
 describe("migrateTurnJournals preview", () => {
@@ -96,9 +106,16 @@ describe("migrateTurnJournals apply", () => {
     const manifest = JSON.parse(await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8"));
     expect(manifest.state).toBe("committed");
     expect(manifest.bindings).toHaveLength(1);
+    // The manifest records the import hash-bound: the staged file and its settlements.
+    expect(manifest.bindings[0]).toMatchObject({
+      sourceFile: V1_ROOM_FILE,
+      stagesFrom: V1_ROOM_FILE,
+      stagingSha256: sha256(legacy.join("\n") + "\n"),
+      importedFacts: { publicationIds: [intent.publicationId], turnDone: ["b"] },
+    });
 
     // A start over the committed migration runs, and the staged file is its authority.
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("b")).toBe(true);
     expect(await room.recoverUnresolved()).toEqual([
@@ -182,13 +199,40 @@ describe("migrateTurnJournals apply", () => {
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: conflicting })).rejects.toBeInstanceOf(JournalFileError);
   });
 
+  it("commits a migration only once when two applies race for it: the other contends, or finds it committed", async () => {
+    const dir = tmpRoot();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })] });
+    // Two applies for the same journal race: the ownership lock admits one at a
+    // time, and a committed migration is not committed a second time.
+    const results = await Promise.allSettled([
+      migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }),
+      migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }),
+    ]);
+    const outcomes = results.map((result) => (result.status === "fulfilled" ? result.value.mode : result.reason instanceof Error ? `error: ${result.reason.message.split("\n")[0]}` : "unknown"));
+    const committed = results.filter((result) => result.status === "fulfilled" && result.value.mode === "committed").length;
+    // Exactly one apply commits; the other contends for the ownership it never gets,
+    // or acquires it after the commit and reports the migration already made.
+    expect(committed).toBe(1);
+    const other = results.find((result) => !(result.status === "fulfilled" && result.value.mode === "committed"));
+    if (other !== undefined) {
+      expect(
+        other.status === "fulfilled" ? other.value.mode === "already-committed" : other.reason instanceof JournalFileError || other.reason instanceof Error,
+        `the losing apply must fail closed or find the commit: ${JSON.stringify(outcomes)}`,
+      ).toBe(true);
+    }
+    // The journal stands on the one commit: its records are the room's authority.
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("m")).toBe(true);
+  });
+
   it("keeps records appended after the commit on a reapply, and reports nothing to do", async () => {
     const dir = tmpRoot();
     const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })] });
     await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
 
     // A process answers one more turn after the migration; its record stands on the journal.
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const { generation } = await generationIn(dir);
     await (await generation.room(ROOM)).turnDone("later");
     const withLater = await readFile(roomFile(dir), "utf8");
     await generation.close();
@@ -231,14 +275,31 @@ describe("migration phases survive interruption", () => {
   it("commits a prepared migration a crash left with its destination staged, keeping what stands", async () => {
     const dir = tmpRoot();
     const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
-    const sourceSha256 = createHash("sha256").update(await readFile(source, "utf8")).digest("hex");
+    const sourceSha256 = sha256(await readFile(source, "utf8"));
     const agentDir = agentJournalDir(dir, AGENT);
     const manifestDir = path.join(agentDir, "migration");
     await mkdir(manifestDir, { recursive: true });
-    // The prepared manifest, exactly as the migration would have written it before staging.
+    // The prepared manifest, exactly as the migration would have written it before staging:
+    // the import recorded hash-bound, so it stands as authority's record of itself.
     await writeFile(
       path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({ v: 1, state: "prepared", createdAt: 1, bindings: [{ sourceFile: V1_ROOM_FILE, roomId: ROOM, sourceSha256, platformIdentity: IDENTITY, provenance: "crash" }] }, null, 2)}\n`,
+      `${JSON.stringify({
+        v: 2,
+        state: "prepared",
+        createdAt: 1,
+        bindings: [
+          {
+            sourceFile: V1_ROOM_FILE,
+            roomId: ROOM,
+            sourceSha256,
+            platformIdentity: IDENTITY,
+            provenance: "crash",
+            stagesFrom: V1_ROOM_FILE,
+            stagingSha256: sourceSha256,
+            importedFacts: { publicationIds: [], turnDone: ["old"] },
+          },
+        ],
+      }, null, 2)}\n`,
     );
     // The destination already stands, as a crash after staging but before committing leaves it —
     // with a record an earlier process settled on it.
@@ -247,7 +308,7 @@ describe("migration phases survive interruption", () => {
     const stood = `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n${JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })}\n${JSON.stringify({ t: "reply.intent", messageId: "s", publicationId: "p", at: 2 })}\n${JSON.stringify({ t: "reply.settled", messageId: "s", publicationId: "p", at: 3 })}\n`;
     await writeFile(staged, stood);
 
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("old")).toBe(true);
     // The re-staged nothing: the record the earlier process settled is still the authority's.
@@ -267,6 +328,7 @@ describe("migration phases survive interruption", () => {
     await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "corrupt" });
   });
 });
+
 describe("migration identity and imported authority", () => {
   it("stages a noncanonical identity spelling under the canonical layout, bound canonically", async () => {
     const dir = tmpRoot();
@@ -286,28 +348,33 @@ describe("migration identity and imported authority", () => {
     // bound to the canonical spelling — not to the spelling the operator typed.
     const staged = roomFile(dir);
     expect(JSON.parse((await readFile(staged, "utf8")).split("\n")[0])).toMatchObject({ t: "header", platformIdentity: IDENTITY });
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
-  it("stages a non-URL identity label as given, and the runtime serves it as given", async () => {
-    const dir = tmpRoot();
+  it("refuses identities the runtime itself will not serve: a label, a credential URL, a query-token URL", async () => {
     const legacy = [
       JSON.stringify({ t: "reply.intent", messageId: "a", at: 1 }),
       JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
     ];
-    const label = "onprem:cluster-7";
-    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy }, { [V1_ROOM_FILE]: label });
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
-    expect(result.mode).toBe("committed");
-    if (result.mode !== "committed") return;
-    expect(result.sources[0].platformIdentity).toBe(label);
-
-    const staged = roomFile(dir, label);
-    expect(JSON.parse((await readFile(staged, "utf8")).split("\n")[0])).toMatchObject({ t: "header", platformIdentity: label });
-    const generation = await new TurnJournal(dir, AGENT).activate(label);
-    expect((await generation.room(ROOM)).answered("b")).toBe(true);
+    for (const identity of ["onprem:cluster-7", "https://user:token@band.example", "https://band.example?token=abc"]) {
+      const dir = tmpRoot();
+      const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+      const binding: MigrationBinding = {
+        sourceFile: V1_ROOM_FILE,
+        roomId: ROOM,
+        sourceSha256: sha256(await readFile(source, "utf8")),
+        platformIdentity: identity,
+        provenance: "operator-attested",
+      };
+      // Staging a journal under an identity the runtime rejects would leave records it
+      // can never read: the binding is refused, and nothing is written.
+      await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] }))
+        .rejects.toThrow(`not a strict canonical HTTP(S) URL`);
+      expect(await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8").catch(() => null)).toBeNull();
+      expect(await readFile(roomFile(dir), "utf8").catch(() => null)).toBeNull();
+    }
   });
 
   it("refuses a destination that stands by its header alone, with the imported settlements missing", async () => {
@@ -329,22 +396,71 @@ describe("migration identity and imported authority", () => {
     expect(manifest === null ? null : JSON.parse(manifest).state).toBe("prepared");
   });
 
-  it("keeps a destination that holds the imported settlements and receipts recorded after the import", async () => {
-    const dir = tmpRoot();
+  it("refuses a header-only destination whether or not the preserved source still stands", async () => {
+    const headerOnly = `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n`;
     const legacy = [
       JSON.stringify({ t: "reply.intent", messageId: "a", at: 1 }),
-      JSON.stringify({ t: "turn.done", messageId: "a", at: 2 }),
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
     ];
-    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+
+    // The destination is replaced by its header: the imported settlements are gone, and the
+    // import the migration recorded — hash-bound in its manifest — stands whether the
+    // preserved source is still there or not.
+    for (const sourceFate of ["kept", "removed", "emptied"] as const) {
+      const dir = tmpRoot();
+      const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+      await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+      const destination = roomFile(dir);
+      const source = path.join(legacyAgentDir(dir, AGENT), V1_ROOM_FILE);
+      await writeFile(destination, headerOnly);
+      if (sourceFate === "removed") await rm(source);
+      if (sourceFate === "emptied") await writeFile(source, "");
+
+      // The destination cannot activate: it holds the import's header but not its settlements.
+      await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "corrupt" });
+      if (sourceFate === "kept") {
+        // A reapply checks the destination against the import it recorded.
+        await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
+          .rejects.toThrow("stands by its header alone");
+      } else {
+        // With the source gone or changed, the binding itself can no longer be checked,
+        // and that too is refused — never a silent downgrade of the destination's authority.
+        await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
+          .rejects.toBeInstanceOf(JournalFileError);
+      }
+    }
+  });
+
+  it("refuses a destination a runtime would refuse: a settlement for a reply it never began", async () => {
+    const dir = tmpRoot();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })] });
+    await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+
+    // A destination that records a settlement whose intent it never holds: the
+    // journal's own state machine rejects it, so the migration's must too.
+    const destination = roomFile(dir);
+    await writeFile(
+      destination,
+      `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n` +
+        `${JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })}\n` +
+        `${JSON.stringify({ t: "reply.settled", messageId: "m2", publicationId: "no-intent", at: 2 })}\n`,
+    );
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings })).rejects.toMatchObject({ kind: "corrupt" });
+  });
+
+  it("keeps a destination that holds the imported settlements and a later reply's records", async () => {
+    const dir = tmpRoot();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "a", at: 1 })] });
     await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
 
     const destination = roomFile(dir);
     const before = await readFile(destination, "utf8");
-    const later = `${JSON.stringify({ t: "reply.settled", messageId: "a", publicationId: "later-receipt", at: 3 })}\n`;
+    // A later process answers another turn: its reply's intent and settlement stand on the journal.
+    const later = `${JSON.stringify({ t: "reply.intent", messageId: "b", publicationId: "later-reply", at: 3 })}\n${JSON.stringify({ t: "reply.settled", messageId: "b", publicationId: "later-reply", at: 4 })}\n`;
     await appendFile(destination, later);
 
     // A reapply keeps the destination byte for byte: the imported settlements stand, and the
-    // receipt an earlier process recorded after the import is not restaged away.
+    // records an earlier process wrote after the import are not restaged away.
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
     expect(result.mode).toBe("already-committed");
     expect(await readFile(destination, "utf8")).toBe(before + later);
@@ -352,7 +468,7 @@ describe("migration identity and imported authority", () => {
 });
 
 describe("v1 compaction remnants", () => {
-  it("treats an exact-duplicate .compacting as the journal it is, binding it without a second staging", async () => {
+  it("treats a remnant that stands byte-identical to its journal as the journal it is, binding without a second staging", async () => {
     const dir = tmpRoot();
     const legacy = [
       JSON.stringify({ t: "reply.intent", messageId: "a", at: 1 }),
@@ -360,7 +476,7 @@ describe("v1 compaction remnants", () => {
     ];
     const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
     // The compaction wrote its output and died before the rename: the two files stand byte-identical.
-    await writeFile(path.join(path.dirname(source), V1_ROOM_FILE + ".compacting"), await readFile(source, "utf8"));
+    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), await readFile(source, "utf8"));
     const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
 
     // The duplicate compaction output is not a separate authority: the preview
@@ -372,51 +488,137 @@ describe("v1 compaction remnants", () => {
 
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
     expect(result.mode).toBe("committed");
-    // A start over the committed migration runs: the duplicate stands bound, and no
-    // operator is asked to delete it.
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    expect((await generation.room(ROOM)).answered("b")).toBe(true);
+    // A start over the committed migration runs: the remnant stands bound with its
+    // journal, and no operator is asked to delete it.
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
   });
 
-  it("binds a lone .compacting remnant to the room its name encodes", async () => {
-    const dir = tmpRoot();
-    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
-    const fileName = V1_ROOM_FILE + ".compacting";
-    const source = await seedLegacyFile(dir, AGENT, fileName, legacy);
-    const binding: MigrationBinding = {
-      sourceFile: fileName,
-      roomId: ROOM,
-      sourceSha256: sha256(await readFile(source, "utf8")),
-      platformIdentity: IDENTITY,
-      provenance: "operator-attested",
-    };
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] });
-    expect(result.mode).toBe("committed");
-    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    expect((await generation.room(ROOM)).answered("b")).toBe(true);
-  });
-
-  it("refuses a .compacting that is not an exact duplicate of its journal, preserving both", async () => {
+  it("refuses to stage a remnant's journal when only the remnant is attested", async () => {
     const dir = tmpRoot();
     const legacy = [
       JSON.stringify({ t: "reply.intent", messageId: "a", at: 1 }),
       JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
     ];
     const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
-    // A compaction interrupted mid-write: its output is not the journal it names.
-    const compacting = path.join(path.dirname(source), V1_ROOM_FILE + ".compacting");
-    await writeFile(compacting, legacy.join("\n") + "\n" + JSON.stringify({ t: "turn.done", messageId: "extra", at: 3 }) + "\n");
+    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), await readFile(source, "utf8"));
+    // The operator attests the copy they found; the journal the copy was staged from stands
+    // unattested. Staging from an unattested file would write authority from what the
+    // operator has not checked, so the migration refuses and names the journal.
+    const remnantSource = path.join(path.dirname(source), V1_REMNANT_FILE);
     const binding: MigrationBinding = {
-      sourceFile: V1_ROOM_FILE + ".compacting",
-      roomId: ROOM,
-      sourceSha256: sha256(await readFile(compacting, "utf8")),
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(await readFile(remnantSource, "utf8")),
       platformIdentity: IDENTITY,
       provenance: "operator-attested",
     };
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] }))
-      .rejects.toThrow("not an exact duplicate");
-    // Both files stand untouched: the migration preserves what it will not choose between.
+      .rejects.toThrow(`${V1_ROOM_FILE}`);
+    // The preview shows what is still unbound.
+    const preview = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, bindings: [binding] });
+    if (preview.mode === "preview") expect(preview.unbound).toEqual([V1_ROOM_FILE]);
+  });
+
+  it("binds both a journal and its remnant when they attest the same provenance, staging the room once", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), await readFile(source, "utf8"));
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy }, {}, { [V1_ROOM_FILE]: ROOM });
+    const remnant: MigrationBinding = {
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(await readFile(path.join(path.dirname(source), V1_REMNANT_FILE), "utf8")),
+      platformIdentity: IDENTITY,
+      provenance: `operator-attested:${V1_ROOM_FILE}`,
+    };
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] });
+    expect(result.mode).toBe("committed");
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
+  });
+
+  it("refuses a journal and its remnant attested to different platforms", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), await readFile(source, "utf8"));
+    const other = IDENTITY.replace("band.example", "other.example");
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy }, { [V1_ROOM_FILE]: IDENTITY }, { [V1_ROOM_FILE]: ROOM });
+    const remnant: MigrationBinding = {
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(await readFile(path.join(path.dirname(source), V1_REMNANT_FILE), "utf8")),
+      platformIdentity: other,
+      provenance: "a different attestation",
+    };
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] })).rejects.toMatchObject({ kind: "corrupt" });
+  });
+
+  it("carries a remnant that differs from its journal with the journal: the journal's records are the room's authority", async () => {
+    const dir = tmpRoot();
+    const legacy = [
+      JSON.stringify({ t: "reply.intent", messageId: "a", at: 1 }),
+      JSON.stringify({ t: "turn.done", messageId: "b", at: 2 }),
+    ];
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
+    // A compaction that filtered records before it died: its output is not the journal's bytes.
+    const compacting = path.join(path.dirname(source), V1_REMNANT_FILE);
+    await writeFile(compacting, `${legacy[1]}\n`);
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+
+    // The journal keeps every record the copy holds, so the copy is covered by the
+    // journal's binding; both files stand untouched, and the room's authority is the journal's.
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    expect(result.mode).toBe("committed");
     expect(await readFile(source, "utf8")).toBe(legacy.join("\n") + "\n");
-    expect(await readFile(compacting, "utf8")).toContain("extra");
+    expect(await readFile(compacting, "utf8")).toBe(`${legacy[1]}\n`);
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
+  });
+
+  it("binds a remnant whose journal is gone as the room's authority in its own right", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const source = await seedLegacyFile(dir, AGENT, V1_REMNANT_FILE, legacy);
+    const binding: MigrationBinding = {
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(await readFile(source, "utf8")),
+      platformIdentity: IDENTITY,
+      provenance: "operator-attested",
+    };
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] });
+    expect(result.mode).toBe("committed");
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
+  });
+
+  it("refuses two journals gone for one room, each surviving as a remnant, to stand for it", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const first = await seedLegacyFile(dir, AGENT, V1_REMNANT_FILE, legacy);
+    const second = `${V1_ROOM_FILE}.${randomUUID()}.compacting`;
+    await seedLegacyFile(dir, AGENT, second, legacy);
+    const firstBinding: MigrationBinding = {
+      sourceFile: V1_REMNANT_FILE,
+      roomId: roomOfLegacyFile(V1_REMNANT_FILE),
+      sourceSha256: sha256(await readFile(first, "utf8")),
+      platformIdentity: IDENTITY,
+      provenance: "operator-attested",
+    };
+    const secondBinding: MigrationBinding = {
+      sourceFile: second,
+      roomId: roomOfLegacyFile(second),
+      sourceSha256: sha256(await readFile(path.join(legacyAgentDir(dir, AGENT), second), "utf8")),
+      platformIdentity: IDENTITY,
+      provenance: "operator-attested",
+    };
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [firstBinding, secondBinding] })).rejects.toMatchObject({ kind: "corrupt" });
   });
 });

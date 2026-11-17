@@ -410,7 +410,7 @@ describe("ownership and generations", () => {
     await mkdir(manifestDir, { recursive: true });
     await writeFile(
       path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({ v: 1, state: "prepared", createdAt: 1, bindings: [{ sourceFile: legacyRoomFile(ROOM), roomId: ROOM, sourceSha256, platformIdentity: IDENTITY, provenance: "crash" }] }, null, 2)}\n`,
+      `${JSON.stringify({ v: 2, state: "prepared", createdAt: 1, bindings: [{ sourceFile: legacyRoomFile(ROOM), roomId: ROOM, sourceSha256, platformIdentity: IDENTITY, provenance: "crash", stagesFrom: legacyRoomFile(ROOM), stagingSha256: sourceSha256, importedFacts: { publicationIds: [], turnDone: ["old"] } }] }, null, 2)}\n`,
     );
 
     const generation = await new TurnJournal(dir, otherAgent).activate(IDENTITY);

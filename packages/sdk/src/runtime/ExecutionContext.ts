@@ -37,8 +37,8 @@ export interface ExecutionContextOptions extends SessionConfig {
   publication?: PublicationEngine;
   /**
    * The room's in-flight inbound message, if any: a static default for the
-   * context's own tools on direct construction. The runtime never sets it —
-   * each turn's tools bind to that turn's inbound via `toolsForTurn` instead.
+   * context's own tools on direct construction. The runtime never sets it — a
+   * runtime turn settles under its inbound through the turn's scope instead.
    */
   inboundMessageId?: () => string | undefined;
   /** The room's current turn, if any: a reply it makes is refused once the turn is cut short. */
@@ -126,26 +126,6 @@ export class ExecutionContext {
   /** The turn the room is running, if any: its replies refuse to post once it is cut short. */
   public setPublicationStop(signal: AbortSignal | undefined): void {
     this.publicationStopSignal = signal;
-  }
-
-  /**
-   * This turn's view of the room's tools: a reply made through it settles under
-   * the turn's own inbound message, or under nothing when `inboundMessageId` is
-   * undefined (a synthetic turn answers no inbound). Work the turn hands to
-   * processing that outlives it keeps this view, so a late reply settles under
-   * the message it answers — never under whatever the room is turning to next.
-   */
-  public toolsForTurn(inboundMessageId: string | undefined): AdapterToolsProtocol {
-    return new AgentTools({
-      roomId: this.roomId,
-      rest: this.link.rest,
-      roster: this.roster,
-      capabilities: this.link.capabilities,
-      logger: this.logger,
-      publication: this.publication,
-      inboundMessageId: () => inboundMessageId,
-      publicationStop: () => this.publicationStopSignal,
-    }).getAdapterTools();
   }
 
   public getRetryTracker(): RetryTracker {

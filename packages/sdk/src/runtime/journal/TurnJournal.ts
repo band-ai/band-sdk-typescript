@@ -162,7 +162,7 @@ export class TurnJournal {
       // journal whose authority is lost, and an empty file must not open over
       // it and settle no one.
       if ((await migrationState(this.dir)) === "committed") {
-        await validateCommittedDestinations(this.dir, this.agentId, legacyAgentDir(this.root, this.agentId));
+        await validateCommittedDestinations(this.dir, this.agentId);
       }
       // A commit — resumed or already made — binds a set of files; anything the
       // agent's legacy directory holds beyond it might belong to any deployment,
@@ -172,7 +172,8 @@ export class TurnJournal {
         throw new JournalFileError(
           `This agent's journal holds legacy records (${legacy.join(", ")}) no offline migration has bound to a platform identity; ` +
             `they might belong to any deployment this agent ever pointed at. Run the exported migrateTurnJournals against them with their ` +
-            `provenance before starting; deleting them discards the journal's authority, so do not do that casually.`,
+            `provenance before starting; it preserves what it binds and removes nothing. A file start will not run over until it is bound, ` +
+            `or it is removed — removal discards whatever authority the file holds.`,
           "unbound-legacy",
           path.join(legacyAgentDir(this.root, this.agentId), legacy[0]),
         );

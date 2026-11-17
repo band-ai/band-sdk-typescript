@@ -1,6 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import { currentDelivery } from "../messageDelivery";
+import { currentTurnInbound } from "../journal/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";
@@ -214,12 +215,13 @@ export class AgentTools implements AgentToolsProtocol {
       );
     };
 
-    // A reply settles under the room's in-flight inbound message: its durable
-    // intent is written before the roster lookup, and its settlement before
-    // the result is returned. A notice (and a reply with nothing in flight)
-    // posts unrecorded, exactly as before the journal existed.
+    // A reply settles under the turn that makes it: the runtime runs the turn
+    // inside its inbound's scope, so whatever tool composition it ran on —
+    // the host's, wrapped or not — settles under the message it answers. A
+    // notice (and a reply with nothing in flight) posts unrecorded, exactly
+    // as before the journal existed.
     if (kind === "reply" && this.publication) {
-      const messageId = this.inboundMessageId?.();
+      const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
       if (messageId !== undefined) {
         return this.publication.publishReply(messageId, post, this.publicationStop?.());
       }
@@ -887,7 +889,7 @@ export class AgentTools implements AgentToolsProtocol {
         // call reports success, so the declined message can never be
         // redelivered. A decline the harness refuses records nothing.
         if (this.publication) {
-          const messageId = this.inboundMessageId?.();
+          const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
           if (messageId !== undefined) {
             return this.publication.publishDecline(messageId, declined);
           }
