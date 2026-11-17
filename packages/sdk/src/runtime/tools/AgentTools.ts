@@ -1,7 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import { currentDelivery } from "../messageDelivery";
-import { currentTurnInbound } from "../journal/turnScope";
+import { currentTurnInbound } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";

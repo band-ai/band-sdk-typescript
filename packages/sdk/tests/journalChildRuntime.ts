@@ -28,11 +28,13 @@
  *   remote-accept        its reply's post is accepted by the platform, then
  *                        the journal's settle record is held: the platform
  *                        has the reply, the journal stands on the intent.
- *   before-tool-return   makes one host tool call and hangs before any
- *                        publication: the journal stands on nothing.
+ *   before-tool-return   durably settles its reply, makes one host tool call
+ *                        on the flushed receipt, and hangs before the turn's
+ *                        end: the reply stands settled, the turn does not.
  *   reset                durably settles its reply, then, on the parent's
- *                        stop command, stops without being awaited and is
- *                        killed mid-stop.
+ *                        command, runs the room's real reset with its cancel
+ *                        budget; the un-cancellable turn detaches, and the
+ *                        process is killed with the detached turn still up.
  *   ab-mixed             durably settles reply A, then posts reply B to the
  *                        platform with its settle record held: A stands
  *                        settled, B stands admitted and unknown.
@@ -157,9 +159,13 @@ async function main(): Promise<void> {
   if (mode === "reset") {
     process.on("message", (message: { type?: string }) => {
       if (message?.type !== "stop") return;
-      // The parent's stop lands here; the child starts it and is killed mid-stop.
-      void runtime.stop();
-      report("stop-started");
+      // The parent's command lands here: the room's real reset, with its cancel
+      // budget. The turn's adapter cannot be cancelled within it, so the reset
+      // fails and detaches the turn — which keeps running when the process dies.
+      void (async () => {
+        const ok = await runtime.resetRoomSession(ROOM, 0);
+        report(ok ? "reset-done" : "reset-failed");
+      })();
     });
   }
 
@@ -194,6 +200,9 @@ async function main(): Promise<void> {
           break;
         }
         case "before-tool-return": {
+          // The reply's post and its receipt stand flushed before the tool call: the
+          // crash lands after the publication and the side effect, still mid-turn.
+          await args.tools.sendMessage("tool answer", ["@owner"]);
           await args.tools.executeToolCall("band_lookup_peers", {});
           report("tool-called");
           break;

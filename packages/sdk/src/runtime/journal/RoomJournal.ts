@@ -291,6 +291,20 @@ export class RoomJournal {
   }
 
   /**
+   * The publication the file records under `publicationId`, whichever outcome
+   * it stands in; `undefined` when the file admits no such publication. A
+   * read-only view for the offline checks that stand on the file's recorded
+   * authority (the migration's validation of what it imported).
+   */
+  public publication(publicationId: string): { messageId: string; outcome: PublicationOutcome } | undefined {
+    for (const [messageId, inbound] of this.inbounds) {
+      const record = inbound.publications.get(publicationId);
+      if (record !== undefined) return { messageId, outcome: record.outcome };
+    }
+    return undefined;
+  }
+
+  /**
    * The room's publications whose delivery stands unresolved — the file left
    * one admitted with no recorded outcome, or recorded it as unknown — that
    * this handle has not announced yet. Announces each, recording the

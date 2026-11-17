@@ -25,6 +25,7 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
+import { overrideTools } from "../core/overrideTools";
 import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
 import type { AgentEventListener, TurnStopMode } from "../contracts/events";
@@ -34,7 +35,7 @@ import { untilStopped } from "../core/signals";
 import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
 import { journalingTools } from "./journal/journalTools";
-import { runTurnInboundScope } from "./journal/turnScope";
+import { runTurnInboundScope } from "../core/turnScope";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import { bestEffort, GenerationClosedError, roomFileName, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
@@ -1076,7 +1077,16 @@ export class PlatformRuntime implements AsyncDisposable {
         const delivering = message.settles
           ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
           : journaled;
-        const tools = revokedOnStop(delivering, stopped);
+        // The turn's inbound also stands on the tools themselves: a call that
+        // reaches them through a long-lived transport — an MCP bridge a turn
+        // opened, a server that outlives its turns — runs in that transport's
+        // context, not the turn's scope, and settles under the turn that
+        // composed the tools it reached, never under the context the
+        // transport was created in.
+        const tools = overrideTools(
+          revokedOnStop(delivering, stopped),
+          { turnInbound: message.settles ? messageId : undefined },
+        );
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
         context.setPublicationStop(stopped);
         const turn = runTurnInboundScope(message.settles ? messageId : undefined, () =>

@@ -12,9 +12,12 @@
  * files, `thenvoi_room_id`/`thenvoiRoomId`, `thenvoiRestUrl` metadata), the
  * CHANGELOG, `.agents/`, and the migration fixtures under `tests/fixtures/migrations/`.
  *
- * The guard reads the git index (`git grep --cached`), not the working tree:
- * it judges what this branch stands to publish, identically on every checkout
- * of it, and a file the branch deletes is gone for it.
+ * The guard reads the working tree (`git grep` without `--cached`), not the
+ * git index: it judges the artifact as it stands in this checkout — what the
+ * build publishes from it — never a staged copy the index may still hold of
+ * an older one. A file the branch deletes is gone from the tree, and so from
+ * the guard; and a `git grep` failure (exit 2) fails the guard, it is not
+ * read as "no match".
  */
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
@@ -37,13 +40,17 @@ function scopedFiles(): string[] {
     .filter((f) => f && !EXCLUDE_PATH.test(f));
 }
 
-/** Every index line `pattern` stands in, outside the guard's own excluded paths. */
+/** Every working-tree line `pattern` stands in, outside the guard's own excluded paths. */
 function matchedLines(pattern: string): Array<{ file: string; line: number; text: string }> {
   let out: string;
   try {
-    out = execSync(`git grep --cached -I -n -e ${JSON.stringify(pattern)}`, { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch {
-    return []; // `git grep` exits 1 when nothing matches: that is the pass.
+    out = execSync(`git grep -I -n -e ${JSON.stringify(pattern)}`, { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch (error) {
+    // `git grep` exits 1 when nothing matches: that is the pass. Any other
+    // exit status is an error the guard must not launder into an empty result.
+    const status = (error as { status?: unknown })?.status;
+    if (status === 1) return [];
+    throw new Error(`git grep failed for pattern ${pattern} (exit ${String(status)}): ${error instanceof Error ? error.message : String(error)}`);
   }
   const hits: Array<{ file: string; line: number; text: string }> = [];
   for (const record of out.split("\n")) {

@@ -4,6 +4,7 @@ import type { AdapterToolsProtocol } from "../contracts/protocols";
 import { DeliveryUnknownError } from "../core/deliveryFailedError";
 import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
+import { runTurnInboundScope } from "../core/turnScope";
 import {
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
@@ -70,6 +71,22 @@ export interface BuildRegistrationsOptions {
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
 
+/**
+ * A tool call arriving through a long-lived transport runs in that
+ * transport's context, not the turn's scope: a bridge a turn opened keeps the
+ * scope it was opened in, and a server that outlives its turns keeps none.
+ * The call re-enters the scope of the turn its tools stand for — the turn
+ * that composed them, stamped on them — so a reply settles under that turn's
+ * inbound, and a call whose tools stand for no turn settles under nothing
+ * rather than under a stale scope.
+ */
+function inTurnScope(
+  tools: AdapterToolsProtocol,
+  work: () => Promise<McpToolResult>,
+): Promise<McpToolResult> {
+  return runTurnInboundScope(tools.turnInbound ?? undefined, work);
+}
+
 /** The argument a room-scoped tool takes to name the room it runs in. */
 export const ROOM_ID_ARG = "room_id";
 const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
@@ -110,7 +127,7 @@ export function registerTools(
  * call runs `execute` with that room's tools and its other arguments. A call
  * naming no known room is refused without running anything.
  */
-export function scopeToRoom<T>(
+export function scopeToRoom<T extends AdapterToolsProtocol>(
   tool: McpToolSchema,
   resolver: (roomId: string) => T | undefined,
   execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
@@ -137,7 +154,7 @@ function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputS
 }
 
 /** Runs `run` with the tools of the room `roomIdArg` names, refusing a call that names no known room. */
-async function inRoom<T>(
+async function inRoom<T extends AdapterToolsProtocol>(
   roomIdArg: unknown,
   resolver: (roomId: string) => T | undefined,
   run: (tools: T, roomId: string) => Promise<McpToolResult>,
@@ -150,7 +167,7 @@ async function inRoom<T>(
   if (!tools) {
     return errorResult(noToolContext(roomId));
   }
-  return run(tools, roomId);
+  return inTurnScope(tools, () => run(tools, roomId));
 }
 
 function noToolContext(roomId: string): string {
@@ -208,7 +225,7 @@ export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterTo
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
   return {
     ...tool,
-    execute: (args, _tools, signal) => tool.execute(args, tools, signal),
+    execute: (args, _tools, signal) => inTurnScope(tools, () => tool.execute(args, tools, signal)),
   };
 }
 
@@ -224,12 +241,13 @@ function whileCurrent(roomId: string, tools: AdapterToolsProtocol, resolver: Too
   });
 }
 
-// Symbol keys and `then` read as absent, so awaiting or inspecting the value
-// does not throw; any other use names the fix.
+// Symbol keys, `then` (await/inspect reads) and the scope's own `turnInbound`
+// marker read as absent, so the tools stay usable for shape checks; any other
+// use names the fix.
 function roomlessHostTools(toolName: string): AdapterToolsProtocol {
   return new Proxy({} as AdapterToolsProtocol, {
     get(_target, key) {
-      if (typeof key === "symbol" || key === "then") {
+      if (typeof key === "symbol" || key === "then" || key === "turnInbound") {
         return undefined;
       }
       throw new UnsupportedFeatureError(
@@ -304,6 +322,7 @@ async function executeToolCall(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<McpToolResult> {
+  return inTurnScope(tools, async () => {
   try {
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
@@ -323,6 +342,7 @@ async function executeToolCall(
     }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
+  });
 }
 
 /**

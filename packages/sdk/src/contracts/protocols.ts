@@ -317,11 +317,22 @@ export interface AdapterToolsProtocol
     Partial<RoomContextTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
+  /**
+   * The inbound message the tools were composed to answer, on the tools a
+   * turn runs on: the runtime stamps it with the turn's own inbound before
+   * the adapter sees the tools, so a call that reaches them through a
+   * long-lived transport — an MCP bridge a turn opened, a server that outlives
+   * its turns — still settles its replies under the turn that composed them,
+   * never under the context the transport was created in. Absent on tools
+   * constructed without a turn (a directly built room's tools), which settle
+   * under whatever they were told to.
+   */
+  readonly turnInbound?: string | undefined;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
-export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities" | "turnInbound">;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

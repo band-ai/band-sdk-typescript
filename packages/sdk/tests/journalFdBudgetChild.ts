@@ -2,15 +2,19 @@
  * The recovery resource budget, measured in a real child process by
  * `turn-journal-runtime.test.ts`: N standing rooms, each with a journal that
  * stands unresolved, one runtime that starts over all of them. The child
- * reports the process's open-descriptor count before, at the peak of the
+ * reports the process's open file-handle count before, at the peak of the
  * start's recovery, and after the stop that follows it. A recovery that opens
  * every room's journal at once grows the count with N; the budgeted recovery
  * holds a bounded handful of them open at once, whatever N is.
  *
+ * The count is the process's own active-handle table filtered to file
+ * handles — the portable reading /dev/fd gives on Linux — so the proof stands
+ * on macOS and Windows as well.
+ *
  * Run through tsx:
  *   node --import tsx tests/journalFdBudgetChild.ts <journalDir> <rooms>
  */
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
@@ -28,7 +32,11 @@ if (journalDir === undefined || roomsText === undefined) {
 const ROOMS = Number(roomsText);
 const IDENTITY = canonicalPlatformIdentity("https://band.example");
 
-const fds = (): number => readdirSync("/dev/fd").length;
+/** The file handles this process holds — the open journals among them — from its own handle table, on every platform. */
+const fds = (): number =>
+  (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles()
+    .filter((handle) => (handle as { constructor?: { name?: string } }).constructor?.name === "FileHandle")
+    .length;
 
 /** Each room's journal stands with one reply that never settled: start's recovery opens and announces it. */
 const roomDir = path.join(agentJournalDir(journalDir, AGENT_ID), identityDirectoryComponent(IDENTITY));

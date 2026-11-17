@@ -859,8 +859,22 @@ describe("the turn journal against a failed start and a stale generation", () =>
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    // Resource-sensitive proof: every post the drain makes must stand on the platform's
+    // live resources. A post that completed only after the link went down would have
+    // failed on a real platform, so its connectivity at completion is the ordering claim.
+    const postConnectivity: boolean[] = [];
+    const originalPost = platform.rest.createChatMessage.bind(platform.rest);
+    const postSpy = vi.spyOn(platform.rest, "createChatMessage").mockImplementation(async (roomId, message, options) => {
+      const result = await originalPost(roomId, message, options);
+      postConnectivity.push(platform.link.transport.isConnected());
+      return result;
+    });
+    onTestFinished(() => postSpy.mockRestore());
+    const adapterConnectivity: boolean[] = [];
     const { runtime } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("late", ["@owner"]);
+      // The adapter's own continuation after the receipt runs while the platform still stands.
+      adapterConnectivity.push(platform.link.transport.isConnected());
     });
     // The reply's post stands in flight; its acknowledgement and record are the drain's.
     const hold = platform.rest.messageHolds.hold((roomId, content) => content === "late");
@@ -878,6 +892,11 @@ describe("the turn journal against a failed start and a stale generation", () =>
     hold.release();
     expect(await stopping).toBe(false);
     expect(runtime.state.status).toBe("stopped");
+    // The drained post and the adapter's after-receipt work both completed on the live
+    // platform: the drain finished its publications before the link went down.
+    expect(postConnectivity).toEqual([true]);
+    expect(adapterConnectivity).toEqual([true]);
+    expect(platform.link.transport.isConnected()).toBe(false);
     // The settlement stands on disk before the ownership released, and the ownership is free now.
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.settled"]);
     // Its message's mark was cut short with the rooms: it stays left on the platform, and its reply's outcome stands on disk.
@@ -1400,8 +1419,9 @@ describe("the recovery resource budget", () => {
   it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async () => {
     const journalDir = tmpRoot();
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // Measured in a child process: /dev/fd lists only that process's descriptors,
-    // and a start's recovery is what would open one journal per standing room.
+    // Measured in a child process: its own handle table lists only its open file
+    // handles, on every platform, and a start's recovery is what would open one
+    // journal per standing room.
     const script = path.join(__dirname, "journalFdBudgetChild.ts");
     const child = spawn(process.execPath, ["--import", "tsx", script, journalDir, "300"], {
       cwd: path.join(__dirname, ".."),

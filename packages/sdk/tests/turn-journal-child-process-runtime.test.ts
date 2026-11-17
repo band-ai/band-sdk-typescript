@@ -45,7 +45,7 @@ const CHILD_BOUNDARY: Record<ChildMode, string> = {
   "intent-only": "post-held",
   "remote-accept": "accepted",
   "before-tool-return": "tool-called",
-  reset: "stop-started",
+  reset: "reset-failed",
   "ab-mixed": "mixed",
 };
 
@@ -309,31 +309,34 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(platform.rest.posted.entries[0].content).toBe("answer");
   }, 180_000);
 
-  it("reruns a turn a killed process started but never published: nothing it did stands in the journal", async () => {
+  it("keeps a killed process's settled reply settled when it dies after its tool call, without posting again or running a turn", async () => {
     const journalDir = tmpRoot();
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // The child makes one host tool call and is killed before it publishes anything.
+    // The child settles "tool answer" durably, makes its host tool call on the flushed
+    // receipt, and is killed with the turn still running: no turn end, no mark.
     const state = await driveChild(journalDir, "before-tool-return", stateFile);
-    expect(state.platform.posted).toEqual([]);
-    // A turn that published nothing left the journal with nothing to settle.
-    expect(await journalRecordsOf(journalDir)).toEqual([]);
+    expect(state.platform.posted.map((posted) => posted.content)).toEqual(["tool answer"]);
+    // The reply stands settled on the journal; the turn's end never landed in the child.
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
 
     const platform = rebuildPlatform(state);
     const successor = await startSuccessor(platform, journalDir, state.inboundId);
-    expect(successor.handled).toEqual([state.inboundId]);
-    expect(successor.posted).toHaveLength(1);
-    expect(successor.posted[0]).toMatch(/^successor reply to /);
+    // The settled reply stands: reposted nowhere, and no turn runs that would post it
+    // again — the repair is a mark, and the journal stands exactly as the child left it.
+    expect(successor.posted).toEqual(["tool answer"]);
+    expect(successor.handled).toEqual([]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
-    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done"]);
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
   }, 180_000);
 
-  it("keeps a killed process's settled reply authoritative when it is killed mid-stop", async () => {
+  it("keeps a killed process's settled reply authoritative when it dies while its room reset detaches the turn", async () => {
     const journalDir = tmpRoot();
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // The child durably settles "reset reply"; the parent's stop command lands on it and the
-    // child is killed mid-stop, its locks still in the OS's hands.
+    // The child durably settles "reset reply"; the parent's command runs the room's real
+    // reset, whose budget cannot cancel the running turn — the reset fails, the turn
+    // detaches, and the child is killed with the detached turn still running.
     const state = await driveChild(journalDir, "reset", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reset reply"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
@@ -341,7 +344,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     const platform = rebuildPlatform(state);
     const successor = await startSuccessor(platform, journalDir, state.inboundId);
     // The settled reply stands: the successor repairs the message without posting again or
-    // running a turn, and the kill mid-stop neither lost the reply nor kept the lock.
+    // running a turn; the failed reset and the kill neither lost the reply nor kept the lock.
     expect(successor.posted).toEqual(["reset reply"]);
     expect(successor.handled).toEqual([]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
@@ -364,6 +367,9 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     // not guessed away.
     expect(successor.posted).toEqual(["reply A", "reply B"]);
     expect(successor.handled).toEqual([]);
+    // No redelivery on the wire either: the platform's post log holds exactly the
+    // child's two posts — the successor re-posted neither the settled A nor the unknown B.
+    expect(platform.rest.posted.entries.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
     expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded").map((event) => event.type)).toEqual(["delivery.unrecorded"]);
   }, 180_000);
