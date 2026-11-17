@@ -255,6 +255,7 @@ describe("publications", () => {
     const reopened = await second.room(ROOM);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
+    await second.close();
   });
 
   it("announces an unknown publication once, on first open, and never again", async () => {
