@@ -253,6 +253,8 @@ export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = tru
         }
         return value === true;
       } catch {
+        // A fence that cannot be read claims nothing: no possible remote
+        // delivery is asserted for a turn whose unknown mark it cannot prove.
         return false;
       }
     });
@@ -264,11 +266,13 @@ export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = tru
         const value = relayFence() as unknown;
         if (value instanceof Promise) {
           value.catch(() => undefined);
-          return false;
+          return true;
         }
         return value === true;
       } catch {
-        return false;
+        // The relay stands blocked when its fence cannot be read: the
+        // closing text is never relayed on a turn it cannot clear.
+        return true;
       }
     });
   }

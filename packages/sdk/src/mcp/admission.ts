@@ -31,6 +31,8 @@ export interface Admission {
   keyed: boolean;
   /** The origin the bridge pinned for it, when one stood. */
   origin: AdmissionOrigin | undefined;
+  /** The call's turn fence stood: the turn it was admitted on is fenced against an unkeyed replacement. When it did not stand, the dispatch is refused rather than run unfenced. */
+  fenced: boolean;
 }
 
 const admissionStorage = new AsyncLocalStorage<Admission>();
@@ -146,12 +148,13 @@ public setProtocolVersion?: (version: string) => void;
     return this.inner.close();
   }
 
-  /**
-   * The admission for one inbound message: nothing for a message that is not a
-   * keyed tool call; otherwise, in one synchronous step, the origin is
+/**
+   * The admission for one inbound message: nothing for a message that is not
+   * a keyed tool call; otherwise, in one synchronous step, the origin is
    * resolved and pinned and the turn it stands on is fenced. A resolver that
-   * cannot prove an origin leaves the call admitted but originless: fenced on
-   * nothing, forwarded on.
+   * cannot prove an origin leaves the call admitted but originless; a fence
+   * that cannot be stood leaves the call admitted but unfenced — either way
+   * the dispatch is refused rather than run against a turn it did not fence.
    */
   private admit(message: JSONRPCMessage): Admission | undefined {
     if (!("method" in message) || message.method !== TOOLS_CALL) {
@@ -177,8 +180,8 @@ public setProtocolVersion?: (version: string) => void;
         origin = undefined;
       }
     }
-    fenceTurnForKeyedAdmission(origin?.tools);
-    return { keyed: true, origin };
+    const fenced = origin === undefined ? false : fenceTurnForKeyedAdmission(origin.tools);
+    return { keyed: true, origin, fenced };
   }
 
   public get innerTransport(): Transport {

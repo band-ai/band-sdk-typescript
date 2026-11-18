@@ -6,7 +6,6 @@ import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";
 import { OperationUnsupportedError, mentionInputsAsStrings } from "../journal/operations";
-import { KEYED_TURN_FENCE } from "../journal/journalTools";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
@@ -162,21 +161,6 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly publication: PublicationEngine | undefined;
   private readonly inboundMessageId: (() => string | undefined) | undefined;
   private readonly publicationStop: (() => AbortSignal | undefined) | undefined;
-  /**
-   * The stops of the turns that ran a canonical keyed call — a send or
-   * no-reply carrying an `operation_id`, whose acceptance the fence does not
-   * wait on: the field's presence commits the turn to keyed delivery before
-   * validation, so its closing text is never relayed as an unkeyed
-   * replacement. A turn with no stop standing fences nothing.
-   */
-  private readonly keyedTurnStops = new Set<AbortSignal>();
-  /**
-   * The stops of the turns whose keyed delivery stands unknown: a reply that
-   * may already be in the room. A definite refusal never lands here, so a
-   * turn reading this claim stands no possible remote delivery.
-   */
-  private readonly unknownTurnStops = new Set<AbortSignal>();
-
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
@@ -195,56 +179,6 @@ export class AgentTools implements AgentToolsProtocol {
 
   public getAdapterTools(): AdapterToolsProtocol {
     return this.adapterTools;
-  }
-
-  /**
-   * Fences the room's current turn for a canonical keyed call: the call
-   * carried an `operation_id`, so whatever it ends up as — accepted,
-   * refused, or unsupported — the turn's closing text is not relayed as an
-   * unkeyed replacement. Without a stop standing (no turn, or a runtime that
-   * tracks none) nothing is fenced.
-   */
-  private fenceKeyedTurn(): void {
-    const stop = this.publicationStop?.();
-    if (stop !== undefined) {
-      this.keyedTurnStops.add(stop);
-    }
-  }
-
-  /** The room's current turn's keyed delivery stands unknown: its reply may already be in the room. */
-  private fenceUnknownTurn(): void {
-    const stop = this.publicationStop?.();
-    if (stop !== undefined) {
-      this.unknownTurnStops.add(stop);
-    }
-  }
-
-  /** The `KEYED_TURN_FENCE` read: the room's current turn's keyed delivery stands unknown. */
-  private unknownTurnFenced(): boolean {
-    const stop = this.publicationStop?.();
-    if (stop === undefined) {
-      return false;
-    }
-    for (const fenced of this.unknownTurnStops) {
-      if (fenced.aborted) {
-        this.unknownTurnStops.delete(fenced);
-      }
-    }
-    return this.unknownTurnStops.has(stop);
-  }
-
-  /** True once the room's current turn made a canonical keyed call: its closing text is never relayed as an unkeyed replacement. */
-  private keyedTurnFenced(): boolean {
-    const stop = this.publicationStop?.();
-    if (stop === undefined) {
-      return false;
-    }
-    for (const fenced of this.keyedTurnStops) {
-      if (fenced.aborted) {
-        this.keyedTurnStops.delete(fenced);
-      }
-    }
-    return this.keyedTurnStops.has(stop);
   }
 
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
@@ -276,12 +210,6 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput,
     operationId: unknown,
   ): Promise<ToolOperationResult> {
-    // Admission stands on the call's presence of an `operation_id`, not on
-    // its inputs: whatever the call ends up as — refused for its inputs,
-    // its id, or its transport, or accepted — the turn is fenced here,
-    // before any validation, so its closing text is never relayed as an
-    // unkeyed replacement on top of the keyed attempt.
-    this.fenceKeyedTurn();
     // A keyed operation's record stands on its inputs: a call missing a field
     // the schema requires is refused before any record or post, like a
     // schema-invalid call, never delivered over the retrying legacy path.
@@ -333,14 +261,10 @@ export class AgentTools implements AgentToolsProtocol {
       }
       return result;
     } catch (error) {
-      // A keyed delivery standing unknown claims possible remote delivery
-      // for the turn it ran on, and fences it: its closing text may not be
-      // relayed on top of a post Band may already hold. A definite refusal
-      // claims nothing: the turn fails plain, with no possible remote
-      // delivery standing behind the failure.
-      if (error instanceof DeliveryUnknownError) {
-        this.fenceUnknownTurn();
-      }
+      // A keyed delivery that stands unknown claims possible remote delivery
+      // for the turn it ran on: its closing text may not be relayed on top
+      // of a post Band may already hold. The turn's own wrapper marks that
+      // claim; a definite refusal claims nothing.
       throw error;
     }
   }
@@ -1004,15 +928,6 @@ export class AgentTools implements AgentToolsProtocol {
 
     return Object.freeze({ ...tools,
       [SCOPED_TOOL_EXECUTOR]: (scope: AdapterToolsProtocol, name: string, args: MetadataMap) => this.executeScopedToolCall(scope, name, args),
-      // The turn's tools read this to decide whether a reply's delivery stands
-      // unknown: it may already be in the room. A keyed call that was
-      // definitely refused stands no such claim.
-      unknownDeliveryFenced: () => this.unknownTurnFenced(),
-      // The turn's tools read this to decide whether the closing text may be
-      // relayed: a canonical keyed call the turn made — valid or not,
-      // accepted or refused — fences it, as a delivery-unknown reply would.
-      relayProhibitedFenced: () => this.keyedTurnFenced() || this.unknownTurnFenced(),
-      [KEYED_TURN_FENCE]: () => this.unknownTurnFenced(),
     }) as AdapterToolsProtocol;
   }
 
@@ -1068,11 +983,10 @@ export class AgentTools implements AgentToolsProtocol {
         // is validated, an invalid one refused before any record or post, and
         // the decline's result settled durably under the turn — no POST is
         // ever made by a decline. Admission stands on the field's presence,
-        // before those checks: whatever the decline ends up as, the turn is
-        // fenced, and its closing text is never relayed as an unkeyed
-        // replacement.
+        // before those checks: whatever the decline ends up as, the turn's
+        // own wrapper fences it, and its closing text is never relayed as an
+        // unkeyed replacement.
         if (Object.hasOwn(arguments_, "operation_id")) {
-          this.fenceKeyedTurn();
           if (this.publication === undefined) {
             throw new OperationUnsupportedError("no-journal");
           }

@@ -127,9 +127,10 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
         // admission pinned, in the room it was admitted in: it is never
         // re-resolved against whatever the room stands for now, and naming
         // another room is refused rather than rerouted. With no standing
-        // origin it is refused outright: no re-resolution, no post, no
-        // settlement, no arbitrary turn selected.
-        if (pinned.origin === undefined) {
+        // origin, or a turn fence that did not stand, it is refused outright:
+        // no re-resolution, no post, no settlement, no turn selected, and
+        // never a dispatch against a turn it did not fence.
+        if (pinned.origin === undefined || !pinned.fenced) {
           return Promise.resolve(errorResult(originlessKeyedResult()));
         }
         if (pinned.origin.roomId !== undefined && roomIdArg !== pinned.origin.roomId) {
@@ -256,7 +257,7 @@ function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): M
     ...tool,
     execute: (args, _tools, signal) => {
       const pinned = currentAdmission();
-      if (pinned?.keyed && pinned.origin === undefined) {
+      if (pinned?.keyed && (pinned.origin === undefined || !pinned.fenced)) {
         return Promise.resolve(errorResult(originlessKeyedResult()));
       }
       return tool.execute(args, pinned?.origin !== undefined ? pinned.origin.tools : tools, signal);
@@ -318,7 +319,7 @@ function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegi
     ...tool,
     execute: (args) => {
       const pinned = currentAdmission();
-      if (pinned?.keyed && pinned.origin === undefined) {
+      if (pinned?.keyed && (pinned.origin === undefined || !pinned.fenced)) {
         return Promise.resolve(errorResult(originlessKeyedResult()));
       }
       return executeToolCall(pinned?.origin !== undefined ? pinned.origin.tools : tools, tool.name, args);
