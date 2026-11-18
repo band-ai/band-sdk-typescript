@@ -19,6 +19,26 @@ function isDeliveryUnknownToolResult(result: unknown): boolean {
 }
 
 /**
+ * The mark a keyed call's admission leaves on the turn it fences: the MCP
+ * transport decorator resolves the turn's tools at the raw call and sets this
+ * flag before the framework's validation, so a keyed call — valid or not —
+ * fences the turn it was admitted on the same way a delivery-unknown reply
+ * would, and the turn's closing text is never relayed as an unkeyed
+ * replacement.
+ */
+export const KEYED_ADMISSION_FENCE = Symbol("band.keyedAdmissionFence");
+
+/** Fences the turn standing behind `tools`, when its wrappers carry the fence. */
+export function fenceTurnForKeyedAdmission(tools: unknown): void {
+  const fence = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } } | undefined)?.[KEYED_ADMISSION_FENCE];
+  try {
+    fence?.fence();
+  } catch {
+    // A fence that throws has not fenced; the call still runs.
+  }
+}
+
+/**
  * Wraps the tools a turn runs on, keeping the turn's side of the runtime's
  * durable publications honest:
  *
@@ -73,5 +93,6 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   return overrideTools(tools, {
     ...overrides,
     unknownDeliveryFenced: () => fenced,
+    [KEYED_ADMISSION_FENCE]: { fence: () => { fenced = true; } },
   } as unknown as Partial<T>);
 }

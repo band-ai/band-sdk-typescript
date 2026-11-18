@@ -34,6 +34,13 @@ function sendingRepeatsOnce(execute: AdapterToolsProtocol["executeToolCall"]): A
   const sends = new Map<string, Promise<unknown>>();
   return (toolName, args) => {
     if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
+    // A keyed send stands under its own operation id, not under the legacy
+    // repeat's content: it never joins a repeat it does not own, and the
+    // legacy path never claims a result the journal recorded for an
+    // operation.
+    if (typeof args === "object" && args !== null && Object.hasOwn(args, "operation_id")) {
+      return execute(toolName, args);
+    }
     const key = JSON.stringify([args.content, args.mentions ?? null]);
     const standing = sends.get(key);
     if (standing) return standing;

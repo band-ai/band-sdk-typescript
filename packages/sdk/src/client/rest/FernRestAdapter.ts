@@ -392,6 +392,14 @@ export interface FernRestAdapterOptions {
   /** Without it, working reports never carry activity detail: this adapter cannot know its endpoint's version. */
   activityCapability?: ActivityCapability;
   logger?: Logger;
+  /**
+   * Lazily builds the SDK-controlled client that makes a keyed operation's
+   * single-attempt post: the same effective endpoint and auth as the legacy
+   * client, a Fetch that forces `redirect: "error"`, and no transport
+   * retries. Without it the once port stands unavailable and keyed
+   * operations are refused rather than delivered over the retrying path.
+   */
+  onceClientFactory?: () => FernBandClientLike;
 }
 
 /** No Fern transport retries: deliverMessage owns post resends; a failed read-back is answered by a resend. */
@@ -444,11 +452,14 @@ async function postedUnlessStopped<T>(chatId: string, post: () => Promise<T>): P
 
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
+  private readonly onceClientFactory: (() => FernBandClientLike) | undefined;
+  private onceClient: FernBandClientLike | undefined;
   private readonly activityCapability?: ActivityCapability;
   private readonly logger: Logger;
 
   public constructor(client: FernBandClientLike, options: FernRestAdapterOptions = {}) {
     this.client = client;
+    this.onceClientFactory = options.onceClientFactory;
     this.activityCapability = options.activityCapability;
     this.logger = resolveLogger(options.logger);
   }
@@ -542,6 +553,50 @@ export class FernRestAdapter implements RestApi {
       // deliverMessage threw after a committed uncertain attempt.
       if (delivery && creditTwins) await this.creditMatchingPosts(chatId, fingerprint, delivery);
     }
+  }
+
+  /**
+   * The once port: at most one SDK-issued HTTP POST, transport retries
+   * disabled on both the client and the attempt, and the client's Fetch
+   * forcing `redirect: "error"`, so a redirect after the request goes out
+   * lands as a failure this caller classifies — never as a second POST to a
+   * second origin. No read-back, no resends, no fingerprint inference of
+   * success: the post's answer is what the response says. With a factory,
+   * the SDK-controlled client is built lazily, separately from the legacy
+   * client, whose Fetch/retry policy stands unchanged; without one, the
+   * adapter's own client stands as the once client and must be
+   * SDK-controlled (redirects refused, no transport retries) — a client that
+   * follows redirects or retries cannot stand a keyed operation.
+   */
+  public async createChatMessageOnce(
+    chatId: string,
+    message: {
+      content: string;
+      messageType?: string;
+      metadata?: MetadataMap;
+      mentions?: MentionReference[];
+    },
+    options?: RestRequestOptions,
+  ): Promise<ToolOperationResult> {
+    const onceClient = this.onceClientFactory === undefined ? this.client : (this.onceClient ??= this.onceClientFactory());
+    const api = onceClient.chatMessages?.createChatMessage?.bind(onceClient.chatMessages)
+      ?? onceClient.agentApiMessages?.createAgentChatMessage?.bind(onceClient.agentApiMessages)
+      ?? onceClient.myChatMessages?.createMyChatMessage?.bind(onceClient.myChatMessages);
+    if (!api) {
+      throw new UnsupportedFeatureError("The once client has no chat message creation endpoint");
+    }
+
+    const body = {
+      message: {
+        content: message.content,
+        message_type: message.messageType,
+        metadata: message.metadata,
+        mentions: message.mentions,
+      },
+    };
+    const attemptOptions = { ...mergeOptions(options), ...NO_TRANSPORT_RETRIES };
+    const posted = await postedUnlessStopped(chatId, () => api(chatId, body, attemptOptions));
+    return normalizeToolOperationResult(posted);
   }
 
   /**

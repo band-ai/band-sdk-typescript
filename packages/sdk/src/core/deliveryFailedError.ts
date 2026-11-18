@@ -35,10 +35,13 @@ export class DeliveryUnknownError extends DeliveryFailedError {
   constructor(
     cause: unknown,
     public readonly publicationId?: string,
+    /** The delivery that stands unknown: a reply by default, a keyed operation when its text is supplied. */
+    message?: string,
   ) {
     super(cause);
     this.name = "DeliveryUnknownError";
     this.message =
+      message ??
       "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
   }
 }

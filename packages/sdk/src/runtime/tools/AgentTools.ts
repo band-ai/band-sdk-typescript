@@ -5,6 +5,7 @@ import { currentTurnInbound } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";
+import { OperationUnsupportedError, mentionInputsAsStrings } from "../journal/operations";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
@@ -49,6 +50,7 @@ import {
   isToolExecutorError,
   sendFailureViaEvent,
   type ToolExecutorError,
+  type SendMessageOptions,
   type FetchRoomContextArgs,
   type RoomContextPage,
 } from "../../contracts/protocols";
@@ -180,13 +182,6 @@ export class AgentTools implements AgentToolsProtocol {
     return this.adapterTools;
   }
 
-  public async sendMessage(
-    content: string,
-    mentions: MentionInput = [],
-  ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions, "reply");
-  }
-
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
   public async sendNotice(
     content: string,
@@ -195,11 +190,75 @@ export class AgentTools implements AgentToolsProtocol {
     return this.postMessage(content, mentions, "notice");
   }
 
+  public async sendMessage(
+    content: string,
+    mentions: MentionInput = [],
+    options?: SendMessageOptions,
+  ): Promise<ToolOperationResult> {
+    return this.postMessage(content, mentions, "reply", options?.operationId);
+  }
+
+  /**
+   * A keyed send: the journal decides the operation's identity (validate,
+   * reserve or join, conflict) before roster resolution runs, the single
+   * attempt posts through the once port against the room's bound endpoint,
+   * and the settled result is what this call — or its retry — returns. The
+   * call's receipt is attributed to the turn's delivery context before any
+   * legacy send or read-back can claim it.
+   */
+  private async postKeyedSend(
+    content: string,
+    mentions: MentionInput,
+    operationId: string,
+  ): Promise<ToolOperationResult> {
+    const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
+    if (this.publication === undefined || messageId === undefined) {
+      throw new OperationUnsupportedError("no-journal");
+    }
+    if (this.rest.createChatMessageOnce === undefined) {
+      throw new OperationUnsupportedError("no-once-transport");
+    }
+    const once = this.rest.createChatMessageOnce.bind(this.rest);
+    const result = await this.publication.publishOperation({
+      operationId,
+      kind: "send",
+      content,
+      // The fingerprint binds the mention input as given, not the roster's
+      // resolution of it: a roster change may re-resolve names, it never
+      // retargets a keyed operation.
+      mentions: mentionInputsAsStrings(mentions),
+      messageId,
+      prepare: async () => {
+        const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
+        const recipients = resolvedMentions
+          .map((mention) => mention.id ?? mention.handle ?? mention.name ?? "")
+          .filter((id) => id.length > 0);
+        return {
+          recipients,
+          post: async () => once(this.roomId, { content, mentions: resolvedMentions }),
+        };
+      },
+      stopped: this.publicationStop?.(),
+    });
+    const delivery = currentDelivery();
+    if (delivery?.attributed !== undefined && typeof result.id === "string" && result.id.length > 0) {
+      delivery.attributed.add(result.id);
+    }
+    return result;
+  }
+
   private async postMessage(
     content: string,
     mentions: MentionInput,
     kind: "reply" | "notice",
+    operationId?: string,
   ): Promise<ToolOperationResult> {
+    if (operationId !== undefined) {
+      if (kind !== "reply") {
+        throw new OperationUnsupportedError("no-once-transport");
+      }
+      return this.postKeyedSend(content, mentions, operationId);
+    }
     const post = async (): Promise<ToolOperationResult> => {
       const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
 
@@ -873,6 +932,9 @@ export class AgentTools implements AgentToolsProtocol {
         this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
+          typeof arguments_.operation_id === "string"
+            ? { operationId: arguments_.operation_id }
+            : undefined,
         ),
       band_send_event: async (arguments_) =>
         this.sendEvent(
@@ -881,10 +943,30 @@ export class AgentTools implements AgentToolsProtocol {
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
       [NO_REPLY_TOOL_NAME]: async (arguments_) => {
-        const declined = async (): Promise<unknown> => {
+        const declined = async (): Promise<ToolOperationResult> => {
           this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
           return NO_REPLY_RESULT;
         };
+        // A keyed no-reply runs the same journal rules as a keyed send: the id
+        // is validated, an invalid one refused before any record or post, and
+        // the decline's result settled durably under the turn — no POST is
+        // ever made by a decline.
+        if (arguments_.operation_id !== undefined) {
+          if (this.publication === undefined) {
+            throw new OperationUnsupportedError("no-journal");
+          }
+          const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
+          if (messageId === undefined) {
+            throw new OperationUnsupportedError("no-journal");
+          }
+          return this.publication.publishOperation({
+            operationId: arguments_.operation_id,
+            kind: "decline",
+            reason: typeof arguments_.reason === "string" ? arguments_.reason : undefined,
+            messageId,
+            runDecline: declined,
+          });
+        }
         // Only a standing decline is settled: the record is durable before the
         // call reports success, so the declined message can never be
         // redelivered. A decline the harness refuses records nothing.
