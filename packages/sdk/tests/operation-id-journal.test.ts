@@ -5,6 +5,7 @@ import { BandError } from "@band-ai/rest-client";
 import { describe, expect, it } from "vitest";
 
 import { NoopLogger } from "../src/core/logger";
+import type { ToolOperationResult } from "../src/contracts/dtos";
 import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
@@ -704,7 +705,7 @@ describe("a keyed no-reply", () => {
           kind: "decline",
           reason: "nothing to answer",
           messageId: "msg-1",
-          runDecline: async () => broken,
+          runDecline: async () => broken as unknown as ToolOperationResult,
         })
         .catch((thrown: unknown) => thrown);
       expect(error).toBeInstanceOf(DeliveryUnknownError);

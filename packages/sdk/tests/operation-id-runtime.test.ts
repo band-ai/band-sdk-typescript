@@ -522,7 +522,7 @@ describe("a late keyed outcome and the successor's relay", () => {
       throw unavailable;
     };
 
-    let late = Promise.resolve();
+    let late: Promise<unknown> = Promise.resolve();
     let relayed = true;
     const first = await startProcess(platform, journalDir, async (args) => {
       const { tools } = args;
