@@ -1,5 +1,7 @@
 import type { ToolOperationResult } from "../../contracts/dtos";
-import { DeliveryUnknownError } from "../../core/deliveryFailedError";
+import { isToolExecutorError } from "../../contracts/protocols";
+import { DeliveryFailedError, DeliveryUnknownError } from "../../core/deliveryFailedError";
+import { statusCodeOf } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import { JournalPublicationError } from "./errors";
@@ -283,8 +285,11 @@ export class PublicationEngine {
         case "refused":
           throw this.storedRefusalError(operationId, check.reasonText);
         case "settled": {
-          await this.settleOperationCaller(journal, input.messageId, input.kind);
+          // The stored result stands first: a send whose authority no longer
+          // validates throws before the caller's inbound is settled for it,
+          // so a broken replay settles nothing for anyone.
           const result = this.storedOperationResult(journal, operationId, check);
+          await this.settleOperationCaller(journal, input.messageId, input.kind);
           deferred.resolve(result);
           return result;
         }
@@ -356,10 +361,27 @@ export class PublicationEngine {
           await this.settleOperationUnknown(journal, operationId, error, { poisonWriter: false });
           throw new DeliveryUnknownError(error, operationId, unknownOperationMessage());
         }
-        await journal.refuseOperation(operationId, publicErrorText(error)).catch((error: unknown) => {
+        await journal.refuseOperation(operationId, publicRefusalText(error)).catch((error: unknown) => {
           this.logger.warn("the refused operation's record could not be written", { roomId: journal.roomId, error });
         });
         throw error;
+      }
+      // A resolved outcome stands its validation before any settlement: a
+      // resolved delivery-unknown stands unknown, like the thrown
+      // classification; a resolved executor error or explicit failure is a
+      // definite refusal — it earns no success settlement and no caller's
+      // answered credit, and its stored reason is the classified text, never
+      // the failure's raw body.
+      if (isToolExecutorError(result) || result.status === "failed") {
+        if (isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND) {
+          await this.settleOperationUnknown(journal, operationId, result, { poisonWriter: false });
+          throw new DeliveryUnknownError(result, operationId, unknownOperationMessage());
+        }
+        const refusal = publicRefusalText(result);
+        await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
+          this.logger.warn("the refused operation's record could not be written", { roomId: journal.roomId, error });
+        });
+        throw new DeliveryFailedError(refusal);
       }
       try {
         await journal.settleOperation(operationId, {
@@ -388,10 +410,20 @@ export class PublicationEngine {
     } catch (error) {
       // A decline the harness refuses stands refused: no settlement, and the
       // refusal is recorded so a same-id retry re-reads it.
-      await journal.refuseOperation(operationId, publicErrorText(error)).catch((error: unknown) => {
+      await journal.refuseOperation(operationId, publicRefusalText(error)).catch((error: unknown) => {
         this.logger.warn("the refused no-reply's record could not be written", { roomId: journal.roomId, error });
       });
       throw error;
+    }
+    if (isToolExecutorError(result)) {
+      // A decline whose decision stands as a structured failure did not
+      // stand: it is refused, like a refusal the harness threw. No
+      // settlement, no caller's answered credit.
+      const refusal = publicRefusalText(result);
+      await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
+        this.logger.warn("the refused no-reply's record could not be written", { roomId: journal.roomId, error });
+      });
+      throw new DeliveryFailedError(refusal);
     }
     try {
       await journal.settleOperation(operationId, {});
@@ -441,24 +473,40 @@ export class PublicationEngine {
     await journal.turnDone(messageId);
   }
 
-  /** The stored result of a settled operation, as it stands for a later same-id caller. */
+  /**
+ * The stored result of a settled operation, as it stands for a later same-id
+ * caller. A settled decline stands as the decline itself. A settled send's
+ * authority is its stored result: a send recorded without a result, or with
+ * one that is not a parseable plain JSON object, has no replay that stands —
+ * inventing success from a receipt, or from nothing, would be a second
+ * publication the journal never recorded, so the journal poisons instead of
+ * answering.
+ */
   private storedOperationResult(journal: RoomJournal, operationId: string, check: Extract<OperationCheck, { status: "settled" }>): ToolOperationResult {
     const operation = journal.operation(operationId);
     if (operation?.kind === "decline") {
       return { status: "ok" };
     }
-    if (check.resultJson !== undefined) {
-      try {
-        const parsed: unknown = JSON.parse(check.resultJson);
-        if (typeof parsed === "object" && parsed !== null) return parsed as ToolOperationResult;
-      } catch (error) {
-        this.logger.warn("the stored operation result would not parse; the receipt stands", { roomId: journal.roomId, error });
-      }
+    const broken = (): never => {
+      journal.poison();
+      throw new JournalPublicationError(
+        `The journal records the settled operation ${operationId} without a stored result that stands: the replay is refused rather than invented, and the journal no longer admits records until it is restored.`,
+        "poisoned",
+      );
+    };
+    if (check.resultJson === undefined) {
+      return broken();
     }
-    if (check.receiptId !== undefined) {
-      return { id: check.receiptId, success: true };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(check.resultJson);
+    } catch {
+      return broken();
     }
-    return { status: "ok" };
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return broken();
+    }
+    return parsed as ToolOperationResult;
   }
 
   private unknownOperationError(operationId: string): DeliveryUnknownError {
@@ -487,10 +535,29 @@ export function unknownOperationMessage(): string {
   return "The operation's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the operation as unknown; a process that reopens the room reports it without reposting it.";
 }
 
-/** The public text a stored refusal stands under: bounded, no transport objects or credentials. */
-function publicErrorText(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.length > 512 ? `${text.slice(0, 512)}…` : text;
+/**
+ * The classified public text a definite refusal stands under: it is what the
+ * journal stores as the refusal's reason and what every later caller, joiner,
+ * and replay reads. It names the refusal's class and, for an HTTP refusal,
+ * its status — and nothing else. A transport's raw message, body, headers,
+ * and credentials never stand in the record: a classifier that echoed them
+ * would persist what the operator must not keep.
+ */
+function publicRefusalText(value: unknown): string {
+  // A resolved executor error may carry the failure it stands for: classify from it.
+  const carried: unknown = isToolExecutorError(value) && value.details?.error !== undefined ? value.details.error : value;
+  const code = statusCodeOf(carried);
+  if (code !== undefined) {
+    return `the platform refused the post (HTTP ${code})`;
+  }
+  if (carried instanceof Error) {
+    // The transport's failure class, not its message: a message can carry a body.
+    return `the post was refused by the transport: ${carried.name}`;
+  }
+  if (isToolExecutorError(value)) {
+    return `the post was refused by the transport (${value.errorType})`;
+  }
+  return "the post was refused before it reached Band";
 }
 
 function receiptIdOf(result: ToolOperationResult): string | undefined {

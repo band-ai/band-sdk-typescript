@@ -555,18 +555,18 @@ export class FernRestAdapter implements RestApi {
     }
   }
 
-  /**
+/**
    * The once port: at most one SDK-issued HTTP POST, transport retries
    * disabled on both the client and the attempt, and the client's Fetch
    * forcing `redirect: "error"`, so a redirect after the request goes out
    * lands as a failure this caller classifies — never as a second POST to a
    * second origin. No read-back, no resends, no fingerprint inference of
-   * success: the post's answer is what the response says. With a factory,
-   * the SDK-controlled client is built lazily, separately from the legacy
-   * client, whose Fetch/retry policy stands unchanged; without one, the
-   * adapter's own client stands as the once client and must be
-   * SDK-controlled (redirects refused, no transport retries) — a client that
-   * follows redirects or retries cannot stand a keyed operation.
+   * success: the post's answer is what the response says. The SDK-controlled
+   * client is built lazily from a factory, separately from the legacy
+   * client, whose Fetch/retry policy stands unchanged. Without a factory
+   * there is no controlled once capability: the port refuses before any
+   * request — an injected client is not verified to refuse redirects and
+   * transport retries, and no keyed operation may post through it.
    */
   public async createChatMessageOnce(
     chatId: string,
@@ -578,7 +578,10 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
-    const onceClient = this.onceClientFactory === undefined ? this.client : (this.onceClient ??= this.onceClientFactory());
+    if (this.onceClientFactory === undefined) {
+      throw new UnsupportedFeatureError("The once port has no SDK-controlled client: construct the adapter with an onceClientFactory so the post's redirects and retries are refused, or deliver without an operation id");
+    }
+    const onceClient = this.onceClient ?? (this.onceClient = this.onceClientFactory());
     const api = onceClient.chatMessages?.createChatMessage?.bind(onceClient.chatMessages)
       ?? onceClient.agentApiMessages?.createAgentChatMessage?.bind(onceClient.agentApiMessages)
       ?? onceClient.myChatMessages?.createMyChatMessage?.bind(onceClient.myChatMessages);

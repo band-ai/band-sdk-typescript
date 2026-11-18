@@ -122,11 +122,16 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
     inputSchema: withRoomId(tool.inputSchema),
     execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
       const pinned = currentAdmission();
-      if (pinned?.origin !== undefined) {
+      if (pinned?.keyed) {
         // A keyed call admitted at the transport runs on the tools its
         // admission pinned, in the room it was admitted in: it is never
         // re-resolved against whatever the room stands for now, and naming
-        // another room is refused rather than rerouted.
+        // another room is refused rather than rerouted. With no standing
+        // origin it is refused outright: no re-resolution, no post, no
+        // settlement, no arbitrary turn selected.
+        if (pinned.origin === undefined) {
+          return Promise.resolve(errorResult(originlessKeyedResult()));
+        }
         if (pinned.origin.roomId !== undefined && roomIdArg !== pinned.origin.roomId) {
           return Promise.resolve(errorResult(wrongRoomResult(roomIdArg, pinned.origin.roomId)));
         }
@@ -140,6 +145,16 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
 /** The refusal a keyed call earns for naming a room other than the one it was admitted in. */
 function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
   return `The call's ${ROOM_ID_ARG} ${JSON.stringify(roomIdArg)} names a different room than the one its operation was admitted in (${admittedRoomId}); it is refused rather than rerouted`;
+}
+
+/**
+ * The refusal a keyed call earns when its bridge stands no origin for it: the
+ * bridge's connection or generation retired, or it resolved no tools. The
+ * call is refused cleanly — no re-resolution against a successor turn, no
+ * post, no settlement, and no turn selected or fenced for it.
+ */
+function originlessKeyedResult(): string {
+  return "The call's operation was admitted with no standing origin: this bridge's connection or generation no longer stands, so the call is refused. Nothing was re-resolved, posted, settled, or fenced.";
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -216,7 +231,10 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
       inputSchema: withRoomId(tool.inputSchema),
       execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) => {
         const pinned = currentAdmission();
-        if (pinned?.origin !== undefined) {
+        if (pinned?.keyed) {
+          if (pinned.origin === undefined) {
+            return Promise.resolve(errorResult(originlessKeyedResult()));
+          }
           if (pinned.origin.roomId !== undefined && args[ROOM_ID_ARG] !== pinned.origin.roomId) {
             return Promise.resolve(errorResult(wrongRoomResult(args[ROOM_ID_ARG], pinned.origin.roomId)));
           }
@@ -238,6 +256,9 @@ function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): M
     ...tool,
     execute: (args, _tools, signal) => {
       const pinned = currentAdmission();
+      if (pinned?.keyed && pinned.origin === undefined) {
+        return Promise.resolve(errorResult(originlessKeyedResult()));
+      }
       return tool.execute(args, pinned?.origin !== undefined ? pinned.origin.tools : tools, signal);
     },
   };
@@ -297,6 +318,9 @@ function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegi
     ...tool,
     execute: (args) => {
       const pinned = currentAdmission();
+      if (pinned?.keyed && pinned.origin === undefined) {
+        return Promise.resolve(errorResult(originlessKeyedResult()));
+      }
       return executeToolCall(pinned?.origin !== undefined ? pinned.origin.tools : tools, tool.name, args);
     },
   };

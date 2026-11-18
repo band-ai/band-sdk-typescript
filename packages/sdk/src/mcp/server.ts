@@ -7,6 +7,7 @@ import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   registerTools,
+  resolveSingleRoomTools,
 } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
@@ -42,6 +43,14 @@ export interface BandMcpServerOptions {
    * stop admitting origins for calls its process already retired.
    */
   admissionGuard?: () => boolean;
+  /**
+   * With a `tools` resolver, whether the server scopes its tools to the call's
+   * `room_id` (the default): `false` stands a single-context server on the
+   * resolver's `""` result, and a keyed call's origin resolves the raw
+   * resolver at the raw call — the actual tools of the turn it stood on, never
+   * a re-resolution after validation yields.
+   */
+  multiRoom?: boolean;
 }
 
 const PORT_RANGE_START = 50000;
@@ -81,14 +90,17 @@ export class BandMcpServer {
       additionalTools: options.additionalTools,
     };
 
-    if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions);
-    } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions);
-    }
     const tools = options.tools;
+    const multiRoom = options.multiRoom ?? (typeof tools === "function");
+    if (typeof tools === "function" && multiRoom) {
+      this.registrations = buildRoomScopedRegistrations(tools, regOptions);
+    } else {
+      this.registrations = buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, regOptions);
+    }
+    // The origin resolver stands on the raw resolver: a keyed call resolves
+    // the actual tools at the raw call, before any await the framework runs.
     this.originResolver = typeof tools === "function"
-      ? buildOriginResolver(tools, true, options.admissionGuard)
+      ? buildOriginResolver(tools, multiRoom, options.admissionGuard)
       : buildOriginResolver(() => tools, false, options.admissionGuard);
   }
 

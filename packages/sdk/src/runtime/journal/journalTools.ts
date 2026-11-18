@@ -28,6 +28,17 @@ function isDeliveryUnknownToolResult(result: unknown): boolean {
  */
 export const KEYED_ADMISSION_FENCE = Symbol("band.keyedAdmissionFence");
 
+/**
+ * A read function the tools an AgentTools stands behind carry: true once the
+ * room's current turn made a canonical keyed call — a send or a no-reply that
+ * carries an `operation_id`, valid or not, accepted or refused. Such a call
+ * commits the turn to keyed delivery, so the turn's closing text is never
+ * relayed as an unkeyed replacement on top of it. The stand the flag reads on
+ * is the room's current turn stop, so a fence earned in one turn cannot reach
+ * a successor, and a call made with no turn standing fences nothing.
+ */
+export const KEYED_TURN_FENCE = Symbol("band.keyedTurnFence");
+
 /** Fences the turn standing behind `tools`, when its wrappers carry the fence. */
 export function fenceTurnForKeyedAdmission(tools: unknown): void {
   const fence = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } } | undefined)?.[KEYED_ADMISSION_FENCE];
@@ -59,9 +70,12 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   stopped: AbortSignal,
   logger?: Logger,
 ): T {
-  // Set once this turn had a reply whose delivery stands unknown; the adapter's
-  // turn reads it through the wrapper it runs on.
+  // Set once this turn had a reply whose delivery stands unknown, or ran a
+  // keyed canonical call that the runtime's tools fence through their own
+  // flag; the adapter's turn object reads it through the wrapper it runs on.
   let fenced = false;
+
+  const underlyingKeyedFence = (tools as unknown as { [KEYED_TURN_FENCE]?: () => boolean } | undefined)?.[KEYED_TURN_FENCE];
 
   const wrapCall = (call: () => Promise<unknown>): Promise<unknown> => {
     if (stopped.aborted) {
@@ -92,7 +106,16 @@ export function journalingTools<T extends AdapterToolsProtocol>(
 
   return overrideTools(tools, {
     ...overrides,
-    unknownDeliveryFenced: () => fenced,
+    unknownDeliveryFenced: () => {
+      if (fenced) {
+        return true;
+      }
+      try {
+        return underlyingKeyedFence?.() === true;
+      } catch {
+        return false;
+      }
+    },
     [KEYED_ADMISSION_FENCE]: { fence: () => { fenced = true; } },
   } as unknown as Partial<T>);
 }

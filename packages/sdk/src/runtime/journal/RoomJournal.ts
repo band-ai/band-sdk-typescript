@@ -602,6 +602,10 @@ export class RoomJournal {
     operation.at = at;
     if (settlement.receiptId !== undefined) operation.receiptId = settlement.receiptId;
     if (settlement.resultJson !== undefined) operation.resultJson = settlement.resultJson;
+    // A durable keyed settlement is the operation's original inbound
+    // answered: a reopen must report it answered without waiting for a
+    // turn.done or decline record, and never redeliver the message.
+    this.touch(operation.messageId).answered = true;
     this.inflightOps.delete(operationId);
     this.unresolvedOps.delete(operationId);
   }
@@ -894,6 +898,9 @@ function applyChecked(index: Map<string, InboundIndex>, operations: Map<string, 
         if (record.t === "op.settled") {
           if (record.receiptId !== undefined) operation.receiptId = record.receiptId;
           if (record.resultJson !== undefined) operation.resultJson = record.resultJson;
+          // A settled operation answered its original inbound when it stood:
+          // the replay stands that answer without a later turn.done record.
+          inbound.answered = true;
         }
         if (record.t === "op.refused" && record.reasonText !== undefined) {
           operation.reasonText = record.reasonText;

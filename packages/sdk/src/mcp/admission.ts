@@ -4,6 +4,7 @@ import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
 
 /** The actual tools of the turn a keyed call was admitted on, and the room it names. */
@@ -85,6 +86,10 @@ export class AdmissionTransport implements Transport {
   public constructor(inner: Transport, originResolver?: OriginResolver) {
     this.inner = inner;
     this.originResolver = originResolver;
+    if (typeof inner.setProtocolVersion === "function") {
+      const innerSet = inner.setProtocolVersion;
+      this.setProtocolVersion = (version) => innerSet.call(inner, version);
+    }
   }
 
   /** `Protocol.connect` sets this transport's handlers just before calling it. */
@@ -100,10 +105,38 @@ export class AdmissionTransport implements Transport {
       // framework answers, stays in the admission it was given.
       admissionStorage.run(admission, () => outer?.(message, extra));
     };
-    this.inner.onclose = () => this.onclose?.();
-    this.inner.onerror = (error) => this.onerror?.(error);
+    // Compose, never replace: a caller that set handlers on the inner
+    // transport before the decorator stood still gets them called.
+    const innerClose = this.inner.onclose;
+    this.inner.onclose = () => {
+      innerClose?.();
+      this.onclose?.();
+    };
+    const innerError = this.inner.onerror;
+    this.inner.onerror = (error) => {
+      innerError?.(error);
+      this.onerror?.(error);
+    };
     return this.inner.start();
   }
+
+  /** The inner transport's session, so a framework that tracks it keeps tracking the real one. */
+public get sessionId(): string | undefined {
+  return this.inner.sessionId;
+}
+
+/** Extra surface some transports (notably the HTTP client's) expose for their session or protocol state. */
+public get capabilities(): unknown {
+  return (this.inner as { capabilities?: unknown }).capabilities;
+}
+
+/**
+ * The framework's protocol version, set on the inner transport it actually
+ * speaks on — the wrapper stands in for it only when the inner stands in
+ * for it, so a framework checking `typeof transport.setProtocolVersion`
+ * sees exactly what the inner supports.
+ */
+public setProtocolVersion?: (version: string) => void;
 
   public async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     await this.inner.send(message, options);
@@ -126,6 +159,13 @@ export class AdmissionTransport implements Transport {
     }
     const params = message.params;
     if (!hasKeyedOperation(params)) {
+      return undefined;
+    }
+    // Only the canonical publication tools admit: an unrelated tool or event
+    // that carries its own operation_id passes through untouched, and its
+    // turn's reply is never fenced or suppressed by it.
+    const name = typeof (params as { name?: unknown } | null)?.name === "string" ? (params as { name: string }).name : "";
+    if (name !== SEND_MESSAGE_TOOL_NAME && name !== NO_REPLY_TOOL_NAME) {
       return undefined;
     }
     let origin: AdmissionOrigin | undefined;

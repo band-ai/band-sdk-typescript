@@ -22,6 +22,7 @@ import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   registerTools,
+  resolveSingleRoomTools,
   scopeHostTools,
 } from "./registrations";
 import { ToolsListedTransport } from "./toolsListedTransport";
@@ -61,6 +62,13 @@ export interface BandMcpStdioServerOptions {
    * turn is fenced.
    */
   admissionGuard?: () => boolean;
+  /**
+   * With a `tools` resolver, whether the server scopes its tools to the call's
+   * `room_id` (the default): `false` stands a single-context server on the
+   * resolver's `""` result, and a keyed call's origin resolves the raw
+   * resolver at the raw call.
+   */
+  multiRoom?: boolean;
 }
 
 export class BandMcpStdioServer {
@@ -88,9 +96,14 @@ export class BandMcpStdioServer {
       // No tools means no origin a keyed call could be pinned to.
       this.originResolver = undefined;
     } else if (typeof tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(tools, regOptions);
-      this.bindAddedTools = (hostTools) => scopeHostTools(hostTools, tools);
-      this.originResolver = buildOriginResolver(tools, true, options.admissionGuard);
+      const multiRoom = options.multiRoom ?? true;
+      const singleRoom = multiRoom ? undefined : resolveSingleRoomTools(tools);
+      this.registrations = singleRoom
+        ? buildSingleContextRegistrations(singleRoom, regOptions)
+        : buildRoomScopedRegistrations(tools, regOptions);
+      this.bindAddedTools = (hostTools) =>
+        singleRoom ? bindHostTools(hostTools, singleRoom) : scopeHostTools(hostTools, tools);
+      this.originResolver = buildOriginResolver(tools, multiRoom, options.admissionGuard);
     } else {
       this.registrations = buildSingleContextRegistrations(tools, regOptions);
       this.bindAddedTools = (hostTools) => bindHostTools(hostTools, tools);

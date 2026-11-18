@@ -33,8 +33,8 @@ import type {
 interface CapturedMessage {
   content: string;
   mentions?: MentionInput;
-  /** The operation id the send carried, when it did. */
-  operationId?: string;
+  /** The operation id the send carried, as supplied, when it carried one. */
+  operationId?: unknown;
 }
 
 interface CapturedEvent {
@@ -108,7 +108,7 @@ export class FakeAgentTools
     return this.post(content, mentions);
   }
 
-  private post(content: string, mentions?: MentionInput, operationId?: string): ToolOperationResult {
+  private post(content: string, mentions?: MentionInput, operationId?: unknown): ToolOperationResult {
     this.messagesSent.push({ content, mentions, operationId });
     const id = `msg-${this.messageCounter++}`;
     return { id, status: "sent" };

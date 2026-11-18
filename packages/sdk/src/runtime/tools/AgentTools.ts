@@ -6,6 +6,7 @@ import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";
 import { OperationUnsupportedError, mentionInputsAsStrings } from "../journal/operations";
+import { KEYED_TURN_FENCE } from "../journal/journalTools";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
@@ -161,6 +162,14 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly publication: PublicationEngine | undefined;
   private readonly inboundMessageId: (() => string | undefined) | undefined;
   private readonly publicationStop: (() => AbortSignal | undefined) | undefined;
+  /**
+   * The stops of the turns that ran a canonical keyed call — a send or
+   * no-reply carrying an `operation_id`, whose acceptance the fence does not
+   * wait on: the field's presence commits the turn to keyed delivery before
+   * validation, so its closing text is never relayed as an unkeyed
+   * replacement. A turn with no stop standing fences nothing.
+   */
+  private readonly keyedTurnStops = new Set<AbortSignal>();
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
@@ -180,6 +189,34 @@ export class AgentTools implements AgentToolsProtocol {
 
   public getAdapterTools(): AdapterToolsProtocol {
     return this.adapterTools;
+  }
+
+  /**
+   * Fences the room's current turn for a canonical keyed call: the call
+   * carried an `operation_id`, so whatever it ends up as — accepted,
+   * refused, or unsupported — the turn's closing text is not relayed as an
+   * unkeyed replacement. Without a stop standing (no turn, or a runtime that
+   * tracks none) nothing is fenced.
+   */
+  private fenceKeyedTurn(): void {
+    const stop = this.publicationStop?.();
+    if (stop !== undefined) {
+      this.keyedTurnStops.add(stop);
+    }
+  }
+
+  /** The `KEYED_TURN_FENCE` read: the room's current turn ran a canonical keyed call. */
+  private keyedTurnFenced(): boolean {
+    const stop = this.publicationStop?.();
+    if (stop === undefined) {
+      return false;
+    }
+    for (const fenced of this.keyedTurnStops) {
+      if (fenced.aborted) {
+        this.keyedTurnStops.delete(fenced);
+      }
+    }
+    return this.keyedTurnStops.has(stop);
   }
 
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
@@ -209,7 +246,7 @@ export class AgentTools implements AgentToolsProtocol {
   private async postKeyedSend(
     content: string,
     mentions: MentionInput,
-    operationId: string,
+    operationId: unknown,
   ): Promise<ToolOperationResult> {
     const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
     if (this.publication === undefined || messageId === undefined) {
@@ -251,7 +288,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput,
     kind: "reply" | "notice",
-    operationId?: string,
+    operationId?: unknown,
   ): Promise<ToolOperationResult> {
     if (operationId !== undefined) {
       if (kind !== "reply") {
@@ -903,6 +940,11 @@ export class AgentTools implements AgentToolsProtocol {
 
     return Object.freeze({ ...tools,
       [SCOPED_TOOL_EXECUTOR]: (scope: AdapterToolsProtocol, name: string, args: MetadataMap) => this.executeScopedToolCall(scope, name, args),
+      // The turn's tools read this to decide whether the closing text may be
+      // relayed: a canonical keyed call the turn made — valid or not,
+      // accepted or refused — fences it, as a delivery-unknown reply would.
+      unknownDeliveryFenced: () => this.keyedTurnFenced(),
+      [KEYED_TURN_FENCE]: () => this.keyedTurnFenced(),
     }) as AdapterToolsProtocol;
   }
 
@@ -928,14 +970,24 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      band_send_message: async (arguments_) =>
-        this.sendMessage(
+      band_send_message: async (arguments_) => {
+        // The fence stands on the field's presence, before any validation: a
+        // keyed call that ends refused or unsupported still commits the turn
+        // to keyed delivery, so its closing text is not relayed unkeyed.
+        if (Object.hasOwn(arguments_, "operation_id")) {
+          this.fenceKeyedTurn();
+        }
+        return this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
-          typeof arguments_.operation_id === "string"
+          // Presence admits the call, not a parsed string: an id of any value
+          // type rides the keyed path and is validated there — a dropped
+          // non-string id would fall to the legacy delivery and post.
+          Object.hasOwn(arguments_, "operation_id")
             ? { operationId: arguments_.operation_id }
             : undefined,
-        ),
+        );
+      },
       band_send_event: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
@@ -950,8 +1002,12 @@ export class AgentTools implements AgentToolsProtocol {
         // A keyed no-reply runs the same journal rules as a keyed send: the id
         // is validated, an invalid one refused before any record or post, and
         // the decline's result settled durably under the turn — no POST is
-        // ever made by a decline.
-        if (arguments_.operation_id !== undefined) {
+        // ever made by a decline. The fence stands on the field's presence,
+        // before validation, like the keyed send's.
+        if (Object.hasOwn(arguments_, "operation_id")) {
+          this.fenceKeyedTurn();
+        }
+        if (Object.hasOwn(arguments_, "operation_id")) {
           if (this.publication === undefined) {
             throw new OperationUnsupportedError("no-journal");
           }

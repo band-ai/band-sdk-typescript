@@ -532,11 +532,12 @@ export const CONTACT_TOOL_NAMES = new Set<string>([
   "band_respond_contact_request",
 ]);
 
-/** The tools that act on a room, and so take its id; every other tool is roomless. */
+/** The tools that act on a room, and so take its id; every other tool is roomless. A no-reply declines the turn standing in that room, so it is room-scoped like a send. */
 export const ROOM_TOOL_NAMES = new Set<string>([
   ...TASK_TOOLS,
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
+  NO_REPLY_TOOL_NAME,
   "band_add_participant",
   "band_remove_participant",
   "band_get_participants",

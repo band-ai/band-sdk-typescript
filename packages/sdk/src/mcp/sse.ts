@@ -7,6 +7,7 @@ import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   registerTools,
+  resolveSingleRoomTools,
 } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
@@ -33,7 +34,14 @@ export interface BandMcpSseServerOptions {
    * reports false, no origin stands for any call, so nothing is pinned and no
    * turn is fenced.
    */
-  admissionGuard?: () => boolean;
+  admissionGuard?: () => boolean
+  /**
+   * With a `tools` resolver, whether the server scopes its tools to the call's
+   * `room_id` (the default): `false` stands a single-context server on the
+   * resolver's `""` result, and a keyed call's origin resolves the raw
+   * resolver at the raw call.
+   */
+  multiRoom?: boolean
 }
 
 interface SessionRecord {
@@ -67,14 +75,15 @@ export class BandMcpSseServer {
       additionalTools: options.additionalTools,
     }
 
-    if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions)
-    } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions)
-    }
     const tools = options.tools
+    const multiRoom = options.multiRoom ?? (typeof tools === "function")
+    if (typeof tools === "function" && multiRoom) {
+      this.registrations = buildRoomScopedRegistrations(tools, regOptions)
+    } else {
+      this.registrations = buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, regOptions)
+    }
     this.originResolver = typeof tools === "function"
-      ? buildOriginResolver(tools, true, options.admissionGuard)
+      ? buildOriginResolver(tools, multiRoom, options.admissionGuard)
       : buildOriginResolver(() => tools, false, options.admissionGuard)
   }
 
