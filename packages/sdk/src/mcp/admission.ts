@@ -180,7 +180,16 @@ public setProtocolVersion?: (version: string) => void;
         origin = undefined;
       }
     }
-    const fenced = origin === undefined ? false : fenceTurnForKeyedAdmission(origin.tools);
+    let fenced = false;
+    if (origin !== undefined) {
+      try {
+        fenced = fenceTurnForKeyedAdmission(origin.tools);
+      } catch {
+        // The fence's stand could not be read: it did not stand, and the
+        // dispatch is refused rather than run against a turn it did not fence.
+        fenced = false;
+      }
+    }
     return { keyed: true, origin, fenced };
   }
 

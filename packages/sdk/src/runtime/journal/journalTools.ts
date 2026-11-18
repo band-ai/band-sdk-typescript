@@ -72,7 +72,13 @@ export class AdmissionGuardError extends Error {
  * unfenced.
  */
 export function fenceTurnForKeyedAdmission(tools: unknown): boolean {
-  const marker = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } | undefined } | undefined)?.[KEYED_ADMISSION_FENCE];
+  let marker: { fence: () => void } | undefined;
+  try {
+    marker = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } | undefined } | undefined)?.[KEYED_ADMISSION_FENCE];
+  } catch {
+    // The turn's fence could not be read: it did not stand.
+    return false;
+  }
   if (marker === undefined) {
     return false;
   }
