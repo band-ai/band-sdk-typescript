@@ -17,7 +17,6 @@ import { IDENTITY, recordTypes, roomFile } from "./turnJournalSupport";
 const ROOM = "room-1";
 const OWNER = "owner";
 const MENTION = `@[[${AGENT_ID}]]`;
-const INBOUND_ID = "msg-op-child-inbound";
 const OP_ID = "op-child-1";
 const KILL = 0;
 

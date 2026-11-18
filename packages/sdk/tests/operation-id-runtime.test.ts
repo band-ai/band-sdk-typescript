@@ -523,6 +523,7 @@ describe("a late keyed outcome and the successor's relay", () => {
     };
 
     let late: Promise<unknown> = Promise.resolve();
+    const entered = createDeferred<void>();
     let relayed = true;
     const first = await startProcess(platform, journalDir, async (args) => {
       const { tools } = args;
@@ -540,14 +541,22 @@ describe("a late keyed outcome and the successor's relay", () => {
           .catch(() => undefined);
         return;
       }
-      // The successor answers plainly.
+      // The successor answers plainly — only after the earlier attempt's
+      // unknown outcome has settled, so the relay cannot stand before the
+      // earlier completion lands.
+      entered.resolve(undefined);
+      await late;
       relayed = await relayReply(tools, "next answered", [OWNER]);
     });
     await settledAs(platform, a, "processed");
     await until(() => recordsContain(journalDir, "op.recipients"));
-    // The successor starts while the earlier attempt still stands unanswered;
-    // then the earlier attempt's 503 lands, mid-successor.
+    // The successor starts while the earlier attempt still stands unanswered.
     const b = await room.say(OWNER, `${MENTION} next`);
+    // Force the order the boundary must survive: the successor's handler has
+    // entered, then the earlier attempt's 503 lands mid-successor, then the
+    // earlier unknown completion settles, and only then does the successor
+    // relay.
+    await entered.promise;
     lostResponse.resolve(undefined);
     await late;
     await settledAs(platform, b, "processed");
