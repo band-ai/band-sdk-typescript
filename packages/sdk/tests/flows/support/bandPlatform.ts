@@ -340,6 +340,16 @@ export class RecordingRestApi extends FakeRestApi {
     return { id: `posted-${this.posted.entries.length}` };
   }
 
+  /** The single-attempt post keyed operations make: the same post, but no retry, resend, or redirect. */
+  public createChatMessageOnce = async (
+    roomId: string,
+    message: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[1],
+    options?: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[2],
+  ) => {
+    const result = await this.createChatMessage(roomId, message, options);
+    return { ...result, status: "ok" };
+  };
+
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
