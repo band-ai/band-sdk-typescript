@@ -992,10 +992,13 @@ test("release workflow packs, uploads, downloads and publishes from one artifact
   assert.match(upload.body, /^\s+retention-days: 1$/m);
 });
 
-test("CI validates pull requests to main and the legacy dev compatibility lane", async () => {
+test("CI validates pull requests against any base, including stacked branches", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
-  assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n/);
+  // No base-branch filter: a stacked pull request must validate while its
+  // base is not yet merged, or the stack sits unverified behind its base.
+  assert.match(workflow, /pull_request:\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/);
+  assert.doesNotMatch(workflow, /pull_request:\n {4}branches:/);
   assert.match(
     workflow,
     /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/,
@@ -1065,7 +1068,8 @@ test("repository-wide content guards run even when a pull request selects no pac
 test("CI skips draft pull requests and starts when one is marked ready", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
-  assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/);
+  assert.match(workflow, /pull_request:\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/);
+  assert.doesNotMatch(workflow, /pull_request:\n {4}branches:/);
   // Both root jobs carry the guard; lint and test hang off `changes`.
   assert.match(workflow, /\n {2}changes:\n(?: {4}#[^\n]*\n)* {4}if: &not-draft github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.draft == false\n/);
   assert.match(workflow, /\n {2}packaging:\n {4}if: \*not-draft\n/);

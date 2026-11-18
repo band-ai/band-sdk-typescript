@@ -48,13 +48,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The journal's suites, plus the real-process crash-boundary and
-      # recovery-budget cases that spawn child runtimes, and the live-contender
-      # ownership and identity-capability suites. On platforms whose
-      # file-descriptor enumeration the budget's positive control cannot use,
-      # the child reports the gap and the test records it instead of asserting
-      # a bound it cannot measure.
-      - name: Run journal and process suites
-        run: pnpm --filter @band-ai/sdk exec vitest run tests/turn-journal.test.ts tests/turn-journal-migration.test.ts tests/turn-journal-runtime.test.ts tests/turn-journal-transport-origin.test.ts tests/turn-journal-child-process-runtime.test.ts tests/journal-ownership.test.ts tests/journal-identity.test.ts
+      # The journal's suites, the keyed-operation suites (their single-attempt
+      # posts, their redirect refusals, and the real child SIGKILL/reopen cuts
+      # at reservation, post, and settled-ACK), plus the real-process
+      # crash-boundary and recovery-budget cases that spawn child runtimes, the
+      # real-transport and real-child-process keyed-operation suites, and the
+      # live-contender ownership and identity-capability suites. On platforms
+      # whose file-descriptor enumeration the budget's positive control cannot
+      # use, the child reports the gap and the test records it instead of
+      # asserting a bound it cannot measure.
+      - name: Run journal, operation, and process suites
+        run: pnpm --filter @band-ai/sdk exec vitest run tests/turn-journal.test.ts tests/turn-journal-migration.test.ts tests/turn-journal-runtime.test.ts tests/turn-journal-transport-origin.test.ts tests/turn-journal-child-process-runtime.test.ts tests/operation-id-journal.test.ts tests/operation-id-redirects.test.ts tests/operation-id-runtime.test.ts tests/operation-id-bridges.test.ts tests/operation-id-child-process.test.ts tests/journal-ownership.test.ts tests/journal-identity.test.ts
         env:
           CI: true
