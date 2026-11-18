@@ -59,7 +59,12 @@ describe("band_no_reply and the tool table", () => {
 
     expect(spec.name).toBe(NO_REPLY_TOOL_NAME);
     expect(model.description).toBe(spec.description);
-    expect(model.properties).toEqual({ [reason!.name]: { type: "string", description: reason!.description } });
+    expect(model.properties[reason!.name]).toEqual({ type: "string", description: reason!.description });
+    // The SDK's local extension of core's no-reply: the optional operation id a
+    // keyed no-reply carries, advertised strictly as a string.
+    const operationId = model.properties.operation_id as { type: string; description: string };
+    expect(operationId.type).toBe("string");
+    expect(operationId.description).toBeTruthy();
     expect(reason!.required).toBe(false);
     expect(model.required).toEqual([]);
   });

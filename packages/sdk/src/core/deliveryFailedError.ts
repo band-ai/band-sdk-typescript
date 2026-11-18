@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import type { MessagingTools } from "../contracts/protocols";
+import type { MessagingTools, SendMessageOptions } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -35,10 +35,13 @@ export class DeliveryUnknownError extends DeliveryFailedError {
   constructor(
     cause: unknown,
     public readonly publicationId?: string,
+    /** The delivery that stands unknown: a reply by default, a keyed operation when its text is supplied. */
+    message?: string,
   ) {
     super(cause);
     this.name = "DeliveryUnknownError";
     this.message =
+      message ??
       "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
   }
 }
@@ -54,13 +57,19 @@ async function delivered(post: () => Promise<ToolOperationResult>): Promise<Tool
   }
 }
 
-/** Posts the turn's reply; on a judged turn it counts as the reply. */
+/**
+ * Posts the turn's reply; on a judged turn it counts as the reply. With
+ * `options.operationId`, the reply rides the keyed path: the journal decides
+ * the operation's identity, a same-id call replays the settled result
+ * without a new post, and an invalid id is refused before any post.
+ */
 export async function deliverReply(
   tools: MessagingTools,
   content: string,
   mentions: MentionInput,
+  options?: SendMessageOptions,
 ): Promise<ToolOperationResult> {
-  return delivered(() => tools.sendMessage(content, mentions));
+  return delivered(() => tools.sendMessage(content, mentions, options));
 }
 
 /** Posts text the adapter writes itself; it never counts as the turn's reply. */

@@ -909,7 +909,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         ))
       }
 
-      backend = this.enableMcpTools ? await this.createBackend(initializeResult) : null
+      backend = this.enableMcpTools ? await this.createBackend(initializeResult, connection, generation) : null
       if (generation !== this.connectionGeneration) {
         throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
@@ -1432,7 +1432,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // revokes exactly the Band access its process was given. Pinned to this
   // agent's room, so the model never names the room and a call can't reach
   // another room's tools.
-  private createBackend(initializeResult: InitializeResponse): Promise<BandMcpBackend> {
+  private createBackend(
+    initializeResult: InitializeResponse,
+    connection: ClientSideConnection,
+    generation: number,
+  ): Promise<BandMcpBackend> {
     return createBandMcpBackend({
       kind: mcpTransport(initializeResult),
       enableMemoryTools: this.enableMemoryTools,
@@ -1440,6 +1444,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       getToolsForRoom: () => this.roomTools.get(this.roomId),
       additionalTools: this.additionalMcpTools,
       multiRoom: false,
+      // The generation guard, consulted before any tools resolve: the attempt
+      // becomes live at `generation + 1`, so a keyed call it admits pins an
+      // origin only while that exact connection stands current. Once the
+      // connection is retired, no call it admitted can pin an origin or fence
+      // a turn, and its tools stand refused to whatever outlived the
+      // generation.
+      admissionGuard: () => {
+        const live = this.live
+        return live !== null && live.connection === connection && live.generation === generation + 1
+      },
     })
   }
 

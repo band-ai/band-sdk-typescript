@@ -6,11 +6,18 @@ import { asErrorMessage } from "./shared/coercion";
 import { deliverReply } from "../core/deliveryFailedError";
 import { overrideTools } from "../core/overrideTools";
 import { agentFailure, reportTurnFailure } from "../core/providerFailure";
+import type { SendMessageOptions } from "../contracts/protocols";
 
-/** Route handler `sendMessage` through `deliverReply`. */
+/**
+ * The handler's `sendMessage`, routed through the SDK's canonical
+ * {@link deliverReply}: a classified unknown keeps its classification, any
+ * other failure stands as `DeliveryFailedError`, and `options` — a send's
+ * `operationId`, when the handler carries one — is forwarded, so the
+ * journal's keyed rules stand on the handler's sends too.
+ */
 function toolsWithDeliverySafeSendMessage(tools: TurnTools): TurnTools {
   return overrideTools(tools, {
-    sendMessage: (content, mentions) => deliverReply(tools, content, mentions ?? []),
+    sendMessage: (content, mentions, options?: SendMessageOptions) => deliverReply(tools, content, mentions ?? [], options),
   });
 }
 

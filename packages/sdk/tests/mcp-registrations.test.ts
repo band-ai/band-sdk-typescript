@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { buildCustomMcpRegistrations } from "../src/mcp/customTools";
 import { trackTurn } from "../src/core/turn";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import {
   buildRoomScopedRegistrations,
@@ -11,6 +13,7 @@ import {
   ROOM_ID_ARG,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
+import { AdmissionTransport, buildOriginResolver } from "../src/mcp/admission";
 import { NO_REPLY_TOOL_NAME, ROOM_TOOL_NAMES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools } from "./testUtils";
 
@@ -139,14 +142,16 @@ describe("MCP registrations", () => {
 
       const byName = (name: string) => registrations.find((reg) => reg.name === name)!;
       expect((await byName("band_create_chatroom").execute({})).content[0].text).toBe(JSON.stringify({ id: "room-new" }));
-      await byName(NO_REPLY_TOOL_NAME).execute({});
+      // A room-scoped no-reply takes a room_id and runs on that room's tools.
+      await byName(NO_REPLY_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", reason: "fyi only" });
+      expect(resolver).toHaveBeenCalledWith("room-1");
+      expect(roomTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, { reason: "fyi only" });
       expect(roomlessTools.executeToolCall).toHaveBeenCalledWith("band_create_chatroom", {});
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, {});
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(1);
 
       await byName(SEND_MESSAGE_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", content: "hello" });
       expect(resolver).toHaveBeenCalledWith("room-1");
       expect(roomTools.executeToolCall).toHaveBeenCalledWith(SEND_MESSAGE_TOOL_NAME, { content: "hello" });
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -249,5 +254,66 @@ describe("shared portable MCP registrations", () => {
     expect(buildCustomMcpRegistrations([def, def], () => undefined)).toHaveLength(2);
     expect(() => buildCustomMcpRegistrations([{ ...def, effect: "bad" } as never], () => undefined)).not.toThrow();
     expect(() => buildCustomMcpRegistrations([{ ...def, schema: z.object({ room_id: z.string() }) }], () => undefined)).toThrow(/routing/);
+  });
+});
+
+describe("the keyed admission guard at dispatch", () => {
+  /** One room's tools behind the admission decorator, as a bridge wires it: the framework dispatches inside the admission's scope. */
+  function keyedBridge(tools: FakeTools, guard: () => boolean) {
+    const resolver = (roomId: string) => (roomId === "room-1" ? tools : undefined);
+    const registrations = buildRoomScopedRegistrations(resolver);
+    const inner: { onmessage?: (message: JSONRPCMessage) => void; start: () => Promise<void> } = { start: async () => {} };
+    const admission = new AdmissionTransport(inner as unknown as Transport, buildOriginResolver(resolver, true, guard));
+    const outcomes: Array<{ name: string; result: Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> = [];
+    admission.onmessage = (message) => {
+      const params = ((message as { params?: unknown }).params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const registration = registrations.find((r) => r.name === params.name);
+      if (registration !== undefined) {
+        outcomes.push({ name: params.name ?? "", result: registration.execute(params.arguments as Record<string, unknown>) as Promise<{ isError?: boolean; content: Array<{ text: string }> }> });
+      }
+    };
+    void admission.start();
+    return {
+      registrations,
+      deliver: (name: string, args: Record<string, unknown>) => inner.onmessage?.({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } as JSONRPCMessage),
+      outcomes,
+    };
+  }
+
+  it("refuses a keyed call whose fence could not stand, cleanly, before any dispatch", async () => {
+    const real = new FakeTools();
+    real.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    // The turn's tools refuse to stand the fence's mark: its lookup cannot
+    // run, so the fence did not stand.
+    const tools = new Proxy(real, {
+      get(target, key) {
+        if (typeof key === "symbol") {
+          throw new Error("the fence's stand cannot be read");
+        }
+        return Reflect.get(target, key);
+      },
+    }) as FakeTools;
+    const bridge = keyedBridge(tools, () => true);
+    bridge.deliver(SEND_MESSAGE_TOOL_NAME, { room_id: "room-1", content: "fenced", operation_id: "op-guard" });
+    // A clean no-dispatch refusal: classified text, no raw error, and the
+    // business never ran against a turn it did not fence.
+    const outcome = await bridge.outcomes[0].result;
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content[0].text).toContain("refused");
+    expect(real.executeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyed call whose origin no longer stands, without claiming what the bridge stands", async () => {
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const bridge = keyedBridge(tools, () => false);
+    bridge.deliver(SEND_MESSAGE_TOOL_NAME, { room_id: "room-1", content: "retired", operation_id: "op-retired" });
+    const outcome = await bridge.outcomes[0].result;
+    // The refusal names only what the call's own admission proved: no origin
+    // that can run it — not what the bridge itself stands.
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content[0].text).toContain("refused");
+    expect(outcome.content[0].text).not.toMatch(/retired|no longer stands/i);
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
   });
 });

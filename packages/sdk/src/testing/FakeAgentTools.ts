@@ -5,6 +5,7 @@ import type {
   PeerLookupTools,
   ContactTools,
   MemoryTools,
+  SendMessageOptions,
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, sendFailureViaEvent } from "../contracts/protocols";
 import { isBlankEventContent } from "../contracts/chatEvents";
@@ -32,6 +33,8 @@ import type {
 interface CapturedMessage {
   content: string;
   mentions?: MentionInput;
+  /** The operation id the send carried, as supplied, when it carried one. */
+  operationId?: unknown;
 }
 
 interface CapturedEvent {
@@ -90,9 +93,10 @@ export class FakeAgentTools
   public async sendMessage(
     content: string,
     mentions?: MentionInput,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendMessage");
-    return this.post(content, mentions);
+    return this.post(content, mentions, options?.operationId);
   }
 
   /** Posts like `sendMessage`; tracked tools never count it as the turn's reply. */
@@ -104,8 +108,8 @@ export class FakeAgentTools
     return this.post(content, mentions);
   }
 
-  private post(content: string, mentions?: MentionInput): ToolOperationResult {
-    this.messagesSent.push({ content, mentions });
+  private post(content: string, mentions?: MentionInput, operationId?: unknown): ToolOperationResult {
+    this.messagesSent.push({ content, mentions, operationId });
     const id = `msg-${this.messageCounter++}`;
     return { id, status: "sent" };
   }

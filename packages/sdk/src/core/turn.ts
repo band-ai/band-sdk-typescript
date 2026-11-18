@@ -40,10 +40,17 @@ export class Turn {
   private declineCount = 0;
   /** The turn's runtime side, when the turn runs on the runtime's tools: it fences the turn when a reply's delivery stands unknown. */
   private fenceSource: (() => boolean) | undefined;
+  /** The turn's keyed-admission fence: a canonical keyed call — valid or not, accepted or refused — commits the turn to keyed delivery, so its closing text is never relayed as an unkeyed replacement. A definite refusal claims no possible remote delivery, so it stands here, not in {@link fenceSource}. */
+  private relayFenceSource: (() => boolean) | undefined;
 
   /** Binds the runtime's fence for this turn's replies, when its tools carry one. */
   public useFenceSource(source: () => boolean): void {
     this.fenceSource = source;
+  }
+
+  /** Binds the runtime's keyed-admission fence, when its tools carry one. */
+  public useRelayFenceSource(source: () => boolean): void {
+    this.relayFenceSource = source;
   }
 
   /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
@@ -117,15 +124,17 @@ export class Turn {
 
   /** The turn's closing text must not be relayed as a reply: a reply whose
    * delivery stands unknown may already be in the room, and an unkeyed relay
-   * would post replacement text on top of it. The fence stands on the turn's
-   * runtime side, so a late result fences the turn it ran on and cannot reach
-   * a successor.
+   * would post replacement text on top of it; a turn that made a keyed
+   * call, whatever its outcome, is committed to keyed delivery and its
+   * closing text is not relayed on top of it either. The fences stand on the
+   * turn's runtime side, so a late result fences the turn it ran on and
+   * cannot reach a successor.
    */
   public get relayProhibited(): boolean {
-    return this.fenceSource?.() ?? false;
+    return (this.fenceSource?.() ?? false) || (this.relayFenceSource?.() ?? false);
   }
 
-  /** This turn's reply delivery stands unknown: the reply may already be in the room. */
+  /** This turn's reply delivery stands unknown: the reply may already be in the room. A keyed call that was definitely refused does not claim this. */
   public get hasUnknownDelivery(): boolean {
     return this.fenceSource?.() ?? false;
   }
@@ -143,6 +152,13 @@ export class Turn {
 export type TurnTools<T = AdapterToolsProtocol> = T & { readonly turn: Turn };
 
 type ToolMethod = (...args: unknown[]) => Promise<unknown>;
+
+/** The wrap a turn-side wrapper applies to one Band tool call: the tool, the call to make, and the call's raw arguments. */
+export type BandToolCallWrap = (
+  toolName: BandToolName,
+  call: () => Promise<unknown>,
+  args: readonly unknown[],
+) => Promise<unknown>;
 
 /** Records a Band tool call on `turn` if it landed: not a failed result, and for a send, not a blank one. */
 function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, result: unknown): void {
@@ -168,7 +184,7 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
  */
 export function bandToolOverrides<T extends AdapterToolsProtocol>(
   tools: T,
-  wrap: (toolName: BandToolName, call: () => Promise<unknown>, content: unknown) => Promise<unknown>,
+  wrap: BandToolCallWrap,
 ): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
 
@@ -177,21 +193,33 @@ export function bandToolOverrides<T extends AdapterToolsProtocol>(
     if (!method) {
       continue;
     }
-    overrides[methodName] = (...args: unknown[]) => wrap(toolName, () => method(...args), args[0]);
+    overrides[methodName] = (...args: unknown[]) => wrap(toolName, () => method(...args), args);
   }
 
   const executeToolCall = tools.executeToolCall.bind(tools);
   overrides.executeToolCall = (toolName: string, args: Record<string, unknown>) =>
-    isBandToolName(toolName) ? wrap(toolName, () => executeToolCall(toolName, args), args.content) : executeToolCall(toolName, args);
+    isBandToolName(toolName) ? wrap(toolName, () => executeToolCall(toolName, args), [args]) : executeToolCall(toolName, args);
 
   return overrides;
 }
 
+/** The message text of a landed send: the method's content argument, or the send's `content` field through `executeToolCall`. */
+function sentContentOf(args: readonly unknown[]): unknown {
+  const first = args[0];
+  if (typeof first === "string") {
+    return first;
+  }
+  if (typeof first === "object" && first !== null && "content" in first) {
+    return (first as { content?: unknown }).content;
+  }
+  return undefined;
+}
+
 /** Wrappers for `tools`' Band tool calls that record each one that lands on `turn`, via {@link bandToolOverrides}. */
 export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: () => Turn): Partial<T> {
-  const overrides = bandToolOverrides(tools, async (toolName, call, content) => {
+  const overrides = bandToolOverrides(tools, async (toolName, call, args) => {
     const result = await call();
-    recordLanded(turn(), toolName, content, result);
+    recordLanded(turn(), toolName, sentContentOf(args), result);
     return result;
   });
 
@@ -225,7 +253,26 @@ export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = tru
         }
         return value === true;
       } catch {
+        // A fence that cannot be read claims nothing: no possible remote
+        // delivery is asserted for a turn whose unknown mark it cannot prove.
         return false;
+      }
+    });
+  }
+  const relayFence = (tools as unknown as { readonly relayProhibitedFenced?: () => boolean } | undefined)?.relayProhibitedFenced;
+  if (relayFence) {
+    turn.useRelayFenceSource(() => {
+      try {
+        const value = relayFence() as unknown;
+        if (value instanceof Promise) {
+          value.catch(() => undefined);
+          return true;
+        }
+        return value === true;
+      } catch {
+        // The relay stands blocked when its fence cannot be read: the
+        // closing text is never relayed on a turn it cannot clear.
+        return true;
       }
     });
   }

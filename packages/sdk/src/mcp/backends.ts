@@ -37,6 +37,13 @@ export interface CreateBandMcpBackendOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
+  /**
+   * Consulted by a keyed call's admission before it resolves any tools: once it
+   * reports false, the bridge admits no origin for any call — nothing is pinned
+   * and no turn is fenced. A bridge whose connection or generation retired
+   * passes one that reports false once it retires.
+   */
+  admissionGuard?: () => boolean;
 }
 
 export async function createBandMcpBackend(
@@ -58,6 +65,7 @@ export async function createBandMcpBackend(
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
       additionalTools: options.additionalTools,
+      admissionGuard: options.admissionGuard,
     });
 
     return {
@@ -68,24 +76,27 @@ export async function createBandMcpBackend(
     };
   }
 
-  // One resolution path, so non-SDK servers and registration building reach the same tools.
-  const resolvedTools = options.multiRoom === false
-    ? resolveSingleRoomTools(options.getToolsForRoom)
-    : options.getToolsForRoom;
+  // The bridges stand the raw room resolver, not a pre-resolved proxy: a keyed
+// call's origin resolves the resolver at the raw call, so it pins the actual
+// tools of the turn the call stood on, not whatever a forwarding proxy would
+// re-resolve to after the framework's validation yields.
+  const multiRoom = options.multiRoom !== false;
 
-  const registrations = options.multiRoom === false
-    ? buildSingleContextRegistrations(resolvedTools as AdapterToolsProtocol, registrationOptions)
-    : buildRoomScopedRegistrations(resolvedTools as (roomId: string) => AdapterToolsProtocol | undefined, registrationOptions);
+  const registrations = multiRoom
+    ? buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions)
+    : buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions);
 
   const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
 
   if (options.kind === "stdio") {
     const server = new BandMcpStdioServer({
-      tools: resolvedTools,
+      tools: options.getToolsForRoom,
+      multiRoom,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
+      admissionGuard: options.admissionGuard,
     });
     await server.start();
 
@@ -105,12 +116,14 @@ export async function createBandMcpBackend(
 
   if (options.kind === "sse") {
     const server = new BandMcpSseServer({
-      tools: resolvedTools,
+      tools: options.getToolsForRoom,
+      multiRoom,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
       authToken,
+      admissionGuard: options.admissionGuard,
     });
     await server.start();
 
@@ -127,12 +140,14 @@ export async function createBandMcpBackend(
 
   const server = new BandMcpServer({
     execute: options.execute,
-    tools: resolvedTools,
+    tools: options.getToolsForRoom,
+    multiRoom,
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
     authToken,
+    admissionGuard: options.admissionGuard,
   });
   await server.start();
 

@@ -7,9 +7,11 @@ import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   registerTools,
+  resolveSingleRoomTools,
 } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
+import { AdmissionTransport, buildOriginResolver, type OriginResolver } from "./admission";
 
 export interface BandMcpSseServerOptions {
   /** Single tools instance or a room resolver, as `McpToolRegistration.execute` describes. */
@@ -27,6 +29,19 @@ export interface BandMcpSseServerOptions {
    * don't opt in.
    */
   authToken?: string;
+  /**
+   * A keyed call's admission consults this before resolving any tools: once it
+   * reports false, no origin stands for any call, so nothing is pinned and no
+   * turn is fenced.
+   */
+  admissionGuard?: () => boolean
+  /**
+   * With a `tools` resolver, whether the server scopes its tools to the call's
+   * `room_id` (the default): `false` stands a single-context server on the
+   * resolver's `""` result, and a keyed call's origin resolves the raw
+   * resolver at the raw call.
+   */
+  multiRoom?: boolean
 }
 
 interface SessionRecord {
@@ -43,6 +58,8 @@ const SESSION_SWEEP_INTERVAL_MS = 60 * 1000
 export class BandMcpSseServer {
   private readonly options: BandMcpSseServerOptions
   private readonly registrations: McpToolRegistration[]
+  /** The origin a keyed call resolves to, as the bridge stands; `undefined` when no origin stands. */
+  private readonly originResolver: OriginResolver
   private httpServer: import("node:http").Server | null = null
   private actualPort: number | null = null
   private readonly sessions = new Map<string, SessionRecord>()
@@ -58,11 +75,16 @@ export class BandMcpSseServer {
       additionalTools: options.additionalTools,
     }
 
-    if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions)
+    const tools = options.tools
+    const multiRoom = options.multiRoom ?? (typeof tools === "function")
+    if (typeof tools === "function" && multiRoom) {
+      this.registrations = buildRoomScopedRegistrations(tools, regOptions)
     } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions)
+      this.registrations = buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, regOptions)
     }
+    this.originResolver = typeof tools === "function"
+      ? buildOriginResolver(tools, multiRoom, options.admissionGuard)
+      : buildOriginResolver(() => tools, false, options.admissionGuard)
   }
 
   public get port(): number | null {
@@ -111,7 +133,9 @@ export class BandMcpSseServer {
         version: MCP_SERVER_VERSION,
       })
       registerTools(mcpServer, z, this.registrations)
-      await mcpServer.connect(transport)
+      // The admission decorator stands between the client and the framework:
+      // a keyed call is fenced and pinned before any validation.
+      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver))
 
       const sessionId = transport.sessionId
       this.sessions.set(sessionId, {

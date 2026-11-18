@@ -9,6 +9,7 @@ import {
   type McpToolRegistration,
 } from "./registrations";
 import { createSdkMcpBridge } from "./sdkTools";
+import { buildOriginResolver } from "./admission";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
@@ -21,6 +22,12 @@ export interface CreateBandSdkMcpServerOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
+  /**
+   * A keyed call's admission consults this before resolving any tools: once it
+   * reports false, no origin stands for any call, so nothing is pinned and no
+   * turn is fenced.
+   */
+  admissionGuard?: () => boolean;
 }
 
 export interface GetSystemPromptContextResult {
@@ -74,7 +81,11 @@ export function createBandSdkMcpServer(
     ? buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions)
     : buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions);
 
-  const bridge = createSdkMcpBridge(registrations);
+  const bridge = createSdkMcpBridge(
+    registrations,
+    undefined,
+    buildOriginResolver(options.getToolsForRoom, options.multiRoom !== false, options.admissionGuard),
+  );
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 

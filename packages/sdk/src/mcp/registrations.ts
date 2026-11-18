@@ -18,6 +18,8 @@ import {
   getToolDescription,
 } from "../contracts/toolSchemas";
 import { buildZodShape } from "./zod";
+import { currentAdmission } from "./admission";
+import { unknownOperationMessage } from "../runtime/journal/publication";
 
 export interface McpToolRegistration {
   name: string;
@@ -118,8 +120,77 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
   return {
     ...tool,
     inputSchema: withRoomId(tool.inputSchema),
-    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
+      const keyed = keyedDispatch(roomIdArg);
+      // A keyed call runs on the tools its admission pinned, in the room it
+      // was admitted in: it is never re-resolved against whatever the room
+      // stands for now, and naming another room is refused rather than
+      // rerouted. With no standing origin, a turn fence that did not stand,
+      // or an admission lookup that cannot run, it is refused outright: no
+      // re-resolution, no post, no settlement, no turn selected, and never a
+      // dispatch against a turn it did not fence.
+      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+        return Promise.resolve(errorResult(keyed.text));
+      }
+      if (keyed.status === "admitted") {
+        return Promise.resolve(execute(keyed.tools as T, args));
+      }
+      return inRoom(roomIdArg, resolver, (roomTools) => execute(roomTools, args));
+    },
   };
+}
+
+/** The refusal a keyed call earns for naming a room other than the one it was admitted in. */
+function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
+  return `The call's ${ROOM_ID_ARG} ${JSON.stringify(roomIdArg)} names a different room than the one its operation was admitted in (${admittedRoomId}); it is refused rather than rerouted`;
+}
+
+/**
+ * The refusal a keyed call earns when its bridge stands no origin for it, or
+ * its turn fence did not stand: no standing turn's tools can run it. The
+ * call is refused cleanly — no re-resolution against a successor turn, no
+ * post, no settlement, and no turn selected or fenced for it. What the bridge
+ * itself stands — open, retired, or replaced — is not claimed: the refusal
+ * names only what the call's own admission proved, and nothing more.
+ */
+function originlessKeyedResult(): string {
+  return "The call's operation was admitted with no origin that can run it, or on a turn whose fence did not stand: the call is refused. Nothing was re-resolved, posted, settled, or fenced.";
+}
+
+/**
+ * What a keyed call's dispatch stands on, read under one guard: the
+ * admission's standing, its origin, and its fence, looked up in a scope where
+ * a lookup that cannot run stands as no origin at all — the call is refused
+ * rather than run against an origin that cannot be read, or unfenced. A call
+ * the admission does not carry keyed dispatches as usual.
+ */
+type KeyedDispatch =
+  | { status: "none" }
+  | { status: "refused"; text: string }
+  | { status: "wrong-room"; text: string }
+  | { status: "admitted"; tools: AdapterToolsProtocol; roomId: string | undefined };
+
+function keyedDispatch(roomIdArg: unknown): KeyedDispatch {
+  try {
+    const admission = currentAdmission();
+    if (!admission?.keyed) {
+      return { status: "none" };
+    }
+    const origin = admission.origin;
+    if (origin === undefined || !admission.fenced) {
+      return { status: "refused", text: originlessKeyedResult() };
+    }
+    const tools = origin.tools;
+    const roomId = origin.roomId;
+    if (roomId !== undefined && roomIdArg !== roomId) {
+      return { status: "wrong-room", text: wrongRoomResult(roomIdArg, roomId) };
+    }
+    return { status: "admitted", tools, roomId };
+  } catch {
+    // The call's admission stood, but its lookup did not: it is refused
+    // rather than run against an origin that cannot be read.
+    return { status: "refused", text: originlessKeyedResult() };
+  }
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -194,8 +265,16 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
     return {
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
-      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) =>
-        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
+      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) => {
+        const keyed = keyedDispatch(args[ROOM_ID_ARG]);
+        if (keyed.status === "refused" || keyed.status === "wrong-room") {
+          return Promise.resolve(errorResult(keyed.text));
+        }
+        if (keyed.status === "admitted") {
+          return Promise.resolve(tool.execute(args, keyed.tools, signal));
+        }
+        return inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal));
+      },
     };
   });
 }
@@ -208,7 +287,13 @@ export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterTo
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
   return {
     ...tool,
-    execute: (args, _tools, signal) => tool.execute(args, tools, signal),
+    execute: (args, _tools, signal) => {
+      const keyed = keyedDispatch(args[ROOM_ID_ARG]);
+      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+        return Promise.resolve(errorResult(keyed.text));
+      }
+      return tool.execute(args, keyed.status === "admitted" ? keyed.tools : tools, signal);
+    },
   };
 }
 
@@ -262,7 +347,16 @@ function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegi
 }
 
 function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegistration {
-  return { ...tool, execute: (args) => executeToolCall(tools, tool.name, args) };
+  return {
+    ...tool,
+    execute: (args) => {
+      const keyed = keyedDispatch(args[ROOM_ID_ARG]);
+      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+        return Promise.resolve(errorResult(keyed.text));
+      }
+      return executeToolCall(keyed.status === "admitted" ? keyed.tools : tools, tool.name, args);
+    },
+  };
 }
 
 function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
@@ -308,41 +402,49 @@ async function executeToolCall(
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
       // A classified delivery-unknown keeps its classification across the MCP
-      // boundary: the result says the post's delivery is unknown and Band may
+      // boundary: the result says the delivery is unknown and Band may
       // already hold it — nothing to call a plain tool failure, and no
-      // adapter text or recovery advice is carried with it.
+      // adapter text or recovery advice is carried with it. A keyed
+      // operation's unknown stands under the operation's own text.
       if (result.details?.kind === DeliveryUnknownError.KIND) {
-        return unknownDeliveryResult();
+        return unknownDeliveryResult(unknownOperationDetail(result.message));
       }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
     if (error instanceof DeliveryUnknownError) {
-      return unknownDeliveryResult();
+      return unknownDeliveryResult(unknownOperationDetail(error.message));
     }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
 }
 
 /**
- * The MCP result for a post whose delivery is unknown: the stable sanitized
+ * The MCP result for a delivery that stands unknown: the stable sanitized
  * `delivery_unknown` discriminator, and the one guidance a caller can act on
- * safely — do not resend. No adapter text, no status, no cause: the post may
- * already stand in the room, and a resend could post it twice. Callers that
- * need more than the discriminator get it from the SDK, not from this result.
+ * safely — do not resend. A keyed operation's unknown carries the operation's
+ * own text; a reply's keeps the generic post text. No adapter text, no
+ * status, no cause: the delivery may already stand in the room, and a resend
+ * could post it twice. Callers that need more than the discriminator get it
+ * from the SDK, not from this result.
  */
-function unknownDeliveryResult(): McpToolResult {
+function unknownDeliveryResult(operationDetail?: string): McpToolResult {
   return {
     content: [{
       type: "text",
       text: JSON.stringify({
         kind: DeliveryUnknownError.KIND,
-        detail: "The post's delivery is unknown: Band may already hold it. Do not resend it.",
+        detail: operationDetail ?? "The post's delivery is unknown: Band may already hold it. Do not resend it.",
       }),
     }],
     isError: true,
   };
+}
+
+/** A keyed operation's unknown stands under the operation's own text; a reply's keeps the generic one. */
+function unknownOperationDetail(message: unknown): string | undefined {
+  return typeof message === "string" && message === unknownOperationMessage() ? message : undefined;
 }
 
 function asNonEmptyString(value: unknown): string | null {
