@@ -18,6 +18,8 @@ import {
   getToolDescription,
 } from "../contracts/toolSchemas";
 import { buildZodShape } from "./zod";
+import { currentAdmission } from "./admission";
+import { unknownOperationMessage } from "../runtime/journal/publication";
 
 export interface McpToolRegistration {
   name: string;
@@ -118,8 +120,26 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
   return {
     ...tool,
     inputSchema: withRoomId(tool.inputSchema),
-    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
+      const pinned = currentAdmission();
+      if (pinned?.origin !== undefined) {
+        // A keyed call admitted at the transport runs on the tools its
+        // admission pinned, in the room it was admitted in: it is never
+        // re-resolved against whatever the room stands for now, and naming
+        // another room is refused rather than rerouted.
+        if (pinned.origin.roomId !== undefined && roomIdArg !== pinned.origin.roomId) {
+          return Promise.resolve(errorResult(wrongRoomResult(roomIdArg, pinned.origin.roomId)));
+        }
+        return Promise.resolve(execute(pinned.origin.tools as T, args));
+      }
+      return inRoom(roomIdArg, resolver, (roomTools) => execute(roomTools, args));
+    },
   };
+}
+
+/** The refusal a keyed call earns for naming a room other than the one it was admitted in. */
+function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
+  return `The call's ${ROOM_ID_ARG} ${JSON.stringify(roomIdArg)} names a different room than the one its operation was admitted in (${admittedRoomId}); it is refused rather than rerouted`;
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -194,8 +214,16 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
     return {
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
-      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) =>
-        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
+      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) => {
+        const pinned = currentAdmission();
+        if (pinned?.origin !== undefined) {
+          if (pinned.origin.roomId !== undefined && args[ROOM_ID_ARG] !== pinned.origin.roomId) {
+            return Promise.resolve(errorResult(wrongRoomResult(args[ROOM_ID_ARG], pinned.origin.roomId)));
+          }
+          return Promise.resolve(tool.execute(args, pinned.origin.tools, signal));
+        }
+        return inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal));
+      },
     };
   });
 }
@@ -208,7 +236,10 @@ export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterTo
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
   return {
     ...tool,
-    execute: (args, _tools, signal) => tool.execute(args, tools, signal),
+    execute: (args, _tools, signal) => {
+      const pinned = currentAdmission();
+      return tool.execute(args, pinned?.origin !== undefined ? pinned.origin.tools : tools, signal);
+    },
   };
 }
 
@@ -262,7 +293,13 @@ function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegi
 }
 
 function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegistration {
-  return { ...tool, execute: (args) => executeToolCall(tools, tool.name, args) };
+  return {
+    ...tool,
+    execute: (args) => {
+      const pinned = currentAdmission();
+      return executeToolCall(pinned?.origin !== undefined ? pinned.origin.tools : tools, tool.name, args);
+    },
+  };
 }
 
 function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
@@ -308,41 +345,49 @@ async function executeToolCall(
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
       // A classified delivery-unknown keeps its classification across the MCP
-      // boundary: the result says the post's delivery is unknown and Band may
+      // boundary: the result says the delivery is unknown and Band may
       // already hold it — nothing to call a plain tool failure, and no
-      // adapter text or recovery advice is carried with it.
+      // adapter text or recovery advice is carried with it. A keyed
+      // operation's unknown stands under the operation's own text.
       if (result.details?.kind === DeliveryUnknownError.KIND) {
-        return unknownDeliveryResult();
+        return unknownDeliveryResult(unknownOperationDetail(result.message));
       }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
     if (error instanceof DeliveryUnknownError) {
-      return unknownDeliveryResult();
+      return unknownDeliveryResult(unknownOperationDetail(error.message));
     }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
 }
 
 /**
- * The MCP result for a post whose delivery is unknown: the stable sanitized
+ * The MCP result for a delivery that stands unknown: the stable sanitized
  * `delivery_unknown` discriminator, and the one guidance a caller can act on
- * safely — do not resend. No adapter text, no status, no cause: the post may
- * already stand in the room, and a resend could post it twice. Callers that
- * need more than the discriminator get it from the SDK, not from this result.
+ * safely — do not resend. A keyed operation's unknown carries the operation's
+ * own text; a reply's keeps the generic post text. No adapter text, no
+ * status, no cause: the delivery may already stand in the room, and a resend
+ * could post it twice. Callers that need more than the discriminator get it
+ * from the SDK, not from this result.
  */
-function unknownDeliveryResult(): McpToolResult {
+function unknownDeliveryResult(operationDetail?: string): McpToolResult {
   return {
     content: [{
       type: "text",
       text: JSON.stringify({
         kind: DeliveryUnknownError.KIND,
-        detail: "The post's delivery is unknown: Band may already hold it. Do not resend it.",
+        detail: operationDetail ?? "The post's delivery is unknown: Band may already hold it. Do not resend it.",
       }),
     }],
     isError: true,
   };
+}
+
+/** A keyed operation's unknown stands under the operation's own text; a reply's keeps the generic one. */
+function unknownOperationDetail(message: unknown): string | undefined {
+  return typeof message === "string" && message === unknownOperationMessage() ? message : undefined;
 }
 
 function asNonEmptyString(value: unknown): string | null {

@@ -25,6 +25,7 @@ import {
   scopeHostTools,
 } from "./registrations";
 import { ToolsListedTransport } from "./toolsListedTransport";
+import { AdmissionTransport, buildOriginResolver, type OriginResolver } from "./admission";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 
 /** A host's resources under one URI template; a variable that may hold `/` needs the `{+name}` form. */
@@ -54,12 +55,19 @@ export interface BandMcpStdioServerOptions {
   resources?: McpResourceSource;
   stdin?: Readable;
   stdout?: Writable;
+  /**
+   * A keyed call's admission consults this before resolving any tools: once it
+   * reports false, no origin stands for any call, so nothing is pinned and no
+   * turn is fenced.
+   */
+  admissionGuard?: () => boolean;
 }
 
 export class BandMcpStdioServer {
   private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
   private readonly bindAddedTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
+  private readonly originResolver: OriginResolver | undefined;
   private session: StdioSession | null = null;
 
   public constructor(options: BandMcpStdioServerOptions) {
@@ -77,12 +85,16 @@ export class BandMcpStdioServer {
     if (!tools) {
       this.registrations = [...(options.additionalTools ?? [])];
       this.bindAddedTools = (hostTools) => hostTools;
+      // No tools means no origin a keyed call could be pinned to.
+      this.originResolver = undefined;
     } else if (typeof tools === "function") {
       this.registrations = buildRoomScopedRegistrations(tools, regOptions);
       this.bindAddedTools = (hostTools) => scopeHostTools(hostTools, tools);
+      this.originResolver = buildOriginResolver(tools, true, options.admissionGuard);
     } else {
       this.registrations = buildSingleContextRegistrations(tools, regOptions);
       this.bindAddedTools = (hostTools) => bindHostTools(hostTools, tools);
+      this.originResolver = buildOriginResolver(() => tools, false, options.admissionGuard);
     }
   }
 
@@ -105,7 +117,7 @@ export class BandMcpStdioServer {
     const modules: McpModules = { ...mcp, ...stdio, ListResourceTemplatesRequestSchema, z };
     const stdin = this.options.stdin ?? process.stdin;
     const stdout = this.options.stdout ?? process.stdout;
-    const session = openSession(modules, this.options, this.registrations, stdin, stdout, () => {
+    const session = openSession(modules, this.options, this.registrations, this.originResolver, stdin, stdout, () => {
       if (this.session === session) {
         void this.stop();
       }
@@ -222,12 +234,16 @@ function openSession(
   modules: McpModules,
   options: BandMcpStdioServerOptions,
   registrations: McpToolRegistration[],
+  originResolver: OriginResolver | undefined,
   stdin: Readable,
   stdout: Writable,
   onClientGone: () => void,
 ): StdioSession {
   const { mcpServer, tools, register } = buildMcpServer(modules, options, registrations);
-  const transport = new ToolsListedTransport(new modules.StdioServerTransport(stdin, stdout));
+  const listed = new ToolsListedTransport(new modules.StdioServerTransport(stdin, stdout));
+  // The admission decorator stands outside the listed wrapper, so a keyed
+  // call is fenced and pinned before anything the framework does with it.
+  const transport = new AdmissionTransport(listed, originResolver);
 
   const initialized = new Promise<void>((resolve) => {
     mcpServer.server.oninitialized = resolve;
@@ -258,7 +274,7 @@ function openSession(
   return {
     mcpServer,
     tools,
-    toolsListed: transport.toolsListed,
+    toolsListed: listed.toolsListed,
     register,
     connect: () => mcpServer.connect(transport),
     initialized,

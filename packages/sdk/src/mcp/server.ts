@@ -10,6 +10,7 @@ import {
 } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
+import { AdmissionTransport, buildOriginResolver, type OriginResolver } from "./admission";
 
 export interface BandMcpServerOptions {
   /** @internal */
@@ -34,6 +35,13 @@ export interface BandMcpServerOptions {
    * prior behavior for callers that don't opt in.
    */
   authToken?: string;
+  /**
+   * A keyed call's admission consults this before resolving any tools: once it
+   * reports false, no origin stands for any call, so nothing is pinned and no
+   * turn is fenced. A bridge whose connection or generation retired uses it to
+   * stop admitting origins for calls its process already retired.
+   */
+  admissionGuard?: () => boolean;
 }
 
 const PORT_RANGE_START = 50000;
@@ -78,7 +86,14 @@ export class BandMcpServer {
     } else {
       this.registrations = buildSingleContextRegistrations(options.tools, regOptions);
     }
+    const tools = options.tools;
+    this.originResolver = typeof tools === "function"
+      ? buildOriginResolver(tools, true, options.admissionGuard)
+      : buildOriginResolver(() => tools, false, options.admissionGuard);
   }
+
+  /** The origin a keyed call resolves to, as the bridge stands; `undefined` when no origin stands. */
+  private readonly originResolver: OriginResolver;
 
   /** Port the server is listening on. Null if not started. */
   public get port(): number | null {
@@ -238,7 +253,9 @@ export class BandMcpServer {
       }
     };
 
-    await mcpServer.connect(transport);
+    // The admission decorator stands between the client and the framework on
+      // every session: a keyed call is fenced and pinned before any validation.
+      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver));
     record = {
       mcpServer,
       transport,

@@ -38,8 +38,29 @@ function toolModelFromSpec(spec: ToolSpec) {
   };
 }
 
+/**
+ * The optional operation id a send or a no-reply may carry, as the tool's
+ * published input carries it: a string, advertised strictly; a supplied id of
+ * any other type is refused by validation, and the call's admission fencing
+ * still stands on the raw invocation.
+ */
+const OPERATION_ID_PROPERTY = {
+  type: "string",
+  description:
+    "Optional operation id: an opaque, untrimmed id of at most 256 bytes; it is not a path, a handle, or an alias. " +
+    "A later call with the same id and the same content (or no-reply reason) stands for the same operation: a settled " +
+    "operation replays its stored result without a new post, a refused one replays its refusal, and an unknown one stays " +
+    "unknown — Band may already hold it, so do not resend it. Changed content or a different tool under the same id is " +
+    "refused. A different id names a different operation.",
+} as const;
+
+/** `model` with the optional `operation_id` input a keyed send or no-reply may carry. */
+function withOperationId<T extends { properties: Record<string, unknown> }>(model: T): T {
+  return { ...model, properties: { ...model.properties, operation_id: OPERATION_ID_PROPERTY } };
+}
+
 export const TOOL_MODELS = {
-  band_send_message: {
+  band_send_message: withOperationId({
     description:
       "Send a message to the chat room. " +
       "Use this to respond to users or other agents. Messages require at least one @mention " +
@@ -62,7 +83,7 @@ export const TOOL_MODELS = {
       },
     },
     required: ["content", "mentions"],
-  },
+  }),
   band_send_event: {
     description:
       "Send an event to the chat room. No mentions required. " +
@@ -87,7 +108,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "message_type"],
   },
-  [NO_REPLY_TOOL_NAME]: toolModelFromSpec(noReplyTool()),
+  [NO_REPLY_TOOL_NAME]: withOperationId(toolModelFromSpec(noReplyTool())),
   band_add_participant: {
     description:
       "Add a participant (agent or user) to the chat room by name. " +

@@ -3,14 +3,36 @@ import { rethrowIfRecoverableTurnFailure } from "../core/errors";
 import type { TurnTools } from "../core/turn";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
-import { deliverReply } from "../core/deliveryFailedError";
+import { DeliveryFailedError, DeliveryUnknownError } from "../core/deliveryFailedError";
 import { overrideTools } from "../core/overrideTools";
 import { agentFailure, reportTurnFailure } from "../core/providerFailure";
+import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
+import type { SendMessageOptions } from "../contracts/protocols";
 
-/** Route handler `sendMessage` through `deliverReply`. */
+/**
+ * The turn's `sendMessage`, delivery-safe: a classified unknown keeps its
+ * classification, and any other failure stands as `DeliveryFailedError`.
+ * `options` — a send's `operationId`, when the handler carries one — is
+ * forwarded, so the journal's keyed rules stand on the handler's sends too.
+ */
+async function deliverReplyForwardingOptions(
+  tools: TurnTools,
+  content: string,
+  mentions: MentionInput,
+  options?: SendMessageOptions,
+): Promise<ToolOperationResult> {
+  try {
+    return await tools.sendMessage(content, mentions, options);
+  } catch (error) {
+    if (error instanceof DeliveryUnknownError) throw error;
+    throw new DeliveryFailedError(error);
+  }
+}
+
+/** Route handler `sendMessage` through a delivery-safe post that forwards its options. */
 function toolsWithDeliverySafeSendMessage(tools: TurnTools): TurnTools {
   return overrideTools(tools, {
-    sendMessage: (content, mentions) => deliverReply(tools, content, mentions ?? []),
+    sendMessage: (content, mentions, options) => deliverReplyForwardingOptions(tools, content, mentions ?? [], options),
   });
 }
 

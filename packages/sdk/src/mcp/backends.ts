@@ -37,6 +37,13 @@ export interface CreateBandMcpBackendOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
+  /**
+   * Consulted by a keyed call's admission before it resolves any tools: once it
+   * reports false, the bridge admits no origin for any call — nothing is pinned
+   * and no turn is fenced. A bridge whose connection or generation retired
+   * passes one that reports false once it retires.
+   */
+  admissionGuard?: () => boolean;
 }
 
 export async function createBandMcpBackend(
@@ -58,6 +65,7 @@ export async function createBandMcpBackend(
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
       additionalTools: options.additionalTools,
+      admissionGuard: options.admissionGuard,
     });
 
     return {
@@ -86,6 +94,7 @@ export async function createBandMcpBackend(
       enableTaskTools: options.enableTaskTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
+      admissionGuard: options.admissionGuard,
     });
     await server.start();
 
@@ -111,6 +120,7 @@ export async function createBandMcpBackend(
       enableContactTools: true,
       additionalTools: options.additionalTools,
       authToken,
+      admissionGuard: options.admissionGuard,
     });
     await server.start();
 
@@ -133,6 +143,7 @@ export async function createBandMcpBackend(
     enableContactTools: true,
     additionalTools: options.additionalTools,
     authToken,
+    admissionGuard: options.admissionGuard,
   });
   await server.start();
 
