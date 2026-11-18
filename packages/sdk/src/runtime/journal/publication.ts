@@ -281,8 +281,17 @@ export class PublicationEngine {
     switch (status) {
         case "conflict":
           throw new OperationConflictError(operationId);
-        case "unknown":
-          throw this.unknownOperationError(operationId);
+        case "unknown": {
+          // A stored unknown says what the file proves, and nothing more: a
+          // send may already be in the room, a decline posts nothing at all.
+          // The text each stands under names that difference.
+          const kind = journal.operation(operationId)?.kind;
+          throw new DeliveryUnknownError(
+            new Error(`operation ${operationId} stands unknown in the journal`),
+            operationId,
+            kind === "decline" ? unknownDeclineMessage() : unknownOperationMessage(),
+          );
+        }
         case "refused":
           throw this.storedRefusalError(operationId, check.reasonText);
         case "settled": {
@@ -427,7 +436,7 @@ export class PublicationEngine {
     let result: ToolOperationResult;
     try {
       result = await input.runDecline();
-    } catch (error) {
+    } catch {
       // A decline the harness refuses stands refused: no settlement, and the
       // refusal is recorded so a same-id retry re-reads it. The stored and
       // thrown texts are the harness's classification, never the harness's
@@ -447,6 +456,16 @@ export class PublicationEngine {
         this.logger.warn("the refused no-reply's record could not be written", { roomId: journal.roomId, error });
       });
       throw new DeliveryFailedError(refusal);
+    }
+    if (!isStorableResult(result)) {
+      // A decline whose decision is not a result the journal's store can
+      // prove — one it would coerce, or not a result at all — did not stand
+      // either: it settles unknown, like a post with an acknowledgment the
+      // store cannot prove. Nothing is credited, and a same-id retry re-reads
+      // the unknown rather than re-running the decline as a success.
+      const error = new Error("the decline's decision does not stand as a stored result");
+      await this.settleOperationUnknown(journal, operationId, error, { poisonWriter: false });
+      throw new DeliveryUnknownError(error, operationId, unknownDeclineMessage());
     }
     try {
       await journal.settleOperation(operationId, {});
@@ -532,14 +551,6 @@ export class PublicationEngine {
     return parsed as ToolOperationResult;
   }
 
-  private unknownOperationError(operationId: string): DeliveryUnknownError {
-    return new DeliveryUnknownError(
-      new Error(`operation ${operationId} stands unknown in the journal`),
-      operationId,
-      unknownOperationMessage(),
-    );
-  }
-
   private storedRefusalError(operationId: string, reasonText: string | undefined): Error {
     const message = reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`;
     const error = new Error(message);
@@ -556,6 +567,11 @@ export class PublicationEngine {
 /** The text a keyed operation's unknown delivery stands under: the operator reads it in the tool result. */
 export function unknownOperationMessage(): string {
   return "The operation's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the operation as unknown; a process that reopens the room reports it without reposting it.";
+}
+
+/** The text a keyed decline's unknown outcome stands under: it posts nothing, so nothing is held. */
+export function unknownDeclineMessage(): string {
+  return "The no-reply's outcome is unknown: its decision did not stand as a stored result, so the journal proves nothing either. The turn journal records the operation as unknown; the reply is not credited as declined, and the operation is never re-run as a success.";
 }
 
 /**

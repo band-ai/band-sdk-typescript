@@ -23,6 +23,7 @@ const ROOM = "room-1";
 const OTHER_ROOM = "room-2";
 const MENTION = `@[[${AGENT_ID}]]`;
 const OP_ID = "op-restart-1";
+const LATE_ID = "op-late-1";
 /** A stop that waits for nothing: the process is killed with its turn and marks in flight. */
 const KILL = 0;
 
@@ -499,6 +500,67 @@ describe("a keyed operation's process boundary", () => {
     expect(relayed).toBe(false);
     expect(postedContents(platform, ROOM)).toEqual([]);
   });
+});
+
+describe("a late keyed outcome and the successor's relay", () => {
+  it("keeps the successor's relay standing when an earlier turn's keyed post lands late with an unknown outcome", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const a = room.postBeforeConnect(OWNER, `${MENTION} keyed please`);
+    // Band accepts the once post; its response — a 503 — is held until the
+    // successor's turn is running.
+    const lostResponse = createDeferred<unknown>();
+    onTestFinished(() => lostResponse.resolve(undefined));
+    const unavailable = new BandError({
+      statusCode: 503,
+      body: { error: { code: "service_unavailable", message: "Band is unavailable", request_id: "req-late" } },
+    });
+    platform.rest.createChatMessageOnce = async (roomId, message, options) => {
+      await platform.rest.createChatMessage(roomId, message, options);
+      await lostResponse.promise;
+      throw unavailable;
+    };
+
+    let late = Promise.resolve();
+    let relayed = true;
+    const first = await startProcess(platform, journalDir, async (args) => {
+      const { tools } = args;
+      if (String(args.message.content).includes("keyed please")) {
+        // The earlier turn commits to keyed delivery and ends without
+        // waiting for the attempt: the post stands unanswered when the
+        // successor starts.
+        late = tools
+          .executeToolCall("band_send_message", {
+            room_id: ROOM,
+            content: "keyed late",
+            mentions: [OWNER],
+            operation_id: LATE_ID,
+          })
+          .catch(() => undefined);
+        return;
+      }
+      // The successor answers plainly.
+      relayed = await relayReply(tools, "next answered", [OWNER]);
+    });
+    await settledAs(platform, a, "processed");
+    await until(() => recordsContain(journalDir, "op.recipients"));
+    // The successor starts while the earlier attempt still stands unanswered;
+    // then the earlier attempt's 503 lands, mid-successor.
+    const b = await room.say(OWNER, `${MENTION} next`);
+    lostResponse.resolve(undefined);
+    await late;
+    await settledAs(platform, b, "processed");
+    // The successor's relay stands: the earlier turn's late unknown outcome
+    // fenced that turn's own wrapper only, and never the successor's.
+    expect(relayed).toBe(true);
+    expect(postedContents(platform, ROOM)).toEqual(["keyed late", "next answered"]);
+    // The earlier operation stands unknown in the journal: a process that
+    // reopens the room reports it, with its id, without reposting it (the
+    // restart's announcement stands behind the kill-process boundary test).
+    expect(await recordsOf(journalDir)).toContain("op.unknown");
+    await first.runtime.stop(KILL);
+  }, 180000);
 });
 
 describe("the MCP bridge's keyed admission", () => {

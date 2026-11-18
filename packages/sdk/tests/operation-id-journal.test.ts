@@ -1,3 +1,5 @@
+import { readFile, writeFile } from "node:fs/promises";
+
 import { BandError } from "@band-ai/rest-client";
 
 import { describe, expect, it } from "vitest";
@@ -13,7 +15,7 @@ import {
   operationFingerprint,
   validateOperationId,
 } from "../src/runtime/journal/operations";
-import { PublicationEngine, unknownOperationMessage } from "../src/runtime/journal/publication";
+import { PublicationEngine, unknownDeclineMessage, unknownOperationMessage } from "../src/runtime/journal/publication";
 import { tmpRoot } from "./testUtils";
 import { ROOM, diskFull, generationIn, interceptJournalAppends, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
 
@@ -504,6 +506,86 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.unknown"]);
   });
 
+  it("stands a send whose acknowledgment does not stand as a stored result unknown: no credit, and a retry reposts nothing", async () => {
+    // The store would coerce an acknowledgment it cannot prove — a lossy
+    // value, or not a result at all — so the operation stands unknown on no
+    // copy: settled for no caller, never re-posted as a success.
+    for (const broken of [null, { invalid: Number.NaN }]) {
+      const dir = tmpRoot();
+      const { generation } = await generationIn(dir);
+      const engine = engineFor(generation);
+      const error = await engine
+        .publishOperation({
+          operationId: ID,
+          kind: "send",
+          content: "hello",
+          messageId: "msg-1",
+          prepare: sendPreparation(async () => broken),
+        })
+        .catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(DeliveryUnknownError);
+      expect((error as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+      const room = await generation.room(ROOM);
+      expect(room.operation(ID)?.outcome).toBe("unknown");
+      // The caller's inbound is credited nothing: the journal cannot prove the post.
+      expect(room.answered("msg-1")).toBe(false);
+      let posts = 0;
+      const retry = await engine
+        .publishOperation({
+          operationId: ID,
+          kind: "send",
+          content: "hello",
+          messageId: "msg-2",
+          prepare: sendPreparation(async () => {
+            posts += 1;
+            return {};
+          }),
+        })
+        .catch((thrown: unknown) => thrown);
+      expect(posts).toBe(0);
+      expect(retry).toBeInstanceOf(DeliveryUnknownError);
+      expect((retry as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+      await generation.close();
+      expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.unknown"]);
+    }
+  });
+
+  it("refuses a send whose acknowledgment stands as a failure, and the refusal credits no caller", async () => {
+    for (const failure of [{ ok: false }, { status: "failed" }]) {
+      const dir = tmpRoot();
+      const { generation } = await generationIn(dir);
+      const engine = engineFor(generation);
+      await expect(
+        engine.publishOperation({
+          operationId: ID,
+          kind: "send",
+          content: "hello",
+          messageId: "msg-1",
+          prepare: sendPreparation(async () => failure),
+        }),
+      ).rejects.toThrowError(DeliveryFailedError);
+      const room = await generation.room(ROOM);
+      expect(room.operation(ID)?.outcome).toBe("refused");
+      expect(room.answered("msg-1")).toBe(false);
+      let posts = 0;
+      await expect(
+        engine.publishOperation({
+          operationId: ID,
+          kind: "send",
+          content: "hello",
+          messageId: "msg-2",
+          prepare: sendPreparation(async () => {
+            posts += 1;
+            return {};
+          }),
+        }),
+      ).rejects.toMatchObject({ name: "OperationRefusedError" });
+      expect(posts).toBe(0);
+      await generation.close();
+      expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.refused"]);
+    }
+  });
+
   it("records a refused send, and a same-id retry re-reads the refusal without a post", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
@@ -607,6 +689,86 @@ describe("a keyed no-reply", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.refused"]);
   });
 
+  it("stands a decline whose decision does not stand as a stored result unknown: nothing is credited, and a retry re-reads the unknown", async () => {
+    // A decline that resolves to a value the store cannot prove — a lossy
+    // object, or not a result at all — did not stand: it settles unknown,
+    // the reply is not credited as declined, and a same-id retry re-reads
+    // the unknown rather than re-running the decision as a success.
+    for (const broken of [null, { invalid: Number.NaN }]) {
+      const dir = tmpRoot();
+      const { generation } = await generationIn(dir);
+      const engine = engineFor(generation);
+      const error = await engine
+        .publishOperation({
+          operationId: ID,
+          kind: "decline",
+          reason: "nothing to answer",
+          messageId: "msg-1",
+          runDecline: async () => broken,
+        })
+        .catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(DeliveryUnknownError);
+      expect((error as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+      const room = await generation.room(ROOM);
+      expect(room.operation(ID)?.outcome).toBe("unknown");
+      expect(room.answered("msg-1")).toBe(false);
+      let ran = 0;
+      const retry = await engine
+        .publishOperation({
+          operationId: ID,
+          kind: "decline",
+          reason: "nothing to answer",
+          messageId: "msg-2",
+          runDecline: async () => {
+            ran += 1;
+            return { status: "ok" };
+          },
+        })
+        .catch((thrown: unknown) => thrown);
+      expect(ran).toBe(0);
+      expect(retry).toBeInstanceOf(DeliveryUnknownError);
+      expect((retry as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+      await generation.close();
+      expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.unknown"]);
+    }
+  });
+
+  it("refuses a decline whose decision stands as a failure, and owes no settlement", async () => {
+    for (const failure of [{ ok: false }, { status: "failed" }]) {
+      const dir = tmpRoot();
+      const { generation } = await generationIn(dir);
+      const engine = engineFor(generation);
+      await expect(
+        engine.publishOperation({
+          operationId: ID,
+          kind: "decline",
+          reason: "no",
+          messageId: "msg-1",
+          runDecline: async () => failure,
+        }),
+      ).rejects.toThrowError(DeliveryFailedError);
+      const room = await generation.room(ROOM);
+      expect(room.operation(ID)?.outcome).toBe("refused");
+      expect(room.answered("msg-1")).toBe(false);
+      let ran = 0;
+      await expect(
+        engine.publishOperation({
+          operationId: ID,
+          kind: "decline",
+          reason: "no",
+          messageId: "msg-2",
+          runDecline: async () => {
+            ran += 1;
+            return { status: "ok" };
+          },
+        }),
+      ).rejects.toMatchObject({ name: "OperationRefusedError" });
+      expect(ran).toBe(0);
+      await generation.close();
+      expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.refused"]);
+    }
+  });
+
   it("collides a send and a no-reply that reuse one id", async () => {
     const { generation } = await generationIn(tmpRoot());
     const engine = engineFor(generation);
@@ -626,6 +788,85 @@ describe("a keyed no-reply", () => {
         prepare: sendPreparation(async () => ({ id: "posted-1" })),
       }),
     ).rejects.toThrowError(OperationConflictError);
+    await generation.close();
+  });
+});
+
+describe("the authority a journal file proves at load", () => {
+  /** Settles `ID`'s send through a real engine, closes the process, and rewrites the settled record's stored authority in the file. */
+  async function settledFileWithAuthority(authority: string | undefined): Promise<string> {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const engine = engineFor(generation);
+    await engine.publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      messageId: "msg-1",
+      prepare: sendPreparation(async () => ({ id: "posted-1" })),
+    });
+    await generation.close();
+    const file = roomFile(dir);
+    const lines = (await readFile(file, "utf8")).split("\n");
+    const at = lines.findIndex((line) => line.includes('"t":"op.settled"'));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const record = JSON.parse(lines[at]) as Record<string, unknown>;
+    if (authority === undefined) delete record.resultJson;
+    else record.resultJson = authority;
+    lines[at] = JSON.stringify(record);
+    await writeFile(file, lines.join("\n"));
+    return dir;
+  }
+
+  it("refuses a file that settled a send with authority that does not stand, before the journal is admitted", async () => {
+    // No result at all, a result that does not parse, and results that stand
+    // as failures are not authority this engine's settlements could store:
+    // the file is refused while it is read, and the engine stands fail-closed
+    // behind it — nothing in the room is admitted, credited, or replayed.
+    for (const authority of [undefined, "{broken-json", JSON.stringify({ ok: false }), JSON.stringify({ status: "failed" })]) {
+      const dir = await settledFileWithAuthority(authority);
+      const { generation } = await generationIn(dir);
+      await expect(generation.room(ROOM)).rejects.toMatchObject({ name: "JournalFileError", kind: "corrupt" });
+      const engine = PublicationEngine.create({
+        room: () => generation.room(ROOM),
+        generation,
+        logger: new NoopLogger(),
+      });
+      let posts = 0;
+      await expect(
+        engine.publishOperation({
+          operationId: "op-fresh",
+          kind: "send",
+          content: "fresh",
+          messageId: "msg-9",
+          prepare: sendPreparation(async () => {
+            posts += 1;
+            return {};
+          }),
+        }),
+      ).rejects.toMatchObject({ name: "JournalFileError", kind: "corrupt" });
+      expect(posts).toBe(0);
+      await generation.close();
+    }
+  });
+
+  it("admits a file whose settled authority stands, credits the answered inbound, and replays the stored result", async () => {
+    const dir = await settledFileWithAuthority(JSON.stringify({ id: "posted-1" }));
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    expect(room.operation(ID)).toMatchObject({ outcome: "settled" });
+    expect(room.answered("msg-1")).toBe(true);
+    const engine = engineFor(generation);
+    const replay = await engine.publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      messageId: "msg-9",
+      prepare: sendPreparation(async () => {
+        throw new Error("a replay must not post");
+      }),
+    });
+    expect(replay).toMatchObject({ id: "posted-1" });
     await generation.close();
   });
 });

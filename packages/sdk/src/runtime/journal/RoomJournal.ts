@@ -801,6 +801,18 @@ function isStorableResultJson(resultJson: string): boolean {
   }
 }
 
+/**
+ * A settled send's stored authority, as the file proves it: JSON that parses
+ * to a plain object the store would keep, and not to a result that stands as
+ * a failure — no settlement this engine makes could store that.
+ */
+function settledSendAuthorityStands(resultJson: string | undefined): boolean {
+  if (resultJson === undefined) return false;
+  if (!isStorableResultJson(resultJson)) return false;
+  const result = JSON.parse(resultJson) as Record<string, unknown>;
+  return result.ok !== false && result.status !== "failed";
+}
+
 function parseRecord(file: string, line: string): JournalRecord {
   let json: unknown;
   try {
@@ -913,15 +925,24 @@ function applyChecked(index: Map<string, InboundIndex>, operations: Map<string, 
         if (record.t === "op.settled") {
           if (record.receiptId !== undefined) operation.receiptId = record.receiptId;
           if (record.resultJson !== undefined) operation.resultJson = record.resultJson;
-          // A settled operation answers its original inbound when it stood —
-          // except where its stored authority no longer stands: a send whose
-          // file records no result that validates settles a replay on
-          // nothing, and a reopen must not credit the caller a success the
-          // journal cannot prove. A settled decline stands on the record
-          // itself, which this replay has already taken.
-          if (operation.kind === "decline" || (record.resultJson !== undefined && isStorableResultJson(record.resultJson))) {
-            inbound.answered = true;
+          // A settled send's stored result is the authority every later
+          // same-id caller reads back. A file that settled a send with no
+          // result, with a result the store cannot prove, or with a result
+          // that stands as a failure is not a journal this engine writes:
+          // it is refused while the file is read, before the journal is
+          // admitted, so no record of the room — least of all the answered
+          // credit of the inbounds the settled operations "answered" — is
+          // granted on authority the file cannot prove.
+          if (operation.kind === "send" && !settledSendAuthorityStands(record.resultJson)) {
+            throw new JournalFileError(
+              `The journal at ${file} settled operation ${record.operationId} with authority that does not stand; its state is in conflict.`,
+              "corrupt",
+              file,
+            );
           }
+          // A settled send stands on its proved result; a settled decline on
+          // the record itself. Either one answers its original inbound.
+          inbound.answered = true;
         }
         if (record.t === "op.refused" && record.reasonText !== undefined) {
           operation.reasonText = record.reasonText;
