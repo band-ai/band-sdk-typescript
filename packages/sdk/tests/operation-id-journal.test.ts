@@ -3,7 +3,7 @@ import { BandError } from "@band-ai/rest-client";
 import { describe, expect, it } from "vitest";
 
 import { NoopLogger } from "../src/core/logger";
-import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
+import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
   OPERATION_ID_MAX_BYTES,
@@ -188,11 +188,18 @@ describe("a keyed send's outcomes", () => {
       messageId: "msg-2",
       prepare: sendPreparation(async () => ({})),
     });
+    // Both callers stand on the classified refusal before the post is answered:
+    // the platform's raw body never reaches either of them.
+    const firstError = first.catch((error: unknown) => error);
+    const secondError = second.catch((error: unknown) => error);
     // The post is answered 422 once it stands out: the owner's call has begun awaiting it.
     await until(() => post.ran());
     post.reject(bandRefused());
-    await expect(first).rejects.toBeInstanceOf(BandError);
-    await expect(second).rejects.toBeInstanceOf(BandError);
+    const [firstOutcome, secondOutcome] = await Promise.all([firstError, secondError]);
+    expect(firstOutcome).toBeInstanceOf(DeliveryFailedError);
+    expect((firstOutcome as Error).message).toBe("the platform refused the post (HTTP 422)");
+    expect(secondOutcome).toBeInstanceOf(DeliveryFailedError);
+    expect((secondOutcome as Error).message).toBe("the platform refused the post (HTTP 422)");
     await generation.close();
   });
 
@@ -511,7 +518,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
           throw bandRefused();
         }),
       }),
-    ).rejects.toBeInstanceOf(BandError);
+    ).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the platform refused the post (HTTP 422)" });
     let posts = 0;
     await expect(
       engine.publishOperation({
@@ -592,7 +599,7 @@ describe("a keyed no-reply", () => {
           throw new Error("the harness declined to decline");
         },
       }),
-    ).rejects.toThrowError(/the harness declined to decline/);
+    ).rejects.toThrowError("the harness could not run this no-reply");
     const room = await generation.room(ROOM);
     expect(room.operation(ID)?.outcome).toBe("refused");
     expect(room.answered("msg-1")).toBe(false);

@@ -270,26 +270,40 @@ describe("room-scoped no-reply over the wire", () => {
   }, 90000);
 
   it("does not advertise room_id on band_no_reply for a single-context server", async () => {
+    // The assertions run inside the turn's handler; their completion or
+    // failure is what the test stands on. Awaiting `runtime.start()` alone
+    // would not establish that the assertion ran.
+    let settle: (error?: unknown) => void;
+    const outcome = new Promise<void>((resolve, reject) => {
+      settle = (error) => (error === undefined ? resolve() : reject(error));
+    });
+    outcome.catch(() => undefined);
     await runtimeWithNetworkBackend("http", async ({ tools }) => {
-      const backend = await createBandMcpBackend({
-        kind: "http",
-        enableMemoryTools: false,
-        multiRoom: false,
-        getToolsForRoom: () => tools,
-      });
-      onTestFinished(async () => {
-        await backend.stop();
-      });
-      const client = await connectClient(backend, "no-reply-single");
       try {
-        const listed = await client.listTools();
-        const noReply = listed.tools.find((tool) => tool.name === "band_no_reply");
-        const schema = noReply?.inputSchema as { properties?: Record<string, unknown> } | undefined;
-        expect(schema?.properties, "a roomless server advertises no room_id").not.toHaveProperty("room_id");
-      } finally {
-        await client.close();
+        const backend = await createBandMcpBackend({
+          kind: "http",
+          enableMemoryTools: false,
+          multiRoom: false,
+          getToolsForRoom: () => tools,
+        });
+        onTestFinished(async () => {
+          await backend.stop();
+        });
+        const client = await connectClient(backend, "no-reply-single");
+        try {
+          const listed = await client.listTools();
+          const noReply = listed.tools.find((tool) => tool.name === "band_no_reply");
+          const schema = noReply?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+          expect(schema?.properties, "a roomless server advertises no room_id").not.toHaveProperty("room_id");
+          settle();
+        } finally {
+          await client.close().catch(() => undefined);
+        }
+      } catch (error) {
+        settle(error);
       }
     });
+    await outcome;
   }, 90000);
 });
 

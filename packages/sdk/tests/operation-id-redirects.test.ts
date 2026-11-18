@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 
+import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import { BandClient } from "@band-ai/rest-client";
 
 import { describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import { NoopLogger } from "../src/core/logger";
 import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { BandLink } from "../src/platform/BandLink";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { ROOM, generationIn } from "./turnJournalSupport";
 import { tmpRoot } from "./testUtils";
@@ -36,7 +38,9 @@ async function fixture(status: 307 | 308): Promise<{ a: Origin; b: Origin }> {
       const server = createServer((req, res) => {
         req.resume();
         req.on("end", () => {
-          origin.posts += 1;
+          if (req.method === "POST") {
+            origin.posts += 1;
+          }
           const { status: answerStatus, headers } = answer(req.url ?? "/");
           res.writeHead(answerStatus, { "content-type": "application/json", ...headers });
           res.end('{"id":"posted-1","status":"ok"}');
@@ -165,32 +169,39 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
 /**
  * The production wiring: `BandLink`'s default REST adapter installs the SDK's
  * once client (same endpoint and auth as the legacy client, no retries, a Fetch
- * that refuses redirects) behind `createChatMessageOnce`. Minimum Node: the once
- * port's Fetch is the platform's global `fetch` with `redirect: "error"`, which
- * Node 18+ provides; the suite's CI matrix floor stands on that.
+ * that refuses redirects) behind `createChatMessageOnce`, and the operation
+ * engine stands a keyed send on that port. The SDK declares a minimum of
+ * Node 22.12: the once port's Fetch is the platform's global `fetch` with
+ * `redirect: "error"`, and the journal's ownership lock stands on
+ * `node:sqlite` — the minimum's consumer proof runs this suite's operation
+ * suites on a Node 22.12 runtime.
  */
-describe("the production BandLink's once port", () => {
+describe("the production BandLink's once port, through the operation engine", () => {
   for (const status of [307, 308] as const) {
-    it(`a ${status} redirect from the post's origin stands unknown: one initial POST, no redirected POST, and a same-id retry reposts nothing`, async () => {
+    it(`a ${status} redirect from the post's origin stands unknown: one initial POST, no redirected POST, and a same-id retry adds zero POSTs`, async () => {
       const { a, b } = await fixture(status);
+      const { generation } = await generationIn(tmpRoot());
       const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, logger: new NoopLogger() });
-      const once = link.rest.createChatMessageOnce;
-      expect(once, "the production link advertises the once port").toBeTypeOf("function");
-      if (typeof once !== "function") {
-        await Promise.all([a.close(), b.close()]);
-        return;
-      }
-      const message = { content: `a ${status} redirect`, mentions: [{ id: USER_ID }] };
-      // The attempt reaches origin A exactly once; the redirect out of its
-      // origin lands as this call's error, never as a second POST.
-      await expect(once(ROOM, message)).rejects.toBeTruthy();
+      expect(link.rest.hasOnceCapability?.() ?? link.rest.createChatMessageOnce !== undefined, "the production link advertises the once port").toBe(true);
+      const engine = PublicationEngine.create({ room: () => generation.room(ROOM), generation, logger: new NoopLogger() });
+      const roster = new ParticipantRoster();
+      roster.add({ id: USER_ID, handle: USER_ID });
+      const tools = new AgentTools({ roomId: ROOM, rest: link.rest, roster, publication: engine, inboundMessageId: () => "inbound-1" });
+      const run = () => tools.sendMessage(`a ${status} redirect`, [USER_ID], { operationId: OP_ID });
+      // The first call's post reaches origin A exactly once; the redirect out
+      // of its origin lands as the attempt's error, never as a second POST,
+      // and the operation stands unknown in the journal.
+      await expect(run()).rejects.toBeInstanceOf(DeliveryUnknownError);
       expect(a.posts).toBe(1);
       expect(b.posts).toBe(0);
-      // A same-id retry is a new attempt: it posts once to its own origin and
-      // no further — the SDK issues at most one attempt per call, never a resend.
-      await expect(once(ROOM, message)).rejects.toBeTruthy();
-      expect(a.posts).toBe(2);
+      expect((await generation.room(ROOM)).operation(OP_ID)?.outcome).toBe("unknown");
+      // A same-id retry through the engine joins the stored unknown: it is
+      // announced with its id and reposts nothing — zero new POSTs to either
+      // origin. The SDK never issues a second attempt for a keyed send.
+      await expect(run()).rejects.toBeInstanceOf(DeliveryUnknownError);
+      expect(a.posts).toBe(1);
       expect(b.posts).toBe(0);
+      await generation.close();
       await a.close();
       await b.close();
     }, 60000);
