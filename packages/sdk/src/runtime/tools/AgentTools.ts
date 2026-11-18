@@ -170,6 +170,12 @@ export class AgentTools implements AgentToolsProtocol {
    * replacement. A turn with no stop standing fences nothing.
    */
   private readonly keyedTurnStops = new Set<AbortSignal>();
+  /**
+   * The stops of the turns whose keyed delivery stands unknown: a reply that
+   * may already be in the room. A definite refusal never lands here, so a
+   * turn reading this claim stands no possible remote delivery.
+   */
+  private readonly unknownTurnStops = new Set<AbortSignal>();
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
@@ -205,7 +211,29 @@ export class AgentTools implements AgentToolsProtocol {
     }
   }
 
-  /** The `KEYED_TURN_FENCE` read: the room's current turn ran a canonical keyed call. */
+  /** The room's current turn's keyed delivery stands unknown: its reply may already be in the room. */
+  private fenceUnknownTurn(): void {
+    const stop = this.publicationStop?.();
+    if (stop !== undefined) {
+      this.unknownTurnStops.add(stop);
+    }
+  }
+
+  /** The `KEYED_TURN_FENCE` read: the room's current turn's keyed delivery stands unknown. */
+  private unknownTurnFenced(): boolean {
+    const stop = this.publicationStop?.();
+    if (stop === undefined) {
+      return false;
+    }
+    for (const fenced of this.unknownTurnStops) {
+      if (fenced.aborted) {
+        this.unknownTurnStops.delete(fenced);
+      }
+    }
+    return this.unknownTurnStops.has(stop);
+  }
+
+  /** True once the room's current turn made a canonical keyed call: its closing text is never relayed as an unkeyed replacement. */
   private keyedTurnFenced(): boolean {
     const stop = this.publicationStop?.();
     if (stop === undefined) {
@@ -232,7 +260,7 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput = [],
     options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions, "reply", options?.operationId);
+    return this.postMessage(content, mentions, "reply", options);
   }
 
   /**
@@ -248,53 +276,89 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput,
     operationId: unknown,
   ): Promise<ToolOperationResult> {
+    // Admission stands on the call's presence of an `operation_id`, not on
+    // its inputs: whatever the call ends up as — refused for its inputs,
+    // its id, or its transport, or accepted — the turn is fenced here,
+    // before any validation, so its closing text is never relayed as an
+    // unkeyed replacement on top of the keyed attempt.
+    this.fenceKeyedTurn();
+    // A keyed operation's record stands on its inputs: a call missing a field
+    // the schema requires is refused before any record or post, like a
+    // schema-invalid call, never delivered over the retrying legacy path.
+    if (typeof content !== "string" || content.length === 0 || mentions.length === 0) {
+      throw new OperationUnsupportedError("invalid-input");
+    }
     const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
     if (this.publication === undefined || messageId === undefined) {
       throw new OperationUnsupportedError("no-journal");
     }
-    if (this.rest.createChatMessageOnce === undefined) {
+    // The once port is advertised only where the adapter stands it on
+    // SDK-controlled transport: a client that merely inherits the method — an
+    // injected generated client without the SDK's controlled once client —
+    // cannot be verified to refuse redirects and retries, and a keyed
+    // operation is refused before any record rather than recorded and then
+    // refused over it.
+    if (
+      this.rest.createChatMessageOnce === undefined ||
+      (this.rest.hasOnceCapability !== undefined && !this.rest.hasOnceCapability())
+    ) {
       throw new OperationUnsupportedError("no-once-transport");
     }
     const once = this.rest.createChatMessageOnce.bind(this.rest);
-    const result = await this.publication.publishOperation({
-      operationId,
-      kind: "send",
-      content,
-      // The fingerprint binds the mention input as given, not the roster's
-      // resolution of it: a roster change may re-resolve names, it never
-      // retargets a keyed operation.
-      mentions: mentionInputsAsStrings(mentions),
-      messageId,
-      prepare: async () => {
-        const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
-        const recipients = resolvedMentions
-          .map((mention) => mention.id ?? mention.handle ?? mention.name ?? "")
-          .filter((id) => id.length > 0);
-        return {
-          recipients,
-          post: async () => once(this.roomId, { content, mentions: resolvedMentions }),
-        };
-      },
-      stopped: this.publicationStop?.(),
-    });
-    const delivery = currentDelivery();
-    if (delivery?.attributed !== undefined && typeof result.id === "string" && result.id.length > 0) {
-      delivery.attributed.add(result.id);
+    try {
+      const result = await this.publication.publishOperation({
+        operationId,
+        kind: "send",
+        content,
+        // The fingerprint binds the mention input as given, not the roster's
+        // resolution of it: a roster change may re-resolve names, it never
+        // retargets a keyed operation.
+        mentions: mentionInputsAsStrings(mentions),
+        messageId,
+        prepare: async () => {
+          const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
+          const recipients = resolvedMentions
+            .map((mention) => mention.id ?? mention.handle ?? mention.name ?? "")
+            .filter((id) => id.length > 0);
+          return {
+            recipients,
+            post: async () => once(this.roomId, { content, mentions: resolvedMentions }),
+          };
+        },
+        stopped: this.publicationStop?.(),
+      });
+      const delivery = currentDelivery();
+      if (delivery?.attributed !== undefined && typeof result.id === "string" && result.id.length > 0) {
+        delivery.attributed.add(result.id);
+      }
+      return result;
+    } catch (error) {
+      // A keyed delivery standing unknown claims possible remote delivery
+      // for the turn it ran on, and fences it: its closing text may not be
+      // relayed on top of a post Band may already hold. A definite refusal
+      // claims nothing: the turn fails plain, with no possible remote
+      // delivery standing behind the failure.
+      if (error instanceof DeliveryUnknownError) {
+        this.fenceUnknownTurn();
+      }
+      throw error;
     }
-    return result;
   }
 
   private async postMessage(
     content: string,
     mentions: MentionInput,
     kind: "reply" | "notice",
-    operationId?: unknown,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
-    if (operationId !== undefined) {
+    // Presence, not a parsed value: an explicit `operationId: undefined` is a
+    // keyed call the journal refuses for its invalid id, never a legacy post
+    // the turn would relay on top of.
+    if (options !== undefined && Object.hasOwn(options, "operationId")) {
       if (kind !== "reply") {
         throw new OperationUnsupportedError("no-once-transport");
       }
-      return this.postKeyedSend(content, mentions, operationId);
+      return this.postKeyedSend(content, mentions, options.operationId);
     }
     const post = async (): Promise<ToolOperationResult> => {
       const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
@@ -940,11 +1004,15 @@ export class AgentTools implements AgentToolsProtocol {
 
     return Object.freeze({ ...tools,
       [SCOPED_TOOL_EXECUTOR]: (scope: AdapterToolsProtocol, name: string, args: MetadataMap) => this.executeScopedToolCall(scope, name, args),
+      // The turn's tools read this to decide whether a reply's delivery stands
+      // unknown: it may already be in the room. A keyed call that was
+      // definitely refused stands no such claim.
+      unknownDeliveryFenced: () => this.unknownTurnFenced(),
       // The turn's tools read this to decide whether the closing text may be
       // relayed: a canonical keyed call the turn made — valid or not,
       // accepted or refused — fences it, as a delivery-unknown reply would.
-      unknownDeliveryFenced: () => this.keyedTurnFenced(),
-      [KEYED_TURN_FENCE]: () => this.keyedTurnFenced(),
+      relayProhibitedFenced: () => this.keyedTurnFenced() || this.unknownTurnFenced(),
+      [KEYED_TURN_FENCE]: () => this.unknownTurnFenced(),
     }) as AdapterToolsProtocol;
   }
 
@@ -971,20 +1039,17 @@ export class AgentTools implements AgentToolsProtocol {
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
       band_send_message: async (arguments_) => {
-        // The fence stands on the field's presence, before any validation: a
-        // keyed call that ends refused or unsupported still commits the turn
-        // to keyed delivery, so its closing text is not relayed unkeyed.
-        if (Object.hasOwn(arguments_, "operation_id")) {
-          this.fenceKeyedTurn();
-        }
+        // Presence admits the call, not a parsed string: an id of any value
+        // type rides the keyed path and is validated there — a dropped
+        // non-string id would fall to the legacy delivery and post. The
+        // turn's fence for the call stands on the turn's own wrapper, so a
+        // late call through a completed turn's tools fences that turn, not
+        // the successor it runs on.
         return this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
-          // Presence admits the call, not a parsed string: an id of any value
-          // type rides the keyed path and is validated there — a dropped
-          // non-string id would fall to the legacy delivery and post.
           Object.hasOwn(arguments_, "operation_id")
-            ? { operationId: arguments_.operation_id }
+            ? { operationId: arguments_.operation_id as string | undefined }
             : undefined,
         );
       },
@@ -1002,12 +1067,12 @@ export class AgentTools implements AgentToolsProtocol {
         // A keyed no-reply runs the same journal rules as a keyed send: the id
         // is validated, an invalid one refused before any record or post, and
         // the decline's result settled durably under the turn — no POST is
-        // ever made by a decline. The fence stands on the field's presence,
-        // before validation, like the keyed send's.
+        // ever made by a decline. Admission stands on the field's presence,
+        // before those checks: whatever the decline ends up as, the turn is
+        // fenced, and its closing text is never relayed as an unkeyed
+        // replacement.
         if (Object.hasOwn(arguments_, "operation_id")) {
           this.fenceKeyedTurn();
-        }
-        if (Object.hasOwn(arguments_, "operation_id")) {
           if (this.publication === undefined) {
             throw new OperationUnsupportedError("no-journal");
           }

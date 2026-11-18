@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ToolOperationResult } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
 import { DeliveryFailedError, DeliveryUnknownError } from "../../core/deliveryFailedError";
@@ -359,12 +360,16 @@ export class PublicationEngine {
       } catch (error) {
         if (classifyFailedAttempt(error) === "uncertain") {
           await this.settleOperationUnknown(journal, operationId, error, { poisonWriter: false });
-          throw new DeliveryUnknownError(error, operationId, unknownOperationMessage());
+          throw new DeliveryUnknownError(new Error("the once port's attempt ended without a verdict"), operationId, unknownOperationMessage());
         }
-        await journal.refuseOperation(operationId, publicRefusalText(error)).catch((error: unknown) => {
+        // The stored and thrown refusal are the classified text: the
+        // transport's raw message, body, and credentials never reach a
+        // caller — first or joining — or the journal.
+        const refusal = publicRefusalText(error);
+        await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
           this.logger.warn("the refused operation's record could not be written", { roomId: journal.roomId, error });
         });
-        throw error;
+        throw new DeliveryFailedError(refusal);
       }
       // A resolved outcome stands its validation before any settlement: a
       // resolved delivery-unknown stands unknown, like the thrown
@@ -372,16 +377,31 @@ export class PublicationEngine {
       // definite refusal — it earns no success settlement and no caller's
       // answered credit, and its stored reason is the classified text, never
       // the failure's raw body.
-      if (isToolExecutorError(result) || result.status === "failed") {
+      const hasFailureMarkers =
+        typeof result === "object" &&
+        result !== null &&
+        (result.status === "failed" || result.ok === false);
+      if (isToolExecutorError(result) || hasFailureMarkers) {
         if (isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND) {
           await this.settleOperationUnknown(journal, operationId, result, { poisonWriter: false });
-          throw new DeliveryUnknownError(result, operationId, unknownOperationMessage());
+          throw new DeliveryUnknownError(new Error("the once port's attempt ended without a verdict"), operationId, unknownOperationMessage());
         }
         const refusal = publicRefusalText(result);
         await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
           this.logger.warn("the refused operation's record could not be written", { roomId: journal.roomId, error });
         });
         throw new DeliveryFailedError(refusal);
+      }
+      // The stored result is the operation's authority for every later
+      // same-id caller: an acknowledgment the journal's JSON store would
+      // coerce — or that is not a result at all — cannot stand as a settled
+      // result, or the replay would invent a delivery that differs from what
+      // the transport claimed. The operation stands unknown instead: settled
+      // on no copy, and never retryable as a success.
+      if (!isStorableResult(result)) {
+        const error = new Error("the post's acknowledgment does not stand as a stored result");
+        await this.settleOperationUnknown(journal, operationId, error, { poisonWriter: false });
+        throw new DeliveryUnknownError(error, operationId, unknownOperationMessage());
       }
       try {
         await journal.settleOperation(operationId, {
@@ -409,16 +429,19 @@ export class PublicationEngine {
       result = await input.runDecline();
     } catch (error) {
       // A decline the harness refuses stands refused: no settlement, and the
-      // refusal is recorded so a same-id retry re-reads it.
-      await journal.refuseOperation(operationId, publicRefusalText(error)).catch((error: unknown) => {
+      // refusal is recorded so a same-id retry re-reads it. The stored and
+      // thrown texts are the harness's classification, never the harness's
+      // raw error, so nothing it carries reaches a caller or the journal.
+      const refusal = "the harness could not run this no-reply";
+      await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
         this.logger.warn("the refused no-reply's record could not be written", { roomId: journal.roomId, error });
       });
-      throw error;
+      throw new DeliveryFailedError(refusal);
     }
-    if (isToolExecutorError(result)) {
-      // A decline whose decision stands as a structured failure did not
-      // stand: it is refused, like a refusal the harness threw. No
-      // settlement, no caller's answered credit.
+    if (isToolExecutorError(result) || (typeof result === "object" && result !== null && (result.status === "failed" || result.ok === false))) {
+      // A decline whose decision stands as a structured failure or an explicit
+      // refusal did not stand: it is refused, like a refusal the harness
+      // threw. No settlement, no caller's answered credit.
       const refusal = publicRefusalText(result);
       await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
         this.logger.warn("the refused no-reply's record could not be written", { roomId: journal.roomId, error });
@@ -568,4 +591,29 @@ function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (!("id" in message)) return undefined;
   const id = message.id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+/**
+ * A resolved post result that stands as a settled operation's stored result:
+ * a plain object the journal's JSON store keeps unchanged on the round trip.
+ * Anything else — a non-object, a value the store coerces (a NaN, an
+ * undefined property, a value a string would not carry back) — would settle
+ * the operation on a copy different from the original result, and no such
+ * copy may stand for the replay.
+ */
+function isStorableResult(result: unknown): boolean {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    return false;
+  }
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(result);
+  } catch {
+    return false;
+  }
+  try {
+    return isDeepStrictEqual(JSON.parse(encoded), result);
+  } catch {
+    return false;
+  }
 }

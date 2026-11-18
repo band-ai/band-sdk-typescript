@@ -556,6 +556,17 @@ export class FernRestAdapter implements RestApi {
   }
 
 /**
+   * The once capability stands or stands down with the SDK-controlled client:
+   * a factory means the once client's redirects and retries are the SDK's to
+   * forbid; without one the capability is not advertised, and a keyed
+   * operation is refused before any record rather than recorded and then
+   * refused over an unverified client.
+   */
+  public hasOnceCapability(): boolean {
+    return this.onceClientFactory !== undefined;
+  }
+
+  /**
    * The once port: at most one SDK-issued HTTP POST, transport retries
    * disabled on both the client and the attempt, and the client's Fetch
    * forcing `redirect: "error"`, so a redirect after the request goes out

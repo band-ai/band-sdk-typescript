@@ -133,6 +133,16 @@ export interface ChatMessagingRestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult>;
+  /**
+   * Whether this adapter can stand the once port on transport the SDK
+   * controls. An adapter whose client is merely an injected generated
+   * client — one that inherits the `createChatMessageOnce` method without
+   * the SDK's controlled once client — reports `false`, and a keyed
+   * operation is refused before any record rather than recorded and then
+   * refused over it. Adapters that do not report stand on the presence of
+   * `createChatMessageOnce`.
+   */
+  hasOnceCapability?(): boolean;
   createChatEvent(
     chatId: string,
     event: {

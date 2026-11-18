@@ -61,16 +61,17 @@ export interface HistoryLike {
 export interface SendMessageOptions {
   /**
    * The operation's id, as supplied: the journal validates it before any
-   * record — a non-string id is an invalid input the keyed call is refused
-   * for, before any reservation, post, or reply or decline credit. A valid
-   * id is an opaque, untrimmed string of at most 256 UTF-8 bytes. A later
-   * call with the same id stands for the same operation — a settled send
-   * replays its stored result without a new post, an unknown send stays
+   * record — a value that is not a valid id (a non-string, an empty string,
+   * or one over 256 UTF-8 bytes) is an invalid input the keyed call is
+   * refused for, before any reservation, post, or reply or decline credit.
+   * A valid id is an opaque, untrimmed string of at most 256 UTF-8 bytes. A
+   * later call with the same id stands for the same operation — a settled
+   * send replays its stored result without a new post, an unknown send stays
    * unknown (Band may already hold it), and changed content or kind is
    * refused. A different id names a different operation. Without it, the
    * call keeps the legacy at-least-once delivery.
    */
-  operationId?: unknown;
+  operationId?: string;
 }
 
 export interface MessagingTools {

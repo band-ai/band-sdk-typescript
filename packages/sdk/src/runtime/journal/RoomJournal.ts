@@ -786,6 +786,21 @@ function parseHeader(file: string, line: string | undefined, options: RoomJourna
   return check.data;
 }
 
+/**
+ * A settled send's stored result, as the file proves it: JSON that parses to
+ * a plain result object. A settled authority that fails this stands refused
+ * for the replay — and answers no inbound on a reopen — rather than settled
+ * on a copy the file cannot prove.
+ */
+function isStorableResultJson(resultJson: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(resultJson);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 function parseRecord(file: string, line: string): JournalRecord {
   let json: unknown;
   try {
@@ -898,9 +913,15 @@ function applyChecked(index: Map<string, InboundIndex>, operations: Map<string, 
         if (record.t === "op.settled") {
           if (record.receiptId !== undefined) operation.receiptId = record.receiptId;
           if (record.resultJson !== undefined) operation.resultJson = record.resultJson;
-          // A settled operation answered its original inbound when it stood:
-          // the replay stands that answer without a later turn.done record.
-          inbound.answered = true;
+          // A settled operation answers its original inbound when it stood —
+          // except where its stored authority no longer stands: a send whose
+          // file records no result that validates settles a replay on
+          // nothing, and a reopen must not credit the caller a success the
+          // journal cannot prove. A settled decline stands on the record
+          // itself, which this replay has already taken.
+          if (operation.kind === "decline" || (record.resultJson !== undefined && isStorableResultJson(record.resultJson))) {
+            inbound.answered = true;
+          }
         }
         if (record.t === "op.refused" && record.reasonText !== undefined) {
           operation.reasonText = record.reasonText;

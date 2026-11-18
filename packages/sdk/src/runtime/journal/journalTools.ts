@@ -1,6 +1,7 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { isToolExecutorError } from "../../contracts/protocols";
-import { BAND_TOOL_EFFECTS } from "../../contracts/toolSchemas";
+import { BAND_TOOL_EFFECTS, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../contracts/toolSchemas";
+import type { BandToolName } from "@band-ai/band-sdk-core";
 import { overrideTools } from "../../core/overrideTools";
 import { bandToolOverrides } from "../../core/turn";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
@@ -16,6 +17,30 @@ export class TurnCutShortError extends Error {
 
 function isDeliveryUnknownToolResult(result: unknown): boolean {
   return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
+}
+
+/**
+ * A canonical publication call carrying an `operation_id`, on the field's
+ * presence rather than its parsed value: a direct `sendMessage` carries it in
+ * its options, a `band_no_reply` in its arguments. An explicit
+ * `operation_id: undefined` stands as a supplied, invalid id.
+ */
+export function carriesOperationId(toolName: BandToolName, args: readonly unknown[]): boolean {
+  if (toolName === SEND_MESSAGE_TOOL_NAME) {
+    // A direct `sendMessage` carries the id in its options; the same call
+    // through `executeToolCall` carries it in the arguments object.
+    const options = args.length > 2 ? args[2] : undefined;
+    if (typeof options === "object" && options !== null && Object.hasOwn(options, "operationId")) {
+      return true;
+    }
+    const arguments_ = args[0];
+    return typeof arguments_ === "object" && arguments_ !== null && Object.hasOwn(arguments_, "operation_id");
+  }
+  if (toolName !== NO_REPLY_TOOL_NAME) {
+    return false;
+  }
+  const arguments_ = args[0];
+  return typeof arguments_ === "object" && arguments_ !== null && Object.hasOwn(arguments_, "operation_id");
 }
 
 /**
@@ -70,12 +95,28 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   stopped: AbortSignal,
   logger?: Logger,
 ): T {
-  // Set once this turn had a reply whose delivery stands unknown, or ran a
-  // keyed canonical call that the runtime's tools fence through their own
-  // flag; the adapter's turn object reads it through the wrapper it runs on.
-  let fenced = false;
+  // Set once a reply's delivery on this turn stands unknown; the adapter's
+  // turn object reads it through `unknownDeliveryFenced`, so a late result
+  // claims possible remote delivery for the turn it ran on and never for a
+  // successor, which wraps its own tools.
+  let unknownFenced = false;
+
+  // Set once this turn made a canonical keyed call — a send or a no-reply
+  // carrying an `operation_id`, valid or not, accepted or refused. Such a
+  // call commits the turn to keyed delivery, so its closing text is never
+  // relayed as an unkeyed replacement; a definite refusal claims no possible
+  // remote delivery, so it stands here, not in `unknownFenced`.
+  let keyedFenced = false;
 
   const underlyingKeyedFence = (tools as unknown as { [KEYED_TURN_FENCE]?: () => boolean } | undefined)?.[KEYED_TURN_FENCE];
+
+  const underlyingFence = (): boolean => {
+    try {
+      return underlyingKeyedFence?.() === true;
+    } catch {
+      return false;
+    }
+  };
 
   const wrapCall = (call: () => Promise<unknown>): Promise<unknown> => {
     if (stopped.aborted) {
@@ -84,13 +125,13 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     return call().then(
       (result) => {
         if (isDeliveryUnknownToolResult(result)) {
-          fenced = true;
+          unknownFenced = true;
         }
         return result;
       },
       (error: unknown) => {
         if (error instanceof DeliveryUnknownError) {
-          fenced = true;
+          unknownFenced = true;
         } else {
           logger?.debug("a turn's reply delivery failed", { error });
         }
@@ -99,23 +140,25 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     );
   };
 
-  const overrides = bandToolOverrides(tools, (toolName, call) => {
+  const overrides = bandToolOverrides(tools, (toolName, call, args) => {
+    // A canonical publication call carrying an `operation_id` — on the field's
+    // presence, not its parsed value — commits this wrapper's turn to keyed
+    // delivery before any validation: whatever the call ends up, accepted,
+    // refused, or unsupported, the turn's closing text is not relayed as an
+    // unkeyed replacement on top of it. The stand is on the wrapper itself, so
+    // a late call made through a completed turn's tools fences that turn and
+    // never reaches a successor, which wraps its own tools.
+    if (carriesOperationId(toolName, args)) {
+      keyedFenced = true;
+    }
     const effect = BAND_TOOL_EFFECTS[toolName];
     return effect === "reply" || effect === "decline" ? wrapCall(call) : call();
   });
 
   return overrideTools(tools, {
     ...overrides,
-    unknownDeliveryFenced: () => {
-      if (fenced) {
-        return true;
-      }
-      try {
-        return underlyingKeyedFence?.() === true;
-      } catch {
-        return false;
-      }
-    },
-    [KEYED_ADMISSION_FENCE]: { fence: () => { fenced = true; } },
+    unknownDeliveryFenced: () => unknownFenced || underlyingFence(),
+    relayProhibitedFenced: () => keyedFenced || unknownFenced || underlyingFence(),
+    [KEYED_ADMISSION_FENCE]: { fence: () => { keyedFenced = true; } },
   } as unknown as Partial<T>);
 }

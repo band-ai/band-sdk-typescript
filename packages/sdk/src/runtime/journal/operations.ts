@@ -39,13 +39,15 @@ export class OperationConflictError extends Error {
   }
 }
 
-/** A keyed send the journal cannot durably stand: no journal, or no once transport. */
+/** A keyed send the journal cannot durably stand: no journal, no once transport, or inputs the record needs. */
 export class OperationUnsupportedError extends Error {
-  public constructor(public readonly issue: "no-journal" | "no-once-transport") {
+  public constructor(public readonly issue: "no-journal" | "no-once-transport" | "invalid-input") {
     const message =
       issue === "no-journal"
         ? "The operation id is accepted, but this room has no turn journal standing behind it, so the operation cannot be recorded durably and is refused before any post. Configure the room's journal to use operation ids."
-        : "The operation id is accepted, but this room's transport cannot make a single-attempt, redirect-forbidden post, so the operation is refused before any post rather than delivered over the retrying legacy path.";
+        : issue === "no-once-transport"
+          ? "The operation id is accepted, but this room's transport cannot make a single-attempt, redirect-forbidden post, so the operation is refused before any post rather than delivered over the retrying legacy path."
+          : "The call is missing a field the operation's record needs (a send's content or a mention), so it is refused before any record or post: the operation id was not the problem, the call is not one the journal can stand.";
     super(message);
     this.name = "OperationUnsupportedError";
   }
