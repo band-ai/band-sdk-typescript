@@ -139,14 +139,16 @@ describe("MCP registrations", () => {
 
       const byName = (name: string) => registrations.find((reg) => reg.name === name)!;
       expect((await byName("band_create_chatroom").execute({})).content[0].text).toBe(JSON.stringify({ id: "room-new" }));
-      await byName(NO_REPLY_TOOL_NAME).execute({});
+      // A room-scoped no-reply takes a room_id and runs on that room's tools.
+      await byName(NO_REPLY_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", reason: "fyi only" });
+      expect(resolver).toHaveBeenCalledWith("room-1");
+      expect(roomTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, { reason: "fyi only" });
       expect(roomlessTools.executeToolCall).toHaveBeenCalledWith("band_create_chatroom", {});
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, {});
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(1);
 
       await byName(SEND_MESSAGE_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", content: "hello" });
       expect(resolver).toHaveBeenCalledWith("room-1");
       expect(roomTools.executeToolCall).toHaveBeenCalledWith(SEND_MESSAGE_TOOL_NAME, { content: "hello" });
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(2);
     });
   });
 

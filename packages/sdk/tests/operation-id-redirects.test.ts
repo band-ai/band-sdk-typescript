@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { NoopLogger } from "../src/core/logger";
 import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { BandLink } from "../src/platform/BandLink";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { ROOM, generationIn } from "./turnJournalSupport";
 import { tmpRoot } from "./testUtils";
@@ -114,13 +115,16 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
     const { a, b } = await fixture(status);
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
+    // The legacy client stands for the port whose policy follows redirects; the
+    // once port runs through the SDK-controlled client, whose Fetch refuses them.
+    const legacyClient = new BandClient({ apiKey: API_KEY, baseUrl: a.origin, maxRetries: 0 });
     const onceClient = new BandClient({
       apiKey: API_KEY,
       baseUrl: a.origin,
       maxRetries: 0,
       fetch: redirectErrorFetch(a),
     });
-    const adapter = new FernRestAdapter(onceClient, { logger: new NoopLogger() });
+    const adapter = new FernRestAdapter(legacyClient, { onceClientFactory: () => onceClient, logger: new NoopLogger() });
     const engine = PublicationEngine.create({
       room: () => generation.room(ROOM),
       generation,
@@ -153,6 +157,59 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
     expect(b.posts).toBe(0);
 
     await generation.close();
+    await a.close();
+    await b.close();
+  });
+});
+
+/**
+ * The production wiring: `BandLink`'s default REST adapter installs the SDK's
+ * once client (same endpoint and auth as the legacy client, no retries, a Fetch
+ * that refuses redirects) behind `createChatMessageOnce`. Minimum Node: the once
+ * port's Fetch is the platform's global `fetch` with `redirect: "error"`, which
+ * Node 18+ provides; the suite's CI matrix floor stands on that.
+ */
+describe("the production BandLink's once port", () => {
+  for (const status of [307, 308] as const) {
+    it(`a ${status} redirect from the post's origin stands unknown: one initial POST, no redirected POST, and a same-id retry reposts nothing`, async () => {
+      const { a, b } = await fixture(status);
+      const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, logger: new NoopLogger() });
+      const once = link.rest.createChatMessageOnce;
+      expect(once, "the production link advertises the once port").toBeTypeOf("function");
+      if (typeof once !== "function") {
+        await Promise.all([a.close(), b.close()]);
+        return;
+      }
+      const message = { content: `a ${status} redirect`, mentions: [{ id: USER_ID }] };
+      // The attempt reaches origin A exactly once; the redirect out of its
+      // origin lands as this call's error, never as a second POST.
+      await expect(once(ROOM, message)).rejects.toBeTruthy();
+      expect(a.posts).toBe(1);
+      expect(b.posts).toBe(0);
+      // A same-id retry is a new attempt: it posts once to its own origin and
+      // no further — the SDK issues at most one attempt per call, never a resend.
+      await expect(once(ROOM, message)).rejects.toBeTruthy();
+      expect(a.posts).toBe(2);
+      expect(b.posts).toBe(0);
+      await a.close();
+      await b.close();
+    }, 60000);
+  }
+
+  it("refuses a keyed post before any request when an injected client stands without the once port", async () => {
+    const { a, b } = await fixture(307);
+    // A generated client stands in with no controlled once capability: the
+    // port is not advertised, and the refusal stands before any request.
+    const injected = new FernRestAdapter(
+      new BandClient({ apiKey: API_KEY, baseUrl: a.origin, maxRetries: 0 }),
+      { logger: new NoopLogger() },
+    );
+    const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, restApi: injected, logger: new NoopLogger() });
+    await expect(
+      link.rest.createChatMessageOnce?.(ROOM, { content: "no once port", mentions: [{ id: USER_ID }] }),
+    ).rejects.toBeTruthy();
+    expect(a.posts).toBe(0);
+    expect(b.posts).toBe(0);
     await a.close();
     await b.close();
   });
