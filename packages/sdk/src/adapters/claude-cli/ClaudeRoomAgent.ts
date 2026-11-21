@@ -156,8 +156,17 @@ export interface ClaudeCliAdapterOptions {
   customSection?: string;
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  /** The CLI's own permission mode. `manual` is accepted and mapped to `default`. */
-  permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "manual";
+  /**
+   * The CLI's own permission mode. `manual` is accepted and mapped to `default`.
+   * `auto` hands every decision to the CLI's risk classifier — reads, edits,
+   * out-of-workspace commands, network calls and calls to servers the person
+   * authorized alike. Band forces no asks there (owner decision 2026-11-15): the
+   * room sees only what the CLI chooses to ask, and whatever it asks arrives over
+   * the room's permission tool. The CLI must report the requested mode back at
+   * `initialize` or the room refuses to start. `bypassPermissions` is never
+   * offered.
+   */
+  permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "manual" | "auto";
   /** Directories or archives the CLI loads as plugins for this session. */
   pluginDirs?: string[];
   /** Tools the CLI may use without asking, in the CLI's own rule syntax. */
@@ -554,8 +563,10 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       rethrowIfRecoverableTurnFailure(error);
       if (!generation) {
         // A process that finished starting for a turn that already ended must
-        // not sit beside the room's next one.
-        void pending.then((started) => this.close(started));
+        // not sit beside the room's next one. This branch waits for the process
+        // only to close it; the turn's own error is the one already in hand, so
+        // the rejection gets a handler rather than becoming an unowned one.
+        void pending.then((started) => this.close(started), () => undefined);
       }
       if (error instanceof ClaudeTurnCancelledError) {
         // A host's cancel ends the turn quietly: what the model produced is
@@ -717,6 +728,23 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       );
       if (generationId !== this.generation) {
         throw new Error(START_SUPERSEDED);
+      }
+      // The mode a person chose is never quietly another mode: when the session
+      // asked for one, the CLI's own `initialize` report must name it back. A
+      // missing report is as untrustworthy as a mismatched one — both would let
+      // the room run on an approval floor nobody confirmed, and a silent fallback
+      // is exactly what the person is owed a reason for instead.
+      const requestedMode = this.permissionMode;
+      if (requestedMode) {
+        const honoured = requestedMode === "manual" ? "default" : requestedMode;
+        const reported = client.initReport?.permissionMode ?? null;
+        if (reported !== honoured) {
+          throw new ClaudeProcessError(
+            reported === null
+              ? `the Claude CLI did not report a permission mode for the requested ${honoured}`
+              : `the Claude CLI started in permission mode ${reported} instead of the requested ${honoured}`,
+          );
+        }
       }
       Object.assign(generation, { client, backend });
       this.live = generation;
