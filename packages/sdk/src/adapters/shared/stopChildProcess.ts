@@ -16,7 +16,8 @@ export async function stopChildProcess(
   }
   if (drainStdin) child.stdin?.end();
   await new Promise<void>((resolve) => {
-    const term = drainStdin ? setTimeout(() => child.kill("SIGTERM"), CHILD_STOP_GRACE_MS.term) : undefined;
+    const terminate = () => child.kill("SIGTERM");
+    const term = drainStdin ? setTimeout(terminate, CHILD_STOP_GRACE_MS.term) : undefined;
     const kill = setTimeout(() => {
       child.kill("SIGKILL");
       finish();
@@ -30,6 +31,6 @@ export async function stopChildProcess(
     }
     child.once("exit", finish);
     child.once("close", finish);
-    if (!drainStdin) child.kill("SIGTERM");
+    if (!drainStdin) terminate();
   });
 }

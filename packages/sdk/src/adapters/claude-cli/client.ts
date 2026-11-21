@@ -317,11 +317,7 @@ export class ClaudeCliClient {
     return this.identity;
   }
 
-  /**
-   * What `initialize` reported beyond the version: the permission mode the
-   * session started in and the capabilities it offers this host. A caller that
-   * must not assume either reads them here rather than re-parsing the frame.
-   */
+  /** The permission mode and capabilities reported in the `initialize` response. */
   public get initReport(): ClaudeInitReport | null {
     return this.init;
   }

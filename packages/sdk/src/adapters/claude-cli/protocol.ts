@@ -68,7 +68,7 @@ export interface ClaudeVersion {
 export interface ClaudeInitReport {
   /** The `claude_code_version` string, exactly as the CLI wrote it. */
   cliVersion: string;
-  /** The permission mode the session started in, when the CLI named one. */
+  /** The permission mode reported during `initialize`, when the CLI named one. */
   permissionMode: string | null;
   /** Capability names the CLI offers this host. */
   capabilities: string[];
