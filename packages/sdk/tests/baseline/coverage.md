@@ -21,12 +21,11 @@ also passed in a focused rerun after the shared Gemini default changed to
 
 | Adapter | Remaining N/A cells | Classification | Work needed |
 | --- | ---: | --- | --- |
-| Codex | 5 | Required coverage missing | Install the required `codex` CLI and provision its authentication in CI. The registry has a builder and SDK peer, but this workflow explicitly provisions neither the command nor authentication. |
 | Kiro ACP | 5 | Required coverage missing | Install the Kiro CLI and provision `KIRO_API_KEY` in CI. Neither is configured by this workflow. |
 | Vercel AI SDK | 4 | Required coverage missing | Install and configure an AI SDK model provider, then replace the deliberately unbuildable baseline builder. The `ai` package alone cannot run these scenarios. |
 | Parlant | 4 | Scenario incompatibility | Generic scenarios assume Band platform tools; this baseline builder does not register them. Its bespoke system-prompt scenario still runs against the pinned server. |
 
-The 14 remaining required missing cells remain owned by the parent nightly
+The 9 remaining required missing cells remain owned by the parent nightly
 remediation work. Authentication provisioning and new model-provider builders are separate
 follow-ups to this repair. Passing executed tests does not close that gate.
 Parlant's four incompatible cells are reported separately rather than being

@@ -192,7 +192,6 @@ const SPECS = {
     id: "codex",
     requires: [requires.peerPackage("@openai/codex-sdk"), requires.cli("codex")],
     supports: [],
-    pending: "needs Codex CLI authentication provisioned in CI",
     build: ({ prompt, workDir }) => new CodexAdapter({ config: { cwd: workDir, customSection: prompt, approvalPolicy: "never" } }),
   },
   copilotAcp: {

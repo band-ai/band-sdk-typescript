@@ -81,6 +81,7 @@ test("red reports sanitize the same evidence before rendering JSON and Markdown"
 
 test("October 8 renders failed plugin tests before green SDK cells, and separates test counts", () => {
   const historicalPending = {
+    codex: "needs Codex CLI authentication provisioned in CI",
     openai: "needs an OPENAI_API_KEY provisioned in CI",
     langgraph: "needs a LangChain chat-model package as a devDependency",
   };
@@ -213,7 +214,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
   const directory = await mkdtemp(join(tmpdir(), "band-report-coverage-"));
   try {
     const input = evidence();
-    input.sdk.modules[0].tests.push(testCase("codex", { fullName: "behavior.coverage > codex", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("codex").pending }));
+    input.sdk.modules[0].tests.push(testCase("kiro-acp", { fullName: "behavior.coverage > kiro-acp", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("kiro-acp").pending }));
     input.matrix = projectLiveRun(input.sdk);
     await Promise.all(Object.entries({ "sdk-live.json": input.sdk, "plugin-live.json": input.plugin, "scorecard.json": input.matrix }).map(([file, data]) => writeFile(join(directory, file), JSON.stringify(data))));
     const canonical = metadata();
@@ -228,7 +229,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
     assert.equal(report.executionVerdict, "PASS");
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.acceptance, "INCOMPLETE");
-    assert.ok(report.coverageProblems.some((problem) => problem.includes("Codex CLI authentication")));
+    assert.ok(report.coverageProblems.some((problem) => problem.includes("Kiro CLI")));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
