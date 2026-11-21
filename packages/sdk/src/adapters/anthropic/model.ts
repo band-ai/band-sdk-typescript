@@ -12,6 +12,7 @@ import {
   mapConversationMessages,
   mergeConsecutiveSameRole,
   normalizeConversationRole,
+  systemNoticeAsUserText,
 } from "../tool-calling/valueUtils";
 
 interface AnthropicMessageResponseLike {
@@ -121,7 +122,7 @@ function toAnthropicMessageWithSystemAsUser(
   if (role === "system") {
     return {
       role: "user",
-      content: `[System]: ${toDisplayText(entry.content)}`,
+      content: systemNoticeAsUserText(toDisplayText(entry.content)),
     };
   }
 

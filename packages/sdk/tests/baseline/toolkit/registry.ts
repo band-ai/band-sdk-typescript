@@ -19,9 +19,11 @@ const SDK_NODE_MODULES = fileURLToPath(new URL("../../../node_modules/", import.
  * helpers, the tool-calling base class, and the protocol bridges, whose
  * coverage is defined separately from the adapter matrix. `claude-cli` is here
  * while it holds only the stream-json protocol and client; it joins `ADAPTER_IDS`
- * in `adapters.ts` when the adapter class that drives it exists.
+ * in `adapters.ts` when the adapter class that drives it exists. `kiro-acp` is here
+ * only while its roster entry is disabled for lack of a CI `KIRO_API_KEY`; drop it
+ * from this list when the entry is restored.
  */
-export const NON_ADAPTER_DIRS = ["shared", "tool-calling", "a2a", "a2a-gateway", "acp", "claude-cli"] as const;
+export const NON_ADAPTER_DIRS = ["shared", "tool-calling", "a2a", "a2a-gateway", "acp", "claude-cli", "kiro-acp"] as const;
 
 /** Joins a shared cast's adapter ids into its test title, e.g. `anthropic + google-adk`. */
 export const CAST_SEPARATOR = " + ";
