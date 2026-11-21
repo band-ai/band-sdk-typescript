@@ -11,6 +11,13 @@
  * retained physical identifiers (`LINEAR_THENVOI_*` env, `.linear-thenvoi-*`
  * files, `thenvoi_room_id`/`thenvoiRoomId`, `thenvoiRestUrl` metadata), the
  * CHANGELOG, `.agents/`, and the migration fixtures under `tests/fixtures/migrations/`.
+ *
+ * The guard reads the working tree (`git grep` without `--cached`), not the
+ * git index: it judges the artifact as it stands in this checkout — what the
+ * build publishes from it — never a staged copy the index may still hold of
+ * an older one. A file the branch deletes is gone from the tree, and so from
+ * the guard; and a `git grep` failure (exit 2) fails the guard, it is not
+ * read as "no match".
  */
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
@@ -22,27 +29,40 @@ const REPO_ROOT = resolve(__dirname, "..", "..", "..");
 // The guard's own assertion literals reference the forbidden strings; exclude it.
 const EXCLUDE_PATH = /(^|\/)(CHANGELOG|\.agents\/|packages\/sdk\/tests\/fixtures\/migrations\/|c6-no-stale-live-thenvoi\.test\.ts)/;
 const ALLOW_MARKER = /legacy|escape hatch|back-compat|deprecat|fallback/i;
-const HOST = /thenvoi\.com/;
-const DOC_ENV = /THENVOI_[A-Z]/;
+const HOST = "thenvoi\\.com";
+const DOC_ENV = "THENVOI_[A-Z]";
 const RETAINED_ENV = /LINEAR_THENVOI_|\.linear-thenvoi/;
 
+/** The branch's contents, from the git index — what it stands to publish. */
 function scopedFiles(): string[] {
   return execSync("git ls-files", { cwd: REPO_ROOT, encoding: "utf8" })
     .split("\n")
     .filter((f) => f && !EXCLUDE_PATH.test(f));
 }
 
-// These files are read from the working tree, so their line endings are whatever
-// git checked out — CRLF under `core.autocrlf=true` on Windows. Split on both so
-// the guard compares text, not the contributor's checkout config.
-function readLines(file: string): string[] {
-  return readFileSync(join(REPO_ROOT, file), "utf8").split(/\r?\n/);
-}
-
-interface Violation {
-  file: string;
-  line: number;
-  text: string;
+/** Every working-tree line `pattern` stands in, outside the guard's own excluded paths. */
+function matchedLines(pattern: string): Array<{ file: string; line: number; text: string }> {
+  let out: string;
+  try {
+    out = execSync(`git grep -I -n -e ${JSON.stringify(pattern)}`, { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch (error) {
+    // `git grep` exits 1 when nothing matches: that is the pass. Any other
+    // exit status is an error the guard must not launder into an empty result.
+    const status = (error as { status?: unknown })?.status;
+    if (status === 1) return [];
+    throw new Error(`git grep failed for pattern ${pattern} (exit ${String(status)}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const hits: Array<{ file: string; line: number; text: string }> = [];
+  for (const record of out.split("\n")) {
+    if (record === "") continue;
+    const at = record.indexOf(":");
+    const rest = record.indexOf(":", at + 1);
+    if (at === -1 || rest === -1) continue;
+    const file = record.slice(0, at);
+    if (EXCLUDE_PATH.test(file)) continue;
+    hits.push({ file, line: Number(record.slice(at + 1, rest)), text: record.slice(rest + 1) });
+  }
+  return hits;
 }
 
 describe("C6 stale-live-text guard", () => {
@@ -53,31 +73,14 @@ describe("C6 stale-live-text guard", () => {
   });
 
   it("uses no `thenvoi.com` service host without a legacy/escape-hatch label", () => {
-    const violations: Violation[] = [];
-    for (const file of files) {
-      const lines = readLines(file);
-      lines.forEach((text, i) => {
-        if (HOST.test(text) && !ALLOW_MARKER.test(text)) {
-          violations.push({ file, line: i + 1, text: text.trim() });
-        }
-      });
-    }
+    const violations = matchedLines(HOST).filter((hit) => !ALLOW_MARKER.test(hit.text));
     expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
   });
 
   it("presents no live `THENVOI_*` env instruction in user-facing docs", () => {
-    const docFiles = files.filter(
-      (f) => f.endsWith(".md") || basename(f) === ".env.local.example",
+    const violations = matchedLines(DOC_ENV).filter(
+      (hit) => (hit.file.endsWith(".md") || basename(hit.file) === ".env.local.example") && !ALLOW_MARKER.test(hit.text) && !RETAINED_ENV.test(hit.text),
     );
-    const violations: Violation[] = [];
-    for (const file of docFiles) {
-      const lines = readLines(file);
-      lines.forEach((text, i) => {
-        if (DOC_ENV.test(text) && !ALLOW_MARKER.test(text) && !RETAINED_ENV.test(text)) {
-          violations.push({ file, line: i + 1, text: text.trim() });
-        }
-      });
-    }
     expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
   });
 
@@ -97,7 +100,7 @@ describe("C6 stale-live-text guard", () => {
     expect(setup).toContain("real Band environment");
     expect(setup).not.toContain("real Thenvoi environment");
 
-    expect(readLines("README.md")[0]).toBe("# Band TypeScript SDK");
+    expect(readFileSync(join(REPO_ROOT, "README.md"), "utf8").split(/\r?\n/)[0]).toBe("# Band TypeScript SDK");
     expect(readFileSync(join(REPO_ROOT, "README.md"), "utf8")).not.toContain("platform.thenvoi.com");
   });
 });

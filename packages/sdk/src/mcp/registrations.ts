@@ -1,6 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { DeliveryUnknownError } from "../core/deliveryFailedError";
 import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
@@ -109,7 +110,7 @@ export function registerTools(
  * call runs `execute` with that room's tools and its other arguments. A call
  * naming no known room is refused without running anything.
  */
-export function scopeToRoom<T>(
+export function scopeToRoom<T extends AdapterToolsProtocol>(
   tool: McpToolSchema,
   resolver: (roomId: string) => T | undefined,
   execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
@@ -136,7 +137,7 @@ function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputS
 }
 
 /** Runs `run` with the tools of the room `roomIdArg` names, refusing a call that names no known room. */
-async function inRoom<T>(
+async function inRoom<T extends AdapterToolsProtocol>(
   roomIdArg: unknown,
   resolver: (roomId: string) => T | undefined,
   run: (tools: T, roomId: string) => Promise<McpToolResult>,
@@ -306,12 +307,42 @@ async function executeToolCall(
   try {
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
+      // A classified delivery-unknown keeps its classification across the MCP
+      // boundary: the result says the post's delivery is unknown and Band may
+      // already hold it — nothing to call a plain tool failure, and no
+      // adapter text or recovery advice is carried with it.
+      if (result.details?.kind === DeliveryUnknownError.KIND) {
+        return unknownDeliveryResult();
+      }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
+    if (error instanceof DeliveryUnknownError) {
+      return unknownDeliveryResult();
+    }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
+}
+
+/**
+ * The MCP result for a post whose delivery is unknown: the stable sanitized
+ * `delivery_unknown` discriminator, and the one guidance a caller can act on
+ * safely — do not resend. No adapter text, no status, no cause: the post may
+ * already stand in the room, and a resend could post it twice. Callers that
+ * need more than the discriminator get it from the SDK, not from this result.
+ */
+function unknownDeliveryResult(): McpToolResult {
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        kind: DeliveryUnknownError.KIND,
+        detail: "The post's delivery is unknown: Band may already hold it. Do not resend it.",
+      }),
+    }],
+    isError: true,
+  };
 }
 
 function asNonEmptyString(value: unknown): string | null {

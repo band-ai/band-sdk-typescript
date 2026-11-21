@@ -6,7 +6,10 @@
  * means resend. A commit landing after the read-back costs a duplicate, never
  * a loss. No decision here reads a clock.
  */
+import { BandError } from "@band-ai/rest-client";
+
 import {
+  BandSdkError,
   HTTP_BAD_REQUEST,
   HTTP_REQUEST_TIMEOUT,
   HTTP_SERVER_ERROR,
@@ -125,13 +128,22 @@ export interface MessageDelivery {
  * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
  * - `uncertain`: a 5xx, no response, or a response that could not be read.
  */
-type FailedAttempt = "refused" | "notCommitted" | "uncertain";
+export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
-function classifyFailedAttempt(error: unknown): FailedAttempt {
+export function classifyFailedAttempt(error: unknown): FailedAttempt {
   if (error instanceof RoomExecutionStoppedError) return "refused";
-  const status = statusCodeOf(error);
-  if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
-  if (status !== undefined && status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR) return "refused";
+  if (error instanceof BandError) {
+    const status = statusCodeOf(error);
+    if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
+    if (status !== undefined && status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR) return "refused";
+    return "uncertain";
+  }
+  // A failure the platform never answered (a mention it cannot resolve, an
+  // invalid argument): the post was never sent, so it is a refusal, not an
+  // uncertainty, and the room's journal keeps admitting records.
+  if (error instanceof BandSdkError) return "refused";
+  // A raw transport failure the client did not wrap: the request may have
+  // been committed, and only the read-back settles it.
   return "uncertain";
 }
 
@@ -165,7 +177,15 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
 
     logger.warn("Message post failed; settling it before any resend", { roomId, attempt, outcome, status: statusCodeOf(failure) });
     // Before the read-back too: a commit still in flight gets the pause to land.
-    await pause(resendDelayMs(attempt, failure), stopped);
+    let cutShort = false;
+    try {
+      await pause(resendDelayMs(attempt, failure), stopped);
+    } catch {
+      // The turn was cut short mid-pause. The cut is not the post's outcome:
+      // the failure it interrupted stands, and the read-back still settles a
+      // commit that may have landed in the pause.
+      cutShort = true;
+    }
     if (outcome === "uncertain" && findPosted) {
       const found = await findPosted();
       if (found) {
@@ -173,8 +193,14 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
         return { found };
       }
     }
-    if (!resendsLeft) throw failure;
-    logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
+    if (!cutShort) {
+      if (!resendsLeft) throw failure;
+      logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
+      continue;
+    }
+    // Cut short: surface the failure the transport itself reported, so the
+    // publication settles on the transport's actual outcome, never on the cut.
+    throw failure;
   }
 }
 

@@ -453,7 +453,7 @@ describe("PlatformRuntime lifecycle", () => {
         throw new Error("adapter cleanup failed");
       }
     });
-    const runtimeStop = vi.spyOn(AgentRuntime.prototype, "stop");
+    const runtimeQuiesce = vi.spyOn(AgentRuntime.prototype, "quiesce");
 
     await runtime.start(adapter as never);
     await expect(runtime.stop()).rejects.toThrow("adapter cleanup failed");
@@ -462,13 +462,13 @@ describe("PlatformRuntime lifecycle", () => {
     await runtime.start(adapter as never);
     expect(runtime.state).toEqual({ status: "running" });
 
-    const stopsBefore = runtimeStop.mock.calls.length;
+    const stopsBefore = runtimeQuiesce.mock.calls.length;
     const cleanupsBefore = adapter.onRuntimeStop.mock.calls.length;
     const disconnectsBefore = transport.disconnectCount;
 
     await expect(runtime.stop()).resolves.toBe(true);
 
-    expect(runtimeStop.mock.calls.length - stopsBefore).toBe(1);
+    expect(runtimeQuiesce.mock.calls.length - stopsBefore).toBe(1);
     expect(adapter.onRuntimeStop.mock.calls.length - cleanupsBefore).toBe(1);
     expect(transport.disconnectCount - disconnectsBefore).toBe(1);
     expect(runtime.state).toEqual({ status: "stopped" });

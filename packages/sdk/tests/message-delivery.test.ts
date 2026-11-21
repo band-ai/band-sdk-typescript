@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AttributedPosts, contextCursorAfter, sortsAfterAnchor, type MessageDelivery } from "../src/client/rest/messageDelivery";
 import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
-import { RoomExecutionStoppedError, RuntimeStateError } from "../src/core/errors";
+import { RoomExecutionStoppedError } from "../src/core/errors";
 import { FakeBandRoom, SELF_ID, type PostStep } from "./support/fakeBandRoom";
 import { settleThroughRetries } from "./support/settleThroughRetries";
 
@@ -362,14 +362,17 @@ describe("message delivery", () => {
     expect(ownPosts()).toHaveLength(2);
   });
 
-  it("stops between attempts once the turn is cut short", async () => {
+  it("surfaces the transport's failure when the turn is cut short between attempts", async () => {
     const turn = new AbortController();
     const sent = send([{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }], { delivery: { ...delivery, stopped: turn.signal } });
     await room.posted(1);
 
     turn.abort("stop");
 
-    await expect(settleThroughRetries(sent)).rejects.toBeInstanceOf(RuntimeStateError);
+    // The cut must not stand in for the transport's own failure: the 503 that
+    // started the settle surfaces as the failure, so the publication stands
+    // unknown, and the retry is never attempted.
+    await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
     expect(room.posts).toHaveLength(1);
   });
 });

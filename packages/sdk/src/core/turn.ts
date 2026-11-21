@@ -38,6 +38,13 @@ export class Turn {
   private isDetached = false;
   private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
+  /** The turn's runtime side, when the turn runs on the runtime's tools: it fences the turn when a reply's delivery stands unknown. */
+  private fenceSource: (() => boolean) | undefined;
+
+  /** Binds the runtime's fence for this turn's replies, when its tools carry one. */
+  public useFenceSource(source: () => boolean): void {
+    this.fenceSource = source;
+  }
 
   /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
   public constructor(public readonly judged = true) {}
@@ -89,10 +96,9 @@ export class Turn {
   /** True once the turn replied or declined, so its closing text must not be relayed. */
   public get replied(): boolean {
     return this.ledger.replySettled();
-  }
+}
 
-  /**
-   * The turn outlives `onMessage` (it was released to wait on a decision), so
+  /** The turn outlives `onMessage` (it was released to wait on a decision), so
    * the adapter judges it at its real end with {@link reportUnsettledTurn}.
    * `untilEnded` is that end: the runtime holds the room's other work until it
    * settles. Without it the room takes its next message at once.
@@ -107,6 +113,21 @@ export class Turn {
 
   public get detached(): boolean {
     return this.isDetached;
+  }
+
+  /** The turn's closing text must not be relayed as a reply: a reply whose
+   * delivery stands unknown may already be in the room, and an unkeyed relay
+   * would post replacement text on top of it. The fence stands on the turn's
+   * runtime side, so a late result fences the turn it ran on and cannot reach
+   * a successor.
+   */
+  public get relayProhibited(): boolean {
+    return this.fenceSource?.() ?? false;
+  }
+
+  /** This turn's reply delivery stands unknown: the reply may already be in the room. */
+  public get hasUnknownDelivery(): boolean {
+    return this.fenceSource?.() ?? false;
   }
 
   /** Settles when a turn detached with its end has really ended; never rejects. */
@@ -189,16 +210,35 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
   const turn = new Turn(judged);
+  // The runtime's tools fence the turn when one of its replies stands delivery-unknown. The
+  // lookup may pass through a stop-refusal wrapper, which answers a cut-short turn with a
+  // rejected promise rather than a boolean: treat anything other than a true boolean as
+  // unfenced, and absorb the rejection so it is never left unhandled.
+  const fence = (tools as unknown as { readonly unknownDeliveryFenced?: () => boolean } | undefined)?.unknownDeliveryFenced;
+  if (fence) {
+    turn.useFenceSource(() => {
+      try {
+        const value = fence() as unknown;
+        if (value instanceof Promise) {
+          value.catch(() => undefined);
+          return false;
+        }
+        return value === true;
+      } catch {
+        return false;
+      }
+    });
+  }
   return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }
 
-/** Relays the model's closing `text` as the reply, unless the turn already replied or declined. */
+/** Relays the model's closing `text` as the reply, unless the turn already replied or declined — or its closing text must not be relayed. */
 export async function relayReply(
   tools: TurnTools<MessagingTools>,
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  if (tools.turn.replied || !text || isBlankEventContent(text)) {
+  if (tools.turn.relayProhibited || tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }
   await deliverReply(tools, text, mentions);
@@ -207,6 +247,14 @@ export async function relayReply(
 
 export function missingReplyFailure(): AgentFailure {
   return agentFailure(TURN_FAILURE_PROVIDER, missingReplyMessage());
+}
+
+/** The verdict for a turn whose reply delivery is unknown: not a missing reply — Band may already hold it. */
+export function unknownDeliveryFailure(): AgentFailure {
+  return agentFailure(
+    TURN_FAILURE_PROVIDER,
+    "The reply's delivery is unknown: Band may already hold it. It was not re-posted, and no replacement reply was sent.",
+  );
 }
 
 /**
@@ -231,9 +279,12 @@ export async function finishTurn(
   logContext: Record<string, unknown> = {},
 ): Promise<void> {
   if (tools.turn.detached !== (mode === "detached") || !tools.turn.unanswered) return;
+  // A delivery-unknown turn reports that classification, not a missing reply:
+  // the reply may already be in the room, and nothing was re-posted for it.
+  const failure = tools.turn.hasUnknownDelivery ? unknownDeliveryFailure() : missingReplyFailure();
   if (mode === "attached") {
-    await reportTurnFailure(tools, missingReplyFailure(), logger, logContext);
+    await reportTurnFailure(tools, failure, logger, logContext);
   } else {
-    await safeSendFailure(tools, missingReplyFailure(), resolveLogger(logger), logContext);
+    await safeSendFailure(tools, failure, resolveLogger(logger), logContext);
   }
 }

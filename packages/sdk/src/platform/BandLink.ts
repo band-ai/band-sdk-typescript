@@ -112,6 +112,8 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly apiKey: string;
   public readonly wsUrl: string;
   public readonly restUrl: string;
+  /** True when a custom REST adapter stands in for Band's API: the journal cannot bind to `restUrl` then. */
+  public readonly customRestAdapter: boolean;
   public readonly rest: BandLinkRestApi;
   private _capabilities: AgentToolsCapabilities;
 
@@ -143,6 +145,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
     this.restUrl = options.restUrl ?? deriveDefaultRestUrl(this.wsUrl);
+    this.customRestAdapter = options.restApi !== undefined;
     this.logger = resolveLogger(options.logger);
     this._capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,

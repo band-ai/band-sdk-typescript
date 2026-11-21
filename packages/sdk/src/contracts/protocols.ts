@@ -317,6 +317,7 @@ export interface AdapterToolsProtocol
     Partial<RoomContextTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
+  readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;

@@ -1,0 +1,60 @@
+name: Journal process matrix
+
+# The turn journal's crash-boundary and process cases (real child processes,
+# the recovery resource budget, the long-lived-transport origin cases) are
+# validated on every platform the SDK ships to: GitHub-hosted Linux, macOS and
+# Windows runners, one current Node 22 line each. The proof a platform cannot
+# run records its gap in the run rather than skipping silently: on Windows the
+# descriptor budget's positive control has no enumeration, so the child reports
+# `supported: false` and the test logs the gap instead of asserting a bound.
+#
+# It runs on draft pull requests too — unlike `ci`, which waits for a draft to
+# come out of draft — so a draft PR's journal work is still judged on all three
+# platforms. It adds no secrets and no write permissions; nothing here is
+# write access to repository or pull-request state.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a pull request supersedes its running matrix run.
+  cancel-in-progress: true
+
+jobs:
+  journal-process:
+    name: journal ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The journal's suites, plus the real-process crash-boundary and
+      # recovery-budget cases that spawn child runtimes, and the live-contender
+      # ownership and identity-capability suites. On platforms whose
+      # file-descriptor enumeration the budget's positive control cannot use,
+      # the child reports the gap and the test records it instead of asserting
+      # a bound it cannot measure.
+      - name: Run journal and process suites
+        run: pnpm --filter @band-ai/sdk exec vitest run tests/turn-journal.test.ts tests/turn-journal-migration.test.ts tests/turn-journal-runtime.test.ts tests/turn-journal-transport-origin.test.ts tests/turn-journal-child-process-runtime.test.ts tests/journal-ownership.test.ts tests/journal-identity.test.ts
+        env:
+          CI: true

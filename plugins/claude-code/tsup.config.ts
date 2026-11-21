@@ -12,6 +12,8 @@ export default defineConfig({
   // Claude Code runs the plugin from its installed files without installing dependencies, so dist/ carries everything.
   noExternal: ["@band-ai/sdk"],
   // Reached only through SDK code paths this plugin never runs.
-  external: ["express", "@anthropic-ai/claude-agent-sdk"],
+  // sqlite: the SDK's journal lock lazy-loads node:sqlite; esbuild does not know
+  // the built-in, so it stays external for Node to resolve.
+  external: ["express", "@anthropic-ai/claude-agent-sdk", "node:sqlite", "sqlite"],
   ...inlinedSdkBundleOptions,
 });
