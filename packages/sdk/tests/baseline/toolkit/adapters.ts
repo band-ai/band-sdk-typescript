@@ -21,12 +21,12 @@ import {
   DEFAULT_COPILOT_ACP_COMMAND,
   DEFAULT_CURSOR_ACP_COMMAND,
   DEFAULT_GEMINI_MODEL,
-  DEFAULT_KIRO_ACP_COMMAND,
+  // DEFAULT_KIRO_ACP_COMMAND,
   DEFAULT_OMP_ACP_COMMAND,
   DEFAULT_OMP_RPC_COMMAND,
   GeminiAdapter,
   GoogleADKAdapter,
-  KiroACPAdapter,
+  // KiroACPAdapter,
   LangGraphAdapter,
   LettaAdapter,
   OmpACPAdapter,
@@ -51,7 +51,7 @@ const ENV = {
   googleKey: "GOOGLE_API_KEY",
   geminiKey: "GEMINI_API_KEY",
   cursorKey: "CURSOR_API_KEY",
-  kiroKey: "KIRO_API_KEY",
+  // kiroKey: "KIRO_API_KEY",
   openaiKey: "OPENAI_API_KEY",
   lettaUrl: "LETTA_BASE_URL",
   lettaKey: "LETTA_API_KEY",
@@ -187,7 +187,6 @@ const SPECS = {
     id: "codex",
     requires: [requires.peerPackage("@openai/codex-sdk"), requires.cli("codex")],
     supports: [],
-    pending: "needs Codex CLI authentication provisioned in CI",
     build: ({ prompt, workDir }) => new CodexAdapter({ config: { cwd: workDir, customSection: prompt, approvalPolicy: "never" } }),
   },
   copilotAcp: {
@@ -244,13 +243,14 @@ const SPECS = {
         ...reportsTools({ customTools, memory, reportToolCalls }),
       }),
   },
-  kiroAcp: {
-    id: "kiro-acp",
-    requires: [ACP_SDK, requires.cli(DEFAULT_KIRO_ACP_COMMAND[0]), requires.envVar(ENV.kiroKey)],
-    supports: [],
-    pending: "needs the Kiro CLI and a KIRO_API_KEY provisioned in CI",
-    build: ({ prompt, workDir }) => new KiroACPAdapter({ cwd: workDir, customSection: prompt }),
-  },
+  // Disabled until a KIRO_API_KEY and the Kiro CLI are provisioned in CI; restore with
+  // the DEFAULT_KIRO_ACP_COMMAND / KiroACPAdapter imports, ENV.kiroKey and scenarios/adapters/kiroAcp.test.ts.
+  // kiroAcp: {
+  //   id: "kiro-acp",
+  //   requires: [ACP_SDK, requires.cli(DEFAULT_KIRO_ACP_COMMAND[0]), requires.envVar(ENV.kiroKey)],
+  //   supports: [],
+  //   build: ({ prompt, workDir }) => new KiroACPAdapter({ cwd: workDir, customSection: prompt }),
+  // },
   langgraph: {
     id: "langgraph",
     requires: [
