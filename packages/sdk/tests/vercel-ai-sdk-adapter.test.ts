@@ -118,8 +118,8 @@ describe("VercelAISDKAdapter", () => {
         content: "[User]: hello",
       },
       {
-        role: "system",
-        content: expect.stringContaining("Current turn identity:"),
+        role: "user",
+        content: expect.stringMatching(/^\[System\]: Current turn identity:/),
       },
       {
         role: "assistant",
@@ -195,7 +195,7 @@ describe("VercelAISDKAdapter", () => {
     expect(tools.messages).toEqual(["alias works"]);
   });
 
-  it("runs a tool turn on the real ai runtime, with system-role notices and JSON-schema tools", async () => {
+  it("runs a tool turn on the real ai runtime, with notices as user text and JSON-schema tools", async () => {
     let calls = 0;
     const model = new MockLanguageModelV4({
       doGenerate: async () => (calls++ === 0 ? {
@@ -224,7 +224,11 @@ describe("VercelAISDKAdapter", () => {
     expect(tools.executed).toEqual([{ name: "band_get_participants", input: {} }]);
     expect(tools.messages).toEqual(["real runtime reply"]);
     expect(model.doGenerateCalls).toHaveLength(2);
-    expect(model.doGenerateCalls[0]?.prompt.map((message) => message.role)).toContain("system");
+    // Only the leading instructions may be a system message: Anthropic rejects one mid-conversation.
+    const roles = model.doGenerateCalls.map((call) => call.prompt.map((message) => message.role));
+    for (const callRoles of roles) {
+      expect(callRoles.slice(callRoles[0] === "system" ? 1 : 0)).not.toContain("system");
+    }
   });
 
   it("routes a provider failure through sendFailure with provider: 'vercel-ai-sdk', then fails the turn", async () => {

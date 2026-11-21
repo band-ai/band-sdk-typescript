@@ -10,7 +10,7 @@ import type {
 import { UnsupportedFeatureError } from "../../core/errors";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { toDisplayText } from "../shared/coercion";
-import { mapConversationMessages, normalizeConversationRole } from "../tool-calling/valueUtils";
+import { mapConversationMessages, normalizeConversationRole, systemNoticeAsUserText } from "../tool-calling/valueUtils";
 
 interface VercelAISDKToolDefinition {
   description?: string;
@@ -105,8 +105,6 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
       model: this.model,
       ...(request.systemPrompt?.trim() ? { system: request.systemPrompt.trim() } : {}),
       messages: toVercelAISDKMessages(request),
-      // The runtime's turn-identity and roster notices are system-role messages inside the conversation; `ai` 7 rejects those by default.
-      allowSystemInMessages: true,
       ...(Object.keys(tools).length > 0 ? { tools } : {}),
       abortSignal: options?.signal,
     });
@@ -143,16 +141,17 @@ function toVercelAISDKMessages(request: ToolCallingModelRequest): Array<Record<s
   return messages;
 }
 
+/** System notices go as user text: the provider behind `ai` may reject a system role mid-conversation, as Anthropic does. */
 function toVercelAISDKMessage(entry: Record<string, unknown>): Record<string, unknown> | null {
   const role = normalizeConversationRole(entry.role);
   if (!role) {
     return null;
   }
 
-  return {
-    role,
-    content: toDisplayText(entry.content),
-  };
+  const content = toDisplayText(entry.content);
+  return role === "system"
+    ? { role: "user", content: systemNoticeAsUserText(content) }
+    : { role, content };
 }
 
 function toVercelAISDKToolOutput(output: unknown): VercelAISDKToolOutput {
