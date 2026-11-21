@@ -21,17 +21,15 @@ also passed in a focused rerun after the shared Gemini default changed to
 
 | Adapter | Remaining N/A cells | Classification | Work needed |
 | --- | ---: | --- | --- |
-| Vercel AI SDK | 4 | Required coverage missing | Install and configure an AI SDK model provider, then replace the deliberately unbuildable baseline builder. The `ai` package alone cannot run these scenarios. |
 | Parlant | 4 | Scenario incompatibility | Generic scenarios assume Band platform tools; this baseline builder does not register them. Its bespoke system-prompt scenario still runs against the pinned server. |
 
-The 4 remaining required missing cells remain owned by the parent nightly
-remediation work. Authentication provisioning and new model-provider builders are separate
-follow-ups to this repair. Passing executed tests does not close that gate.
+No required cells remain missing: the Vercel AI SDK builder now runs on
+`@ai-sdk/anthropic` with the shared Anthropic model and credential.
 Parlant's four incompatible cells are reported separately rather than being
 described as missing credentials.
 
 `adapters.codexAcpSmoke` is a separate opt-in scenario. The baseline config
 excludes it unless `RUN_CODEX_ACP_E2E=1`; it requires a local `codex-acp` command.
-Its absence is not one of the registry's 14 pending cells and the scheduled
+Its absence is not a pending registry cell, and the scheduled
 workflow does not currently opt in. It needs its own explicit coverage decision
 under the parent remediation work.

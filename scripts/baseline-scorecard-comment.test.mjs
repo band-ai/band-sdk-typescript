@@ -84,6 +84,7 @@ test("October 8 renders failed plugin tests before green SDK cells, and separate
     codex: "needs Codex CLI authentication provisioned in CI",
     openai: "needs an OPENAI_API_KEY provisioned in CI",
     langgraph: "needs a LangChain chat-model package as a devDependency",
+    "vercel-ai-sdk": "needs an AI SDK model-provider package as a devDependency",
   };
   const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(historicalPending[id] ? { pending: historicalPending[id] } : {}) })));
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {
@@ -214,8 +215,8 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
   const directory = await mkdtemp(join(tmpdir(), "band-report-coverage-"));
   try {
     const input = evidence();
-    input.sdk.modules[0].tests.push(testCase("vercel-ai-sdk", { fullName: "behavior.coverage > vercel-ai-sdk", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("vercel-ai-sdk").pending }));
-    input.matrix = projectLiveRun(input.sdk);
+    // The live registry has no pending adapter left, so a filtered plugin test is the coverage gap.
+    input.plugin.modules[0].tests.push(testCase("plugin filtered", { state: "skipped", mode: "skip", filtered: true }));
     await Promise.all(Object.entries({ "sdk-live.json": input.sdk, "plugin-live.json": input.plugin, "scorecard.json": input.matrix }).map(([file, data]) => writeFile(join(directory, file), JSON.stringify(data))));
     const canonical = metadata();
     canonical.run.status = "in_progress";
@@ -229,7 +230,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
     assert.equal(report.executionVerdict, "PASS");
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.acceptance, "INCOMPLETE");
-    assert.ok(report.coverageProblems.some((problem) => problem.includes("model-provider")));
+    assert.ok(report.coverageProblems.some((problem) => problem.includes("plugin: 1 filtered")));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
