@@ -89,7 +89,7 @@ test("October 8 renders failed plugin tests before green SDK cells, and separate
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {
     id: `pass${index}`, fullName: `behavior.fixture${index} > anthropic`, parent: { type: "suite", name: `behavior.fixture${index}` },
   }));
-  for (const [adapter, count] of [["openai", 21], ["codex", 5], ["kiro-acp", 5], ["langgraph", 4], ["vercel-ai-sdk", 4], ["parlant", 4]]) {
+  for (const [adapter, count] of [["openai", 21], ["codex", 5], ["langgraph", 4], ["vercel-ai-sdk", 4], ["parlant", 4]]) {
     const spec = historicalRoster.get(adapter);
     sdkTests.push(...Array.from({ length: count }, (_, index) => testCase(adapter, {
       id: `${adapter}-excluded${index}`, fullName: `behavior.excluded${index} > ${adapter}`, parent: { type: "suite", name: `behavior.excluded${index}` }, state: "skipped", mode: "skip", note: spec.pending ?? spec.bespokeOnly,
@@ -105,13 +105,13 @@ test("October 8 renders failed plugin tests before green SDK cells, and separate
     { name: "Run the live baseline", conclusion: "success" }, { name: "Run the Claude Code plugin live lane", conclusion: "failure" },
   ] }) });
   assert.equal(report.verdict, "FAIL");
-  assert.match(markdown, /SDK baseline \| 147 \| 0 \| 43/);
+  assert.match(markdown, /SDK baseline \| 147 \| 0 \| 38/);
   assert.match(markdown, /Claude Code plugin \| 3 \| 2 \| 0/);
-  assert.match(markdown, /148 passing · 0 failing · 43 N\/A/);
+  assert.match(markdown, /148 passing · 0 failing · 38 N\/A/);
   assert.match(markdown, /every agent is taken/);
   assert.match(markdown, /never saved/);
   assert.ok(markdown.indexOf("every agent is taken") < markdown.indexOf("SDK-only scenario"));
-  assert.equal(report.groupedExclusions.reduce((count, group) => count + group.count, 0), 43);
+  assert.equal(report.groupedExclusions.reduce((count, group) => count + group.count, 0), 38);
   assert.equal(report.groupedExclusions.find((group) => group.adapter === "openai").count, 21);
   assert.equal(report.groupedExclusions.find((group) => group.adapter === "parlant").classification, "scenario incompatibility");
   assert.match(markdown, /Nightly acceptance: INCOMPLETE/);
@@ -214,7 +214,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
   const directory = await mkdtemp(join(tmpdir(), "band-report-coverage-"));
   try {
     const input = evidence();
-    input.sdk.modules[0].tests.push(testCase("kiro-acp", { fullName: "behavior.coverage > kiro-acp", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("kiro-acp").pending }));
+    input.sdk.modules[0].tests.push(testCase("vercel-ai-sdk", { fullName: "behavior.coverage > vercel-ai-sdk", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("vercel-ai-sdk").pending }));
     input.matrix = projectLiveRun(input.sdk);
     await Promise.all(Object.entries({ "sdk-live.json": input.sdk, "plugin-live.json": input.plugin, "scorecard.json": input.matrix }).map(([file, data]) => writeFile(join(directory, file), JSON.stringify(data))));
     const canonical = metadata();
@@ -229,7 +229,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
     assert.equal(report.executionVerdict, "PASS");
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.acceptance, "INCOMPLETE");
-    assert.ok(report.coverageProblems.some((problem) => problem.includes("Kiro CLI")));
+    assert.ok(report.coverageProblems.some((problem) => problem.includes("model-provider")));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
