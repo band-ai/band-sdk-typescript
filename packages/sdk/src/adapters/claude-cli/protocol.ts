@@ -43,7 +43,7 @@ export const CLAUDE_FRAME = {
   result: "result",
 } as const;
 
-/** The `system` subtype that starts a session; other subtypes are informational. */
+/** The `system` subtype that starts a session. */
 export const CLAUDE_SYSTEM_SUBTYPE = "init";
 
 /** The terminal `result` subtypes observed on 2.1.319. */
@@ -239,6 +239,11 @@ export function parseSystemInit(frame: Record<string, unknown>): ClaudeSystemIni
     }, []),
     capabilities: asStringArray(frame.capabilities),
   };
+}
+
+export function parseStatusPermissionMode(frame: Record<string, unknown>): string | null {
+  if (frame.type !== CLAUDE_FRAME.system || frame.subtype !== "status") return null;
+  return asStringOrNull(frame.permissionMode);
 }
 
 /** The content blocks of an `assistant` or `user` frame, reduced to safe fields. */

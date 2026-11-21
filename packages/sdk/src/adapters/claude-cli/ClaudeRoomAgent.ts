@@ -162,9 +162,9 @@ export interface ClaudeCliAdapterOptions {
    * out-of-workspace commands, network calls and calls to servers the person
    * authorized alike. Band forces no asks there (owner decision 2026-11-15): the
    * room sees only what the CLI chooses to ask, and whatever it asks arrives over
-   * the room's permission tool. The CLI must report the requested mode back at
-   * `initialize` or the room refuses to start. `bypassPermissions` is never
-   * offered.
+   * the room's permission tool. The CLI must confirm the requested mode in
+   * both its handshake and its session startup report. `bypassPermissions`
+   * is never offered.
    */
   permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "manual" | "auto";
   /** Directories or archives the CLI loads as plugins for this session. */
@@ -290,7 +290,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   private readonly customSection?: string;
   private readonly model?: string;
   private readonly effort?: ClaudeCliAdapterOptions["effort"];
-  private readonly permissionMode?: ClaudeCliAdapterOptions["permissionMode"];
+  private readonly permissionMode?: Exclude<ClaudeCliAdapterOptions["permissionMode"], "manual">;
   private readonly pluginDirs: readonly string[];
   private readonly allowedTools: readonly string[];
   private readonly additionalTools: readonly McpToolRegistration[];
@@ -341,7 +341,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     this.customSection = options.customSection;
     this.model = options.model;
     this.effort = options.effort;
-    this.permissionMode = options.permissionMode;
+    this.permissionMode = options.permissionMode === "manual" ? "default" : options.permissionMode;
     this.pluginDirs = options.pluginDirs ?? [];
     this.allowedTools = options.allowedTools ?? [];
     this.additionalTools = options.additionalTools ?? [];
@@ -527,7 +527,10 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       }
       turn.client = generation.client;
       const outcome = await withTimeout(
-        generation.client.runTurn(prompt, { onEvent: (event) => this.observeEvent(turn, generation!, event) }),
+        generation.client.runTurn(prompt, {
+          validateStartupPermissionMode: (mode) => this.assertPermissionMode(mode),
+          onEvent: (event) => this.observeEvent(turn, generation!, event),
+        }),
         this.turnTimeoutMs,
         () => new ClaudeTurnTimeoutError(),
       );
@@ -729,31 +732,15 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       if (generationId !== this.generation) {
         throw new Error(START_SUPERSEDED);
       }
-      // The mode a person chose is never quietly another mode: when the session
-      // asked for one, the CLI's own `initialize` report must name it back. A
-      // missing report is as untrustworthy as a mismatched one — both would let
-      // the room run on an approval floor nobody confirmed, and a silent fallback
-      // is exactly what the person is owed a reason for instead.
-      const requestedMode = this.permissionMode;
-      if (requestedMode) {
-        const honoured = requestedMode === "manual" ? "default" : requestedMode;
-        const reported = client.initReport?.permissionMode ?? null;
-        if (reported !== honoured) {
-          throw new ClaudeProcessError(
-            reported === null
-              ? `the Claude CLI did not report a permission mode for the requested ${honoured}`
-              : `the Claude CLI started in permission mode ${reported} instead of the requested ${honoured}`,
-          );
-        }
-      }
+      this.assertPermissionMode(client.initReport?.permissionMode ?? null);
       Object.assign(generation, { client, backend });
       this.live = generation;
       if (this.startingGeneration === generation) this.startingGeneration = null;
-      void client.failed.then(() => {
+      void client.failed.then((error) => {
         // Still live means nothing here retired it: the process failed on its own.
         if (this.live === generation) {
           this.live = null;
-          this.observer({ type: "room.failed", roomId: this.roomId, error: "the Claude CLI process ended" });
+          this.observer({ type: "room.failed", roomId: this.roomId, error: error.message });
         }
       });
       return generation;
@@ -770,6 +757,16 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       }
       throw error;
     }
+  }
+
+  private assertPermissionMode(reported: string | null): void {
+    const requested = this.permissionMode;
+    if (requested === undefined || reported === requested) return;
+    throw new ClaudeProcessError(
+      reported === null
+        ? `the Claude CLI did not report a permission mode for the requested ${requested}`
+        : `the Claude CLI started in permission mode ${reported} instead of the requested ${requested}`,
+    );
   }
 
   /**
@@ -871,7 +868,7 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
       args.push("--effort", this.effort);
     }
     if (this.permissionMode) {
-      args.push("--permission-mode", this.permissionMode === "manual" ? "default" : this.permissionMode);
+      args.push("--permission-mode", this.permissionMode);
     }
     for (const dir of this.pluginDirs) {
       args.push("--plugin-dir", dir);

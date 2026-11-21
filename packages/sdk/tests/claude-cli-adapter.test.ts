@@ -921,7 +921,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn({ ...systemInit(), permissionMode: "acceptEdits" }, assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
       const command = peer.options.command;
@@ -949,7 +949,7 @@ describe("ClaudeCliAdapter", () => {
       const promptedDone = turnSettled(agent);
       const prompted = room.say("owner", "one");
       const peer = await rigged.nextPeer();
-      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn({ ...systemInit(), permissionMode: "default" }, assistant(text("ok")), result({ result: "ok" }));
       await prompted;
       await promptedDone;
       expect(argPair(peer.options.command, "--permission-mode")).toBe("default");
@@ -981,9 +981,14 @@ describe("ClaudeCliAdapter", () => {
       expect(argPair(peer.options.command, "--permission-prompt-tool"), "the permission route must stay wired").toBe(`mcp__band__${PERMISSION_TOOL}`);
       expect(Object.keys(mcpConfig(peer).mcpServers), "the authorized server passes through to the CLI").toEqual(["granted", "band"]);
       peer.send(initResponse(String((await peer.controlRequest("initialize")).request_id), "2.1.319", "auto"));
-      await peer.scriptTurn(systemInit(), assistant(text("ok")), result({ result: "ok" }));
+      await peer.scriptTurn(
+        { ...systemInit(), permissionMode: "auto" },
+        assistant(text("ok")),
+        { type: "system", subtype: "status", permissionMode: "plan" },
+        result({ result: "ok" }),
+      );
       await prompted;
-      await promptedDone;
+      expect((await promptedDone).type).toBe("turn.completed");
     } finally {
       await agent.stop();
     }
@@ -1029,6 +1034,42 @@ describe("ClaudeCliAdapter", () => {
         events.some((event) => event.type === "room.failed" && JSON.stringify(event).includes("did not report a permission mode")),
         `an unconfirmed mode is as untrustworthy as a wrong one: ${JSON.stringify(events.map((event) => event.type))}`,
       ).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it.each([
+    { source: "session init", initMode: "default", status: [], reason: "started in permission mode default instead of the requested auto" },
+    { source: "session init with no mode", initMode: null, status: [], reason: "did not report a permission mode for the requested auto" },
+    {
+      source: "startup status",
+      initMode: "auto",
+      status: [{ type: "system", subtype: "status", permissionMode: "default" }],
+      reason: "started in permission mode default instead of the requested auto",
+    },
+  ])("refuses an unconfirmed mode from $source after the handshake accepted auto", async ({ initMode, status, reason }) => {
+    const rigged = rig();
+    const claude = adapter(rigged, { permissionMode: "auto" });
+    const { agent, room, events } = await started(claude);
+    try {
+      const promptedDone = turnSettled(agent);
+      const prompted = room.say("owner", "one");
+      const peer = await rigged.nextPeer();
+      await peer.scriptTurn(
+        { ...systemInit(), permissionMode: initMode },
+        ...status,
+        assistant(text("reply under the wrong mode")),
+        result({ result: "reply under the wrong mode" }),
+      );
+      await prompted;
+      expect((await promptedDone).type).toBe("turn.failed");
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "room.failed",
+        error: expect.stringContaining(reason),
+      }));
+      expect(room.messages).toEqual([]);
+      expect(peer.hasExited).toBe(true);
     } finally {
       await agent.stop();
     }

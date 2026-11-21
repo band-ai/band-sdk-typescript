@@ -30,6 +30,7 @@ import {
   parseInitReport,
   parseInboundRequest,
   parseResult,
+  parseStatusPermissionMode,
   parseSystemInit,
   type ClaudeEvent,
   type ClaudeInitReport,
@@ -162,6 +163,8 @@ export interface ClaudeIdentity {
 
 /** What a turn does with the CLI's events while it runs. */
 export interface ClaudeTurnHandlers {
+  /** Checks mode reports before the first assistant frame. A throw fails the turn. */
+  validateStartupPermissionMode?(mode: string | null): void;
   /** Each frame's events, synchronously and in the order the CLI wrote them. */
   onEvent(event: ClaudeEvent): void;
 }
@@ -201,6 +204,7 @@ interface PendingControl {
 
 interface TurnRun {
   handlers: ClaudeTurnHandlers;
+  hasAssistantFrame: boolean;
   result?: ClaudeResultFrame;
   interrupted: boolean;
   outcome: Deferred<ClaudeTurnOutcome | Error>;
@@ -344,7 +348,7 @@ export class ClaudeCliClient {
     if (this.turn) {
       throw new ClaudeProcessError("a turn is already running on this Claude CLI process");
     }
-    const run: TurnRun = { handlers, interrupted: false, outcome: createDeferred(), settled: false };
+    const run: TurnRun = { handlers, hasAssistantFrame: false, interrupted: false, outcome: createDeferred(), settled: false };
     this.turn = run;
     this.lastTurnEndedWithResult = false;
     try {
@@ -379,20 +383,22 @@ export class ClaudeCliClient {
   }
 
   /**
-   * Closes stdin so the process can leave, waits `drainMs` for that, then stops
-   * it for real. Returns only once the exit has been observed, so a caller never
-   * leaves a running process behind, and reports whether the drain was clean.
+   * Gives a healthy process up to `drainMs` to exit on EOF. A failed transport
+   * is stopped immediately. Returns only once the exit has been observed.
    */
   public async close(options: { drainMs?: number } = {}): Promise<ClaudeDrainReport> {
     this.closing = true;
-    this.handle.endStdin();
-    const drained = await Promise.race([
-      this.handle.exited.then(() => true),
-      new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), options.drainMs ?? CLAUDE_DRAIN_TIMEOUT_MS);
-        timer.unref();
-      }),
-    ]);
+    let drained = false;
+    if (!this.error) {
+      this.handle.endStdin();
+      drained = await Promise.race([
+        this.handle.exited.then(() => true),
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), options.drainMs ?? CLAUDE_DRAIN_TIMEOUT_MS);
+          timer.unref();
+        }),
+      ]);
+    }
     await this.handle.stop();
     const exit = await this.handle.exited;
     // A CLI that saw its stdin close, wrote everything it had and left is a
@@ -592,14 +598,22 @@ export class ClaudeCliClient {
       case CLAUDE_FRAME.controlRequest:
         return this.onInboundRequest(frame);
       case CLAUDE_FRAME.system: {
+        const run = this.turn;
         const init = parseSystemInit(frame);
-        if (!init) {
-          return;
+        if (init) {
+          run?.handlers.validateStartupPermissionMode?.(init.permissionMode);
+          this.sessionId = init.sessionId;
+          return this.emit({ type: "system_init", init });
         }
-        this.sessionId = init.sessionId;
-        return this.emit({ type: "system_init", init });
+        // Model eligibility can resolve after system/init and before output.
+        if (run && !run.hasAssistantFrame) {
+          const mode = parseStatusPermissionMode(frame);
+          if (mode !== null) run.handlers.validateStartupPermissionMode?.(mode);
+        }
+        return;
       }
       case CLAUDE_FRAME.assistant:
+        if (this.turn) this.turn.hasAssistantFrame = true;
         return this.emitAll(eventsFromAssistant(frame));
       case CLAUDE_FRAME.user:
         return this.emitAll(eventsFromUser(frame));
