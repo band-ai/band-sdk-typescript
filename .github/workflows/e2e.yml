@@ -64,7 +64,13 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install adapter CLIs
-        run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot
+        run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot @openai/codex
+
+      # `codex app-server` reads its credentials from the login store, not from OPENAI_API_KEY.
+      - name: Sign in to Codex with the OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
 
       # Cursor ships its CLI (`agent`) as an installer script, not an npm package.
       - name: Install the Cursor agent CLI

@@ -49,8 +49,10 @@ concurrency:
 
 jobs:
   coverage:
-    # Drafts get no CI; ready_for_review above fires the first real run.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Fork PRs cannot access the secret for the private Core checkout.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
