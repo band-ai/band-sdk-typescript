@@ -12,7 +12,7 @@ import { mapConversationMessages, normalizeConversationRole } from "../tool-call
 
 interface VercelAISDKToolDefinition {
   description?: string;
-  inputSchema: Record<string, unknown>;
+  inputSchema: unknown;
 }
 
 type VercelAISDKGenerateText = (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -65,6 +65,8 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
       model: this.model,
       ...(request.systemPrompt?.trim() ? { system: request.systemPrompt.trim() } : {}),
       messages: toVercelAISDKMessages(request),
+      // The runtime's turn-identity and roster notices are system-role messages inside the conversation; `ai` 7 rejects those by default.
+      allowSystemInMessages: true,
       ...(Object.keys(tools).length > 0 ? { tools } : {}),
       abortSignal: options?.signal,
     });
@@ -93,7 +95,7 @@ function toVercelAISDKMessages(request: ToolCallingModelRequest): Array<Record<s
         type: "tool-result",
         toolCallId: result.toolCallId,
         toolName: result.name,
-        output: result.output,
+        output: toVercelAISDKToolOutput(result.output),
       })),
     });
   }
@@ -111,6 +113,13 @@ function toVercelAISDKMessage(entry: Record<string, unknown>): Record<string, un
     role,
     content: toDisplayText(entry.content),
   };
+}
+
+/** `ai` takes a tool result as a typed output (`text` or `json`), never the bare value. */
+function toVercelAISDKToolOutput(output: unknown): Record<string, unknown> {
+  return typeof output === "string"
+    ? { type: "text", value: output }
+    : { type: "json", value: output ?? null };
 }
 
 function toVercelAISDKTools(
@@ -139,7 +148,7 @@ function toVercelAISDKTools(
     tools[name] = toolFactory({
       ...(description ? { description } : {}),
       inputSchema: parameters && typeof parameters === "object" && !Array.isArray(parameters)
-        ? parameters as Record<string, unknown>
+        ? parameters
         : { type: "object", properties: {}, required: [] },
     });
   }
@@ -202,16 +211,19 @@ async function loadVercelAISDKRuntime(): Promise<VercelAISDKRuntime> {
   })) as {
     generateText?: VercelAISDKGenerateText;
     tool?: VercelAISDKToolFactory;
+    jsonSchema?: (schema: Record<string, unknown>) => unknown;
   };
 
-  if (!module.generateText || !module.tool) {
+  if (!module.generateText || !module.tool || !module.jsonSchema) {
     throw new UnsupportedFeatureError(
       'VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai".',
     );
   }
 
+  const { generateText, tool, jsonSchema } = module;
   return {
-    generateText: module.generateText,
-    tool: module.tool,
+    generateText,
+    // `tool()` takes a Schema or Zod type, not the raw JSON Schema the platform tools carry.
+    tool: (definition) => tool({ ...definition, inputSchema: jsonSchema(definition.inputSchema as Record<string, unknown>) }),
   };
 }

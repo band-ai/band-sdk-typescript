@@ -1,3 +1,4 @@
+import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
@@ -135,7 +136,7 @@ describe("VercelAISDKAdapter", () => {
           type: "tool-result",
           toolCallId: "call_1",
           toolName: "band_get_participants",
-          output: { ok: true },
+          output: { type: "json", value: { ok: true } },
         }],
       },
     ]);
@@ -162,6 +163,38 @@ describe("VercelAISDKAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["alias works"]);
+  });
+
+  it("runs a tool turn on the real ai runtime, with system-role notices and JSON-schema tools", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => (calls++ === 0 ? {
+        content: [{ type: "tool-call", toolCallId: "call_1", toolName: "band_get_participants", input: "{}" }],
+        finishReason: { unified: "tool-calls", raw: "tool_use" },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+        warnings: [],
+      } : {
+        content: [{ type: "text", text: "real runtime reply" }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+        warnings: [],
+      }),
+    });
+    const adapter = new VercelAISDKAdapter({ model });
+    const tools = new VercelAISDKTestTools();
+
+    await adapter.onMessage(makeMessage("hello"), tools, history, null, null, { isSessionBootstrap: true, roomId: "room-3" });
+
+    expect(tools.executed).toEqual([{ name: "band_get_participants", input: {} }]);
+    expect(tools.messages).toEqual(["real runtime reply"]);
+    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(model.doGenerateCalls[0]?.prompt.map((message) => message.role)).toContain("system");
   });
 
   it("routes a provider failure through sendFailure with provider: 'vercel-ai-sdk', then fails the turn", async () => {
