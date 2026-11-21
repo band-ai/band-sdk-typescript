@@ -8,6 +8,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { anthropic as aiSdkAnthropic } from "@ai-sdk/anthropic";
 import { MemorySaver } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
 
@@ -33,6 +34,7 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  VercelAISDKAdapter,
   type ClaudeSDKAdapterOptions,
   type LettaAdapterOptions,
   type OmpACPAdapterOptions,
@@ -157,13 +159,6 @@ function reportsTools({ customTools, memory, reportToolCalls }: Pick<BuildOption
  * tool-heavy turn never trips it.
  */
 const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: 90_000 };
-
-/** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
-function unbuildable(reason: string): () => never {
-  return () => {
-    throw new Error(`this adapter cannot be built: ${reason}`);
-  };
-}
 
 /** Keyed by handle; each spec's `id` is its directory under `src/adapters/`. */
 const SPECS = {
@@ -328,10 +323,17 @@ const SPECS = {
   },
   vercelAiSdk: {
     id: "vercel-ai-sdk",
-    requires: [requires.peerPackage("ai")],
-    supports: [],
-    pending: "needs an AI SDK model-provider package as a devDependency",
-    build: unbuildable("no AI SDK model-provider package is installed"),
+    requires: [ANTHROPIC_KEY, requires.peerPackage("ai"), requires.peerPackage("@ai-sdk/anthropic")],
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory, reportToolCalls }) =>
+      new VercelAISDKAdapter({
+        model: aiSdkAnthropic(ANTHROPIC_MODEL),
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory, reportToolCalls }),
+        ...TOOL_CALLING_TURN_TIMEOUT,
+      }),
   },
 } as const satisfies Record<string, AdapterSpec>;
 

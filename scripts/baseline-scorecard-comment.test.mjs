@@ -83,6 +83,7 @@ test("October 8 renders failed plugin tests before green SDK cells, and separate
   const historicalPending = {
     openai: "needs an OPENAI_API_KEY provisioned in CI",
     langgraph: "needs a LangChain chat-model package as a devDependency",
+    "vercel-ai-sdk": "needs an AI SDK model-provider package as a devDependency",
   };
   const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(historicalPending[id] ? { pending: historicalPending[id] } : {}) })));
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {
