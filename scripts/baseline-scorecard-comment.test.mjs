@@ -81,14 +81,16 @@ test("red reports sanitize the same evidence before rendering JSON and Markdown"
 
 test("October 8 renders failed plugin tests before green SDK cells, and separates test counts", () => {
   const historicalPending = {
+    codex: "needs Codex CLI authentication provisioned in CI",
     openai: "needs an OPENAI_API_KEY provisioned in CI",
     langgraph: "needs a LangChain chat-model package as a devDependency",
+    "vercel-ai-sdk": "needs an AI SDK model-provider package as a devDependency",
   };
   const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(historicalPending[id] ? { pending: historicalPending[id] } : {}) })));
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {
     id: `pass${index}`, fullName: `behavior.fixture${index} > anthropic`, parent: { type: "suite", name: `behavior.fixture${index}` },
   }));
-  for (const [adapter, count] of [["openai", 21], ["codex", 5], ["kiro-acp", 5], ["langgraph", 4], ["vercel-ai-sdk", 4], ["parlant", 4]]) {
+  for (const [adapter, count] of [["openai", 21], ["codex", 5], ["langgraph", 4], ["vercel-ai-sdk", 4], ["parlant", 4]]) {
     const spec = historicalRoster.get(adapter);
     sdkTests.push(...Array.from({ length: count }, (_, index) => testCase(adapter, {
       id: `${adapter}-excluded${index}`, fullName: `behavior.excluded${index} > ${adapter}`, parent: { type: "suite", name: `behavior.excluded${index}` }, state: "skipped", mode: "skip", note: spec.pending ?? spec.bespokeOnly,
@@ -104,13 +106,13 @@ test("October 8 renders failed plugin tests before green SDK cells, and separate
     { name: "Run the live baseline", conclusion: "success" }, { name: "Run the Claude Code plugin live lane", conclusion: "failure" },
   ] }) });
   assert.equal(report.verdict, "FAIL");
-  assert.match(markdown, /SDK baseline \| 147 \| 0 \| 43/);
+  assert.match(markdown, /SDK baseline \| 147 \| 0 \| 38/);
   assert.match(markdown, /Claude Code plugin \| 3 \| 2 \| 0/);
-  assert.match(markdown, /148 passing · 0 failing · 43 N\/A/);
+  assert.match(markdown, /148 passing · 0 failing · 38 N\/A/);
   assert.match(markdown, /every agent is taken/);
   assert.match(markdown, /never saved/);
   assert.ok(markdown.indexOf("every agent is taken") < markdown.indexOf("SDK-only scenario"));
-  assert.equal(report.groupedExclusions.reduce((count, group) => count + group.count, 0), 43);
+  assert.equal(report.groupedExclusions.reduce((count, group) => count + group.count, 0), 38);
   assert.equal(report.groupedExclusions.find((group) => group.adapter === "openai").count, 21);
   assert.equal(report.groupedExclusions.find((group) => group.adapter === "parlant").classification, "scenario incompatibility");
   assert.match(markdown, /Nightly acceptance: INCOMPLETE/);
@@ -213,8 +215,8 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
   const directory = await mkdtemp(join(tmpdir(), "band-report-coverage-"));
   try {
     const input = evidence();
-    input.sdk.modules[0].tests.push(testCase("codex", { fullName: "behavior.coverage > codex", parent: { type: "suite", name: "behavior.coverage" }, state: "skipped", mode: "skip", note: registry.get("codex").pending }));
-    input.matrix = projectLiveRun(input.sdk);
+    // The live registry has no pending adapter left, so a filtered plugin test is the coverage gap.
+    input.plugin.modules[0].tests.push(testCase("plugin filtered", { state: "skipped", mode: "skip", filtered: true }));
     await Promise.all(Object.entries({ "sdk-live.json": input.sdk, "plugin-live.json": input.plugin, "scorecard.json": input.matrix }).map(([file, data]) => writeFile(join(directory, file), JSON.stringify(data))));
     const canonical = metadata();
     canonical.run.status = "in_progress";
@@ -228,7 +230,7 @@ test("assembly CLI keeps required coverage red after passing executed lanes", as
     assert.equal(report.executionVerdict, "PASS");
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.acceptance, "INCOMPLETE");
-    assert.ok(report.coverageProblems.some((problem) => problem.includes("Codex CLI authentication")));
+    assert.ok(report.coverageProblems.some((problem) => problem.includes("plugin: 1 filtered")));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
