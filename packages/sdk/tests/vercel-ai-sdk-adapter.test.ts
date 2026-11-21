@@ -142,6 +142,36 @@ describe("VercelAISDKAdapter", () => {
     ]);
   });
 
+  it("skips a malformed tool call, and sends a result that is not JSON as text", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const responses = [
+      { toolCalls: [{ toolName: "no_id" }, "not an object", { toolCallId: "call_1", toolName: "band_get_participants", input: "garbled" }] },
+      { text: "done" },
+    ];
+    const adapter = new VercelAISDKAdapter({
+      model: { id: "test-model" },
+      generateText: async (params) => {
+        requests.push(params);
+        return responses.shift() ?? {};
+      },
+      toolFactory: (definition) => definition,
+    });
+    const tools = new VercelAISDKTestTools();
+    tools.executeToolCall = async (name, input) => {
+      tools.executed.push({ name, input });
+      return 10n;
+    };
+
+    await adapter.onMessage(makeMessage("hello"), tools, history, null, null, { isSessionBootstrap: true, roomId: "room-4" });
+
+    expect(tools.executed).toEqual([{ name: "band_get_participants", input: {} }]);
+    expect(requests[1]?.messages).toContainEqual({
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "call_1", toolName: "band_get_participants", output: { type: "text", value: "10" } }],
+    });
+    expect(tools.messages).toEqual(["done"]);
+  });
+
   it("sends final text when used directly", async () => {
     const adapter = new VercelAISDKAdapter({
       model: { id: "test-model" },

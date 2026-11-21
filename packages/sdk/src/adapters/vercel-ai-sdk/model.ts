@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   ToolCall,
   ToolCallingModel,
@@ -15,13 +17,51 @@ interface VercelAISDKToolDefinition {
   inputSchema: unknown;
 }
 
-type VercelAISDKGenerateText = (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+type VercelAISDKGenerateText = (params: Record<string, unknown>) => Promise<unknown>;
 type VercelAISDKToolFactory = (definition: VercelAISDKToolDefinition) => unknown;
 
 interface VercelAISDKRuntime {
   generateText: VercelAISDKGenerateText;
   tool: VercelAISDKToolFactory;
 }
+
+const functionSchema = <T extends (...args: never[]) => unknown>() =>
+  z.custom<T>((value) => typeof value === "function");
+
+/** The parts of the `ai` module the adapter calls; a module without them is not a usable `ai`. */
+const aiModuleSchema = z.object({
+  generateText: functionSchema<VercelAISDKGenerateText>(),
+  tool: functionSchema<VercelAISDKToolFactory>(),
+  jsonSchema: functionSchema<(schema: Record<string, unknown>) => unknown>(),
+});
+
+/** What the adapter reads from a Band tool schema (OpenAI function format). */
+const bandToolSchema = z.object({
+  function: z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    parameters: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+const EMPTY_INPUT_SCHEMA: Record<string, unknown> = { type: "object", properties: {}, required: [] };
+
+/** What the adapter reads from one `generateText` tool call. */
+const generatedToolCall = z.object({
+  toolCallId: z.string(),
+  toolName: z.string(),
+  input: z.record(z.string(), z.unknown()).catch({}),
+  invalid: z.boolean().optional(),
+  error: z.unknown().optional(),
+});
+
+const generatedResponse = z.object({
+  text: z.string().optional().catch(undefined),
+  toolCalls: z.array(z.unknown()).optional().catch(undefined),
+});
+
+/** A tool result as `ai` takes it: typed, never the bare value. */
+type VercelAISDKToolOutput = { type: "text"; value: string } | { type: "json"; value: z.infer<ReturnType<typeof z.json>> };
 
 export interface VercelAISDKToolCallingModelOptions {
   model: unknown;
@@ -115,11 +155,13 @@ function toVercelAISDKMessage(entry: Record<string, unknown>): Record<string, un
   };
 }
 
-/** `ai` takes a tool result as a typed output (`text` or `json`), never the bare value. */
-function toVercelAISDKToolOutput(output: unknown): Record<string, unknown> {
-  return typeof output === "string"
-    ? { type: "text", value: output }
-    : { type: "json", value: output ?? null };
+function toVercelAISDKToolOutput(output: unknown): VercelAISDKToolOutput {
+  if (typeof output === "string") {
+    return { type: "text", value: output };
+  }
+
+  const json = z.json().safeParse(output);
+  return json.success ? { type: "json", value: json.data } : { type: "text", value: toDisplayText(output) };
 }
 
 function toVercelAISDKTools(
@@ -129,36 +171,25 @@ function toVercelAISDKTools(
   const tools: Record<string, unknown> = {};
 
   for (const schema of schemas) {
-    const functionRecordRaw = schema.function;
-    if (!functionRecordRaw || typeof functionRecordRaw !== "object" || Array.isArray(functionRecordRaw)) {
-      continue;
-    }
-    const functionRecord = functionRecordRaw as Record<string, unknown>;
-
-    const name = typeof functionRecord.name === "string" ? functionRecord.name : null;
-    if (!name) {
+    const parsed = bandToolSchema.safeParse(schema);
+    if (!parsed.success) {
       continue;
     }
 
-    const description = typeof functionRecord.description === "string"
-      ? functionRecord.description
-      : undefined;
-    const parameters = functionRecord.parameters;
-
+    const { name, description, parameters } = parsed.data.function;
     tools[name] = toolFactory({
       ...(description ? { description } : {}),
-      inputSchema: parameters && typeof parameters === "object" && !Array.isArray(parameters)
-        ? parameters
-        : { type: "object", properties: {}, required: [] },
+      inputSchema: parameters ?? EMPTY_INPUT_SCHEMA,
     });
   }
 
   return tools;
 }
 
-function parseVercelAISDKResponse(response: Record<string, unknown>): ToolCallingResponse {
-  const text = typeof response.text === "string" ? response.text.trim() : "";
-  const toolCalls = parseVercelAISDKToolCalls(response.toolCalls);
+function parseVercelAISDKResponse(response: unknown): ToolCallingResponse {
+  const { text: rawText, toolCalls: rawToolCalls } = generatedResponse.parse(response);
+  const text = rawText?.trim() ?? "";
+  const toolCalls = parseVercelAISDKToolCalls(rawToolCalls ?? []);
 
   return {
     ...(text ? { text } : {}),
@@ -166,36 +197,23 @@ function parseVercelAISDKResponse(response: Record<string, unknown>): ToolCallin
   };
 }
 
-function parseVercelAISDKToolCalls(raw: unknown): ToolCall[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-
+function parseVercelAISDKToolCalls(raw: unknown[]): ToolCall[] {
   const toolCalls: ToolCall[] = [];
   for (const value of raw) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const parsed = generatedToolCall.safeParse(value);
+    if (!parsed.success) {
       continue;
     }
 
-    const toolCall = value as Record<string, unknown>;
-    const id = typeof toolCall.toolCallId === "string" ? toolCall.toolCallId : null;
-    const name = typeof toolCall.toolName === "string" ? toolCall.toolName : null;
-    if (!id || !name) {
-      continue;
-    }
-
-    const input = toolCall.input;
-    const error = toolCall.error;
-    const parseError = toolCall.invalid === true
+    const { toolCallId, toolName, input, invalid, error } = parsed.data;
+    const parseError = invalid === true
       ? (error instanceof Error ? error.message : (typeof error === "string" ? error : "Vercel AI SDK returned an invalid tool call."))
       : undefined;
 
     toolCalls.push({
-      id,
-      name,
-      input: input && typeof input === "object" && !Array.isArray(input)
-        ? input as Record<string, unknown>
-        : {},
+      id: toolCallId,
+      name: toolName,
+      input,
       ...(parseError ? { inputParseError: parseError } : {}),
     });
   }
@@ -204,26 +222,22 @@ function parseVercelAISDKToolCalls(raw: unknown): ToolCall[] {
 }
 
 async function loadVercelAISDKRuntime(): Promise<VercelAISDKRuntime> {
-  const module = (await import("ai").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    generateText?: VercelAISDKGenerateText;
-    tool?: VercelAISDKToolFactory;
-    jsonSchema?: (schema: Record<string, unknown>) => unknown;
-  };
+  const missing = (cause?: unknown): UnsupportedFeatureError => new UnsupportedFeatureError(
+    `VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai".${cause === undefined ? "" : ` (${cause instanceof Error ? cause.message : String(cause)})`}`,
+  );
 
-  if (!module.generateText || !module.tool || !module.jsonSchema) {
-    throw new UnsupportedFeatureError(
-      'VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai".',
-    );
+  const imported: unknown = await import("ai").catch((error: unknown) => {
+    throw missing(error);
+  });
+  const parsed = aiModuleSchema.safeParse(imported);
+  if (!parsed.success) {
+    throw missing();
   }
 
-  const { generateText, tool, jsonSchema } = module;
+  const { generateText, tool, jsonSchema } = parsed.data;
   return {
     generateText,
     // `tool()` takes a Schema or Zod type, not the raw JSON Schema the platform tools carry.
-    tool: (definition) => tool({ ...definition, inputSchema: jsonSchema(definition.inputSchema as Record<string, unknown>) }),
+    tool: (definition) => tool({ ...definition, inputSchema: jsonSchema(z.record(z.string(), z.unknown()).parse(definition.inputSchema)) }),
   };
 }
