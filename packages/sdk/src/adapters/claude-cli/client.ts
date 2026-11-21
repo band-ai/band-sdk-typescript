@@ -89,7 +89,7 @@ export interface ClaudeProcessHandle {
   endStdin(): void;
   /** The last lines the process wrote to stderr, for a diagnostic when it dies. */
   stderrTail(): string;
-  /** Terminates the process and waits for exit. The default handle skips grace when forced. */
+  /** Terminates the process and waits for exit. The default POSIX handle skips EOF when forced. */
   stop(options?: { force?: boolean }): Promise<void>;
 }
 
@@ -152,8 +152,8 @@ export const spawnClaudeProcess: ClaudeProcessFactory = async ({ command, cwd, e
     endStdin: () => stdin.end(),
     stderrTail: () => tail.join("\n"),
     stop: async ({ force = false } = {}) => {
-      if (!force) return stopChildProcess(child);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      // Windows signals terminate abruptly, so preserve the CLI's chance to clean up on EOF.
+      await stopChildProcess(child, { drainStdin: !force || process.platform === "win32" });
       await exited;
     },
   };
@@ -387,8 +387,8 @@ export class ClaudeCliClient {
   }
 
   /**
-   * Gives a healthy process up to `drainMs` to exit on EOF. A failed transport
-   * is stopped immediately. Returns only once the exit has been observed.
+   * Gives a healthy process up to `drainMs` to exit on EOF. Transport failure
+   * ends the drain and requests a forced stop. Returns after observing exit.
    */
   public async close(options: { drainMs?: number } = {}): Promise<ClaudeDrainReport> {
     this.closing = true;
@@ -397,6 +397,7 @@ export class ClaudeCliClient {
       this.handle.endStdin();
       drained = await Promise.race([
         this.handle.exited.then(() => true),
+        this.failed.then(() => false),
         new Promise<boolean>((resolve) => {
           const timer = setTimeout(() => resolve(false), options.drainMs ?? CLAUDE_DRAIN_TIMEOUT_MS);
           timer.unref();

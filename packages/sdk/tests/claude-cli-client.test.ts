@@ -437,7 +437,27 @@ describe("ClaudeCliClient", () => {
   });
 
   describe("bounded lifecycle", () => {
-    it("terminates a mismatched subprocess without giving it an EOF drain", async () => {
+    it("ends an ongoing drain when startup validation fails", async () => {
+      const leaving = fakeClaudeProcesses((peer) => { peer.exitsOnEof = false; });
+      const { client, peer } = await online(leaving, log);
+      const turn = expect(client.runTurn("probe", {
+        onEvent: () => undefined,
+        validateStartupPermissionMode(mode) {
+          if (mode !== "auto") throw new ClaudeProcessError("unexpected mode");
+        },
+      })).rejects.toThrow("unexpected mode");
+      const close = client.close({ drainMs: 250 });
+      peer.send({ type: "system", subtype: "status", permissionMode: "default" });
+      try {
+        await turn;
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(peer.hasExited).toBe(true);
+      } finally {
+        await close;
+      }
+    });
+
+    it("gives a mismatched subprocess a chance to clean up before hard termination", async () => {
       const cwd = tmpRoot();
       const command = [process.execPath, "-e", `
         const io = require("node:readline").createInterface({ input: process.stdin });
@@ -454,8 +474,10 @@ describe("ClaudeCliClient", () => {
           }
         });
         io.on("close", () => require("node:fs").writeFileSync("ran-after-fallback", "yes"));
+        process.on("SIGTERM", () => process.exit(0));
       `];
       const client = await ClaudeCliClient.start(spawnClaudeProcess, { command, cwd, logger: log });
+      let exitCode: number | null;
       try {
         await expect(client.runTurn("probe", {
           onEvent: () => undefined,
@@ -464,9 +486,10 @@ describe("ClaudeCliClient", () => {
           },
         })).rejects.toThrow("unexpected mode");
       } finally {
-        await client.close();
+        ({ exitCode } = await client.close());
       }
-      expect(existsSync(join(cwd, "ran-after-fallback"))).toBe(false);
+      expect(exitCode).toBe(0);
+      expect(existsSync(join(cwd, "ran-after-fallback"))).toBe(process.platform === "win32");
     });
 
     it("drains a process that leaves after its stdin closes, without a signal", async () => {

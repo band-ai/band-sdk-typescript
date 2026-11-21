@@ -582,6 +582,31 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("settles an acknowledged cancellation quietly if startup mode falls back", async () => {
+    const rigged = rig();
+    const claude = adapter(rigged, { permissionMode: "auto" });
+    const { agent, room, events } = await started(claude);
+    try {
+      const done = turnSettled(agent);
+      const posted = room.say("owner", "one");
+      const peer = await rigged.nextPeer();
+      await waitForPrompt(peer);
+      expect(await agent.cancelTurn(ROOM)).toBe(true);
+      peer.send(
+        { ...systemInit(), permissionMode: "auto" },
+        { type: "system", subtype: "status", permissionMode: "default" },
+        result({ subtype: "error_during_execution", is_error: true }),
+      );
+      await posted;
+      expect((await done).type).toBe("turn.completed");
+      expect(room.events("error")).toEqual([]);
+      expect(events.some((event) => event.type === "room.failed")).toBe(false);
+      expect(peer.hasExited).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("settles a cancelled turn quietly on the captured error-shaped result, posting nothing", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
@@ -1001,12 +1026,6 @@ describe("ClaudeCliAdapter", () => {
   });
 
   it("passes auto through under its own name and keeps the permission route wired", async () => {
-    // Owner decision 2026-11-15: under auto the CLI's own risk classifier decides
-    // what runs — including calls to servers the person authorized. Band forces
-    // no asks; the mapping must still hand "auto" over unchanged, wire the
-    // permission route for whatever the CLI chooses to ask, and pass authorized
-    // servers to the CLI as any other server (the encoder's own guards apply —
-    // no band shadow, no nameless entry).
     const rigged = fakeClaudeProcesses();
     const claude = adapter(rigged, {
       permissionMode: "auto",

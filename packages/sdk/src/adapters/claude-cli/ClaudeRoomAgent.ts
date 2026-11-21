@@ -567,9 +567,8 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
             this.logger.warn("claude_cli.late_close_failed", { roomId: this.roomId, error: asErrorMessage(closeError) });
           });
       }
-      if (error instanceof ClaudeTurnCancelledError) {
-        // A host's cancel ends the turn quietly: what the model produced is
-        // dropped, and the error-shaped result the CLI wrote is not a failure.
+      if (error instanceof ClaudeTurnCancelledError || (turn.cancelled && error instanceof ClaudeProcessError)) {
+        // An accepted cancellation owns the outcome even if the CLI then fails.
         turn.tools.turn.settle();
         return;
       }
@@ -736,7 +735,9 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
         // Still live means nothing here retired it: the process failed on its own.
         if (this.live === generation) {
           this.live = null;
-          this.observer({ type: "room.failed", roomId: this.roomId, error: error.message });
+          if (generation.endReason !== "turn-cancelled") {
+            this.observer({ type: "room.failed", roomId: this.roomId, error: error.message });
+          }
         }
       });
       return generation;
