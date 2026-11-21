@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,6 +8,7 @@ import {
   ClaudeCliError,
   ClaudeProcessError,
   ClaudeVersionError,
+  spawnClaudeProcess,
   type ClaudeCliStartConfig,
   type ClaudeEvent,
   type ClaudeProcessFactory,
@@ -434,6 +437,38 @@ describe("ClaudeCliClient", () => {
   });
 
   describe("bounded lifecycle", () => {
+    it("terminates a mismatched subprocess without giving it an EOF drain", async () => {
+      const cwd = tmpRoot();
+      const command = [process.execPath, "-e", `
+        const io = require("node:readline").createInterface({ input: process.stdin });
+        io.on("line", line => {
+          const frame = JSON.parse(line);
+          if (frame.type === "control_request") {
+            const response = { claude_code_version: "2.1.319", current_permission_mode: "auto" };
+            console.log(JSON.stringify({ type: "control_response", response: {
+              subtype: "success", request_id: frame.request_id, response,
+            } }));
+          } else {
+            console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "probe", permissionMode: "auto" }));
+            console.log(JSON.stringify({ type: "system", subtype: "status", session_id: "probe", permissionMode: "default" }));
+          }
+        });
+        io.on("close", () => require("node:fs").writeFileSync("ran-after-fallback", "yes"));
+      `];
+      const client = await ClaudeCliClient.start(spawnClaudeProcess, { command, cwd, logger: log });
+      try {
+        await expect(client.runTurn("probe", {
+          onEvent: () => undefined,
+          validateStartupPermissionMode(mode) {
+            if (mode !== "auto") throw new ClaudeProcessError("unexpected mode");
+          },
+        })).rejects.toThrow("unexpected mode");
+      } finally {
+        await client.close();
+      }
+      expect(existsSync(join(cwd, "ran-after-fallback"))).toBe(false);
+    });
+
     it("drains a process that leaves after its stdin closes, without a signal", async () => {
       const leaving = fakeClaudeProcesses((peer) => {
         peer.exitsOnEof = true;

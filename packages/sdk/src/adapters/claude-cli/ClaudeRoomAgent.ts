@@ -158,13 +158,8 @@ export interface ClaudeCliAdapterOptions {
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * The CLI's own permission mode. `manual` is accepted and mapped to `default`.
-   * `auto` hands every decision to the CLI's risk classifier — reads, edits,
-   * out-of-workspace commands, network calls and calls to servers the person
-   * authorized alike. Band forces no asks there (owner decision 2026-11-15): the
-   * room sees only what the CLI chooses to ask, and whatever it asks arrives over
-   * the room's permission tool. The CLI must confirm the requested mode in
-   * both its handshake and its session startup report. `bypassPermissions`
-   * is never offered.
+   * `auto` uses Claude Code's permission policy and routes its approval prompts
+   * through Band. The CLI must confirm an explicit mode during startup.
    */
   permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "manual" | "auto";
   /** Directories or archives the CLI loads as plugins for this session. */
@@ -565,11 +560,12 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
       if (!generation) {
-        // A process that finished starting for a turn that already ended must
-        // not sit beside the room's next one. This branch waits for the process
-        // only to close it; the turn's own error is the one already in hand, so
-        // the rejection gets a handler rather than becoming an unowned one.
-        void pending.then((started) => this.close(started), () => undefined);
+        // The turn can finish while its process is still starting.
+        void pending
+          .then((started) => this.close(started), () => undefined)
+          .catch((closeError: unknown) => {
+            this.logger.warn("claude_cli.late_close_failed", { roomId: this.roomId, error: asErrorMessage(closeError) });
+          });
       }
       if (error instanceof ClaudeTurnCancelledError) {
         // A host's cancel ends the turn quietly: what the model produced is
@@ -1050,24 +1046,27 @@ export class ClaudeCliRoomAgent extends SimpleAdapter<ClaudeCliSessionState, Tur
   }
 
   private async drainGeneration(generation: Generation): Promise<void> {
-    const report = await generation.client.close({ drainMs: CLAUDE_DRAIN_TIMEOUT_MS });
-    // A Band server that will not close must not hold the room hostage: its stop
-    // gets its own bound, shorter than the process drain, and a server that
-    // overruns it is logged and left to settle behind the next turn.
-    await withTimeout(
-      generation.backend.stop(),
-      BACKEND_STOP_TIMEOUT_MS,
-      () => new Error(`the Band MCP server did not stop within ${BACKEND_STOP_TIMEOUT_MS}ms`),
-    ).catch((error: unknown) => {
-      this.logger.warn("claude_cli.backend_stop_failed", { roomId: this.roomId, error: asErrorMessage(error) });
-    });
-    if (!report.drained) {
-      this.logger.warn("claude_cli.drain_failed", {
-        roomId: this.roomId,
-        signal: report.signalCode,
-        exitCode: report.exitCode,
-        stderr: bounded(report.stderr),
-      });
+    try {
+      const report = await generation.client.close({ drainMs: CLAUDE_DRAIN_TIMEOUT_MS });
+      if (!report.drained) {
+        this.logger.warn("claude_cli.drain_failed", {
+          roomId: this.roomId,
+          signal: report.signalCode,
+          exitCode: report.exitCode,
+          stderr: bounded(report.stderr),
+        });
+      }
+    } finally {
+      // The backend has its own deadline and must close even if the process stop failed.
+      try {
+        await withTimeout(
+          generation.backend.stop(),
+          BACKEND_STOP_TIMEOUT_MS,
+          () => new Error(`the Band MCP server did not stop within ${BACKEND_STOP_TIMEOUT_MS}ms`),
+        );
+      } catch (error) {
+        this.logger.warn("claude_cli.backend_stop_failed", { roomId: this.roomId, error: asErrorMessage(error) });
+      }
     }
   }
 

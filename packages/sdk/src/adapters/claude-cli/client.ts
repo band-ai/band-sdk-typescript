@@ -89,8 +89,8 @@ export interface ClaudeProcessHandle {
   endStdin(): void;
   /** The last lines the process wrote to stderr, for a diagnostic when it dies. */
   stderrTail(): string;
-  /** Escalates from SIGTERM to SIGKILL until the process is gone. */
-  stop(): Promise<void>;
+  /** Terminates the process and waits for exit. The default handle skips grace when forced. */
+  stop(options?: { force?: boolean }): Promise<void>;
 }
 
 export interface ClaudeProcessOptions {
@@ -151,7 +151,11 @@ export const spawnClaudeProcess: ClaudeProcessFactory = async ({ command, cwd, e
     exited,
     endStdin: () => stdin.end(),
     stderrTail: () => tail.join("\n"),
-    stop: () => stopChildProcess(child),
+    stop: async ({ force = false } = {}) => {
+      if (!force) return stopChildProcess(child);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exited;
+    },
   };
 };
 
@@ -399,7 +403,7 @@ export class ClaudeCliClient {
         }),
       ]);
     }
-    await this.handle.stop();
+    await this.handle.stop({ force: this.error !== null });
     const exit = await this.handle.exited;
     // A CLI that saw its stdin close, wrote everything it had and left is a
     // transport that finished its work, not one that broke: no failure is recorded

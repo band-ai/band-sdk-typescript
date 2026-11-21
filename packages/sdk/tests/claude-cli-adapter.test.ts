@@ -17,7 +17,7 @@ import { BandLink } from "../src/platform/BandLink";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { controlSuccess, fakeClaudeProcesses, initResponse, type FakeClaude } from "./support/fakeClaudeCli";
 import { turnFrames } from "./support/claudeCaptures";
-import { FakeTools, tmpRoot } from "./testUtils";
+import { FakeTools, makeLoggerSpy, tmpRoot } from "./testUtils";
 import { ACT_ARGS, ACT_TOOL, CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
 const ROOM = "room-1";
@@ -679,6 +679,48 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("owns a late process stop failure after cancelling startup", async () => {
+    const rigged = fakeClaudeProcesses();
+    const closing = createDeferred<void>();
+    const failure = new Error("late process stop failed");
+    const claude = adapter(rigged, {
+      logger: {
+        ...makeLoggerSpy(),
+        warn(event, context) {
+          if (event === "claude_cli.late_close_failed" && context?.error === failure.message) {
+            closing.resolve();
+          }
+        },
+      },
+      spawnProcess: async (options) => {
+        const handle = await rigged.spawnProcess(options);
+        return {
+          ...handle,
+          async stop() {
+            await handle.stop();
+            throw failure;
+          },
+        };
+      },
+    });
+    const { agent, room } = await started(claude);
+    try {
+      const done = turnSettled(agent);
+      const posted = room.say("owner", "one");
+      const peer = await rigged.nextPeer();
+      const init = await peer.controlRequest("initialize");
+      expect(await agent.cancelTurn(ROOM)).toBe(true);
+      await posted;
+      await done;
+      peer.send(initResponse(String(init.request_id)));
+      await closing.promise;
+      const { url } = mcpConfig(peer).mcpServers.band!;
+      await expect(fetch(url)).rejects.toThrow();
+    } finally {
+      await agent.stop();
+    }
+  }, 5_000);
+
   it("warm starts and initializes a process, sends no prompt, and reports what the CLI said", async () => {
     const rigged = rig();
     const claude = adapter(rigged);
@@ -923,7 +965,7 @@ describe("ClaudeCliAdapter", () => {
       const peer = await rigged.nextPeer();
       await peer.scriptTurn({ ...systemInit(), permissionMode: "acceptEdits" }, assistant(text("ok")), result({ result: "ok" }));
       await prompted;
-      await promptedDone;
+      expect((await promptedDone).type).toBe("turn.completed");
       const command = peer.options.command;
       expect(argPair(command, "--setting-sources")).toBe("");
       expect(command).toContain("--strict-mcp-config");
@@ -951,7 +993,7 @@ describe("ClaudeCliAdapter", () => {
       const peer = await rigged.nextPeer();
       await peer.scriptTurn({ ...systemInit(), permissionMode: "default" }, assistant(text("ok")), result({ result: "ok" }));
       await prompted;
-      await promptedDone;
+      expect((await promptedDone).type).toBe("turn.completed");
       expect(argPair(peer.options.command, "--permission-mode")).toBe("default");
     } finally {
       await agent.stop();
@@ -1008,6 +1050,8 @@ describe("ClaudeCliAdapter", () => {
       await prompted;
       const end = await promptedDone;
       expect(end.type).toBe("turn.failed");
+      expect(peer.received.some((frame) => frame.type === "user")).toBe(false);
+      expect(peer.hasExited).toBe(true);
       expect(
         events.some((event) => event.type === "room.failed" && JSON.stringify(event).includes("started in permission mode default instead of the requested auto")),
         `the person is owed the reason: ${JSON.stringify(events.map((event) => event.type))}`,
@@ -1030,6 +1074,8 @@ describe("ClaudeCliAdapter", () => {
       await prompted;
       const end = await promptedDone;
       expect(end.type).toBe("turn.failed");
+      expect(peer.received.some((frame) => frame.type === "user")).toBe(false);
+      expect(peer.hasExited).toBe(true);
       expect(
         events.some((event) => event.type === "room.failed" && JSON.stringify(event).includes("did not report a permission mode")),
         `an unconfirmed mode is as untrustworthy as a wrong one: ${JSON.stringify(events.map((event) => event.type))}`,
