@@ -248,14 +248,13 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, TurnTools>()
-  // Rooms whose previous session could not be restored. Stays set until a
-  // prompt on the replacement session is accepted, so a rejected prompt or
-  // a dropped session still seeds the next one. Keyed by room, not by
-  // the session that may be thrown away before that prompt lands.
-  private readonly roomsOwedReplay = new Set<string>()
-  // The history the debt was armed with. Later turns in the same room are
-  // not bootstraps, so their history argument is only what this process
-  // has recorded since startup.
+  // Rooms whose previous session could not be restored or configured, each
+  // with the history the debt was armed with: later turns in the same room
+  // are not bootstraps, so their history is only what this process has
+  // recorded since startup. Stays set until a prompt on the replacement
+  // session is accepted, so a rejected prompt or a dropped session still
+  // seeds the next one. Keyed by room, not by the session that may be
+  // thrown away before that prompt lands.
   private readonly replaySource = new Map<string, ACPClientSessionState>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
   // agent can reissue the identical session id across a reconnect.
@@ -437,17 +436,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // A restored session is normally already bootstrapped. It still owes
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.
-      const seedingSession = this.roomsOwedReplay.has(context.roomId) || !this.bootstrappedSessions.has(sessionKey)
+      const replayDebt = this.replaySource.get(context.roomId)
+      const seedingSession = replayDebt !== undefined || !this.bootstrappedSessions.has(sessionKey)
       let promptText: string
       if (!seedingSession) {
         promptText = messageWithContext
       } else {
-        const replayLines = this.replayLinesFor(
-          context.roomId,
-          message.id,
-          this.replaySource.get(context.roomId) ?? history,
-        )
-        if (this.roomsOwedReplay.has(context.roomId)) {
+        const replayLines = replayDebt ? this.replayLinesFor(message.id, replayDebt) : null
+        if (replayDebt) {
           this.safeWarn("acp_client.replay_seed", { roomId: context.roomId, lineCount: replayLines?.length ?? 0 })
         }
         const liveSections = replayLines ? framedReplay(replayLines, messageWithContext) : [messageWithContext]
@@ -503,7 +499,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         // so the connection generation has to match too, same as `unlinkOwner`.
         const owner = this.roomToSession.get(context.roomId)
         if (owner?.sessionId === sessionId && owner.generation === generation) {
-          this.roomsOwedReplay.delete(context.roomId)
           this.replaySource.delete(context.roomId)
         }
       }
@@ -676,7 +671,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
     this.sessionEvents.reset()
-    this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurns.release(roomId)
@@ -705,7 +699,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.live = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
-    this.roomsOwedReplay.clear()
     this.replaySource.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
@@ -832,11 +825,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // history handed to the adapter is read); a bootstrap history does not.
   // Empty after that filter means there is nothing to frame — an empty
   // array must not still emit the history header.
-  private replayLinesFor(roomId: string, currentMessageId: string, history: ACPClientSessionState): string[] | null {
-    if (!this.roomsOwedReplay.has(roomId)) {
-      return null
-    }
-    const lines = (history.replayMessages ?? [])
+  private replayLinesFor(currentMessageId: string, source: ACPClientSessionState): string[] | null {
+    const lines = (source.replayMessages ?? [])
       .filter((entry) => entry.id !== currentMessageId)
       .map((entry) => entry.line)
     return lines.length > 0 ? lines : null
@@ -1091,7 +1081,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // The first debt keeps its source: a later turn's history is not the
   // transcript the replaced session carried.
   private oweReplay(roomId: string, previousSessionId: string, history: ACPClientSessionState): void {
-    this.roomsOwedReplay.add(roomId)
     if (!this.replaySource.has(roomId)) {
       this.replaySource.set(roomId, history)
     }

@@ -40,6 +40,14 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
   )
 }
 
+// A replayed transcript leads the prompt: the history section carries
+// `earlierLine` ahead of the live message.
+function expectReplayedBefore(promptText: string | undefined, earlierLine: string, liveText: string): void {
+  expect(promptText).toContain("[Conversation History]")
+  expect(promptText).toContain(earlierLine)
+  expect(promptText!.indexOf(earlierLine)).toBeLessThan(promptText!.indexOf(liveText))
+}
+
 // Shared by the `resolveSessionMode` and `resolveSessionModel` test
 // harnesses below: the connection-mock shape every ACP session actually
 // exposes (signal/closed/initialize/authenticate/loadSession/
@@ -3424,30 +3432,30 @@ describe("ACPClientAdapter", () => {
           newSessionModes: MODES,
         })
         const earlierLine = "[Alice]: please refactor the auth module"
-        const turn = (isSessionBootstrap: boolean) => adapter.onMessage(
-          isSessionBootstrap ? makeMessage("hi", "room-1") : { ...makeMessage("try again", "room-1"), id: "msg-2" },
-          new FakeTools(),
-          {
-            roomToSession: { "room-1": "session-restored" },
-            replayMessages: isSessionBootstrap
-              ? [{ id: "earlier-1", line: earlierLine }]
-              : [{ id: "msg-2", line: "[User]: try again" }],
-          },
-          null,
-          null,
-          { isSessionBootstrap, roomId: "room-1" },
-        )
+        const roomToSession = { "room-1": "session-restored" }
 
         await adapter.onStarted("Agent", "desc")
-        await expectTurnFailed(turn(true))
-        await turn(false)
+        await expectTurnFailed(adapter.onMessage(
+          makeMessage("hi", "room-1"),
+          new FakeTools(),
+          { roomToSession, replayMessages: [{ id: "earlier-1", line: earlierLine }] },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-1" },
+        ))
+        await adapter.onMessage(
+          { ...makeMessage("try again", "room-1"), id: "msg-2" },
+          new FakeTools(),
+          { roomToSession, replayMessages: [{ id: "msg-2", line: "[User]: try again" }] },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-1" },
+        )
 
         expect(loadSession).toHaveBeenCalledTimes(1)
         expect(newSession).toHaveBeenCalledTimes(1)
         expect(promptTexts).toHaveLength(1)
-        expect(promptTexts[0]).toContain("[Conversation History]")
-        expect(promptTexts[0]).toContain(earlierLine)
-        expect(promptTexts[0]!.indexOf(earlierLine)).toBeLessThan(promptTexts[0]!.indexOf("try again"))
+        expectReplayedBefore(promptTexts[0], earlierLine, "try again")
       })
 
       it("does not ask an agent that cannot close sessions to close one", async () => {
@@ -4829,23 +4837,30 @@ describe("ACPClientAdapter", () => {
         roomToSession: { "room-1": "session-1" },
         replayMessages: [{ id: "msg-2", line: "[User]: try again" }],
       }
+      // A bootstrap that hydrated nothing, as after a restart that lost the transcript.
+      const emptyBootstrapHistory = { ...bootstrapHistory, replayMessages: [] }
       const nextMessage = { ...makeMessage("try again", "room-1"), id: "msg-2" }
 
-      function turn(adapter: ACPClientAdapter, isSessionBootstrap: boolean): Promise<void> {
+      function bootstrapTurn(adapter: ACPClientAdapter, history = bootstrapHistory): Promise<void> {
         return adapter.onMessage(
-          isSessionBootstrap ? makeMessage("hi", "room-1") : nextMessage,
+          makeMessage("hi", "room-1"),
           new FakeTools(),
-          isSessionBootstrap ? bootstrapHistory : nextHistory,
+          history,
           null,
           null,
-          { isSessionBootstrap, roomId: "room-1" },
+          { isSessionBootstrap: true, roomId: "room-1" },
         )
       }
 
-      function expectReplayedBefore(promptText: string | undefined, liveText: string): void {
-        expect(promptText).toContain("[Conversation History]")
-        expect(promptText).toContain(EARLIER_LINE)
-        expect(promptText!.indexOf(EARLIER_LINE)).toBeLessThan(promptText!.indexOf(liveText))
+      function nextTurn(adapter: ACPClientAdapter): Promise<void> {
+        return adapter.onMessage(
+          nextMessage,
+          new FakeTools(),
+          nextHistory,
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-1" },
+        )
       }
 
       it("when the agent rejects a selected option", async () => {
@@ -4859,13 +4874,40 @@ describe("ACPClientAdapter", () => {
         setSessionConfigOption.mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
 
         await adapter.onStarted("Agent", "desc")
-        await expectTurnFailed(turn(adapter, true))
-        await turn(adapter, false)
+        await expectTurnFailed(bootstrapTurn(adapter))
+        await nextTurn(adapter)
+        await nextTurn(adapter)
 
         expect(loadSession).toHaveBeenCalledTimes(1)
         expect(newSession).toHaveBeenCalledTimes(1)
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
+        // The accepted prompt paid the debt: the next turn is an ordinary one.
+        expect(promptTexts).toHaveLength(2)
+        expect(promptTexts[1]).not.toContain("[Conversation History]")
+      })
+
+      it("keeping the first transcript when the restore fails to configure again before any replay", async () => {
+        const resolveSessionConfig = vi.fn()
+          .mockResolvedValueOnce({ model: "sonnet" })
+          .mockResolvedValueOnce({ model: "sonnet" })
+          .mockResolvedValue(undefined)
+        const { adapter, setSessionConfigOption, loadSession, newSession, promptTexts } = buildHarness({
+          adapterOptions: { resolveSessionConfig },
+          loadSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption
+          .mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+          .mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(bootstrapTurn(adapter))
+        await expectTurnFailed(bootstrapTurn(adapter, emptyBootstrapHistory))
+        await nextTurn(adapter)
+
+        expect(loadSession).toHaveBeenCalledTimes(2)
+        expect(newSession).toHaveBeenCalledTimes(1)
         expect(promptTexts).toHaveLength(1)
-        expectReplayedBefore(promptTexts[0], "try again")
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
       })
 
       it("when the turn was cancelled and its configuration failed in the background", async () => {
@@ -4884,23 +4926,25 @@ describe("ACPClientAdapter", () => {
         logger.warn.mockImplementation((message: string) => {
           if (message === "acp_client.cancelled_turn_wait_failed") lateFailure.resolve()
         })
-        const { adapter, setSessionConfigOption, promptTexts } = buildHarness({
+        const { adapter, setSessionConfigOption, loadSession, newSession, promptTexts } = buildHarness({
           adapterOptions: { resolveSessionConfig, logger },
           loadSessionConfigOptions: [modelConfigOption()],
         })
         setSessionConfigOption.mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
 
         await adapter.onStarted("Agent", "desc")
-        const first = turn(adapter, true)
+        const first = bootstrapTurn(adapter)
         await asked.promise
         expect(await adapter.cancelTurn("room-1")).toBe(true)
         await first
         release.resolve()
         await lateFailure.promise
-        await turn(adapter, false)
+        await nextTurn(adapter)
 
+        expect(loadSession).toHaveBeenCalledTimes(1)
+        expect(newSession).toHaveBeenCalledTimes(1)
         expect(promptTexts).toHaveLength(1)
-        expectReplayedBefore(promptTexts[0], "try again")
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
       })
     })
 
