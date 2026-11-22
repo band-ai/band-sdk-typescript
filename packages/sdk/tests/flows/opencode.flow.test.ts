@@ -1866,4 +1866,26 @@ describe("OpenCode platform Stop decisions", () => {
     expect(await session.room.outcome(messageId)).toBe("processed");
     expect(session.room.failures).toEqual([]);
   });
+
+  it("does not report a provider failure when a cancelled promptAsync rejects late", async () => {
+    await using session = await opencodeRoom({ enableTaskEvents: false });
+    const { adapter, room, server } = session;
+    const finished = createDeferred();
+    const onEvent = adapter.onEvent.bind(adapter);
+    const observed = vi.spyOn(adapter, "onEvent").mockImplementationOnce(async (input) => {
+      try { await onEvent(input); } finally { finished.resolve(); }
+    });
+    onTestFinished(() => observed.mockRestore());
+    const prompt = server.hold("POST /session/ses_:id/prompt_async");
+    server.failNext("POST /session/ses_:id/prompt_async", { status: 500, body: "prompt rejected" });
+    try {
+      const messageId = await session.start(() => undefined);
+      await prompt.sending;
+      expect(await adapter.cancelTurn(room.id)).toBe(true);
+      prompt.release();
+      await finished.promise;
+      expect(room.failures).toEqual([]);
+      expect(await room.outcome(messageId)).toBe("processed");
+    } finally { prompt.release(); }
+  });
 });

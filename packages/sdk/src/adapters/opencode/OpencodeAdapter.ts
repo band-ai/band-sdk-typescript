@@ -407,6 +407,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
         variant: this.config.variant || undefined,
       });
     } catch (error) {
+      // cancelTurn may have settled and cleared this turn while promptAsync was
+      // still in flight; a late reject must not become reportTurnFailure.
+      if (roomState.turn !== turn) {
+        return;
+      }
       this.clearTurnState(roomState);
       throw error;
     }
