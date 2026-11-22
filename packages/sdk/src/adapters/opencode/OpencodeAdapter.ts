@@ -429,12 +429,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return true;
     }
     if (!roomState.turn) return false;
-    const { permissions, questions } = roomState.decisions;
-    const cancelledPermissions = permissions.cancelAll();
-    const cancelledQuestions = questions.cancelAll();
-    for (const { token } of [...cancelledPermissions, ...cancelledQuestions]) {
-      this.logger.info("opencode_adapter.decision_dropped", { roomId: roomState.roomId, requestId: token, reason: "turn_cancelled" });
-    }
+    const { permissions: cancelledPermissions, questions: cancelledQuestions } = this.dropDecisions(roomState, "turn_cancelled");
     const client = this.connection?.client;
     if (client) {
       for (const entry of cancelledPermissions) {
@@ -1010,11 +1005,18 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
   }
 
   // Drops every ask still pending in the room; the session it came from is going away.
-  private dropDecisions(roomState: RoomState, reason: string): void {
+  // Returns the cancelled entries so a caller that must still reject them on OpenCode can.
+  private dropDecisions(roomState: RoomState, reason: string): {
+    permissions: DecisionEntry<PendingPermission>[];
+    questions: DecisionEntry<PendingQuestion>[];
+  } {
     const { permissions, questions } = roomState.decisions;
-    for (const { token } of [...permissions.cancelAll(), ...questions.cancelAll()]) {
+    const cancelledPermissions = permissions.cancelAll();
+    const cancelledQuestions = questions.cancelAll();
+    for (const { token } of [...cancelledPermissions, ...cancelledQuestions]) {
       this.logger.info("opencode_adapter.decision_dropped", { roomId: roomState.roomId, requestId: token, reason });
     }
+    return { permissions: cancelledPermissions, questions: cancelledQuestions };
   }
 
   private async ensureSession(
