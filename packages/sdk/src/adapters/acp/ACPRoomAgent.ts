@@ -248,14 +248,13 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, TurnTools>()
-  // Rooms whose previous session could not be restored. Stays set until a
-  // prompt on the replacement session is accepted, so a rejected prompt or
-  // a dropped session still seeds the next one. Keyed by room, not by
-  // the session that may be thrown away before that prompt lands.
-  private readonly roomsOwedReplay = new Set<string>()
-  // The history the debt was armed with. Later turns in the same room are
-  // not bootstraps, so their history argument is only what this process
-  // has recorded since startup.
+  // Rooms whose previous session could not be restored or configured, each
+  // with the history the debt was armed with: later turns in the same room
+  // are not bootstraps, so their history is only what this process has
+  // recorded since startup. Stays set until a prompt on the replacement
+  // session is accepted, so a rejected prompt or a dropped session still
+  // seeds the next one. Keyed by room, not by the session that may be
+  // thrown away before that prompt lands.
   private readonly replaySource = new Map<string, ACPClientSessionState>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
   // agent can reissue the identical session id across a reconnect.
@@ -415,21 +414,15 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     history: ACPClientSessionState,
     turn: ActiveTurn,
   ): Promise<void> {
-    // Hoisted out of the `try` so the `catch` below can retire the connection
-    // the turn failed on and flush what its session had already produced.
-    let connection: ClientSideConnection | undefined
-    let client: BandACPClient | null = null
+    let live: LiveConnection | undefined
     let sessionId: string | undefined
-    let generation = 0
     let releasePrompt: (() => void) | undefined
     let completed = false
     try {
-      const live = await this.untilCancelled(turn, this.ensureConnection())
-      connection = live.connection
-      generation = live.generation
-      client = live.client
+      live = await this.untilCancelled(turn, this.ensureConnection())
+      const { connection, generation, client } = live
 
-      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live))
+      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live, history), live)
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
@@ -437,20 +430,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // A restored session is normally already bootstrapped. It still owes
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.
-      const seedingSession = this.roomsOwedReplay.has(context.roomId) || !this.bootstrappedSessions.has(sessionKey)
-      if (this.roomsOwedReplay.has(context.roomId) && !this.replaySource.has(context.roomId)) {
-        this.replaySource.set(context.roomId, history)
-      }
+      const replayDebt = this.replaySource.get(context.roomId)
+      const seedingSession = replayDebt !== undefined || !this.bootstrappedSessions.has(sessionKey)
       let promptText: string
       if (!seedingSession) {
         promptText = messageWithContext
       } else {
-        const replayLines = this.replayLinesFor(
-          context.roomId,
-          message.id,
-          this.replaySource.get(context.roomId) ?? history,
-        )
-        if (this.roomsOwedReplay.has(context.roomId)) {
+        const replayLines = replayDebt ? this.replayLinesFor(message.id, replayDebt) : null
+        if (replayDebt) {
           this.safeWarn("acp_client.replay_seed", { roomId: context.roomId, lineCount: replayLines?.length ?? 0 })
         }
         const liveSections = replayLines ? framedReplay(replayLines, messageWithContext) : [messageWithContext]
@@ -461,17 +448,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         // Cancelled before its prompt was sent: there is nothing to tell the agent.
         throw new AcpTurnCancelledError()
       }
-      const activeConnection = connection
       const activeSessionId = sessionId
       const promptSession = client.enterPromptSession(activeSessionId, this.promptActivity(tools))
       releasePrompt = promptSession.release
       const response = await withTimeout(
-        this.raceAgainstConnectionClose(activeConnection, promptSession.run(async () => {
+        this.raceAgainstConnectionClose(connection, promptSession.run(async () => {
           // Set in the same synchronous step as the send, so no cancel can
           // land between the check above and the prompt.
-          turn.prompt = { connection: activeConnection, sessionId: activeSessionId, sessionKey }
+          turn.prompt = { connection, sessionId: activeSessionId, sessionKey }
           try {
-            return await activeConnection.prompt({
+            return await connection.prompt({
               sessionId: activeSessionId,
               prompt: [{
                 type: "text",
@@ -506,7 +492,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         // so the connection generation has to match too, same as `unlinkOwner`.
         const owner = this.roomToSession.get(context.roomId)
         if (owner?.sessionId === sessionId && owner.generation === generation) {
-          this.roomsOwedReplay.delete(context.roomId)
           this.replaySource.delete(context.roomId)
         }
       }
@@ -540,6 +525,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
       releasePrompt?.()
+      const client = live?.client
 
       if (error instanceof AcpTurnCancelledError) {
         // A host's cancel ends the turn quietly, as an interrupt does: what the
@@ -560,11 +546,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
       // Before any fallible delivery: a DeliveryFailedError from flushChunks
       // is recoverable and would otherwise skip this.
-      if (connection) {
-        this.dropUnacceptedSession(context.roomId, generation)
-        if (retiresConnection(error)) {
-          this.retireConnection(connection, generation)
-        }
+      if (live) {
+        this.discardFailedConnectionState(context.roomId, live, error, sessionId)
       }
 
       if (client && sessionId) {
@@ -655,18 +638,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
   // A cancel ends the turn's wait, not `operation`: it runs on, so a
   // connection or session it establishes stays for the room's next turn.
-  // `Promise.race` keeps observing `operation`; a late failure is logged and
-  // an unaccepted session is dropped, since the turn it belonged to has
-  // already settled.
-  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>): Promise<T> {
+  // `Promise.race` keeps observing `operation`; a late failure is logged and,
+  // for an operation that ran on `live`, handled as the turn would have
+  // handled it, since that turn has already settled.
+  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>, live?: LiveConnection): Promise<T> {
     const cancelled = turn.cancellation.promise.then((): typeof TURN_CANCELLED => TURN_CANCELLED)
     const winner = await Promise.race([operation, cancelled])
     if (winner === TURN_CANCELLED) {
       void operation.catch((error: unknown) => {
         this.safeWarn("acp_client.cancelled_turn_wait_failed", { roomId: this.roomId, error: asErrorMessage(error) })
-        const live = this.live
         if (live) {
-          this.dropUnacceptedSession(this.roomId, live.generation)
+          this.discardFailedConnectionState(this.roomId, live, error)
         }
       })
       throw new AcpTurnCancelledError()
@@ -679,7 +661,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
     this.sessionEvents.reset()
-    this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurns.release(roomId)
@@ -708,7 +689,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.live = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
-    this.roomsOwedReplay.clear()
     this.replaySource.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
@@ -835,11 +815,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // history handed to the adapter is read); a bootstrap history does not.
   // Empty after that filter means there is nothing to frame — an empty
   // array must not still emit the history header.
-  private replayLinesFor(roomId: string, currentMessageId: string, history: ACPClientSessionState): string[] | null {
-    if (!this.roomsOwedReplay.has(roomId)) {
-      return null
-    }
-    const lines = (history.replayMessages ?? [])
+  private replayLinesFor(currentMessageId: string, source: ACPClientSessionState): string[] | null {
+    const lines = (source.replayMessages ?? [])
       .filter((entry) => entry.id !== currentMessageId)
       .map((entry) => entry.line)
     return lines.length > 0 ? lines : null
@@ -980,7 +957,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  private async getOrCreateSession(roomId: string, live: LiveConnection): Promise<string> {
+  private async getOrCreateSession(roomId: string, live: LiveConnection, history: ACPClientSessionState): Promise<string> {
     const connectionGeneration = live.generation
     const owner = this.roomToSession.get(roomId)
     const existingSessionId = owner?.sessionId
@@ -1008,7 +985,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // to the room's *current* generation, and stays pinned to it even if
     // `onCleanup`/`stop` bump the counter while it's still in flight.
     const generation = this.nextRoomGeneration(roomId)
-    const establishing = this.establishSession(roomId, existingSessionId, live, generation)
+    const establishing = this.establishSession(roomId, existingSessionId, live, generation, history)
     // Compare-and-delete: if this room was torn down and re-entered while
     // `establishing` was still pending, a newer promise is already stored at
     // `roomId` by the time this one settles. Deleting unconditionally would
@@ -1033,6 +1010,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     existingSessionId: string | undefined,
     live: LiveConnection,
     generation: number,
+    history: ACPClientSessionState,
   ): Promise<string> {
     const { connection, client, generation: connectionGeneration } = live
     const mcpServers = this.buildSessionMcpServers(live.backend)
@@ -1049,7 +1027,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         this.linkOrAbandon(roomId, existingSessionId, generation, connectionGeneration, client)
         const restoredKey = this.sessionKey(connectionGeneration, existingSessionId)
         this.activeSessions.add(restoredKey)
-        await this.configureSession(live, roomId, existingSessionId, restored.modes, restored.configOptions)
+        try {
+          await this.configureSession(live, roomId, existingSessionId, restored.modes, restored.configOptions)
+        } catch (error) {
+          // The failed turn unlinks this session, so the room's next session
+          // would not know it replaced one that held a transcript.
+          this.oweReplay(roomId, existingSessionId, history)
+          throw error
+        }
         // Only once configured: a failure above must drop this session, not keep it.
         this.bootstrappedSessions.add(restoredKey)
         return existingSessionId
@@ -1077,11 +1062,19 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // the new session key: a failed turn drops that session if no prompt
     // was accepted on it.
     if (existingSessionId) {
-      this.roomsOwedReplay.add(roomId)
-      this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId: existingSessionId })
+      this.oweReplay(roomId, existingSessionId, history)
     }
     await this.configureSession(live, roomId, created.sessionId, created.modes, created.configOptions)
     return created.sessionId
+  }
+
+  // The first debt keeps its source: a later turn's history is not the
+  // transcript the replaced session carried.
+  private oweReplay(roomId: string, previousSessionId: string, history: ACPClientSessionState): void {
+    if (!this.replaySource.has(roomId)) {
+      this.replaySource.set(roomId, history)
+    }
+    this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId })
   }
 
   // Applies the caller's mode, config and model choices to a session the agent
@@ -1108,9 +1101,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  // Skipped for agents without `session/close`, and when the failure retires
-  // the connection anyway, since ending the process ends its sessions. A
-  // failed close is logged, never thrown, so the caller sees the original error.
+  // Closing after setup or prompt failure must preserve the original error.
   private async closeFailedSession(live: LiveConnection, roomId: string, sessionId: string, cause: unknown): Promise<void> {
     if (!live.initializeResult.agentCapabilities?.sessionCapabilities?.close || retiresConnection(cause)) {
       return
@@ -1122,7 +1113,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         `closeSession did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
-      this.safeWarn("acp_client.session_close_failed", { roomId, sessionId, error: String(error) })
+      if (this.live === live) {
+        this.safeWarn("acp_client.session_close_failed", { roomId, sessionId, error: String(error) })
+      }
     }
   }
 
@@ -1156,9 +1149,20 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     })
   }
 
+  // What a failed turn leaves behind on its connection, whether it failed in
+  // the turn or, once cancelled, in the setup it abandoned.
+  private discardFailedConnectionState(roomId: string, live: LiveConnection, error: unknown, ownSessionId?: string): void {
+    const droppedSessionId = this.dropUnacceptedSession(roomId, live.generation)
+    if (retiresConnection(error)) {
+      this.retireConnection(live.connection, live.generation)
+    } else if (ownSessionId !== undefined && droppedSessionId === ownSessionId) {
+      abandon(() => this.closeFailedSession(live, roomId, ownSessionId, error))
+    }
+  }
+
   // A session no prompt was accepted on may be half-configured, so a failed
   // turn drops it: the next turn opens a fresh one and seeds it again.
-  private dropUnacceptedSession(roomId: string, connectionGeneration: number): void {
+  private dropUnacceptedSession(roomId: string, connectionGeneration: number): string | undefined {
     const owner = this.roomToSession.get(roomId)
     if (!owner || owner.generation !== connectionGeneration) {
       return
@@ -1169,6 +1173,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
     this.unlinkOwner(roomId, owner)
     this.activeSessions.delete(key)
+    return owner.sessionId
   }
 
   // Drops a connection that timed out, failed, or closed, and stops its

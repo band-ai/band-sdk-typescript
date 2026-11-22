@@ -1,5 +1,5 @@
 import type { AgentSideConnection, Agent as AcpAgent, PermissionOption, PromptRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { ACPRoomAgent } from "../src/adapters/acp/ACPRoomAgent";
@@ -14,6 +14,37 @@ import { tmpRoot } from "./testUtils";
 
 const ROOM = "room-1";
 const ALLOW_ONCE: PermissionOption = { kind: "allow_once", optionId: "allow", name: "Allow" };
+const MODES = {
+  currentModeId: "ask",
+  availableModes: [{ id: "ask", name: "Ask" }, { id: "read-only", name: "Read only" }],
+};
+const MODEL_CATALOG = [{
+  type: "select" as const,
+  id: "model",
+  name: "Model",
+  currentValue: "a",
+  options: [{ value: "a", name: "A" }, { value: "b", name: "B" }],
+}];
+// The adapter's wait on each session setup call; it keeps no exported constant.
+const SESSION_CALL_TIMEOUT_MS = 10_000;
+
+/** Answers `result` at once, except the first call, which the agent never answers until released. */
+type HungOnce = <T>(result: T) => Promise<T>;
+
+/** Session setup calls the adapter fails the setup on when the agent never answers. */
+const hungSetups: Record<string, (hungOnce: HungOnce) => { hooks: HarnessHooks; options: Partial<ACPClientAdapterOptions> }> = {
+  "setSessionConfigOption": (hungOnce) => ({
+    hooks: {
+      sessionFields: { configOptions: MODEL_CATALOG },
+      setSessionConfigOption: () => hungOnce({ configOptions: MODEL_CATALOG }),
+    },
+    options: { resolveSessionConfig: async () => ({ model: "b" }) },
+  }),
+  "setSessionMode": (hungOnce) => ({
+    hooks: { sessionFields: { modes: MODES }, setSessionMode: () => hungOnce(undefined) },
+    options: { resolveSessionMode: async () => "read-only", requireSessionMode: true },
+  }),
+};
 
 type HarnessHooks = {
   sessionFields?: Record<string, unknown>;
@@ -390,16 +421,12 @@ describe("Agent.cancelTurn", () => {
   it("waits for an in-flight session configure before the next turn prompts", async () => {
     const asked = createDeferred();
     const answer = createDeferred<string | undefined>();
-    const modes = {
-      currentModeId: "ask",
-      availableModes: [{ id: "ask", name: "Ask" }, { id: "read-only", name: "Read only" }],
-    };
     const acp = harness(
       async (peer, { sessionId }) => {
         await say(peer, sessionId, "answer");
         return { stopReason: "end_turn" };
       },
-      { sessionFields: { modes } },
+      { sessionFields: { modes: MODES } },
     );
     const adapter = new ACPClientAdapter({
       ...acp.options,
@@ -430,26 +457,19 @@ describe("Agent.cancelTurn", () => {
     const answer = createDeferred<Record<string, string>>();
     const lateFailure = createDeferred<unknown>();
     let rejectConfig = true;
-    const catalog = [{
-      type: "select" as const,
-      id: "model",
-      name: "Model",
-      currentValue: "a",
-      options: [{ value: "a", name: "A" }, { value: "b", name: "B" }],
-    }];
     const acp = harness(
       async (peer, { sessionId }) => {
         await say(peer, sessionId, "answer");
         return { stopReason: "end_turn" };
       },
       {
-        sessionFields: { configOptions: catalog },
+        sessionFields: { configOptions: MODEL_CATALOG },
         setSessionConfigOption: async () => {
           if (rejectConfig) {
             rejectConfig = false;
             throw new Error("config rejected");
           }
-          return { configOptions: catalog };
+          return { configOptions: MODEL_CATALOG };
         },
       },
     );
@@ -480,6 +500,58 @@ describe("Agent.cancelTurn", () => {
     const second = await room.say("owner", "second");
     expect(await room.outcome(second)).toBe("processed");
     expect(acp.record.prompts, "the failed configure session is not prompted").toEqual(["session-2"]);
+    expect(acp.record, "an agent's own error response leaves its process usable").toMatchObject({ connections: 1, stops: 0 });
     expect(room.messages.map((posted) => posted.content)).toEqual(["answer"]);
   });
+
+  it.each(Object.entries(hungSetups))(
+    "retires the connection when the %s call of a cancelled turn times out",
+    async (_name, setup) => {
+      const requested = createDeferred();
+      const release = createDeferred();
+      onTestFinished(() => release.resolve());
+      let calls = 0;
+      const hungOnce: HungOnce = async (result) => {
+        if (calls++ === 0) {
+          requested.resolve();
+          await release.promise;
+        }
+        return result;
+      };
+      const lateFailure = createDeferred();
+      const { hooks, options } = setup(hungOnce);
+      const acp = harness(async (peer, { sessionId }) => {
+        await say(peer, sessionId, "answer");
+        return { stopReason: "end_turn" };
+      }, hooks);
+      const { agent, room } = await startAgent(new ACPClientAdapter({
+        ...acp.options,
+        ...options,
+        logger: {
+          debug: () => {},
+          info: () => {},
+          error: () => {},
+          warn: (message) => {
+            if (message === "acp_client.cancelled_turn_wait_failed") lateFailure.resolve();
+          },
+        },
+      }));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      onTestFinished(() => { vi.useRealTimers(); });
+
+      const first = await room.say("owner", "first");
+      await requested.promise;
+      expect(await agent.cancelTurn(ROOM)).toBe(true);
+      expect(await room.outcome(first)).toBe("processed");
+      await vi.advanceTimersByTimeAsync(SESSION_CALL_TIMEOUT_MS);
+      await lateFailure.promise;
+      expect(acp.record, "the hung process is stopped").toMatchObject({ connections: 1, stops: 1 });
+
+      const second = await room.say("owner", "second");
+      expect(await room.outcome(second)).toBe("processed");
+      expect(room.failures).toEqual([]);
+      expect(room.messages.map((posted) => posted.content)).toEqual(["answer"]);
+      expect(acp.record, "the next turn runs on a fresh process").toMatchObject({ connections: 2, stops: 1, prompts: ["session-2"] });
+    },
+  );
 });
