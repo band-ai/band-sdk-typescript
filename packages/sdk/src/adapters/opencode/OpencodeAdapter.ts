@@ -432,6 +432,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     const { permissions, questions } = roomState.decisions;
     const cancelledPermissions = permissions.cancelAll();
     const cancelledQuestions = questions.cancelAll();
+    for (const { token } of [...cancelledPermissions, ...cancelledQuestions]) {
+      this.logger.info("opencode_adapter.decision_dropped", { roomId: roomState.roomId, requestId: token, reason: "turn_cancelled" });
+    }
     const client = this.connection?.client;
     if (client) {
       for (const entry of cancelledPermissions) {

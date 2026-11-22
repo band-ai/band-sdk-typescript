@@ -1844,6 +1844,7 @@ describe("OpenCode platform Stop decisions", () => {
       vi.useRealTimers();
       await finished.promise;
       expect(server.requestsTo("POST", /\/prompt_async$/)).toEqual([]);
+      await server.until(() => server.requestsTo("POST", /\/abort$/).length === 1);
       expect(cancellationResult).toBe(true);
       expect(room.outcomes(messageId)).toEqual([]);
       expect(room.posted).toEqual([]);
@@ -1854,14 +1855,15 @@ describe("OpenCode platform Stop decisions", () => {
       expect(room.messages.map((posted) => posted.content)).toEqual(["Recovered after setup Stop"]);
     } finally { establishment.release(); vi.useRealTimers(); }
   });
-});
 
-it("cancels an attached OpenCode turn without a missing-reply failure", async () => {
-  await using session = await opencodeRoom();
-  const started = createDeferred();
-  const messageId = await session.start(() => { started.resolve(); });
-  await started.promise;
-  expect(await session.adapter.cancelTurn(session.room.id)).toBe(true);
-  expect(await session.room.outcome(messageId)).toBe("processed");
-  expect(session.room.failures).toEqual([]);
+  it("cancels an attached OpenCode turn without a missing-reply failure", async () => {
+    await using session = await opencodeRoom();
+    const started = createDeferred();
+    const messageId = await session.start(() => { started.resolve(); });
+    await started.promise;
+    expect(await session.adapter.cancelTurn(session.room.id)).toBe(true);
+    await session.server.until(() => session.server.requestsTo("POST", /\/abort$/).length === 1);
+    expect(await session.room.outcome(messageId)).toBe("processed");
+    expect(session.room.failures).toEqual([]);
+  });
 });
