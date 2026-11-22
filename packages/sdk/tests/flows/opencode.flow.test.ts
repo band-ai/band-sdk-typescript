@@ -1772,3 +1772,120 @@ describe("OpenCode holds the room's other work until a handed-back turn ends", (
     expect(room.messages.at(-1)?.content).toBe("Noted.");
   });
 });
+
+describe("OpenCode platform Stop decisions", () => {
+  it("keeps a stopped session abandoned when prompt acceptance arrives late", async () => {
+    await using session = await opencodeRoom();
+    const { adapter, platform, room, server } = session;
+    let stopped = false;
+    platform.rest.reportActivity = async (_roomId, working) => ({ working: working && !stopped });
+    const finished = createDeferred();
+    const onEvent = adapter.onEvent.bind(adapter);
+    const observed = vi.spyOn(adapter, "onEvent").mockImplementationOnce(async (input) => {
+      try { await onEvent(input); } finally { finished.resolve(); }
+    });
+    onTestFinished(() => observed.mockRestore());
+    const acceptance = server.holdPromptAcceptance();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const messageId = await session.start(() => {});
+      const oldTurn = await server.turn(0);
+      const beforeStop = room.posted.length;
+      stopped = true;
+      await vi.advanceTimersByTimeAsync(WORKING_HEARTBEAT_MS);
+      vi.useRealTimers();
+      await server.until(() => server.requestsTo("POST", /\/abort$/).length === 1);
+      acceptance.release();
+      await finished.promise;
+      expect(room.outcomes(messageId)).toEqual([]);
+      expect(room.posted.slice(beforeStop)).toEqual([]);
+      server.onPrompt((turn) => {
+        oldTurn.askPermission({ id: "per_obsolete_prompt" });
+        turn.answer("Recovered on a fresh session");
+      });
+      stopped = false;
+      platform.control("play", room.id);
+      expect(await room.outcome(messageId)).toBe("processed");
+      const prompts = server.requestsTo("POST", /\/prompt_async$/);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]!.path).not.toBe(prompts[0]!.path);
+      expect(server.requestsTo("POST", /^\/session$/)).toHaveLength(2);
+      expect(room.messages.map((posted) => posted.content)).toEqual(["Recovered on a fresh session"]);
+    } finally { acceptance.release(); vi.useRealTimers(); }
+  });
+
+  it("cancels session setup without sending a prompt after Stop", async () => {
+    await using session = await opencodeRoom({ enableTaskEvents: false });
+    const { adapter, platform, room, server } = session;
+    let stopped = false;
+    platform.rest.reportActivity = async (_roomId, working) => ({ working: working && !stopped });
+    const cancelled = createDeferred<boolean>();
+    const cancel = adapter.cancelTurn.bind(adapter);
+    const observedCancel = vi.spyOn(adapter, "cancelTurn").mockImplementation(async (roomId) => {
+      const result = await cancel(roomId);
+      cancelled.resolve(result);
+      return result;
+    });
+    const finished = createDeferred();
+    const onEvent = adapter.onEvent.bind(adapter);
+    const observedEvent = vi.spyOn(adapter, "onEvent").mockImplementationOnce(async (input) => {
+      try { await onEvent(input); } finally { finished.resolve(); }
+    });
+    onTestFinished(() => { observedCancel.mockRestore(); observedEvent.mockRestore(); });
+    const establishment = server.hold("POST /session");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const messageId = await session.start((turn) => turn.answer("Recovered after setup Stop"));
+      await establishment.sending;
+      stopped = true;
+      await vi.advanceTimersByTimeAsync(WORKING_HEARTBEAT_MS);
+      const cancellationResult = await cancelled.promise;
+      establishment.release();
+      vi.useRealTimers();
+      await finished.promise;
+      expect(server.requestsTo("POST", /\/prompt_async$/)).toEqual([]);
+      await server.until(() => server.requestsTo("POST", /\/abort$/).length === 1);
+      expect(cancellationResult).toBe(true);
+      expect(room.outcomes(messageId)).toEqual([]);
+      expect(room.posted).toEqual([]);
+      stopped = false;
+      platform.control("play", room.id);
+      expect(await room.outcome(messageId)).toBe("processed");
+      expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(1);
+      expect(room.messages.map((posted) => posted.content)).toEqual(["Recovered after setup Stop"]);
+    } finally { establishment.release(); vi.useRealTimers(); }
+  });
+
+  it("cancels an attached OpenCode turn without a missing-reply failure", async () => {
+    await using session = await opencodeRoom();
+    const started = createDeferred();
+    const messageId = await session.start(() => { started.resolve(); });
+    await started.promise;
+    expect(await session.adapter.cancelTurn(session.room.id)).toBe(true);
+    await session.server.until(() => session.server.requestsTo("POST", /\/abort$/).length === 1);
+    expect(await session.room.outcome(messageId)).toBe("processed");
+    expect(session.room.failures).toEqual([]);
+  });
+
+  it("does not report a provider failure when a cancelled promptAsync rejects late", async () => {
+    await using session = await opencodeRoom({ enableTaskEvents: false });
+    const { adapter, room, server } = session;
+    const finished = createDeferred();
+    const onEvent = adapter.onEvent.bind(adapter);
+    const observed = vi.spyOn(adapter, "onEvent").mockImplementationOnce(async (input) => {
+      try { await onEvent(input); } finally { finished.resolve(); }
+    });
+    onTestFinished(() => observed.mockRestore());
+    const prompt = server.hold("POST /session/ses_:id/prompt_async");
+    server.failNext("POST /session/ses_:id/prompt_async", { status: 500, body: "prompt rejected" });
+    try {
+      const messageId = await session.start(() => undefined);
+      await prompt.sending;
+      expect(await adapter.cancelTurn(room.id)).toBe(true);
+      prompt.release();
+      await finished.promise;
+      expect(room.failures).toEqual([]);
+      expect(await room.outcome(messageId)).toBe("processed");
+    } finally { prompt.release(); }
+  });
+});
