@@ -159,9 +159,10 @@ export interface ACPClientAdapterBaseOptions {
   // ACP advertises session modes once a session is (re)established. This
   // callback receives that harness-owned catalog and may select one before
   // the session's first prompt. Omit it to preserve the harness's advertised
-  // current mode. Applied via ACP's `session/set_mode`; ignored if the
-  // resolved id isn't advertised. Best-effort and one-time per session: a
-  // failed switch only logs a warning, and an agent that later changes mode
+  // current mode. Applied via ACP's `session/set_mode`. Unless
+  // `requireSessionMode`, it is best-effort: an id the agent doesn't
+  // advertise is ignored and a failed switch only logs a warning. One-time
+  // per session: an agent that later changes mode
   // on its own (ACP's `current_mode_update`) is neither tracked nor
   // re-asserted. A session's mode is therefore fixed for its lifetime —
   // changing it means tearing the session down and establishing a new one.
@@ -1102,7 +1103,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         await this.configureSessionModel(roomId, sessionId, configOptions, connection)
       }
     } catch (error) {
-      await this.closeFailedSession(live, sessionId, error)
+      await this.closeFailedSession(live, roomId, sessionId, error)
       throw error
     }
   }
@@ -1110,7 +1111,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // Skipped for agents without `session/close`, and when the failure retires
   // the connection anyway, since ending the process ends its sessions. A
   // failed close is logged, never thrown, so the caller sees the original error.
-  private async closeFailedSession(live: LiveConnection, sessionId: string, cause: unknown): Promise<void> {
+  private async closeFailedSession(live: LiveConnection, roomId: string, sessionId: string, cause: unknown): Promise<void> {
     if (!live.initializeResult.agentCapabilities?.sessionCapabilities?.close || retiresConnection(cause)) {
       return
     }
@@ -1121,7 +1122,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         `closeSession did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
-      this.safeWarn("acp_client.session_close_failed", { sessionId, error: String(error) })
+      this.safeWarn("acp_client.session_close_failed", { roomId, sessionId, error: String(error) })
     }
   }
 
@@ -1292,9 +1293,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     })
   }
 
-  // Best-effort, same contract as `configureSessionMode`: never throws, so a
-  // model switch going wrong can't take a session establishment down with
-  // it. Reads the model catalog off `configOptions` (the stable, generic
+  // Best-effort, never throws (unlike `configureSessionMode` under
+  // `requireSessionMode`), so a model switch going wrong can't take a session
+  // establishment down with it. Reads the model catalog off `configOptions` (the stable, generic
   // mechanism every ACP protocol version from this repo's actual pin through
   // npm's current latest carries), not the separate `unstable_`-prefixed
   // `SessionModelState` field, which real agents don't populate — see

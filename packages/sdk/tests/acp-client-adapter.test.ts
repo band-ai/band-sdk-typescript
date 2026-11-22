@@ -377,9 +377,9 @@ describe("ACPClientAdapter", () => {
     ["session/new", { loadSession: true }, "room-fresh"],
   ] as const)("sends sessionMeta as _meta on %s", async (method, agentCapabilities, roomId) => {
     const calls: Array<{ method: string; params: Record<string, unknown> }> = []
-    const record = (method: string) => vi.fn(async (params?: Record<string, unknown>) => {
-      calls.push({ method, params: params ?? {} })
-      return method === "session/new" ? { sessionId: "session-fresh" } : {}
+    const record = (rpc: string) => vi.fn(async (params?: Record<string, unknown>) => {
+      calls.push({ method: rpc, params: params ?? {} })
+      return rpc === "session/new" ? { sessionId: "session-fresh" } : {}
     })
     const sessionMeta = { claudeCode: { options: { model: "opus", extraArgs: { verbose: null } } } }
     const adapter = new ACPClientAdapter({
@@ -3447,24 +3447,26 @@ describe("ACPClientAdapter", () => {
       })
 
       it("applies the mode before the session's first prompt, and prompts only once the switch is done", async () => {
-        let releaseSwitch!: () => void
-        const { adapter, newSession, setSessionMode, prompt } = buildHarness({
+        let releaseSwitch: () => void = () => undefined
+        let switchRequested: () => void = () => undefined
+        const requested = new Promise<void>((resolve) => { switchRequested = resolve })
+        const { adapter, setSessionMode, prompt } = buildHarness({
           adapterOptions: { resolveSessionMode: async () => "default", requireSessionMode: true },
           newSessionModes: MODES,
         })
-        setSessionMode.mockImplementationOnce(() => new Promise((resolve) => {
-          releaseSwitch = () => resolve({})
-        }))
+        setSessionMode.mockImplementationOnce(() => {
+          switchRequested()
+          return new Promise((resolve) => { releaseSwitch = () => resolve({}) })
+        })
 
         const sent = send(adapter)
-        await vi.waitFor(() => expect(setSessionMode).toHaveBeenCalledTimes(1))
+        await requested
         expect(prompt).not.toHaveBeenCalled()
         releaseSwitch()
         await sent
 
         expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "default" })
-        expect(newSession.mock.invocationCallOrder[0]).toBeLessThan(setSessionMode.mock.invocationCallOrder[0]!)
-        expect(setSessionMode.mock.invocationCallOrder[0]).toBeLessThan(prompt.mock.invocationCallOrder[0]!)
+        expect(prompt).toHaveBeenCalledTimes(1)
       })
 
       const failures: Array<[
@@ -3476,6 +3478,7 @@ describe("ACPClientAdapter", () => {
         ["the agent offers an empty list", { currentModeId: "auto", availableModes: [] }, async () => "default"],
         ["the selected mode is not offered", MODES, async () => "plan"],
         ["no mode is selected", MODES, async () => undefined],
+        ["the selection hook throws", MODES, async () => { throw new Error("policy service down") }],
       ]
       it.each(failures)("fails the turn, and never prompts, when %s", async (_case, newSessionModes, resolveSessionMode) => {
         const { adapter, setSessionMode, prompt } = buildHarness({
