@@ -113,6 +113,17 @@ test("Core checkout uses the scoped read secret", async () => {
   );
 });
 
+test("Core coverage runs on ready same-repository PRs and non-PR events", async () => {
+  const { workflow } = await loadSteps();
+  const condition = workflow.match(/^  coverage:\n(?:    #.*\n)*    if: >-\n((?:      .+\n)+)/m);
+
+  assert.ok(condition, "coverage job must guard access to the private Core checkout");
+  assert.equal(
+    condition[1].trim().replace(/\s+/g, " "),
+    "github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)",
+  );
+});
+
 test("workflow stays out of the merge queue", async () => {
   const { workflow } = await loadSteps();
 

@@ -11,6 +11,7 @@ import { asOptionalRecord, toDisplayText, toWireString } from "../shared/coercio
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   normalizeConversationRole,
+  systemNoticeAsUserText,
 } from "../tool-calling/valueUtils";
 
 /**
@@ -223,7 +224,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     }
 
     if (role === "system") {
-      return { role: "user", parts: [{ text: `[System]: ${content}` }] };
+      return { role: "user", parts: [{ text: systemNoticeAsUserText(content) }] };
     }
 
     return { role: "user", parts: [{ text: content }] };

@@ -4,16 +4,20 @@ import type { ChildProcess } from "node:child_process";
 export const CHILD_STOP_GRACE_MS = { term: 500, kill: 1_500 } as const;
 
 /**
- * Closes the child's stdin so it can exit cleanly, then escalates to SIGTERM and
- * SIGKILL, so a child that ignores both EOF and SIGTERM cannot outlive its stop.
+ * Lets the child exit on EOF, then escalates to SIGTERM and SIGKILL. When
+ * draining stdin is disabled, sends SIGTERM immediately so the child can clean up.
  */
-export async function stopChildProcess(child: ChildProcess): Promise<void> {
+export async function stopChildProcess(
+  child: ChildProcess,
+  { drainStdin = true }: { drainStdin?: boolean } = {},
+): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  child.stdin?.end();
+  if (drainStdin) child.stdin?.end();
   await new Promise<void>((resolve) => {
-    const term = setTimeout(() => child.kill("SIGTERM"), CHILD_STOP_GRACE_MS.term);
+    const terminate = () => child.kill("SIGTERM");
+    const term = drainStdin ? setTimeout(terminate, CHILD_STOP_GRACE_MS.term) : undefined;
     const kill = setTimeout(() => {
       child.kill("SIGKILL");
       finish();
@@ -27,5 +31,6 @@ export async function stopChildProcess(child: ChildProcess): Promise<void> {
     }
     child.once("exit", finish);
     child.once("close", finish);
+    if (!drainStdin) terminate();
   });
 }

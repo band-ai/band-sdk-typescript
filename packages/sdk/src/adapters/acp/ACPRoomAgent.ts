@@ -76,11 +76,13 @@ const CANCELLED_PERMISSION_RESPONSE: RequestPermissionResponse = { outcome: { ou
 // its own bound. Order-of-magnitude match for `OpencodeAdapter`'s own
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
-const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
+// Bounds the session calls made while establishing a session: mode, config
+// and model selection, and closing one that failed.
+const SESSION_CALL_TIMEOUT_MS = 10_000;
 // Bounds `initialize` and `authenticate`, which share that unbounded wait.
 // Cursor's `agent acp` answers neither error nor stderr to an `authenticate`
 // it has no valid credential for: it just never responds. Longer than the
-// config bound because authenticating makes a network round trip.
+// session-call bound because authenticating makes a network round trip.
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const PROCESS_EXITED_ERROR = "The ACP agent process exited";
@@ -112,6 +114,14 @@ export type ACPConfigSelections = ReconciledACPConfigSelections;
 export interface ACPClientAdapterBaseOptions {
   /** Merged into the first-turn system context (character/persona sections for examples). */
   customSection?: string;
+  /**
+   * Sent as `_meta` on every `session/new`, `session/load` and
+   * `session/resume`, for agents that read session settings from it. Its
+   * shape is the agent's own: claude-agent-acp, for one, reads
+   * `claudeCode.options` as Claude Agent SDK options (`model`, `effort`,
+   * `plugins`, `extraArgs`, ...). Unset sends no `_meta`.
+   */
+  sessionMeta?: Record<string, unknown>;
   cwd?: string;
   env?: Record<string, string>;
   mcpServers?: McpServer[];
@@ -149,13 +159,21 @@ export interface ACPClientAdapterBaseOptions {
   // ACP advertises session modes once a session is (re)established. This
   // callback receives that harness-owned catalog and may select one before
   // the session's first prompt. Omit it to preserve the harness's advertised
-  // current mode. Applied via ACP's `session/set_mode`; ignored if the
-  // resolved id isn't advertised. Best-effort and one-time per session: a
-  // failed switch only logs a warning, and an agent that later changes mode
+  // current mode. Applied via ACP's `session/set_mode`. Unless
+  // `requireSessionMode`, it is best-effort: an id the agent doesn't
+  // advertise is ignored and a failed switch only logs a warning. One-time
+  // per session: an agent that later changes mode
   // on its own (ACP's `current_mode_update`) is neither tracked nor
   // re-asserted. A session's mode is therefore fixed for its lifetime —
   // changing it means tearing the session down and establishing a new one.
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
+  // Makes the mode binding: the session's first prompt is sent only once the
+  // mode `resolveSessionMode` selects is in effect. An agent that offers no
+  // modes, a selection that is missing or not offered, and a switch the agent
+  // refuses each fail the turn with `AcpSessionConfigError` (option id
+  // `"mode"`) instead of leaving the agent in its own default mode. Off by
+  // default.
+  requireSessionMode?: boolean;
   // ACP advertises all user-selectable session configuration in one live
   // catalog. Return values keyed by config id to apply before the first
   // prompt, in the order the caller supplies them. Each successful
@@ -230,14 +248,13 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, TurnTools>()
-  // Rooms whose previous session could not be restored. Stays set until a
-  // prompt on the replacement session is accepted, so a rejected prompt or
-  // a dropped session still seeds the next one. Keyed by room, not by
-  // the session that may be thrown away before that prompt lands.
-  private readonly roomsOwedReplay = new Set<string>()
-  // The history the debt was armed with. Later turns in the same room are
-  // not bootstraps, so their history argument is only what this process
-  // has recorded since startup.
+  // Rooms whose previous session could not be restored or configured, each
+  // with the history the debt was armed with: later turns in the same room
+  // are not bootstraps, so their history is only what this process has
+  // recorded since startup. Stays set until a prompt on the replacement
+  // session is accepted, so a rejected prompt or a dropped session still
+  // seeds the next one. Keyed by room, not by the session that may be
+  // thrown away before that prompt lands.
   private readonly replaySource = new Map<string, ACPClientSessionState>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
   // agent can reissue the identical session id across a reconnect.
@@ -260,6 +277,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
   private readonly resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly requireSessionMode: boolean
   private readonly resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionConfig?: (request: ACPConfigRequest, signal: AbortSignal) => Promise<ACPConfigSelections | undefined>
   private readonly permissionTimeoutMs: number
@@ -268,6 +286,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   private readonly observer: AgentEventListener
   private readonly sessionEvents: SessionUpdateEvents
   private readonly customSection?: string
+  private readonly sessionMeta?: Record<string, unknown>
 
   private live: LiveConnection | null = null
   private pendingConnectionStop: (() => Promise<void>) | null = null
@@ -298,12 +317,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
+    this.requireSessionMode = options.requireSessionMode ?? false
     this.resolveSessionModel = options.resolveSessionModel
     this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
     this.observer = options.observer
     this.sessionEvents = new SessionUpdateEvents(options.roomId, this.observer)
     this.customSection = options.customSection
+    this.sessionMeta = options.sessionMeta
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
   }
@@ -407,7 +428,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       generation = live.generation
       client = live.client
 
-      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live))
+      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live, history), live)
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
@@ -415,20 +436,14 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // A restored session is normally already bootstrapped. It still owes
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.
-      const seedingSession = this.roomsOwedReplay.has(context.roomId) || !this.bootstrappedSessions.has(sessionKey)
-      if (this.roomsOwedReplay.has(context.roomId) && !this.replaySource.has(context.roomId)) {
-        this.replaySource.set(context.roomId, history)
-      }
+      const replayDebt = this.replaySource.get(context.roomId)
+      const seedingSession = replayDebt !== undefined || !this.bootstrappedSessions.has(sessionKey)
       let promptText: string
       if (!seedingSession) {
         promptText = messageWithContext
       } else {
-        const replayLines = this.replayLinesFor(
-          context.roomId,
-          message.id,
-          this.replaySource.get(context.roomId) ?? history,
-        )
-        if (this.roomsOwedReplay.has(context.roomId)) {
+        const replayLines = replayDebt ? this.replayLinesFor(message.id, replayDebt) : null
+        if (replayDebt) {
           this.safeWarn("acp_client.replay_seed", { roomId: context.roomId, lineCount: replayLines?.length ?? 0 })
         }
         const liveSections = replayLines ? framedReplay(replayLines, messageWithContext) : [messageWithContext]
@@ -484,7 +499,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         // so the connection generation has to match too, same as `unlinkOwner`.
         const owner = this.roomToSession.get(context.roomId)
         if (owner?.sessionId === sessionId && owner.generation === generation) {
-          this.roomsOwedReplay.delete(context.roomId)
           this.replaySource.delete(context.roomId)
         }
       }
@@ -539,10 +553,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // Before any fallible delivery: a DeliveryFailedError from flushChunks
       // is recoverable and would otherwise skip this.
       if (connection) {
-        this.dropUnacceptedSession(context.roomId, generation)
-        if (retiresConnection(error)) {
-          this.retireConnection(connection, generation)
-        }
+        this.discardFailedConnectionState(context.roomId, connection, generation, error)
       }
 
       if (client && sessionId) {
@@ -633,18 +644,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
   // A cancel ends the turn's wait, not `operation`: it runs on, so a
   // connection or session it establishes stays for the room's next turn.
-  // `Promise.race` keeps observing `operation`; a late failure is logged and
-  // an unaccepted session is dropped, since the turn it belonged to has
-  // already settled.
-  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>): Promise<T> {
+  // `Promise.race` keeps observing `operation`; a late failure is logged and,
+  // for an operation that ran on `live`, handled as the turn would have
+  // handled it, since that turn has already settled.
+  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>, live?: LiveConnection): Promise<T> {
     const cancelled = turn.cancellation.promise.then((): typeof TURN_CANCELLED => TURN_CANCELLED)
     const winner = await Promise.race([operation, cancelled])
     if (winner === TURN_CANCELLED) {
       void operation.catch((error: unknown) => {
         this.safeWarn("acp_client.cancelled_turn_wait_failed", { roomId: this.roomId, error: asErrorMessage(error) })
-        const live = this.live
         if (live) {
-          this.dropUnacceptedSession(this.roomId, live.generation)
+          this.discardFailedConnectionState(this.roomId, live.connection, live.generation, error)
         }
       })
       throw new AcpTurnCancelledError()
@@ -657,7 +667,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.roomTools.delete(roomId)
     this.activeTurns.delete(roomId)
     this.sessionEvents.reset()
-    this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurns.release(roomId)
@@ -686,7 +695,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     this.live = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
-    this.roomsOwedReplay.clear()
     this.replaySource.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
@@ -813,11 +821,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   // history handed to the adapter is read); a bootstrap history does not.
   // Empty after that filter means there is nothing to frame — an empty
   // array must not still emit the history header.
-  private replayLinesFor(roomId: string, currentMessageId: string, history: ACPClientSessionState): string[] | null {
-    if (!this.roomsOwedReplay.has(roomId)) {
-      return null
-    }
-    const lines = (history.replayMessages ?? [])
+  private replayLinesFor(currentMessageId: string, source: ACPClientSessionState): string[] | null {
+    const lines = (source.replayMessages ?? [])
       .filter((entry) => entry.id !== currentMessageId)
       .map((entry) => entry.line)
     return lines.length > 0 ? lines : null
@@ -958,7 +963,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  private async getOrCreateSession(roomId: string, live: LiveConnection): Promise<string> {
+  private async getOrCreateSession(roomId: string, live: LiveConnection, history: ACPClientSessionState): Promise<string> {
     const connectionGeneration = live.generation
     const owner = this.roomToSession.get(roomId)
     const existingSessionId = owner?.sessionId
@@ -986,7 +991,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // to the room's *current* generation, and stays pinned to it even if
     // `onCleanup`/`stop` bump the counter while it's still in flight.
     const generation = this.nextRoomGeneration(roomId)
-    const establishing = this.establishSession(roomId, existingSessionId, live, generation)
+    const establishing = this.establishSession(roomId, existingSessionId, live, generation, history)
     // Compare-and-delete: if this room was torn down and re-entered while
     // `establishing` was still pending, a newer promise is already stored at
     // `roomId` by the time this one settles. Deleting unconditionally would
@@ -1011,6 +1016,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     existingSessionId: string | undefined,
     live: LiveConnection,
     generation: number,
+    history: ACPClientSessionState,
   ): Promise<string> {
     const { connection, client, generation: connectionGeneration } = live
     const mcpServers = this.buildSessionMcpServers(live.backend)
@@ -1019,20 +1025,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     if (existingSessionId) {
       const restored = await this.tryRestoreSession(live, existingSessionId, cwd, mcpServers)
       if (restored.ok) {
-        // Linked and marked active before the best-effort mode switch below
-        // is awaited: `configureSessionMode` makes a real RPC call, and a
+        // Linked and marked active before configuring awaits a real RPC: a
         // connection drop mid-call clears `activeSessions` (see
-        // `spawnConnection`'s `closed.finally()`) — running this after that
-        // await would let a stale add silently re-admit a session whose
-        // connection just died, and would leave the session unroutable for
-        // the whole duration of the call.
+        // `spawnConnection`'s `closed.finally()`), so a later add would
+        // re-admit a session whose connection just died, and the session
+        // would be unroutable for the whole call.
         this.linkOrAbandon(roomId, existingSessionId, generation, connectionGeneration, client)
         const restoredKey = this.sessionKey(connectionGeneration, existingSessionId)
         this.activeSessions.add(restoredKey)
-        await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
-        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection)
-        if (!this.resolveSessionConfig) {
-          await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
+        try {
+          await this.configureSession(live, roomId, existingSessionId, restored.modes, restored.configOptions)
+        } catch (error) {
+          // The failed turn unlinks this session, so the room's next session
+          // would not know it replaced one that held a transcript.
+          this.oweReplay(roomId, existingSessionId, history)
+          throw error
         }
         // Only once configured: a failure above must drop this session, not keep it.
         this.bootstrappedSessions.add(restoredKey)
@@ -1047,6 +1054,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     const created = await this.raceAgainstConnectionClose(connection, connection.newSession({
       cwd,
       mcpServers,
+      ...this.metaParams(),
     }))
 
     // Same ordering reason as the restored-session branch above.
@@ -1060,15 +1068,61 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // the new session key: a failed turn drops that session if no prompt
     // was accepted on it.
     if (existingSessionId) {
-      this.roomsOwedReplay.add(roomId)
-      this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId: existingSessionId })
+      this.oweReplay(roomId, existingSessionId, history)
     }
-    await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
-    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection)
-    if (!this.resolveSessionConfig) {
-      await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
-    }
+    await this.configureSession(live, roomId, created.sessionId, created.modes, created.configOptions)
     return created.sessionId
+  }
+
+  // The first debt keeps its source: a later turn's history is not the
+  // transcript the replaced session carried.
+  private oweReplay(roomId: string, previousSessionId: string, history: ACPClientSessionState): void {
+    if (!this.replaySource.has(roomId)) {
+      this.replaySource.set(roomId, history)
+    }
+    this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId })
+  }
+
+  // Applies the caller's mode, config and model choices to a session the agent
+  // just created or restored. A failure closes the agent's copy too: with
+  // nothing left to prompt it, it would leak, and claude-agent-acp starts a
+  // CLI process per session.
+  private async configureSession(
+    live: LiveConnection,
+    roomId: string,
+    sessionId: string,
+    modes: SessionModeState | null | undefined,
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+  ): Promise<void> {
+    const { connection } = live
+    try {
+      await this.configureSessionMode(roomId, sessionId, modes, connection)
+      await this.configureSessionConfig(roomId, sessionId, configOptions, connection)
+      if (!this.resolveSessionConfig) {
+        await this.configureSessionModel(roomId, sessionId, configOptions, connection)
+      }
+    } catch (error) {
+      await this.closeFailedSession(live, roomId, sessionId, error)
+      throw error
+    }
+  }
+
+  // Skipped for agents without `session/close`, and when the failure retires
+  // the connection anyway, since ending the process ends its sessions. A
+  // failed close is logged, never thrown, so the caller sees the original error.
+  private async closeFailedSession(live: LiveConnection, roomId: string, sessionId: string, cause: unknown): Promise<void> {
+    if (!live.initializeResult.agentCapabilities?.sessionCapabilities?.close || retiresConnection(cause)) {
+      return
+    }
+    try {
+      await withTimeout(
+        live.connection.closeSession({ sessionId }),
+        SESSION_CALL_TIMEOUT_MS,
+        `closeSession did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
+      )
+    } catch (error) {
+      this.safeWarn("acp_client.session_close_failed", { roomId, sessionId, error: String(error) })
+    }
   }
 
   private async configureSessionConfig(
@@ -1097,8 +1151,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       catalog: advertisedOptions,
       selections,
       setOption: (params) => connection.setSessionConfigOption(params),
-      timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
+      timeoutMs: SESSION_CALL_TIMEOUT_MS,
     })
+  }
+
+  // What a failed turn leaves behind on its connection, whether it failed in
+  // the turn or, once cancelled, in the setup it abandoned.
+  private discardFailedConnectionState(roomId: string, connection: ClientSideConnection, generation: number, error: unknown): void {
+    this.dropUnacceptedSession(roomId, generation)
+    if (retiresConnection(error)) {
+      this.retireConnection(connection, generation)
+    }
   }
 
   // A session no prompt was accepted on may be half-configured, so a failed
@@ -1154,31 +1217,36 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  // Best-effort: never throws, so a mode switch going wrong can't take a
-  // session establishment down with it.
+  // Best-effort unless `requireSessionMode`: then every way the selected mode
+  // could fail to take effect throws `AcpSessionConfigError`, before the
+  // session's first prompt. Otherwise never throws, so a mode switch going
+  // wrong can't take a session establishment down with it.
   private async configureSessionMode(
     roomId: string,
     sessionId: string,
     modes: SessionModeState | null | undefined,
     connection: ClientSideConnection,
   ): Promise<void> {
-    if (!this.resolveSessionMode || !modes) {
+    const resolve = this.resolveSessionMode
+    if (!resolve) {
       return
     }
+    const required = this.requireSessionMode
 
     // Defensive, not just typed: `modes` comes straight off an unvalidated
     // JSON-RPC response from the spawned agent process (the ACP client does
     // no runtime schema check), so a non-conforming agent can send
     // `availableModes` missing, null, or containing a null entry despite the
     // type guaranteeing an `Array<SessionMode>`.
-    const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : []
-    if (availableModes.length === 0) {
+    const availableModes = Array.isArray(modes?.availableModes) ? modes.availableModes : []
+    if (!modes || availableModes.length === 0) {
+      if (required) throw this.modeError(sessionId, "The agent offers no session modes, and a mode is required.")
       return
     }
 
     const selectedModeId = await this.resolveManualSelection(
       "resolveSessionMode",
-      (signal) => this.resolveSessionMode!({
+      (signal) => resolve({
         roomId,
         sessionId,
         currentModeId: modes.currentModeId,
@@ -1186,11 +1254,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       }, signal),
       connection.signal,
     )
-    if (!selectedModeId || selectedModeId === modes.currentModeId) {
+    if (!selectedModeId) {
+      if (required) throw this.modeError(sessionId, "No session mode was selected, and a mode is required.")
+      return
+    }
+    if (selectedModeId === modes.currentModeId) {
       return
     }
 
     if (!availableModes.some((mode) => mode?.id === selectedModeId)) {
+      if (required) throw this.modeError(sessionId, `Session mode "${selectedModeId}" is not offered by the agent.`, selectedModeId)
       // Warned, not silent: otherwise a caller-selected mode id silently
       // failing to apply has no signal at all.
       this.safeWarn("resolveSessionMode selected a mode id this session does not advertise", {
@@ -1204,10 +1277,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     try {
       await withTimeout(
         connection.setSessionMode({ sessionId, modeId: selectedModeId }),
-        SET_SESSION_CONFIG_TIMEOUT_MS,
-        `setSessionMode did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        SESSION_CALL_TIMEOUT_MS,
+        `setSessionMode did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
+      if (required) throw this.modeError(sessionId, `The agent did not switch to session mode "${selectedModeId}".`, selectedModeId, error)
       this.safeWarn("failed to switch session into the selected mode", {
         sessionId,
         selectedModeId,
@@ -1216,9 +1290,20 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  // Best-effort, same contract as `configureSessionMode`: never throws, so a
-  // model switch going wrong can't take a session establishment down with
-  // it. Reads the model catalog off `configOptions` (the stable, generic
+  private modeError(sessionId: string, message: string, selectedValue?: string, cause?: unknown): AcpSessionConfigError {
+    return new AcpSessionConfigError({
+      provider: this.provider,
+      sessionId,
+      optionId: "mode",
+      message,
+      ...(selectedValue === undefined ? {} : { selectedValue }),
+      ...(cause === undefined ? {} : { cause }),
+    })
+  }
+
+  // Best-effort, never throws (unlike `configureSessionMode` under
+  // `requireSessionMode`), so a model switch going wrong can't take a session
+  // establishment down with it. Reads the model catalog off `configOptions` (the stable, generic
   // mechanism every ACP protocol version from this repo's actual pin through
   // npm's current latest carries), not the separate `unstable_`-prefixed
   // `SessionModelState` field, which real agents don't populate — see
@@ -1272,8 +1357,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     try {
       await withTimeout(
         connection.setSessionConfigOption({ sessionId, configId: modelOption.id, value: selectedModelId }),
-        SET_SESSION_CONFIG_TIMEOUT_MS,
-        `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        SESSION_CALL_TIMEOUT_MS,
+        `setSessionConfigOption did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
       this.safeWarn("failed to switch session into the selected model", {
@@ -1343,6 +1428,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
+  /** `_meta` for a session request, when the adapter was given any. */
+  private metaParams(): { _meta?: Record<string, unknown> } {
+    return this.sessionMeta === undefined ? {} : { _meta: this.sessionMeta }
+  }
+
   private async tryRestoreSession(
     { connection, initializeResult }: LiveConnection,
     sessionId: string,
@@ -1353,7 +1443,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     | { ok: false }
   > {
     const capabilities = initializeResult.agentCapabilities
-    const params = { cwd, mcpServers, sessionId }
+    const params = { cwd, mcpServers, sessionId, ...this.metaParams() }
 
     // `loadSession`/`resumeSession` share both their params and
     // their response shape (`{ ...; modes?: SessionModeState | null;
@@ -1899,6 +1989,10 @@ export function validateACPClientOptions(options: ACPClientAdapterOptions): stri
   // of them is never rejected over it.
   if (options.resolvePermission || options.resolveSessionMode || options.resolveSessionModel || options.resolveSessionConfig) {
     assertPermissionTimeoutMs(options.permissionTimeoutMs)
+  }
+
+  if (options.requireSessionMode && !options.resolveSessionMode) {
+    throw new ValidationError("ACPClientAdapter requireSessionMode needs resolveSessionMode to select the mode")
   }
 
   assertTurnTimeoutMs(options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS)

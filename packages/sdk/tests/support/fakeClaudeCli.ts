@@ -10,8 +10,12 @@ export function controlSuccess(requestId: string): Frame {
   return { type: "control_response", response: { subtype: "success", request_id: requestId, response: {} } };
 }
 
-/** The `initialize` answer Claude Code 2.1.319 writes, as the capture recorded it. */
-export function initResponse(requestId: string, cliVersion = "2.1.319"): Frame {
+/**
+ * The `initialize` answer Claude Code 2.1.319 writes. `permissionMode` names
+ * what the process claims to run under; `null` leaves the field out, the way a
+ * CLI that reports nothing about its mode would.
+ */
+export function initResponse(requestId: string, cliVersion = "2.1.319", permissionMode: string | null = "default"): Frame {
   return {
     type: "control_response",
     response: {
@@ -19,7 +23,7 @@ export function initResponse(requestId: string, cliVersion = "2.1.319"): Frame {
       request_id: requestId,
       response: {
         claude_code_version: cliVersion,
-        current_permission_mode: "default",
+        ...(permissionMode === null ? {} : { current_permission_mode: permissionMode }),
         capabilities: ["ui_surface_v1", "mcp_call_result_not_for_model_v1", "mcp_call_check_permissions_v1"],
       },
       pending_permission_requests: [],

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,6 +8,7 @@ import {
   ClaudeCliError,
   ClaudeProcessError,
   ClaudeVersionError,
+  spawnClaudeProcess,
   type ClaudeCliStartConfig,
   type ClaudeEvent,
   type ClaudeProcessFactory,
@@ -434,6 +437,61 @@ describe("ClaudeCliClient", () => {
   });
 
   describe("bounded lifecycle", () => {
+    it("ends an ongoing drain when startup validation fails", async () => {
+      const leaving = fakeClaudeProcesses((peer) => { peer.exitsOnEof = false; });
+      const { client, peer } = await online(leaving, log);
+      const turn = expect(client.runTurn("probe", {
+        onEvent: () => undefined,
+        validateStartupPermissionMode(mode) {
+          if (mode !== "auto") throw new ClaudeProcessError("unexpected mode");
+        },
+      })).rejects.toThrow("unexpected mode");
+      const close = client.close({ drainMs: 250 });
+      peer.send({ type: "system", subtype: "status", permissionMode: "default" });
+      try {
+        await turn;
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(peer.hasExited).toBe(true);
+      } finally {
+        await close;
+      }
+    });
+
+    it("gives a mismatched subprocess a chance to clean up before hard termination", async () => {
+      const cwd = tmpRoot();
+      const command = [process.execPath, "-e", `
+        const io = require("node:readline").createInterface({ input: process.stdin });
+        io.on("line", line => {
+          const frame = JSON.parse(line);
+          if (frame.type === "control_request") {
+            const response = { claude_code_version: "2.1.319", current_permission_mode: "auto" };
+            console.log(JSON.stringify({ type: "control_response", response: {
+              subtype: "success", request_id: frame.request_id, response,
+            } }));
+          } else {
+            console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "probe", permissionMode: "auto" }));
+            console.log(JSON.stringify({ type: "system", subtype: "status", session_id: "probe", permissionMode: "default" }));
+          }
+        });
+        io.on("close", () => require("node:fs").writeFileSync("ran-after-fallback", "yes"));
+        process.on("SIGTERM", () => process.exit(0));
+      `];
+      const client = await ClaudeCliClient.start(spawnClaudeProcess, { command, cwd, logger: log });
+      let exitCode: number | null;
+      try {
+        await expect(client.runTurn("probe", {
+          onEvent: () => undefined,
+          validateStartupPermissionMode(mode) {
+            if (mode !== "auto") throw new ClaudeProcessError("unexpected mode");
+          },
+        })).rejects.toThrow("unexpected mode");
+      } finally {
+        ({ exitCode } = await client.close());
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(join(cwd, "ran-after-fallback"))).toBe(process.platform === "win32");
+    });
+
     it("drains a process that leaves after its stdin closes, without a signal", async () => {
       const leaving = fakeClaudeProcesses((peer) => {
         peer.exitsOnEof = true;
