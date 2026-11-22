@@ -13,6 +13,7 @@ import {
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { createDeferred } from "../src/core/deferred";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { ValidationError } from "../src/core/errors";
 import { BandMcpServer } from "../src/mcp/server";
@@ -37,6 +38,14 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
     null,
     { isSessionBootstrap: true, roomId },
   )
+}
+
+// A replayed transcript leads the prompt: the history section carries
+// `earlierLine` ahead of the live message.
+function expectReplayedBefore(promptText: string | undefined, earlierLine: string, liveText: string): void {
+  expect(promptText).toContain("[Conversation History]")
+  expect(promptText).toContain(earlierLine)
+  expect(promptText!.indexOf(earlierLine)).toBeLessThan(promptText!.indexOf(liveText))
 }
 
 // Shared by the `resolveSessionMode` and `resolveSessionModel` test
@@ -3209,7 +3218,9 @@ describe("ACPClientAdapter", () => {
       }))
       const resumeSession = vi.fn()
       const closeSession = vi.fn(async (_params: { sessionId: string }) => ({}))
-      const prompt = vi.fn(async (params: { sessionId: string }) => {
+      const promptTexts: string[] = []
+      const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+        promptTexts.push(params.prompt?.[0]?.text ?? "")
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
             sessionId: params.sessionId,
@@ -3256,7 +3267,7 @@ describe("ACPClientAdapter", () => {
         ...input.adapterOptions,
       } as never)
 
-      return { adapter, setSessionMode, loadSession, newSession, closeSession, prompt, spawns: () => spawns, getPermissionResult: () => permissionResult }
+      return { adapter, setSessionMode, loadSession, newSession, closeSession, prompt, promptTexts, spawns: () => spawns, getPermissionResult: () => permissionResult }
     }
 
     async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
@@ -3413,6 +3424,38 @@ describe("ACPClientAdapter", () => {
         expect(newSession).not.toHaveBeenCalled()
         expect(closeSession).toHaveBeenCalledWith({ sessionId: "session-restored" })
         expect(prompt).not.toHaveBeenCalled()
+      })
+
+      it("replays the room's history into the session that replaces a restored one the agent returned without modes", async () => {
+        const { adapter, loadSession, newSession, promptTexts } = buildHarness({
+          adapterOptions: { resolveSessionMode: async () => "auto", requireSessionMode: true },
+          newSessionModes: MODES,
+        })
+        const earlierLine = "[Alice]: please refactor the auth module"
+        const roomToSession = { "room-1": "session-restored" }
+
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(adapter.onMessage(
+          makeMessage("hi", "room-1"),
+          new FakeTools(),
+          { roomToSession, replayMessages: [{ id: "earlier-1", line: earlierLine }] },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-1" },
+        ))
+        await adapter.onMessage(
+          { ...makeMessage("try again", "room-1"), id: "msg-2" },
+          new FakeTools(),
+          { roomToSession, replayMessages: [{ id: "msg-2", line: "[User]: try again" }] },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-1" },
+        )
+
+        expect(loadSession).toHaveBeenCalledTimes(1)
+        expect(newSession).toHaveBeenCalledTimes(1)
+        expect(promptTexts).toHaveLength(1)
+        expectReplayedBefore(promptTexts[0], earlierLine, "try again")
       })
 
       it("does not ask an agent that cannot close sessions to close one", async () => {
@@ -4526,7 +4569,11 @@ describe("ACPClientAdapter", () => {
         ...(input.loadSessionConfigOptions ? { configOptions: input.loadSessionConfigOptions } : {}),
       }))
       const closeSession = vi.fn(async (_params: { sessionId: string }) => ({}))
-      const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+      const promptTexts: string[] = []
+      const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+        promptTexts.push(params.prompt?.[0]?.text ?? "")
+        return { stopReason: "end_turn" }
+      })
 
       let spawns = 0
       const adapter = new ACPClientAdapter({
@@ -4546,7 +4593,7 @@ describe("ACPClientAdapter", () => {
         ...input.adapterOptions,
       } as never)
 
-      return { adapter, setSessionMode, setSessionConfigOption, closeSession, loadSession, newSession, spawns: () => spawns }
+      return { adapter, setSessionMode, setSessionConfigOption, closeSession, loadSession, newSession, promptTexts, spawns: () => spawns }
     }
 
     // Shaped like the "model" config option real Claude/Codex ACP agents
@@ -4777,6 +4824,128 @@ describe("ACPClientAdapter", () => {
 
       expect(loadSession).toHaveBeenCalledTimes(1)
       expect(newSession).toHaveBeenCalledTimes(1)
+    })
+
+    describe("replays the room's history into the session that replaces a restored one whose configuration failed", () => {
+      const EARLIER_LINE = "[Alice]: please refactor the auth module"
+      const bootstrapHistory = {
+        roomToSession: { "room-1": "session-old" },
+        replayMessages: [{ id: "earlier-1", line: EARLIER_LINE }],
+      }
+      // What the room's next turn sees locally: it never carries the earlier lines.
+      const nextHistory = {
+        roomToSession: { "room-1": "session-1" },
+        replayMessages: [{ id: "msg-2", line: "[User]: try again" }],
+      }
+      // A bootstrap that hydrated nothing, as after a restart that lost the transcript.
+      const emptyBootstrapHistory = { ...bootstrapHistory, replayMessages: [] }
+      const nextMessage = { ...makeMessage("try again", "room-1"), id: "msg-2" }
+
+      function bootstrapTurn(adapter: ACPClientAdapter, history = bootstrapHistory): Promise<void> {
+        return adapter.onMessage(
+          makeMessage("hi", "room-1"),
+          new FakeTools(),
+          history,
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-1" },
+        )
+      }
+
+      function nextTurn(adapter: ACPClientAdapter): Promise<void> {
+        return adapter.onMessage(
+          nextMessage,
+          new FakeTools(),
+          nextHistory,
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-1" },
+        )
+      }
+
+      it("when the agent rejects a selected option", async () => {
+        const resolveSessionConfig = vi.fn()
+          .mockResolvedValueOnce({ model: "sonnet" })
+          .mockResolvedValue(undefined)
+        const { adapter, setSessionConfigOption, loadSession, newSession, promptTexts } = buildHarness({
+          adapterOptions: { resolveSessionConfig },
+          loadSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption.mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(bootstrapTurn(adapter))
+        await nextTurn(adapter)
+        await nextTurn(adapter)
+
+        expect(loadSession).toHaveBeenCalledTimes(1)
+        expect(newSession).toHaveBeenCalledTimes(1)
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
+        // The accepted prompt paid the debt: the next turn is an ordinary one.
+        expect(promptTexts).toHaveLength(2)
+        expect(promptTexts[1]).not.toContain("[Conversation History]")
+      })
+
+      it("keeping the first transcript when the restore fails to configure again before any replay", async () => {
+        const resolveSessionConfig = vi.fn()
+          .mockResolvedValueOnce({ model: "sonnet" })
+          .mockResolvedValueOnce({ model: "sonnet" })
+          .mockResolvedValue(undefined)
+        const { adapter, setSessionConfigOption, loadSession, newSession, promptTexts } = buildHarness({
+          adapterOptions: { resolveSessionConfig },
+          loadSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption
+          .mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+          .mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(bootstrapTurn(adapter))
+        await expectTurnFailed(bootstrapTurn(adapter, emptyBootstrapHistory))
+        await nextTurn(adapter)
+
+        expect(loadSession).toHaveBeenCalledTimes(2)
+        expect(newSession).toHaveBeenCalledTimes(1)
+        expect(promptTexts).toHaveLength(1)
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
+      })
+
+      it("when the turn was cancelled and its configuration failed in the background", async () => {
+        // The first configuration picks a model once released, which the agent rejects.
+        const asked = createDeferred()
+        const release = createDeferred()
+        const resolveSessionConfig = vi.fn()
+          .mockImplementationOnce(async () => {
+            asked.resolve()
+            await release.promise
+            return { model: "sonnet" }
+          })
+          .mockResolvedValue(undefined)
+        const logger = makeLoggerSpy()
+        const lateFailure = createDeferred()
+        logger.warn.mockImplementation((message: string) => {
+          if (message === "acp_client.cancelled_turn_wait_failed") lateFailure.resolve()
+        })
+        const { adapter, setSessionConfigOption, loadSession, newSession, promptTexts } = buildHarness({
+          adapterOptions: { resolveSessionConfig, logger },
+          loadSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption.mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+
+        await adapter.onStarted("Agent", "desc")
+        const first = bootstrapTurn(adapter)
+        await asked.promise
+        expect(await adapter.cancelTurn("room-1")).toBe(true)
+        await first
+        release.resolve()
+        await lateFailure.promise
+        await nextTurn(adapter)
+
+        expect(loadSession).toHaveBeenCalledTimes(1)
+        expect(newSession).toHaveBeenCalledTimes(1)
+        expect(promptTexts).toHaveLength(1)
+        expectReplayedBefore(promptTexts[0], EARLIER_LINE, "try again")
+      })
     })
 
     it("applies Copilot effort first then model=auto when the returned catalog drops effort", async () => {
