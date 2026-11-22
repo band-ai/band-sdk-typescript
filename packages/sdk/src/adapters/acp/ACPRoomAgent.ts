@@ -428,7 +428,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       generation = live.generation
       client = live.client
 
-      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live, history))
+      sessionId = await this.untilCancelled(turn, this.getOrCreateSession(context.roomId, live, history), live)
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
@@ -553,10 +553,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       // Before any fallible delivery: a DeliveryFailedError from flushChunks
       // is recoverable and would otherwise skip this.
       if (connection) {
-        this.dropUnacceptedSession(context.roomId, generation)
-        if (retiresConnection(error)) {
-          this.retireConnection(connection, generation)
-        }
+        this.discardFailedConnectionState(context.roomId, connection, generation, error)
       }
 
       if (client && sessionId) {
@@ -647,18 +644,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
 
   // A cancel ends the turn's wait, not `operation`: it runs on, so a
   // connection or session it establishes stays for the room's next turn.
-  // `Promise.race` keeps observing `operation`; a late failure is logged and
-  // an unaccepted session is dropped, since the turn it belonged to has
-  // already settled.
-  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>): Promise<T> {
+  // `Promise.race` keeps observing `operation`; a late failure is logged and,
+  // for an operation that ran on `live`, handled as the turn would have
+  // handled it, since that turn has already settled.
+  private async untilCancelled<T>(turn: ActiveTurn, operation: Promise<T>, live?: LiveConnection): Promise<T> {
     const cancelled = turn.cancellation.promise.then((): typeof TURN_CANCELLED => TURN_CANCELLED)
     const winner = await Promise.race([operation, cancelled])
     if (winner === TURN_CANCELLED) {
       void operation.catch((error: unknown) => {
         this.safeWarn("acp_client.cancelled_turn_wait_failed", { roomId: this.roomId, error: asErrorMessage(error) })
-        const live = this.live
         if (live) {
-          this.dropUnacceptedSession(this.roomId, live.generation)
+          this.discardFailedConnectionState(this.roomId, live.connection, live.generation, error)
         }
       })
       throw new AcpTurnCancelledError()
@@ -1157,6 +1153,15 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       setOption: (params) => connection.setSessionConfigOption(params),
       timeoutMs: SESSION_CALL_TIMEOUT_MS,
     })
+  }
+
+  // What a failed turn leaves behind on its connection, whether it failed in
+  // the turn or, once cancelled, in the setup it abandoned.
+  private discardFailedConnectionState(roomId: string, connection: ClientSideConnection, generation: number, error: unknown): void {
+    this.dropUnacceptedSession(roomId, generation)
+    if (retiresConnection(error)) {
+      this.retireConnection(connection, generation)
+    }
   }
 
   // A session no prompt was accepted on may be half-configured, so a failed
