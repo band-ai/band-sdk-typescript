@@ -76,11 +76,13 @@ const CANCELLED_PERMISSION_RESPONSE: RequestPermissionResponse = { outcome: { ou
 // its own bound. Order-of-magnitude match for `OpencodeAdapter`'s own
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
-const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
+// Bounds the session calls made while establishing a session: mode, config
+// and model selection, and closing one that failed.
+const SESSION_CALL_TIMEOUT_MS = 10_000;
 // Bounds `initialize` and `authenticate`, which share that unbounded wait.
 // Cursor's `agent acp` answers neither error nor stderr to an `authenticate`
 // it has no valid credential for: it just never responds. Longer than the
-// config bound because authenticating makes a network round trip.
+// session-call bound because authenticating makes a network round trip.
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const PROCESS_EXITED_ERROR = "The ACP agent process exited";
@@ -1038,13 +1040,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     if (existingSessionId) {
       const restored = await this.tryRestoreSession(live, existingSessionId, cwd, mcpServers)
       if (restored.ok) {
-        // Linked and marked active before the best-effort mode switch below
-        // is awaited: `configureSessionMode` makes a real RPC call, and a
+        // Linked and marked active before configuring awaits a real RPC: a
         // connection drop mid-call clears `activeSessions` (see
-        // `spawnConnection`'s `closed.finally()`) — running this after that
-        // await would let a stale add silently re-admit a session whose
-        // connection just died, and would leave the session unroutable for
-        // the whole duration of the call.
+        // `spawnConnection`'s `closed.finally()`), so a later add would
+        // re-admit a session whose connection just died, and the session
+        // would be unroutable for the whole call.
         this.linkOrAbandon(roomId, existingSessionId, generation, connectionGeneration, client)
         const restoredKey = this.sessionKey(connectionGeneration, existingSessionId)
         this.activeSessions.add(restoredKey)
@@ -1084,7 +1084,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
   }
 
   // Applies the caller's mode, config and model choices to a session the agent
-  // just created or restored; a failure closes the session agent-side.
+  // just created or restored. A failure closes the agent's copy too: with
+  // nothing left to prompt it, it would leak, and claude-agent-acp starts a
+  // CLI process per session.
   private async configureSession(
     live: LiveConnection,
     roomId: string,
@@ -1105,14 +1107,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
   }
 
-  // A session the agent created or restored, whose configuration then failed,
-  // is closed on the agent's side too. Dropping it only here would leave the
-  // agent holding it with nothing to prompt it; claude-agent-acp starts a
-  // Claude Code CLI process per session, so each retry would leak one. Only
-  // for agents that advertise `session/close`, and not when the connection
-  // is being retired anyway: ending the agent process ends its sessions. A
-  // close that fails is logged, never thrown, so the caller still sees the
-  // error that failed the session.
+  // Skipped for agents without `session/close`, and when the failure retires
+  // the connection anyway, since ending the process ends its sessions. A
+  // failed close is logged, never thrown, so the caller sees the original error.
   private async closeFailedSession(live: LiveConnection, sessionId: string, cause: unknown): Promise<void> {
     if (!live.initializeResult.agentCapabilities?.sessionCapabilities?.close || retiresConnection(cause)) {
       return
@@ -1120,8 +1117,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     try {
       await withTimeout(
         live.connection.closeSession({ sessionId }),
-        SET_SESSION_CONFIG_TIMEOUT_MS,
-        `closeSession did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        SESSION_CALL_TIMEOUT_MS,
+        `closeSession did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
       this.safeWarn("acp_client.session_close_failed", { sessionId, error: String(error) })
@@ -1154,7 +1151,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       catalog: advertisedOptions,
       selections,
       setOption: (params) => connection.setSessionConfigOption(params),
-      timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
+      timeoutMs: SESSION_CALL_TIMEOUT_MS,
     })
   }
 
@@ -1221,20 +1218,11 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     modes: SessionModeState | null | undefined,
     connection: ClientSideConnection,
   ): Promise<void> {
-    const required = this.requireSessionMode
-    const fail = (message: string, selectedValue?: string, cause?: unknown): never => {
-      throw new AcpSessionConfigError({
-        provider: this.provider,
-        sessionId,
-        optionId: "mode",
-        message,
-        ...(selectedValue === undefined ? {} : { selectedValue }),
-        ...(cause === undefined ? {} : { cause }),
-      })
-    }
-    if (!this.resolveSessionMode && !required) {
+    const resolve = this.resolveSessionMode
+    if (!resolve) {
       return
     }
+    const required = this.requireSessionMode
 
     // Defensive, not just typed: `modes` comes straight off an unvalidated
     // JSON-RPC response from the spawned agent process (the ACP client does
@@ -1243,25 +1231,22 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     // type guaranteeing an `Array<SessionMode>`.
     const availableModes = Array.isArray(modes?.availableModes) ? modes.availableModes : []
     if (!modes || availableModes.length === 0) {
-      if (required) fail("The agent offers no session modes, and a mode is required.")
+      if (required) throw this.modeError(sessionId, "The agent offers no session modes, and a mode is required.")
       return
     }
 
-    const resolve = this.resolveSessionMode
-    const selectedModeId = resolve === undefined
-      ? undefined
-      : await this.resolveManualSelection(
-        "resolveSessionMode",
-        (signal) => resolve({
-          roomId,
-          sessionId,
-          currentModeId: modes.currentModeId,
-          modes: availableModes,
-        }, signal),
-        connection.signal,
-      )
+    const selectedModeId = await this.resolveManualSelection(
+      "resolveSessionMode",
+      (signal) => resolve({
+        roomId,
+        sessionId,
+        currentModeId: modes.currentModeId,
+        modes: availableModes,
+      }, signal),
+      connection.signal,
+    )
     if (!selectedModeId) {
-      if (required) fail("No session mode was selected, and a mode is required.")
+      if (required) throw this.modeError(sessionId, "No session mode was selected, and a mode is required.")
       return
     }
     if (selectedModeId === modes.currentModeId) {
@@ -1269,7 +1254,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     }
 
     if (!availableModes.some((mode) => mode?.id === selectedModeId)) {
-      if (required) fail(`Session mode "${selectedModeId}" is not offered by the agent.`, selectedModeId)
+      if (required) throw this.modeError(sessionId, `Session mode "${selectedModeId}" is not offered by the agent.`, selectedModeId)
       // Warned, not silent: otherwise a caller-selected mode id silently
       // failing to apply has no signal at all.
       this.safeWarn("resolveSessionMode selected a mode id this session does not advertise", {
@@ -1283,17 +1268,28 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     try {
       await withTimeout(
         connection.setSessionMode({ sessionId, modeId: selectedModeId }),
-        SET_SESSION_CONFIG_TIMEOUT_MS,
-        `setSessionMode did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        SESSION_CALL_TIMEOUT_MS,
+        `setSessionMode did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
-      if (required) fail(`The agent did not switch to session mode "${selectedModeId}".`, selectedModeId, error)
+      if (required) throw this.modeError(sessionId, `The agent did not switch to session mode "${selectedModeId}".`, selectedModeId, error)
       this.safeWarn("failed to switch session into the selected mode", {
         sessionId,
         selectedModeId,
         error: String(error),
       })
     }
+  }
+
+  private modeError(sessionId: string, message: string, selectedValue?: string, cause?: unknown): AcpSessionConfigError {
+    return new AcpSessionConfigError({
+      provider: this.provider,
+      sessionId,
+      optionId: "mode",
+      message,
+      ...(selectedValue === undefined ? {} : { selectedValue }),
+      ...(cause === undefined ? {} : { cause }),
+    })
   }
 
   // Best-effort, same contract as `configureSessionMode`: never throws, so a
@@ -1352,8 +1348,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     try {
       await withTimeout(
         connection.setSessionConfigOption({ sessionId, configId: modelOption.id, value: selectedModelId }),
-        SET_SESSION_CONFIG_TIMEOUT_MS,
-        `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        SESSION_CALL_TIMEOUT_MS,
+        `setSessionConfigOption did not respond within ${SESSION_CALL_TIMEOUT_MS}ms`,
       )
     } catch (error) {
       this.safeWarn("failed to switch session into the selected model", {
@@ -1984,6 +1980,10 @@ export function validateACPClientOptions(options: ACPClientAdapterOptions): stri
   // of them is never rejected over it.
   if (options.resolvePermission || options.resolveSessionMode || options.resolveSessionModel || options.resolveSessionConfig) {
     assertPermissionTimeoutMs(options.permissionTimeoutMs)
+  }
+
+  if (options.requireSessionMode && !options.resolveSessionMode) {
+    throw new ValidationError("ACPClientAdapter requireSessionMode needs resolveSessionMode to select the mode")
   }
 
   assertTurnTimeoutMs(options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS)
