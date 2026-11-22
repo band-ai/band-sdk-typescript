@@ -1048,16 +1048,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         this.linkOrAbandon(roomId, existingSessionId, generation, connectionGeneration, client)
         const restoredKey = this.sessionKey(connectionGeneration, existingSessionId)
         this.activeSessions.add(restoredKey)
-        try {
-          await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
-          await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection)
-          if (!this.resolveSessionConfig) {
-            await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
-          }
-        } catch (error) {
-          await this.closeFailedSession(live, existingSessionId, error)
-          throw error
-        }
+        await this.configureSession(live, roomId, existingSessionId, restored.modes, restored.configOptions)
         // Only once configured: a failure above must drop this session, not keep it.
         this.bootstrappedSessions.add(restoredKey)
         return existingSessionId
@@ -1088,17 +1079,30 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       this.roomsOwedReplay.add(roomId)
       this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId: existingSessionId })
     }
+    await this.configureSession(live, roomId, created.sessionId, created.modes, created.configOptions)
+    return created.sessionId
+  }
+
+  // Applies the caller's mode, config and model choices to a session the agent
+  // just created or restored; a failure closes the session agent-side.
+  private async configureSession(
+    live: LiveConnection,
+    roomId: string,
+    sessionId: string,
+    modes: SessionModeState | null | undefined,
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+  ): Promise<void> {
+    const { connection } = live
     try {
-      await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
-      await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection)
+      await this.configureSessionMode(roomId, sessionId, modes, connection)
+      await this.configureSessionConfig(roomId, sessionId, configOptions, connection)
       if (!this.resolveSessionConfig) {
-        await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
+        await this.configureSessionModel(roomId, sessionId, configOptions, connection)
       }
     } catch (error) {
-      await this.closeFailedSession(live, created.sessionId, error)
+      await this.closeFailedSession(live, sessionId, error)
       throw error
     }
-    return created.sessionId
   }
 
   // A session the agent created or restored, whose configuration then failed,
