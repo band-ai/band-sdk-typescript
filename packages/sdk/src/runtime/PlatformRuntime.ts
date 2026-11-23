@@ -1075,9 +1075,10 @@ export class PlatformRuntime implements AsyncDisposable {
     // Release is chained into the hold promise (before the room wakes) and is not
     // awaited here: stop()/idle do not wait on publicationStop.
     //
-    // Nested control turns run during a hold and install their own stop. Release
-    // is identity-checked and restores the prior signal so a nested finally
-    // cannot wipe an outer retained abort (or leave the nested live signal).
+    // Nested control turns push their own stop onto the context stack. Release
+    // always removes this turn's signal (and its retain), even when it is not
+    // the top — so an outer hold ending during a nested cut-short cannot leave
+    // an orphaned aborted stop after the nested release.
     let retainPublicationStop = false;
     let publicationHold: Promise<void> = Promise.resolve();
     let publicationClearGeneration = 0;
@@ -1129,12 +1130,9 @@ export class PlatformRuntime implements AsyncDisposable {
           message.settles ? messageId : undefined,
         );
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
-        const priorPublicationStop = context.getPublicationStop();
         context.setPublicationStop(stopped);
         releasePublicationStop = () => {
-          if (context.getPublicationStop() === stopped) {
-            context.setPublicationStop(priorPublicationStop);
-          }
+          context.releasePublicationStop(stopped);
         };
         const turn = adapter.onEvent({
           ...input,

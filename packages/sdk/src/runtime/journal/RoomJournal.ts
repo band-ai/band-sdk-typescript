@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm, type FileHandle } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveLogger, type Logger } from "../../core/logger";
@@ -65,6 +65,35 @@ export async function rewriteFile(file: string, text: string): Promise<void> {
     const handle = await open(copy, "w");
     try {
       await handle.writeFile(text, "utf8");
+      await handle.datasync();
+    } finally {
+      await handle.close();
+    }
+    await rename(copy, file);
+  } catch (error) {
+    await rm(copy, { force: true });
+    throw error;
+  }
+  await syncDirectory(path.dirname(file));
+}
+
+/**
+ * Lands `reply.refused` after the FileHandle compacting rewrite failed: path-based
+ * `writeFile` plus datasync, so a never-posted refusal is not left as recoverable
+ * pending when only the handle write path is broken. The caller still surfaces the
+ * primary failure and keeps the writer poisoned.
+ */
+async function landRefuseDurable(
+  file: string,
+  whole: string[],
+  record: { t: "reply.refused"; messageId: string; publicationId: string; at: number },
+): Promise<void> {
+  const text = `${whole.join("\n")}\n${toLine(record)}`;
+  const copy = `${file}.${randomUUID()}.compacting`;
+  try {
+    await writeFile(copy, text, "utf8");
+    const handle = await open(copy, "r+");
+    try {
       await handle.datasync();
     } finally {
       await handle.close();
@@ -346,30 +375,43 @@ export class RoomJournal {
    * Records that a reply is about to begin posting; the post does not run until
    * this is durable. An inbound that already has a pending or unknown
    * publication is refused: a replacement must not POST beside a reply Band
-   * may already hold. The pending slot is reserved in memory before the
-   * durable write so a concurrent beginReply for the same inbound sees it.
+   * may already hold. The fence check, in-memory reserve, and durable append
+   * run as one serialized write so a concurrent beginReply for the same
+   * inbound waits for this attempt's durable outcome — it never fences on a
+   * reservation that then rolls back with a failed append.
    */
-  public async beginReply(messageId: string): Promise<string> {
-    this.assertAdmitting();
-    const inbound = this.touch(messageId);
-    for (const publication of inbound.publications.values()) {
-      if (publication.outcome === "pending" || publication.outcome === "unknown") {
-        throw new JournalPublicationError(
-          "This inbound already has a reply whose delivery is unresolved; a replacement is refused rather than posted beside it",
-          "fenced",
-        );
+  public beginReply(messageId: string): Promise<string> {
+    return this.writes.run(async () => {
+      this.assertAdmitting();
+      const inbound = this.touch(messageId);
+      for (const publication of inbound.publications.values()) {
+        if (publication.outcome === "pending" || publication.outcome === "unknown") {
+          throw new JournalPublicationError(
+            "This inbound already has a reply whose delivery is unresolved; a replacement is refused rather than posted beside it",
+            "fenced",
+          );
+        }
       }
-    }
-    const publicationId = randomUUID();
-    const at = this.now();
-    inbound.publications.set(publicationId, { outcome: "pending", reported: false, at });
-    try {
-      await this.append({ t: "reply.intent", messageId, publicationId, at });
-    } catch (error) {
-      inbound.publications.delete(publicationId);
-      throw error;
-    }
-    return publicationId;
+      const publicationId = randomUUID();
+      const at = this.now();
+      inbound.publications.set(publicationId, { outcome: "pending", reported: false, at });
+      let bytesWritten = false;
+      try {
+        await this.appendUnlocked(
+          { t: "reply.intent", messageId, publicationId, at },
+          { onBytesWritten: () => { bytesWritten = true; } },
+        );
+      } catch (error) {
+        inbound.publications.delete(publicationId);
+        // Intent never stood on disk: this append's poison is not an owed
+        // settlement debt — clear it so a peer queued behind us can retry.
+        // When appendFile succeeded and only sync failed, keep poison: the
+        // intent may already be in the file without a memory reservation.
+        if (!bytesWritten) this.poisoned = false;
+        throw error;
+      }
+      return publicationId;
+    });
   }
 
   /** Records that Band acknowledged the reply; the reply is settled and the inbound answered. */
@@ -393,7 +435,10 @@ export class RoomJournal {
    * never posted: the reply is definitely not in the room. Refusal must stand
    * durably — if append fails (or the writer is already poisoned from that
    * failure), the valid prefix is rewritten with `reply.refused` so a reopen
-   * does not announce pending/unrecorded for a never-posted reply.
+   * does not announce pending/unrecorded for a never-posted reply. A successful
+   * refuse rewrite clears poison only when *this* refuse append caused it;
+   * an owed settlement or unknown write another publication lost stays poisoned
+   * until the handle reopens.
    */
   public async markRefused(messageId: string, publicationId: string): Promise<void> {
     if (this.closed) {
@@ -401,6 +446,8 @@ export class RoomJournal {
     }
     const at = this.now();
     const record = { t: "reply.refused" as const, messageId, publicationId, at };
+    // Only heal poison this refuse append itself caused; foreign owed debt stays.
+    let clearPoisonOnRewrite = false;
     if (!this.poisoned) {
       try {
         await this.append(record);
@@ -409,9 +456,17 @@ export class RoomJournal {
       } catch {
         // Append may have torn the file and poisoned the writer; refuse must
         // still land so recovery does not treat a never-posted intent as unknown.
+        clearPoisonOnRewrite = true;
       }
     }
-    await this.rewriteRefused(record);
+    try {
+      await this.rewriteRefused(record, { clearPoisonOnRewrite });
+    } catch (error) {
+      // Emergency land may have written refuse before the throw; sync memory
+      // either way so this handle does not keep a rolled-forward pending slot.
+      this.applyRefused(messageId, publicationId, at);
+      throw error;
+    }
     this.applyRefused(messageId, publicationId, at);
   }
 
@@ -485,18 +540,24 @@ export class RoomJournal {
    * Rewrites the file's valid prefix plus a durable `reply.refused`, then
    * rebinds the append handle. Used when an append failed (or left the writer
    * poisoned) so a never-posted refusal cannot reopen as pending.
+   * `clearPoisonOnRewrite` is set only when this refuse's own append caused the
+   * poison; an unrelated owed write stays non-admitting until reopen.
    */
-  private rewriteRefused(record: { t: "reply.refused"; messageId: string; publicationId: string; at: number }): Promise<void> {
+  private rewriteRefused(
+    record: { t: "reply.refused"; messageId: string; publicationId: string; at: number },
+    { clearPoisonOnRewrite }: { clearPoisonOnRewrite: boolean },
+  ): Promise<void> {
     return this.writes.run(async () => {
       if (this.closed) {
         throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
       }
+      let whole: string[] | undefined;
       try {
         const text = await readFile(this.file, "utf8");
         const complete = text.endsWith("\n");
         const lines = text.split("\n");
         if (!complete) lines.pop();
-        const whole = (complete ? lines.slice(0, -1) : lines).filter((line) => line !== "");
+        whole = (complete ? lines.slice(0, -1) : lines).filter((line) => line !== "");
         const last = whole[whole.length - 1];
         if (last !== undefined) {
           try {
@@ -506,7 +567,7 @@ export class RoomJournal {
               // already stands; rebind onto the rewritten inode path.
               await this.handle.close().catch(() => undefined);
               this.handle = await open(this.file, "a");
-              this.poisoned = false;
+              if (clearPoisonOnRewrite) this.poisoned = false;
               this.lineCut = false;
               return;
             }
@@ -517,35 +578,60 @@ export class RoomJournal {
         await rewriteFile(this.file, `${whole.join("\n")}\n${toLine(record)}`);
         await this.handle.close().catch(() => undefined);
         this.handle = await open(this.file, "a");
-        this.poisoned = false;
+        if (clearPoisonOnRewrite) this.poisoned = false;
         this.lineCut = false;
       } catch (error) {
+        // Primary compacting rewrite failed: stay poisoned and surface the
+        // failure. Still try to land refuse via path-based write so a
+        // never-posted intent is not left as recoverable pending on reopen.
         this.poisoned = true;
+        if (whole !== undefined) {
+          try {
+            await landRefuseDurable(this.file, whole, record);
+            await this.handle.close().catch(() => undefined);
+            this.handle = await open(this.file, "a");
+            this.lineCut = false;
+          } catch {
+            // Emergency land failed too; reopen may still see the intent.
+          }
+        }
         throw journalFileFailure(error, this.file);
       }
     });
   }
 
   private append(record: Record<string, unknown>): Promise<void> {
-    return this.writes.run(async () => {
-      // Re-check inside the queue: a caller may have passed assertAdmitting
-      // before a concurrent write poisoned the handle, and must not append
-      // beneath a torn or half-recorded line.
-      this.assertAdmitting();
-      const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
-      try {
-        this.lineCut = true;
-        await this.handle.appendFile(line, "utf8");
-        await this.handle.datasync();
-        this.lineCut = false;
-      } catch (error) {
-        // The write or its sync failed: the file may hold a torn record, and the
-        // writer that lost the write it owes stops admitting. No later append may
-        // stand beneath an uncertain write; the writer is fresh again on reopen.
-        this.poisoned = true;
-        throw journalFileFailure(error, this.file);
-      }
-    });
+    return this.writes.run(() => this.appendUnlocked(record));
+  }
+
+  /**
+   * Appends one record while already holding `writes`. Callers that nest under
+   * the serializer (beginReply) must use this; `append` would deadlock.
+   * `onBytesWritten` runs after `appendFile` succeeds and before `datasync`, so
+   * beginReply can tell a never-written failure from a sync-only one.
+   */
+  private async appendUnlocked(
+    record: Record<string, unknown>,
+    options?: { onBytesWritten?: () => void },
+  ): Promise<void> {
+    // Re-check inside the queue: a caller may have passed assertAdmitting
+    // before a concurrent write poisoned the handle, and must not append
+    // beneath a torn or half-recorded line.
+    this.assertAdmitting();
+    const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
+    try {
+      this.lineCut = true;
+      await this.handle.appendFile(line, "utf8");
+      options?.onBytesWritten?.();
+      await this.handle.datasync();
+      this.lineCut = false;
+    } catch (error) {
+      // The write or its sync failed: the file may hold a torn record, and the
+      // writer that lost the write it owes stops admitting. No later append may
+      // stand beneath an uncertain write; the writer is fresh again on reopen.
+      this.poisoned = true;
+      throw journalFileFailure(error, this.file);
+    }
   }
 
   /** Like `append`, for records whose failure the caller reports rather than throws. */

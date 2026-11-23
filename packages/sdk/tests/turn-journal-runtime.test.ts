@@ -339,13 +339,13 @@ describe("the turn journal across a restart", () => {
     const parked = createDeferred();
     onTestFinished(() => parked.resolve());
     const late = createDeferred<unknown>();
-    const stopSignals: Array<AbortSignal | undefined> = [];
+    let contextRef: ExecutionContext | undefined;
     const setStop = ExecutionContext.prototype.setPublicationStop;
     const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
       this: ExecutionContext,
       signal: AbortSignal | undefined,
     ) {
-      stopSignals.push(signal);
+      contextRef = this;
       return setStop.call(this, signal);
     });
     onTestFinished(() => spy.mockRestore());
@@ -361,8 +361,8 @@ describe("the turn journal across a restart", () => {
     await events.next((event) => event.type === "turn.stopped");
     // untilStopped has settled (the former clear point): the cut-short hold must
     // still own publicationStop so the late reply sees the abort.
-    expect(stopSignals.at(-1)).toBeInstanceOf(AbortSignal);
-    expect(stopSignals.at(-1)?.aborted).toBe(true);
+    expect(contextRef?.getPublicationStop()).toBeInstanceOf(AbortSignal);
+    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
 
     parked.resolve();
     const error = await late.promise;
@@ -371,7 +371,7 @@ describe("the turn journal across a restart", () => {
     expect(room.messages).toEqual([]);
     expect(await room.outcome(inbound)).toBe("processed");
     await vi.waitFor(() => {
-      expect(stopSignals.some((signal) => signal === undefined)).toBe(true);
+      expect(contextRef?.getPublicationStop()).toBeUndefined();
     });
   });
 
@@ -391,13 +391,13 @@ describe("the turn journal across a restart", () => {
       }
     }
 
-    const stopSignals: Array<AbortSignal | undefined> = [];
+    let contextRef: ExecutionContext | undefined;
     const setStop = ExecutionContext.prototype.setPublicationStop;
     const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
       this: ExecutionContext,
       signal: AbortSignal | undefined,
     ) {
-      stopSignals.push(signal);
+      contextRef = this;
       return setStop.call(this, signal);
     });
     onTestFinished(() => spy.mockRestore());
@@ -436,17 +436,17 @@ describe("the turn journal across a restart", () => {
 
     platform.control("interrupt", ROOM);
     await events.next((event) => event.type === "turn.stopped");
-    const retained = stopSignals.at(-1);
+    const retained = contextRef?.getPublicationStop();
     expect(retained).toBeInstanceOf(AbortSignal);
     expect(retained?.aborted).toBe(true);
 
-    // Nested control runs during the cut-short hold; its finally must restore the
-    // outer aborted stop, not leave undefined or its own live signal.
+    // Nested control runs during the cut-short hold; its release must leave the
+    // outer aborted stop on the stack, not clear it or leave the nested signal.
     const control = await room.say(OWNER, CONTROL);
     await controlDone.promise;
     expect(await room.outcome(control)).toBe("processed");
-    expect(stopSignals.at(-1)).toBe(retained);
-    expect(stopSignals.at(-1)?.aborted).toBe(true);
+    expect(contextRef?.getPublicationStop()).toBe(retained);
+    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
 
     parked.resolve();
     const error = await late.promise;
@@ -454,6 +454,93 @@ describe("the turn journal across a restart", () => {
     expect(String(error)).toContain("cut short");
     expect(room.messages).toEqual([]);
     expect(await room.outcome(inbound)).toBe("processed");
+  });
+
+  it("clears publicationStop when a nested control is also cut short during an outer hold", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const outerParked = createDeferred();
+    const nestedParked = createDeferred();
+    onTestFinished(() => {
+      outerParked.resolve();
+      nestedParked.resolve();
+    });
+    const late = createDeferred<unknown>();
+    const CONTROL = "CONTROL: proceed";
+
+    class ControlAwareAdapter extends GenericAdapter {
+      public isControlMessage(message: { content: string }): boolean {
+        return message.content === CONTROL;
+      }
+    }
+
+    let contextRef: ExecutionContext | undefined;
+    const setStop = ExecutionContext.prototype.setPublicationStop;
+    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
+      this: ExecutionContext,
+      signal: AbortSignal | undefined,
+    ) {
+      contextRef = this;
+      return setStop.call(this, signal);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const events = new RecordLog<AgentEvent>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: {
+        journalDir,
+        journalPlatformIdentity: IDENTITY,
+      },
+    });
+    runtime.observe((event) => {
+      events.record(event);
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running") await runtime.stop(KILL);
+    });
+
+    let nestedStarted = false;
+    await runtime.start(
+      new ControlAwareAdapter(async ({ message, tools }) => {
+        if (message.content === CONTROL) {
+          nestedStarted = true;
+          await nestedParked.promise;
+          return;
+        }
+        await outerParked.promise;
+        await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
+      }),
+    );
+
+    await room.say(OWNER, `${MENTION} hello`);
+    await events.next((event) => event.type === "turn.started");
+
+    platform.control("interrupt", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
+
+    void room.say(OWNER, CONTROL);
+    await vi.waitFor(() => expect(nestedStarted).toBe(true));
+    await events.next((event) => event.type === "turn.started");
+
+    platform.control("interrupt", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+
+    // Outer settles first while the nested retain is still live: identity-only
+    // restore would leave the outer aborted signal installed after nested ends.
+    outerParked.resolve();
+    await late.promise;
+
+    nestedParked.resolve();
+    await vi.waitFor(() => {
+      const stop = contextRef?.getPublicationStop();
+      expect(stop === undefined || stop.aborted === false).toBe(true);
+    });
   });
 });
 

@@ -147,8 +147,15 @@ function coalesceSendMessage(
 
 /**
  * Same logical send → same key: empty mentions (omitted / null / []) collapse;
- * mention tokens are shape-normalized and stable-sorted so order or string vs
- * `{id,handle}` cannot miss a standing delivery_unknown.
+ * mention tokens are shape-normalized, deduped, and stable-sorted so order,
+ * duplicates (`['@a','@a']` vs `['@a']`), or string vs `{handle}` cannot miss a
+ * standing delivery_unknown.
+ *
+ * Token form matches AgentTools' mention normalization when both id and a
+ * handle-like field are on one object (prefer handle). This layer has no room
+ * roster, so an id-only `{id}` and a bare `@handle` string stay distinct keys
+ * even when they name the same peer — resolving them would need the same
+ * participant map AgentTools uses at send time.
  */
 function coalesceKey(content: unknown, mentions: unknown): string {
   return JSON.stringify([content, coalesceMentionTokens(mentions)]);
@@ -156,13 +163,16 @@ function coalesceKey(content: unknown, mentions: unknown): string {
 
 function coalesceMentionTokens(mentions: unknown): string[] {
   if (!Array.isArray(mentions) || mentions.length === 0) return [];
-  return mentions.map(coalesceMentionToken).sort();
+  // Band refuses duplicate_mentions (422): duplicates are not a distinct send.
+  return [...new Set(mentions.map(coalesceMentionToken))].sort();
 }
 
 function coalesceMentionToken(mention: unknown): string {
   if (typeof mention === "string") return normalizeMentionHandle(mention);
   if (mention && typeof mention === "object" && !Array.isArray(mention)) {
     const ref = mention as Record<string, unknown>;
+    // Same preference as AgentTools.normalizeMentionInput / roster resolve:
+    // a handle-like field wins over id when both are present.
     for (const field of ["handle", "username", "name"] as const) {
       const value = ref[field];
       if (typeof value === "string" && value.length > 0) return normalizeMentionHandle(value);

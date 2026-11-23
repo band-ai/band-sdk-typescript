@@ -112,13 +112,13 @@ export class PublicationEngine {
       const journal = await this.requireJournal("reply");
       const publicationId = await journal.beginReply(messageId);
       // A turn cut short between the durable intent and the post: the reply is
-      // refused, not delivered — the platform never saw it.
+      // refused, not delivered — the platform never saw it. Refusal must land
+      // or fail closed visibly; never swallow a markRefused rejection and leave
+      // a never-posted intent as recoverable pending on reopen.
       if (stopped) {
         const cut = cutShort(stopped);
         if (cut) {
-          await journal.markRefused(messageId, publicationId).catch((error: unknown) => {
-            this.logger.warn("the interrupted reply's refusal could not be recorded", { roomId: journal.roomId, error });
-          });
+          await journal.markRefused(messageId, publicationId);
           throw cut;
         }
       }
@@ -129,9 +129,7 @@ export class PublicationEngine {
         if (classifyFailedAttempt(error) === "uncertain") {
           return await this.settleAsUnknown(journal, messageId, publicationId, error, { poisonWriter: false });
         }
-        await journal.markRefused(messageId, publicationId).catch((error: unknown) => {
-          this.logger.warn("the refused reply's record could not be written", { roomId: journal.roomId, error });
-        });
+        await journal.markRefused(messageId, publicationId);
         throw error;
       }
       // The transport said yes; the yes must stand on disk before the result

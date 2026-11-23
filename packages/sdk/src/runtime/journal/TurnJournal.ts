@@ -299,7 +299,12 @@ class Generation implements JournalGeneration {
     const room = this.rooms.get(roomId);
     if (!room) {
       // Force already closed (or never opened): no close is owed to a later endHold.
-      if (force) this.deferredCloses.delete(roomId);
+      if (force) {
+        this.deferredCloses.delete(roomId);
+        // Admit-time announce tracks before rooms.set; drain that inflight so
+        // force does not return while a tracked announce is still pending.
+        await this.drainRoomInflight(roomId);
+      }
       // A held room's close is owed, but a turn still uses its handle; it runs
       // when the last hold ends. An already closed room stands behind its close.
       return (this.deferredCloses.has(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
@@ -322,17 +327,26 @@ class Generation implements JournalGeneration {
     // outcome is never lost to the close racing the post. The room's set lives for
     // the generation: drain it in place rather than snapshot-and-delete, so a
     // concurrent track still lands in the set this close waits on.
-    const held = this.roomInflightSet(roomId);
     const closing = (async () => {
-      while (held.size > 0) {
-        await Promise.allSettled([...held]);
-      }
+      await this.drainRoomInflight(roomId);
       await closeRoom(room);
     })().finally(() => {
       if (this.releasing.get(roomId) === closing) this.releasing.delete(roomId);
     });
     this.releasing.set(roomId, closing);
     await closing;
+  }
+
+  /**
+   * Waits for every promise tracked against `roomId` until the set is empty.
+   * Used by close and by force-release before `rooms.set` (admit-time announce).
+   */
+  private async drainRoomInflight(roomId: string): Promise<void> {
+    const held = this.roomInflight.get(roomId);
+    if (!held) return;
+    while (held.size > 0) {
+      await Promise.allSettled([...held]);
+    }
   }
 
   public async drain(): Promise<void> {

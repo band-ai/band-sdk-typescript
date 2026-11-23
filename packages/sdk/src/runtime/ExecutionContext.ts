@@ -69,8 +69,13 @@ export class ExecutionContext {
   private workingReporter?: WorkingStateReporter;
   private readonly publication: PublicationEngine | undefined;
   private readonly sessionConfig: ResolvedSessionConfig;
-  /** The room's current turn, if any: its replies refuse to post once it is cut short. */
-  private publicationStopSignal: AbortSignal | undefined;
+  /**
+   * Installed publication-stop signals, outer to inner. Nested control turns
+   * push; {@link releasePublicationStop} removes that turn's signal even when
+   * it is not the top so an outer cut-short hold ending during a nested retain
+   * cannot leave an orphaned aborted stop after the nested release.
+   */
+  private readonly publicationStopStack: AbortSignal[] = [];
 
   private _state: ExecutionState = "starting";
   private readonly retryTrackerInstance: RetryTracker;
@@ -99,7 +104,7 @@ export class ExecutionContext {
       logger: this.logger,
       publication: options.publication,
       inboundMessageId: options.inboundMessageId,
-      publicationStop: () => this.publicationStopSignal,
+      publicationStop: () => this.getPublicationStop(),
     });
     this.adapterTools = this.tools.getAdapterTools();
   }
@@ -123,14 +128,34 @@ export class ExecutionContext {
     this._state = state;
   }
 
-  /** The turn the room is running, if any: its replies refuse to post once it is cut short. */
+  /**
+   * Installs this turn's publication-stop signal (pushed for nesting), or
+   * clears every installed stop when `signal` is undefined.
+   */
   public setPublicationStop(signal: AbortSignal | undefined): void {
-    this.publicationStopSignal = signal;
+    if (signal === undefined) {
+      this.publicationStopStack.length = 0;
+      return;
+    }
+    this.publicationStopStack.push(signal);
   }
 
-  /** The stop currently installed for publication refusal, if any. */
+  /** The innermost stop currently installed for publication refusal, if any. */
   public getPublicationStop(): AbortSignal | undefined {
-    return this.publicationStopSignal;
+    return this.publicationStopStack.at(-1);
+  }
+
+  /**
+   * Ends this turn's ownership of `signal`: removes it from the stack even when
+   * a nested turn currently owns the top. The active stop becomes the new top
+   * (a still-living outer hold), or undefined. Called from finally when the
+   * turn is not held, or from the hold completion when it is.
+   */
+  public releasePublicationStop(signal: AbortSignal): void {
+    const idx = this.publicationStopStack.lastIndexOf(signal);
+    if (idx !== -1) {
+      this.publicationStopStack.splice(idx, 1);
+    }
   }
 
   public getRetryTracker(): RetryTracker {

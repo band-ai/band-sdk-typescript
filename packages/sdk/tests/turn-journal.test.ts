@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -367,6 +367,111 @@ describe("publications", () => {
     const reopened = await second.room(ROOM);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
+  });
+
+  it("keeps poison from A's failed settle when B's refuse rewrite lands", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const pubA = await room.beginReply("msg-A");
+    const pubB = await room.beginReply("msg-B");
+
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.settled")) return Promise.reject(diskFull());
+      if (line.includes("reply.refused")) return Promise.reject(diskFull());
+      return original.apply(self, args);
+    });
+
+    await expect(room.settleReply("msg-A", pubA, "receipt-A")).rejects.toBeTruthy();
+    expect(room.accepting).toBe(false);
+
+    await room.markRefused("msg-B", pubB);
+    // B's refuse landed via rewrite; A's owed settlement debt must keep the writer closed.
+    expect(room.accepting).toBe(false);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.intent", "reply.refused"]);
+    await expect(room.beginReply("msg-C")).rejects.toMatchObject({ kind: "poisoned" });
+  });
+
+  it("surfaces cut-short markRefused rewrite failure instead of leaving only a cut error and reopen pending", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      roomId: ROOM,
+      generation,
+      logger: new NoopLogger(),
+    });
+    const controller = new AbortController();
+
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.intent")) {
+        const result = await original.apply(self, args);
+        controller.abort("interrupt");
+        return result;
+      }
+      if (line.includes("reply.refused")) return Promise.reject(diskFull());
+      return original.apply(self, args);
+    });
+
+    // Fail FileHandle.writeFile used by rewriteFile's compacting copy.
+    const probe = await open(path.join(dir, "probe-write"), "w");
+    const prototype = Object.getPrototypeOf(probe) as { writeFile: (...args: unknown[]) => Promise<void> };
+    await probe.close();
+    const writeSpy = vi.spyOn(prototype, "writeFile").mockImplementation(() => Promise.reject(diskFull()));
+    onTestFinished(() => writeSpy.mockRestore());
+
+    const error: unknown = await engine
+      .publishReply("msg-cut", async () => ({ success: true, id: "must-not-post" }), controller.signal)
+      .catch((thrown: unknown) => thrown);
+
+    expect(room.accepting).toBe(false);
+    // Refuse I/O failure must surface — not only the cut-short error.
+    expect(error).toBeInstanceOf(JournalFileError);
+    expect(String(error).includes("cut short")).toBe(false);
+
+    await generation.close();
+    const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    onTestFinished(() => second.close());
+    const reopened = await second.room(ROOM);
+    // Emergency land (or durable refuse) leaves nothing recoverable as pending.
+    expect(await reopened.recoverUnresolved()).toEqual([]);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
+  });
+
+  it("lets a peer beginReply proceed after a rolled-back intent append instead of fencing on memory", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+
+    let intentCount = 0;
+    const entered = createDeferred();
+    const releaseFail = createDeferred();
+    onTestFinished(() => releaseFail.resolve());
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.intent")) {
+        intentCount += 1;
+        if (intentCount === 1) {
+          entered.resolve();
+          await releaseFail.promise;
+          throw diskFull();
+        }
+      }
+      return original.apply(self, args);
+    });
+
+    const beginA = room.beginReply("msg-1");
+    await entered.promise;
+    // Peer queues behind A's serialized begin; it must not sync-fence on the
+    // in-flight reservation that rolls back when append never wrote bytes.
+    const beginB = room.beginReply("msg-1");
+    releaseFail.resolve();
+    await expect(beginA).rejects.toBeTruthy();
+    await expect(beginB).resolves.toEqual(expect.any(String));
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
   });
 
   it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
@@ -821,6 +926,36 @@ describe("ownership and generations", () => {
     expect(room.accepting).toBe(true);
     await room.turnDone("after-open-race");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+  });
+
+  it("awaits tracked announce inflight on force release before rooms.set", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    // Open then release so the room file exists but rooms has no entry — the
+    // admit-time announce window trackInflight covers before rooms.set.
+    await generation.room(ROOM);
+    await generation.release(ROOM);
+
+    let finishTracked!: () => void;
+    const tracked = new Promise<void>((resolve) => {
+      finishTracked = resolve;
+    });
+    let trackedDone = false;
+    void tracked.then(() => {
+      trackedDone = true;
+    });
+    generation.trackInflight(tracked, ROOM);
+
+    const releaseStatus = await Promise.race([
+      generation.release(ROOM, true).then(() => ({ done: true as const, trackedDone })),
+      new Promise<{ done: false; trackedDone: boolean }>((resolve) => {
+        setTimeout(() => resolve({ done: false, trackedDone }), 30);
+      }),
+    ]);
+    expect(releaseStatus).toEqual({ done: false, trackedDone: false });
+    finishTracked();
+    await generation.release(ROOM, true);
+    expect(trackedDone).toBe(true);
   });
 });
 
