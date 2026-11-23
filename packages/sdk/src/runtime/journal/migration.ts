@@ -356,9 +356,10 @@ async function coalescedStaging(
     if (line !== undefined) surplusLines.push(line);
   };
   for (const record of primaryRecords) admit(record, undefined);
-  // The copies in the order the journal directory lists them: the staging
-  // must be the same whatever run computes it.
-  for (const file of legacy.filter((candidate) => remnantPrimaryOf(candidate) === primary)) {
+  // Remnant copies sorted by name: directory listing order is not stable
+  // across runs, and surplus line order must not flip stagingSha256.
+  const remnants = legacy.filter((candidate) => remnantPrimaryOf(candidate) === primary).sort();
+  for (const file of remnants) {
     const copyPath = path.join(legacyDir, file);
     const copyText = await readFile(copyPath, "utf8").catch((error: unknown) => {
       if (hasErrorCode(error, "ENOENT")) return null;
@@ -662,11 +663,15 @@ function importedFactsOf(stagingFile: string, records: LegacyRecord[]): Imported
  * migration's missing destination is refused — its authority is gone, and
  * nothing here may guess it back.
  *
- * When `restageIfInvalid` is set (a prepared binding **extension** — e.g. the
- * operator added a surplus remnant after an earlier prepare), a destination
- * that no longer matches the amended import is rewritten from the coalesced
- * sources instead of refusing: the earlier staging could not have held
- * settlements the new attestation just admitted.
+ * When `restageIfInvalid` is set (resuming or amending an already-prepared
+ * migration), a destination that no longer matches the prepared import is
+ * rewritten from the coalesced sources instead of refusing: that covers an
+ * amend that added a surplus remnant, and a crash after the amended manifest
+ * was durable but before restage finished (resume hits sameBindings with a
+ * journal-only destination). First prepare still refuses a pre-existing
+ * destination that fails validate. Committed destinations never restage.
+ * A destination that still matches is kept, so settlements appended since
+ * staging are not restaged away.
  */
 async function stageDestination(
   agentDir: string,
@@ -690,7 +695,7 @@ async function stageDestination(
       return;
     } catch (error) {
       if (!restageIfInvalid || !(error instanceof JournalFileError) || state !== "prepared") throw error;
-      // Amended prepared import no longer matches what stands: restage below.
+      // Prepared resume/amend import no longer matches what stands: restage below.
     }
   }
   if (state === "committed") {
@@ -789,7 +794,8 @@ export async function resumeInterruptedMigration(
   for (const binding of manifest.bindings) {
     if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
     const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
-    await stageDestination(agentDir, legacyDir, agentId, binding, manifest.createdAt, "prepared", logger, explicit);
+    // Prepared resume (including after amend crash): restage destinations that fail validate.
+    await stageDestination(agentDir, legacyDir, agentId, binding, manifest.createdAt, "prepared", logger, explicit, true);
   }
   await commitManifest(agentDir, manifest, now);
 }
@@ -835,7 +841,10 @@ async function checkSource(legacyDir: string, binding: PreparedBinding, logger: 
  * migration may be amended when the next apply's bindings keep every
  * previously attested file unchanged and only add sources (for example a
  * surplus remnant the earlier prepare lacked); a rewrite of an existing
- * attestation, or any change after commit, is still refused.
+ * attestation, or any change after commit, is still refused. A crash after
+ * that amend rewrote the prepared manifest but before restage finished is
+ * resumed under the extended bindings: prepared destinations that fail
+ * validate are restaged so the import is not stuck on the journal-only file.
  */
 export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): Promise<MigrationResult> {
   const now = options.now ?? Date.now;
@@ -903,6 +912,11 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       return { mode: "already-committed", sources: await reportSources(legacyDir, legacy, prepared) };
     }
     let manifest: Manifest;
+    // Restage on validate failure whenever a prepared manifest already stood:
+    // amend in-process, and sameBindings resume after an amend crash (manifest
+    // extended, destination still journal-only). First prepare keeps refusing
+    // a pre-existing destination that fails validate. Committed sameBindings
+    // refuse for divergent bindings is unchanged above.
     let restageIfInvalid = false;
     if (existing !== null) {
       // A prepared manifest from an earlier interrupted run: resume when the
@@ -910,11 +924,11 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       // surplus remnant) without rewriting any attestation already prepared;
       // refuse any other rewrite so an unrelated re-prepare cannot displace a
       // prepared import mid-flight.
+      restageIfInvalid = true;
       if (sameBindings(existing.bindings, prepared)) {
         manifest = existing;
       } else if (bindingsExtendPrepared(existing.bindings, prepared)) {
         manifest = { v: 2, state: "prepared", createdAt: existing.createdAt, bindings: prepared };
-        restageIfInvalid = true;
         await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
         await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
       } else {

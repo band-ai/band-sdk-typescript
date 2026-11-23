@@ -201,6 +201,12 @@ export class TurnJournal {
 class Generation implements JournalGeneration {
   public readonly identity: string;
   private readonly rooms = new Map<string, Promise<RoomJournal>>();
+  /**
+   * In-flight opens not yet published into `rooms`. A pending open must not
+   * stand in `rooms`: a concurrent force release would close it and the
+   * waiter would receive a closed handle.
+   */
+  private readonly opening = new Map<string, Promise<RoomJournal>>();
   /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
   private readonly releasing = new Map<string, Promise<void>>();
   private readonly inflight: Set<Promise<unknown>> = new Set();
@@ -229,17 +235,43 @@ class Generation implements JournalGeneration {
 
   public room(roomId: string): Promise<RoomJournal> {
     if (this.closed) return Promise.reject(new GenerationClosedError());
-    let room = this.rooms.get(roomId);
-    if (!room) {
-      const options = this.roomOptions(roomId);
-      const released = (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
-      room = released.then(() => RoomJournal.open(this.roomFile(roomId), options));
-      this.rooms.set(roomId, room);
-      room.catch(() => {
-        if (this.rooms.get(roomId) === room) this.rooms.delete(roomId);
-      });
+    const existing = this.rooms.get(roomId);
+    if (existing) return existing;
+    let opening = this.opening.get(roomId);
+    if (!opening) {
+      opening = this.openRoom(roomId);
+      this.opening.set(roomId, opening);
+      const clear = (): void => {
+        if (this.opening.get(roomId) === opening) this.opening.delete(roomId);
+      };
+      void opening.then(clear, clear);
     }
-    return room;
+    return opening;
+  }
+
+  /**
+   * Opens `roomId` after any in-flight release, and publishes into `rooms`
+   * only once open succeeds — never the pending promise.
+   */
+  private async openRoom(roomId: string): Promise<RoomJournal> {
+    const options = this.roomOptions(roomId);
+    await (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
+    if (this.closed) throw new GenerationClosedError();
+    const afterRelease = this.rooms.get(roomId);
+    if (afterRelease) return afterRelease;
+
+    const journal = await RoomJournal.open(this.roomFile(roomId), options);
+    if (this.closed) {
+      await journal.close().catch(() => undefined);
+      throw new GenerationClosedError();
+    }
+    const raced = this.rooms.get(roomId);
+    if (raced) {
+      await journal.close().catch(() => undefined);
+      return raced;
+    }
+    this.rooms.set(roomId, Promise.resolve(journal));
+    return journal;
   }
 
   public holdRoom(roomId: string): void {

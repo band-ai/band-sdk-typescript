@@ -128,6 +128,11 @@ export class ExecutionContext {
     this.publicationStopSignal = signal;
   }
 
+  /** The stop currently installed for publication refusal, if any. */
+  public getPublicationStop(): AbortSignal | undefined {
+    return this.publicationStopSignal;
+  }
+
   public getRetryTracker(): RetryTracker {
     return this.retryTrackerInstance;
   }

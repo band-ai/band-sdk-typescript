@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
 import { BandSdkError } from "../src/core/errors";
@@ -658,6 +658,32 @@ describe("ownership and generations", () => {
     expect(reopened.isClosed).toBe(false);
     expect(reopened.accepting).toBe(true);
     await reopened.turnDone("msg-after-end-hold");
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+  });
+
+  it("does not hand a closed handle when force release races an in-flight open (S2)", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const openEntered = createDeferred();
+    const releaseOpen = createDeferred();
+    const originalOpen = RoomJournal.open.bind(RoomJournal);
+    const spy = vi.spyOn(RoomJournal, "open").mockImplementation(async (file, options) => {
+      openEntered.resolve();
+      await releaseOpen.promise;
+      return originalOpen(file, options);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const opening = generation.room(ROOM);
+    await openEntered.promise;
+    // Force while open is still pending: rooms must not hold the pending promise,
+    // or closeRoomNow would close the handle the waiter is about to receive.
+    await generation.release(ROOM, true);
+    releaseOpen.resolve();
+    const room = await opening;
+    expect(room.isClosed).toBe(false);
+    expect(room.accepting).toBe(true);
+    await room.turnDone("after-open-race");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 });

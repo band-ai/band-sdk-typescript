@@ -270,4 +270,46 @@ describe("same-turn band_send_message coalescing after delivery_unknown", () => 
     expect((error as DeliveryUnknownError).publicationId).toBe("pub-cross");
     expect(posts).toBe(1);
   });
+
+  it("resolves executeToolCall after sendMessage DeliveryUnknown instead of throwing the rejection", async () => {
+    let posts = 0;
+    const unknown = new DeliveryUnknownError(serverError(), "pub-reverse");
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              throw unknown;
+            };
+          }
+          if (key === "executeToolCall") {
+            return async () => {
+              posts += 1;
+              return { success: true, id: "should-not-post" };
+            };
+          }
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    await expect(tools.sendMessage("reverse", ["@a"])).rejects.toBe(unknown);
+
+    const viaTool = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "reverse",
+      mentions: ["@a"],
+    });
+    expect(isToolExecutorError(viaTool)).toBe(true);
+    expect(viaTool).toMatchObject({
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-reverse" },
+    });
+
+    const stillUnknown: unknown = await tools.sendMessage("reverse", ["@a"]).catch((thrown: unknown) => thrown);
+    expect(stillUnknown).toBe(unknown);
+    expect(posts).toBe(1);
+  });
 });

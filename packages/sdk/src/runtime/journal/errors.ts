@@ -11,7 +11,7 @@ export class JournalFileError extends BandSdkError {
     public readonly file: string,
     cause?: unknown,
   ) {
-    super(message, cause !== undefined ? { cause } : undefined);
+    super(message, cause);
     this.name = "JournalFileError";
   }
 }

@@ -374,6 +374,87 @@ describe("the turn journal across a restart", () => {
       expect(stopSignals.some((signal) => signal === undefined)).toBe(true);
     });
   });
+
+  it("keeps an outer cut-short publicationStop when a nested control turn ends", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const parked = createDeferred();
+    onTestFinished(() => parked.resolve());
+    const late = createDeferred<unknown>();
+    const controlDone = createDeferred();
+    const CONTROL = "CONTROL: proceed";
+
+    class ControlAwareAdapter extends GenericAdapter {
+      public isControlMessage(message: { content: string }): boolean {
+        return message.content === CONTROL;
+      }
+    }
+
+    const stopSignals: Array<AbortSignal | undefined> = [];
+    const setStop = ExecutionContext.prototype.setPublicationStop;
+    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
+      this: ExecutionContext,
+      signal: AbortSignal | undefined,
+    ) {
+      stopSignals.push(signal);
+      return setStop.call(this, signal);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const events = new RecordLog<AgentEvent>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: {
+        journalDir,
+        journalPlatformIdentity: IDENTITY,
+      },
+    });
+    runtime.observe((event) => {
+      events.record(event);
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running") await runtime.stop(KILL);
+    });
+    await runtime.start(
+      new ControlAwareAdapter(async ({ message, tools }) => {
+        if (message.content === CONTROL) {
+          await tools.turn.settle();
+          controlDone.resolve();
+          return;
+        }
+        await parked.promise;
+        await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
+      }),
+    );
+
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await events.next((event) => event.type === "turn.started");
+
+    platform.control("interrupt", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+    const retained = stopSignals.at(-1);
+    expect(retained).toBeInstanceOf(AbortSignal);
+    expect(retained?.aborted).toBe(true);
+
+    // Nested control runs during the cut-short hold; its finally must restore the
+    // outer aborted stop, not leave undefined or its own live signal.
+    const control = await room.say(OWNER, CONTROL);
+    await controlDone.promise;
+    expect(await room.outcome(control)).toBe("processed");
+    expect(stopSignals.at(-1)).toBe(retained);
+    expect(stopSignals.at(-1)?.aborted).toBe(true);
+
+    parked.resolve();
+    const error = await late.promise;
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("cut short");
+    expect(room.messages).toEqual([]);
+    expect(await room.outcome(inbound)).toBe("processed");
+  });
 });
 
 describe("an unresolved publication through a restart", () => {

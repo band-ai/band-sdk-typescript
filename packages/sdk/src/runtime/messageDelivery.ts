@@ -2,7 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import type { MentionInput } from "../contracts/dtos";
-import { isFailedToolOutput, type AdapterToolsProtocol } from "../contracts/protocols";
+import {
+  createToolExecutorError,
+  isFailedToolOutput,
+  type AdapterToolsProtocol,
+} from "../contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
 import {
   DeliveryUnknownError,
@@ -47,9 +51,10 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
  * error or thrown DeliveryUnknownError) keep the key so a same-content
  * retry cannot POST again; a definite refusal still clears.
  *
- * The sendMessage door never resolves a delivery_unknown ToolExecutorError as
- * success: when the standing result came from the tool door, it rejects with
- * DeliveryUnknownError instead.
+ * The map stores the raw first-call promise. Each door adapts at exit so the
+ * other door's contract still holds: send never resolves a delivery_unknown
+ * ToolExecutorError as success (rejects DeliveryUnknownError); tool never
+ * throws a standing DeliveryUnknownError (resolves ToolExecutorError).
  */
 function coalesceSendMessage(
   execute: AdapterToolsProtocol["executeToolCall"],
@@ -78,7 +83,22 @@ function coalesceSendMessage(
   return {
     executeToolCall: (toolName, args) => {
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
-      return admit(args.content, args.mentions ?? null, () => execute(toolName, args));
+      return admit(args.content, args.mentions ?? null, () => execute(toolName, args)).catch(
+        (error: unknown) => {
+          // Send-door delivery_unknown rejects; the tool door must resolve a
+          // ToolExecutorError so model/MCP callers see structured failure data.
+          if (error instanceof DeliveryUnknownError) {
+            return createToolExecutorError({
+              errorType: "ToolExecutionError",
+              toolName: SEND_MESSAGE_TOOL_NAME,
+              message: error.message,
+              legacyMessage: `Error executing ${SEND_MESSAGE_TOOL_NAME}: ${error.message}`,
+              details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
+            });
+          }
+          throw error;
+        },
+      );
     },
     sendMessage: (content, mentions) =>
       admit(content, mentions ?? null, () => sendMessage(content, mentions)).then((result) => {

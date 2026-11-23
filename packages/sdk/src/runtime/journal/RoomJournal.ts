@@ -20,10 +20,10 @@ import {
 
 export type { PublicationOutcome };
 
-/** A journal read or write failure; the file is in its cause. */
-export function journalFileFailure(error: unknown): JournalFileError {
+/** A journal read or write failure; `file` is the path that failed. */
+export function journalFileFailure(error: unknown, file: string): JournalFileError {
   if (error instanceof JournalFileError) return error;
-  return new JournalFileError("Turn journal I/O failed", "io", "", error);
+  return new JournalFileError("Turn journal I/O failed", "io", file, error);
 }
 
 /** Whether `error` is a file system error with `code`. */
@@ -154,6 +154,7 @@ export class RoomJournal {
   private constructor(
     private readonly handle: FileHandle,
     private readonly options: RoomJournalOptions,
+    private readonly file: string,
   ) {
     this.now = options.now ?? Date.now;
     this.logger = resolveLogger(options.logger);
@@ -201,7 +202,7 @@ export class RoomJournal {
           await handle.close();
           throw error;
         }
-        return new RoomJournal(handle, options);
+        return new RoomJournal(handle, options, file);
       }
 
       const lines = text.split("\n");
@@ -245,7 +246,7 @@ export class RoomJournal {
       }
 
       const handle = await open(file, "a");
-      const journal = new RoomJournal(handle, options);
+      const journal = new RoomJournal(handle, options, file);
       journal.inbounds = index;
       // Every publication the file left without an outcome is unresolved: this
       // handle admitted none of them, so each is the leftover of an earlier
@@ -259,7 +260,7 @@ export class RoomJournal {
       }
       return journal;
     } catch (error) {
-      throw journalFileFailure(error);
+      throw journalFileFailure(error, file);
     }
   }
 
@@ -453,7 +454,7 @@ export class RoomJournal {
         // writer that lost the write it owes stops admitting. No later append may
         // stand beneath an uncertain write; the writer is fresh again on reopen.
         this.poisoned = true;
-        throw journalFileFailure(error);
+        throw journalFileFailure(error, this.file);
       }
     });
   }
