@@ -133,6 +133,7 @@ describe("where a room-history page ends", () => {
 
   it.each([
     { name: "no more after a cursor", metadata: { has_more: false, next_cursor: "stale" }, next: null },
+    { name: "cursor without has_more", metadata: { next_cursor: "older" }, next: null },
     { name: "no metadata", metadata: undefined, next: null },
     { name: "more and a cursor", metadata: { has_more: true, next_cursor: "older" }, next: "older" },
   ])("$name", async ({ metadata, next }) => {

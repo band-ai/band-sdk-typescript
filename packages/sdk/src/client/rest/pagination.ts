@@ -317,6 +317,8 @@ export const MAX_ROOM_HISTORY_PAGE = MAX_CURSOR_PAGE;
  * the cursor of the next older page: null once the page reaches the room's
  * first message. Unlike `getRecentMessages`, this is the room's history, not
  * the agent's context, and it pages without a cap.
+ * Throws `ValidationError` when Band reports more without a cursor, since a null
+ * `nextCursor` would then wrongly claim the room's first message was reached.
  */
 export async function readRoomHistoryPage(
   rest: RoomHistoryRestApi,
