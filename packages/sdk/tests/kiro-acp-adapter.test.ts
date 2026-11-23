@@ -97,6 +97,27 @@ describe("KiroACPAdapter", () => {
     await adapter.stop()
   })
 
+  it("sends sessionMeta as _meta on the room's session", async () => {
+    let newSessionParams: Record<string, unknown> | null = null
+    const sessionMeta = { kiro: { agent: "reviewer" } }
+    const adapter = new KiroACPAdapter({
+      enableMcpTools: false,
+      cwd: tmpRoot(),
+      sessionMeta,
+      connectionFactory: async () => mockConnection(async () => ({ stopReason: "end_turn" }), {
+        newSession: async (params) => {
+          newSessionParams = params ?? {}
+          return { sessionId: "kiro-session" }
+        },
+      }),
+    })
+
+    await runAcpTurn(adapter)
+
+    expect(newSessionParams).toMatchObject({ _meta: sessionMeta })
+    await adapter.stop()
+  })
+
   it("reports failures as kiro-acp", async () => {
     const adapter = new KiroACPAdapter({
       cwd: tmpRoot(),
