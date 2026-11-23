@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 
-import { agentJournalDir, legacyAgentDir } from "./TurnJournal";
+import { OWNERSHIP_FILE, agentJournalDir, legacyAgentDir } from "./TurnJournal";
 import { JournalFileError } from "./errors";
 import { JournalOwnership } from "./ownership";
 import { RoomJournal, hasErrorCode, headerLine, rewriteFile } from "./RoomJournal";
@@ -376,32 +376,16 @@ async function coalescedStaging(
       );
     }
     const entries = parseRemnantRecords(file, copyText);
-    const localIntents = new Map<string, number>();
-    let copySurplus = 0;
-    for (const { line, record } of entries) {
-      if (record.t === "reply.intent") {
-        const n = (localIntents.get(record.messageId) ?? 0) + 1;
-        localIntents.set(record.messageId, n);
-        if (n > (intentCounts.get(record.messageId) ?? 0)) {
-          admit(record, line);
-          copySurplus++;
-        }
-        continue;
-      }
-      if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) {
-        admit(record, line);
-        copySurplus++;
-      }
-    }
-    if (copySurplus > 0 && !explicitSources.has(file)) {
+    const surplus = remnantSurplusRecords(intentCounts, doneInbounds, entries.map((entry) => entry.record));
+    if (surplus.length > 0 && !explicitSources.has(file)) {
       // The copy stands for settlements its journal no longer records; a
       // name is not an attestation, and the journal's binding does not cover
       // them.
-      throw new JournalFileError(
-        `The compaction copy ${file} beside the journal ${primary} holds records the journal does not; that authority stands on the copy alone, and no binding attests it. Bind the copy — its hash, identity and provenance — so the surplus stands attested, or reconcile it against the v1 writer that produced it.`,
-        "corrupt",
-        copyPath,
-      );
+      throw unboundSurplusRemnantError(file, primary, copyPath);
+    }
+    const admitSurplus = new Set(surplus);
+    for (const { line, record } of entries) {
+      if (admitSurplus.has(record)) admit(record, line);
     }
   }
   // The journal's text and the surplus are whole lines: where the journal
@@ -412,10 +396,31 @@ async function coalescedStaging(
 }
 
 /**
- * The copy's records its journal's do not cover: an intent the journal
- * records fewer of, a turn.done the journal never recorded. The authority a
- * copy stands for on its own, beyond the journal beside it.
+ * The copy's records a baseline (the journal, or the journal plus surplus
+ * already admitted from earlier remnants) does not cover: an intent the
+ * baseline records fewer of, a turn.done it never recorded. Shared by
+ * staging and the unbound-copy refuse so the two cannot drift.
  */
+function remnantSurplusRecords(
+  intentCounts: ReadonlyMap<string, number>,
+  doneInbounds: ReadonlySet<string>,
+  copyRecords: LegacyRecord[],
+): LegacyRecord[] {
+  const localIntents = new Map<string, number>();
+  const surplus: LegacyRecord[] = [];
+  for (const record of copyRecords) {
+    if (record.t === "reply.intent") {
+      const n = (localIntents.get(record.messageId) ?? 0) + 1;
+      localIntents.set(record.messageId, n);
+      if (n > (intentCounts.get(record.messageId) ?? 0)) surplus.push(record);
+    } else if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) {
+      surplus.push(record);
+    }
+  }
+  return surplus;
+}
+
+/** The copy's records its journal's do not cover — count only. */
 function uncoveredRemnantRecords(primaryRecords: LegacyRecord[], copyRecords: LegacyRecord[]): number {
   const intentCounts = new Map<string, number>();
   const doneInbounds = new Set<string>();
@@ -423,18 +428,16 @@ function uncoveredRemnantRecords(primaryRecords: LegacyRecord[], copyRecords: Le
     if (record.t === "reply.intent") intentCounts.set(record.messageId, (intentCounts.get(record.messageId) ?? 0) + 1);
     if (record.t === "turn.done") doneInbounds.add(record.messageId);
   }
-  const localIntents = new Map<string, number>();
-  let uncovered = 0;
-  for (const record of copyRecords) {
-    if (record.t === "reply.intent") {
-      const n = (localIntents.get(record.messageId) ?? 0) + 1;
-      localIntents.set(record.messageId, n);
-      if (n > (intentCounts.get(record.messageId) ?? 0)) uncovered++;
-    } else if (record.t === "turn.done" && !doneInbounds.has(record.messageId)) {
-      uncovered++;
-    }
-  }
-  return uncovered;
+  return remnantSurplusRecords(intentCounts, doneInbounds, copyRecords).length;
+}
+
+/** Refuse a compaction copy whose surplus stands with no binding of its own. */
+function unboundSurplusRemnantError(file: string, primary: string, copyPath: string): JournalFileError {
+  return new JournalFileError(
+    `The compaction copy ${file} beside the journal ${primary} holds records the journal does not; that authority stands on the copy alone, and no binding attests it. Bind the copy — its hash, identity and provenance — so the surplus stands attested, or reconcile it against the v1 writer that produced it.`,
+    "corrupt",
+    copyPath,
+  );
 }
 
 /**
@@ -872,7 +875,7 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
   }
 
   await mkdir(agentDir, { recursive: true });
-  const ownership = await JournalOwnership.acquire(path.join(agentDir, ".ownership.sqlite"), { loadSqlite: options.loadSqlite });
+  const ownership = await JournalOwnership.acquire(path.join(agentDir, OWNERSHIP_FILE), { loadSqlite: options.loadSqlite });
   try {
     // The copies whose surplus stands imported are the ones the operator
     // attested by a binding of their own: a name beside a journal is not an
@@ -1132,11 +1135,7 @@ async function validateBindings(
       primaryRecordsCache.set(primary, primaryRecords);
     }
     if (uncoveredRemnantRecords(primaryRecords, copyRecords) > 0) {
-      throw new JournalFileError(
-        `The compaction copy ${file} beside the journal ${primary} holds records the journal does not; that authority stands on the copy alone, and no binding attests it. Bind the copy — its hash, identity and provenance — so the surplus stands attested, or reconcile it against the v1 writer that produced it.`,
-        "corrupt",
-        path.join(legacyDir, file),
-      );
+      throw unboundSurplusRemnantError(file, primary, path.join(legacyDir, file));
     }
   }
   return normalized;

@@ -92,8 +92,8 @@ export class PublicationEngine {
    *   transport said — and the journal is poisoned either way: a writer that
    *   lost the write it owes is not admitted again until it reopens.
    *   A `DeliveryUnknownError` is thrown, not a storage failure.
-   * - `refused`/`notCommitted`: the publication is marked refused (the
-   *   record is best-effort where the file will not take it) and the
+   * - `refused`/`notCommitted`, or cut short before the post: the publication
+   *   is marked refused durably (rewrite fallback if append fails) and the
    *   original failure propagates, so the turn fails and may be retried.
    */
   public async publishReply(

@@ -152,7 +152,7 @@ export class RoomJournal {
   private poisoned = false;
 
   private constructor(
-    private readonly handle: FileHandle,
+    private handle: FileHandle,
     private readonly options: RoomJournalOptions,
     private readonly file: string,
   ) {
@@ -342,13 +342,33 @@ export class RoomJournal {
     return found;
   }
 
-  /** Records that a reply is about to begin posting; the post does not run until this is durable. */
+  /**
+   * Records that a reply is about to begin posting; the post does not run until
+   * this is durable. An inbound that already has a pending or unknown
+   * publication is refused: a replacement must not POST beside a reply Band
+   * may already hold. The pending slot is reserved in memory before the
+   * durable write so a concurrent beginReply for the same inbound sees it.
+   */
   public async beginReply(messageId: string): Promise<string> {
     this.assertAdmitting();
-    const publicationId = randomUUID();
-    await this.append({ t: "reply.intent", messageId, publicationId, at: this.now() });
     const inbound = this.touch(messageId);
-    inbound.publications.set(publicationId, { outcome: "pending", reported: false, at: this.now() });
+    for (const publication of inbound.publications.values()) {
+      if (publication.outcome === "pending" || publication.outcome === "unknown") {
+        throw new JournalPublicationError(
+          "This inbound already has a reply whose delivery is unresolved; a replacement is refused rather than posted beside it",
+          "fenced",
+        );
+      }
+    }
+    const publicationId = randomUUID();
+    const at = this.now();
+    inbound.publications.set(publicationId, { outcome: "pending", reported: false, at });
+    try {
+      await this.append({ t: "reply.intent", messageId, publicationId, at });
+    } catch (error) {
+      inbound.publications.delete(publicationId);
+      throw error;
+    }
     return publicationId;
   }
 
@@ -368,17 +388,31 @@ export class RoomJournal {
     this.unresolved.delete(publicationId);
   }
 
-  /** Records that Band answered and saved nothing: the reply is definitely not in the room. */
+  /**
+   * Records that Band answered and saved nothing, or that a cut-short reply
+   * never posted: the reply is definitely not in the room. Refusal must stand
+   * durably — if append fails (or the writer is already poisoned from that
+   * failure), the valid prefix is rewritten with `reply.refused` so a reopen
+   * does not announce pending/unrecorded for a never-posted reply.
+   */
   public async markRefused(messageId: string, publicationId: string): Promise<void> {
-    this.assertAdmitting();
-    const at = this.now();
-    await this.append({ t: "reply.refused", messageId, publicationId, at });
-    const publication = this.touch(messageId).publications.get(publicationId);
-    if (publication) {
-      publication.outcome = "refused";
-      publication.at = at;
+    if (this.closed) {
+      throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
     }
-    this.unresolved.delete(publicationId);
+    const at = this.now();
+    const record = { t: "reply.refused" as const, messageId, publicationId, at };
+    if (!this.poisoned) {
+      try {
+        await this.append(record);
+        this.applyRefused(messageId, publicationId, at);
+        return;
+      } catch {
+        // Append may have torn the file and poisoned the writer; refuse must
+        // still land so recovery does not treat a never-posted intent as unknown.
+      }
+    }
+    await this.rewriteRefused(record);
+    this.applyRefused(messageId, publicationId, at);
   }
 
   /** Records that whether Band has the reply is unknown: it may already be in the room. */
@@ -436,6 +470,60 @@ export class RoomJournal {
         "poisoned",
       );
     }
+  }
+
+  private applyRefused(messageId: string, publicationId: string, at: number): void {
+    const publication = this.touch(messageId).publications.get(publicationId);
+    if (publication) {
+      publication.outcome = "refused";
+      publication.at = at;
+    }
+    this.unresolved.delete(publicationId);
+  }
+
+  /**
+   * Rewrites the file's valid prefix plus a durable `reply.refused`, then
+   * rebinds the append handle. Used when an append failed (or left the writer
+   * poisoned) so a never-posted refusal cannot reopen as pending.
+   */
+  private rewriteRefused(record: { t: "reply.refused"; messageId: string; publicationId: string; at: number }): Promise<void> {
+    return this.writes.run(async () => {
+      if (this.closed) {
+        throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
+      }
+      try {
+        const text = await readFile(this.file, "utf8");
+        const complete = text.endsWith("\n");
+        const lines = text.split("\n");
+        if (!complete) lines.pop();
+        const whole = (complete ? lines.slice(0, -1) : lines).filter((line) => line !== "");
+        const last = whole[whole.length - 1];
+        if (last !== undefined) {
+          try {
+            const parsed = JSON.parse(last) as { t?: string; publicationId?: string };
+            if (parsed.t === "reply.refused" && parsed.publicationId === record.publicationId) {
+              // Append wrote the refuse line but failed its sync: the refusal
+              // already stands; rebind onto the rewritten inode path.
+              await this.handle.close().catch(() => undefined);
+              this.handle = await open(this.file, "a");
+              this.poisoned = false;
+              this.lineCut = false;
+              return;
+            }
+          } catch {
+            // Last line is not a refuse record; continue with rewrite.
+          }
+        }
+        await rewriteFile(this.file, `${whole.join("\n")}\n${toLine(record)}`);
+        await this.handle.close().catch(() => undefined);
+        this.handle = await open(this.file, "a");
+        this.poisoned = false;
+        this.lineCut = false;
+      } catch (error) {
+        this.poisoned = true;
+        throw journalFileFailure(error, this.file);
+      }
+    });
   }
 
   private append(record: Record<string, unknown>): Promise<void> {

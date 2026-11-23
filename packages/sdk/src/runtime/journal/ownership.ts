@@ -114,8 +114,15 @@ export class JournalOwnership {
   }
 }
 
-/** The lock failure of `file`: contention, a corrupt file, or an I/O fault. */
-function classify(file: string, error: unknown): JournalOwnershipError {
+/**
+ * Whether `error` is SQLite lock contention on `file`.
+ *
+ * Only SQLITE_BUSY / SQLITE_LOCKED (and SQLite's own lock wording) count.
+ * Filesystem EBUSY / "resource busy" and path fragments like a `locked/`
+ * parent directory must stay I/O faults — bare "busy"/"locked" substrings
+ * after path strip are not enough.
+ */
+function isSqliteLockContention(file: string, error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   // Strip the path (and its basename) before substring kind checks so a file
   // named e.g. `locked.sqlite` inside an EACCES message is not treated as
@@ -124,12 +131,22 @@ function classify(file: string, error: unknown): JournalOwnershipError {
   const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
   const code =
     error !== null && typeof error === "object" && "code" in error ? String(error.code).toUpperCase() : "";
-  if (
-    code === "SQLITE_BUSY" ||
-    code === "SQLITE_LOCKED" ||
-    haystack.includes("busy") ||
-    haystack.includes("locked")
-  ) {
+  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+  return (
+    haystack.includes("database is locked") ||
+    haystack.includes("database table is locked") ||
+    haystack.includes("sqlite_busy") ||
+    haystack.includes("sqlite_locked")
+  );
+}
+
+/** The lock failure of `file`: contention, a corrupt file, or an I/O fault. */
+function classify(file: string, error: unknown): JournalOwnershipError {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowered = message.toLowerCase();
+  // Same path strip as contention checks; corrupt wording must not match a path.
+  const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
+  if (isSqliteLockContention(file, error)) {
     return new JournalOwnershipError(
       `Another process owns the journal at ${file}. Stop that process (or the runtime that started it) and try again; ` +
         `the lock is never stolen, and the journal stays closed meanwhile.`,

@@ -54,7 +54,8 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
  * thrown DeliveryUnknownError) keep the key so a same-content retry cannot
  * POST again; a definite refusal clears. Tool-door successes also keep the
  * key (model/MCP dedupe). Send-door successes clear it so intentional
- * repeated direct replies each post.
+ * repeated direct replies each post. The send door joins only in-flight or
+ * delivery_unknown standings — never a retained tool-door success.
  *
  * The map stores the raw first-call promise. Each door adapts at exit so the
  * other door's contract still holds: send never resolves a delivery_unknown
@@ -68,25 +69,46 @@ function coalesceSendMessage(
   executeToolCall: AdapterToolsProtocol["executeToolCall"];
   sendMessage: AdapterToolsProtocol["sendMessage"];
 } {
-  const sends = new Map<string, Promise<unknown>>();
+  type Standing = {
+    promise: Promise<unknown>;
+    /** inflight until settle; unknown keeps the key; done is a retained tool success. */
+    outcome: "inflight" | "unknown" | "done";
+  };
+  const sends = new Map<string, Standing>();
   const admit = <R>(
     content: unknown,
     mentions: unknown,
     call: () => Promise<R>,
     retainOnSuccess: boolean,
+    /** Send door skips retained tool successes; tool door joins every standing. */
+    joinRetainedSuccess: boolean,
   ): Promise<R> => {
-    const key = JSON.stringify([content, mentions ?? null]);
+    const key = coalesceKey(content, mentions);
     const standing = sends.get(key);
-    if (standing) return standing as Promise<R>;
+    if (standing && (joinRetainedSuccess || standing.outcome !== "done")) {
+      return standing.promise as Promise<R>;
+    }
     const sent = call();
-    sends.set(key, sent);
+    const entry: Standing = { promise: sent, outcome: "inflight" };
+    sends.set(key, entry);
     sent.then(
       (result) => {
-        if (isDeliveryUnknownOutput(result)) return;
-        if (isFailedToolOutput(result) || !retainOnSuccess) sends.delete(key);
+        if (isDeliveryUnknownOutput(result)) {
+          entry.outcome = "unknown";
+          return;
+        }
+        if (isFailedToolOutput(result) || !retainOnSuccess) {
+          sends.delete(key);
+          return;
+        }
+        entry.outcome = "done";
       },
       (error) => {
-        if (!(error instanceof DeliveryUnknownError)) sends.delete(key);
+        if (error instanceof DeliveryUnknownError) {
+          entry.outcome = "unknown";
+          return;
+        }
+        sends.delete(key);
       },
     );
     return sent;
@@ -94,7 +116,7 @@ function coalesceSendMessage(
   return {
     executeToolCall: (toolName, args) => {
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
-      return admit(args.content, args.mentions ?? null, () => execute(toolName, args), true).catch(
+      return admit(args.content, args.mentions, () => execute(toolName, args), true, true).catch(
         (error: unknown) => {
           // Send-door delivery_unknown rejects; the tool door must resolve a
           // ToolExecutorError so model/MCP callers see structured failure data.
@@ -112,7 +134,7 @@ function coalesceSendMessage(
       );
     },
     sendMessage: (content, mentions) =>
-      admit(content, mentions ?? null, () => sendMessage(content, mentions), false).then((result) => {
+      admit(content, mentions, () => sendMessage(content, mentions), false, false).then((result) => {
         // Tool-door delivery_unknown resolves a ToolExecutorError; the send
         // door must reject so deliverReply never treats it as a successful post.
         if (isDeliveryUnknownOutput(result)) {
@@ -121,4 +143,35 @@ function coalesceSendMessage(
         return result;
       }),
   };
+}
+
+/**
+ * Same logical send → same key: empty mentions (omitted / null / []) collapse;
+ * mention tokens are shape-normalized and stable-sorted so order or string vs
+ * `{id,handle}` cannot miss a standing delivery_unknown.
+ */
+function coalesceKey(content: unknown, mentions: unknown): string {
+  return JSON.stringify([content, coalesceMentionTokens(mentions)]);
+}
+
+function coalesceMentionTokens(mentions: unknown): string[] {
+  if (!Array.isArray(mentions) || mentions.length === 0) return [];
+  return mentions.map(coalesceMentionToken).sort();
+}
+
+function coalesceMentionToken(mention: unknown): string {
+  if (typeof mention === "string") return normalizeMentionHandle(mention);
+  if (mention && typeof mention === "object" && !Array.isArray(mention)) {
+    const ref = mention as Record<string, unknown>;
+    for (const field of ["handle", "username", "name"] as const) {
+      const value = ref[field];
+      if (typeof value === "string" && value.length > 0) return normalizeMentionHandle(value);
+    }
+    if (typeof ref.id === "string") return `id:${ref.id.toLowerCase()}`;
+  }
+  return JSON.stringify(mention);
+}
+
+function normalizeMentionHandle(handle: string): string {
+  return handle.trim().replace(/^@+/, "").toLowerCase();
 }

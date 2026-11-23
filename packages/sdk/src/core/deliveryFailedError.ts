@@ -53,7 +53,7 @@ export function isDeliveryUnknownOutput(value: unknown): boolean {
 
 /** Publication id carried on a delivery_unknown tool result, when present. */
 export function deliveryUnknownPublicationId(value: unknown): string | undefined {
-  if (!isToolExecutorError(value) || value.details?.kind !== DeliveryUnknownError.KIND) return undefined;
+  if (!isDeliveryUnknownOutput(value) || !isToolExecutorError(value)) return undefined;
   const publicationId = value.details?.publicationId;
   return typeof publicationId === "string" ? publicationId : undefined;
 }

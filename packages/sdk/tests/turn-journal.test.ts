@@ -1,10 +1,11 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
+import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { BandSdkError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
@@ -298,6 +299,74 @@ describe("publications", () => {
       expect.objectContaining({ messageId: "msg-top", receiptId: "posted-top" }),
       expect.objectContaining({ messageId: "msg-nested", receiptId: "posted-nested" }),
     ]);
+  });
+
+  it("refuses a second publishReply for an inbound whose delivery already stands unknown", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      roomId: ROOM,
+      generation,
+      logger: new NoopLogger(),
+    });
+
+    await expect(
+      engine.publishReply("msg-1", async () => {
+        // Raw transport failure: classifyFailedAttempt treats it as uncertain.
+        throw new Error("socket hang up");
+      }),
+    ).rejects.toBeInstanceOf(DeliveryUnknownError);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown"]);
+
+    let secondPosts = 0;
+    await expect(
+      engine.publishReply("msg-1", async () => {
+        secondPosts += 1;
+        return { success: true, id: "replacement" };
+      }),
+    ).rejects.toMatchObject({ kind: "fenced" });
+    expect(secondPosts).toBe(0);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown"]);
+    expect(room.accepting).toBe(true);
+  });
+
+  it("records a cut-short refusal durably when the refuse append fails, so reopen does not announce pending", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      roomId: ROOM,
+      generation,
+      logger: new NoopLogger(),
+    });
+    const controller = new AbortController();
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.intent")) {
+        const result = await original.apply(self, args);
+        controller.abort("interrupt");
+        return result;
+      }
+      if (line.includes("reply.refused")) return Promise.reject(diskFull());
+      return original.apply(self, args);
+    });
+
+    await expect(
+      engine.publishReply("msg-cut", async () => ({ success: true, id: "must-not-post" }), controller.signal),
+    ).rejects.toBeInstanceOf(BandSdkError);
+    // Refuse append failed; rewrite still left a durable refusal — not a recoverable pending.
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
+    expect(await room.recoverUnresolved()).toEqual([]);
+
+    await generation.close();
+    const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    onTestFinished(() => second.close());
+    const reopened = await second.room(ROOM);
+    expect(await reopened.recoverUnresolved()).toEqual([]);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
   });
 
   it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
@@ -606,6 +675,73 @@ describe("ownership and generations", () => {
     const generation = await new TurnJournal(dir, otherAgent).activate(IDENTITY);
     const reopened = await generation.room(ROOM);
     expect(reopened.answered("old")).toBe(true);
+    const state = JSON.parse(await readFile(path.join(manifestDir, "manifest.json"), "utf8"));
+    expect(state.state).toBe("committed");
+    await generation.close();
+  });
+
+  it("activates over a prepared migration whose destination fails validate, restaging the surplus", async () => {
+    // Missing-dest resume is covered above; this is the start path for a
+    // prepared-but-invalid destination (amend crash: journal-only staged file
+    // vs surplus facts already in the prepared manifest).
+    const dir = tmpRoot();
+    const v1File = legacyRoomFile(ROOM);
+    const remnantFile = `${v1File}.${randomUUID()}.compacting`;
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const source = await seedLegacyFile(dir, AGENT, v1File, legacy);
+    const sourceText = await readFile(source, "utf8");
+    const sourceSha256 = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    const copyOnly = JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 });
+    const copyText = `${legacy.join("\n")}\n${copyOnly}\n`;
+    await writeFile(path.join(path.dirname(source), remnantFile), copyText);
+    const stagingText = `${sourceText.endsWith("\n") ? sourceText : `${sourceText}\n`}${copyOnly}\n`;
+    const stagingSha256 = createHash("sha256").update(stagingText, "utf8").digest("hex");
+    const provenance = `operator-attested:${v1File}`;
+    const agentDir = agentJournalDir(dir, AGENT);
+    const manifestDir = path.join(agentDir, "migration");
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      path.join(manifestDir, "manifest.json"),
+      `${JSON.stringify({
+        v: 2,
+        state: "prepared",
+        createdAt: 1,
+        bindings: [
+          {
+            sourceFile: v1File,
+            roomId: ROOM,
+            sourceSha256,
+            platformIdentity: IDENTITY,
+            provenance,
+            stagesFrom: v1File,
+            stagingSha256,
+            importedFacts: { publicationIds: [], turnDone: ["b", "only-in-copy"] },
+          },
+          {
+            sourceFile: remnantFile,
+            roomId: ROOM,
+            sourceSha256: createHash("sha256").update(copyText, "utf8").digest("hex"),
+            platformIdentity: IDENTITY,
+            provenance,
+            stagesFrom: v1File,
+            stagingSha256,
+            importedFacts: { publicationIds: [], turnDone: ["b", "only-in-copy"] },
+          },
+        ],
+      }, null, 2)}\n`,
+    );
+    // Journal-only destination: fails validate against surplus importedFacts.
+    const staged = roomFile(dir);
+    await mkdir(path.dirname(staged), { recursive: true });
+    await writeFile(
+      staged,
+      `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n${JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })}\n`,
+    );
+
+    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const room = await generation.room(ROOM);
+    expect(room.answered("b")).toBe(true);
+    expect(room.answered("only-in-copy")).toBe(true);
     const state = JSON.parse(await readFile(path.join(manifestDir, "manifest.json"), "utf8"));
     expect(state.state).toBe("committed");
     await generation.close();

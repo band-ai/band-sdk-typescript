@@ -60,7 +60,8 @@ export function roomJournalFile(dir: string, roomId: string): string {
   return path.join(dir, roomFileName(roomId));
 }
 
-const OWNERSHIP_FILE = ".ownership.sqlite";
+/** The agent's exclusive ownership lock file under its journal directory. */
+export const OWNERSHIP_FILE = ".ownership.sqlite";
 
 /** A v2 journal the start generation opened: its rooms, and the ownership it holds for them. */
 export interface JournalGeneration {

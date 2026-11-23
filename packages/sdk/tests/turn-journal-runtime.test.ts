@@ -597,6 +597,41 @@ describe("a reply whose delivery cannot stand", () => {
     expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
   });
+
+  it("fences relayReply after executeToolCall resolves delivery_unknown", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const posts: string[] = [];
+    const original = platform.rest.createChatMessage.bind(platform.rest);
+    const spy = vi.spyOn(platform.rest, "createChatMessage").mockImplementation(async (roomId, message, options) => {
+      posts.push(message.content);
+      if (message.content === "may be held") {
+        throw new BandError({ statusCode: 503, body: { error: { code: "server_error", message: "Service unavailable", request_id: "req-1" } } });
+      }
+      return original(roomId, message, options);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    let relayed = true;
+    await startProcess(platform, journalDir, async ({ tools }) => {
+      // Model/MCP path: executeToolCall resolves a ToolExecutorError delivery_unknown
+      // (does not throw). The journal wrapper must still fence closing text.
+      const result = await tools.executeToolCall("band_send_message", {
+        content: "may be held",
+        mentions: ["@owner"],
+      });
+      expect(result).toMatchObject({ details: { kind: DeliveryUnknownError.KIND } });
+      relayed = await relayReply(tools, "closing text", ["@owner"]);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await platform.rest.settled.next((settled) => settled.messageId === inbound);
+
+    expect(relayed).toBe(false);
+    expect(posts).toEqual(["may be held"]);
+    expect(room.failureLabels(inbound)).toEqual([expect.stringContaining("delivery is unknown")]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown"]);
+  });
 });
 
 describe("an unresolved publication with no inbound to ride on", () => {
@@ -614,6 +649,41 @@ describe("an unresolved publication with no inbound to ride on", () => {
     // No message is ever served to the room: the report rides on the room's admission.
     await events.next((event) => event.type === "delivery.unrecorded");
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: "m-old" }]);
+    expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
+  });
+
+  it("still announces unresolved publications when force-release races the admit-time announce", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    await seedRoomRecords(journalDir, ROOM, async (journal) => {
+      const publicationId = await journal.beginReply("m-race");
+      await journal.markUnknown("m-race", publicationId);
+    });
+
+    // Hold recover until force release has started: without roomInflight tracking,
+    // close would finish mid-hold and recover would return [] (no delivery.unrecorded).
+    const entered = createDeferred();
+    const hold = createDeferred();
+    const recover = RoomJournal.prototype.recoverUnresolved;
+    const spy = vi.spyOn(RoomJournal.prototype, "recoverUnresolved").mockImplementation(async function (this: RoomJournal) {
+      entered.resolve();
+      await hold.promise;
+      return recover.call(this);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const starting = startProcess(platform, journalDir, async () => undefined);
+    await entered.promise;
+
+    const removed = room.remove();
+    // Give force release a turn to observe an empty inflight set if tracking were missing.
+    await Promise.resolve();
+    hold.resolve();
+    const { events } = await starting;
+    await removed;
+    await events.next((event) => event.type === "delivery.unrecorded");
+    expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: "m-race" }]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
   });
 
@@ -1267,12 +1337,24 @@ describe("what the turn journal records and reports", () => {
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
-    await seedRoomRecords(journalDir, ROOM, async (room) => {
-      await room.beginReply(inbound);
-      await room.beginReply(inbound);
-    });
+    // Two intents for one inbound must be seeded as raw records: beginReply
+    // fences a second pending publication for the same inbound.
+    const seeded = journalFile(journalDir, ROOM);
+    await mkdir(path.dirname(seeded), { recursive: true });
+    await writeFile(
+      seeded,
+      [
+        JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT_ID, roomId: ROOM, at: 1 }),
+        JSON.stringify({ t: "reply.intent", messageId: inbound, publicationId: "pub-a", at: 2 }),
+        JSON.stringify({ t: "reply.intent", messageId: inbound, publicationId: "pub-b", at: 3 }),
+      ].map((line) => `${line}\n`).join(""),
+    );
 
-    const { events } = await startProcess(platform, journalDir, answers);
+    // Pending unresolved publications fence a replacement POST for this inbound;
+    // settle the re-run with a decline (same as delivery_unknown restart).
+    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.executeToolCall("band_no_reply", { reason: "already reported as unrecorded" });
+    });
 
     expect(await room.outcome(inbound)).toBe("processed");
     // Each publication the journal still cannot confirm is reported, none hidden under an older marker.
@@ -1282,7 +1364,7 @@ describe("what the turn journal records and reports", () => {
     ]);
     expect(await journalRecords(journalDir)).toEqual([
       "reply.intent", "reply.intent", "publication.reported", "publication.reported",
-      "reply.intent", "reply.settled", "turn.done",
+      "decline.settled", "turn.done",
     ]);
   });
 

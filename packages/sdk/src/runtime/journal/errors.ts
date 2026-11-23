@@ -16,8 +16,15 @@ export class JournalFileError extends BandSdkError {
   }
 }
 
-/** Why the room's publications are not admitted; the room's replies refuse to post until it is resolved. */
-export type JournalPublicationKind = "poisoned" | "closed";
+/**
+ * Why the room's publications are not admitted; the room's replies refuse to
+ * post until it is resolved.
+ *
+ * - `poisoned` / `closed`: the handle will not take records.
+ * - `fenced`: the inbound already has a pending or unknown publication; a
+ *   replacement must not POST beside a reply Band may already hold.
+ */
+export type JournalPublicationKind = "poisoned" | "closed" | "fenced";
 
 /** A publication the room's journal will not admit; the reply does not post. */
 export class JournalPublicationError extends BandSdkError {

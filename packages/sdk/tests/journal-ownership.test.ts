@@ -156,6 +156,43 @@ describe("journal ownership", () => {
     expect(error.message).toContain(file);
   });
 
+  it("classifies filesystem EBUSY / resource busy as io, not contention", async () => {
+    const file = path.join(dir, "resource-busy.sqlite");
+    const error = await JournalOwnership.acquire(file, {
+      loadSqlite: async () =>
+        ({
+          DatabaseSync: class {
+            constructor() {
+              throw Object.assign(new Error(`EBUSY: resource busy, open '${file}'`), { code: "EBUSY" });
+            }
+          },
+        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
+    }).catch((e: unknown) => e);
+    expectKind(error, "io");
+    expect(error.message).toContain(file);
+  });
+
+  it("classifies EACCES as io when locked appears only in a parent path the strip misses", async () => {
+    // Parent directory named `locked`; error message uses the alternate separator so
+    // stripping `file` / basename leaves "locked" in the haystack — bare "locked"
+    // must not become contention.
+    const file = path.join(dir, "locked", "owner.sqlite");
+    const altSep = path.sep === "/" ? "\\" : "/";
+    const echoed = file.split(path.sep).join(altSep);
+    const error = await JournalOwnership.acquire(file, {
+      loadSqlite: async () =>
+        ({
+          DatabaseSync: class {
+            constructor() {
+              throw Object.assign(new Error(`EACCES: permission denied, open '${echoed}'`), { code: "EACCES" });
+            }
+          },
+        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
+    }).catch((e: unknown) => e);
+    expectKind(error, "io");
+    expect(error.message).toContain(file);
+  });
+
   it("fails closed when the journal's directory cannot be written", async () => {
     const subdir = path.join(dir, "unwritable");
     await mkdir(subdir);

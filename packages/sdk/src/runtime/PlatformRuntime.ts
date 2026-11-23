@@ -1356,16 +1356,31 @@ export class PlatformRuntime implements AsyncDisposable {
       if (hasErrorCode(error, "ENOENT")) return;
       throw error;
     }
-    await this.withRecoverySlot(async () => {
-      const journal = await generation.room(roomId);
-      try {
-        await this.announceUnresolvedPublications(journal, roomId);
-      } finally {
-        // An idle room holds no file open: the handle is released once its
-        // publications stand reported, and a turn running in the room reopens it.
-        await generation.release(roomId).catch(() => undefined);
-      }
+    // Track before opening so a concurrent force release drains this announce
+    // instead of closing the handle mid-recover (which would return [] and skip
+    // admit-time delivery.unrecorded). Release stays outside the tracked promise
+    // so closeRoomNow waiting on us cannot deadlock with our finally awaiting it.
+    let finish!: () => void;
+    let fail!: (reason?: unknown) => void;
+    const tracked = new Promise<void>((resolve, reject) => {
+      finish = resolve;
+      fail = reject;
     });
+    generation.trackInflight(tracked, roomId);
+    try {
+      await this.withRecoverySlot(async () => {
+        const journal = await generation.room(roomId);
+        await this.announceUnresolvedPublications(journal, roomId);
+      });
+      finish();
+    } catch (error) {
+      fail(error);
+      throw error;
+    } finally {
+      // An idle room holds no file open: the handle is released once its
+      // publications stand reported, and a turn running in the room reopens it.
+      await generation.release(roomId).catch(() => undefined);
+    }
   }
 
   /**

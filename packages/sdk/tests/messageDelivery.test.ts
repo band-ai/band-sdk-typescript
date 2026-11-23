@@ -203,6 +203,183 @@ describe("same-turn band_send_message coalescing after delivery_unknown", () => 
     expect(posts).toBe(2);
   });
 
+  it("after tool-door success, same-content sendMessage still POSTs (send ignores retained tool success)", async () => {
+    let posts = 0;
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "executeToolCall") {
+            return async (toolName: string) => {
+              if (toolName === SEND_MESSAGE_TOOL_NAME) {
+                posts += 1;
+                return { success: true, id: "tool-posted" };
+              }
+              return {};
+            };
+          }
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              return { success: true, id: "send-posted" };
+            };
+          }
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "same", mentions: ["@a"] });
+    await expect(tools.sendMessage("same", ["@a"])).resolves.toMatchObject({ id: "send-posted" });
+    expect(posts).toBe(2);
+  });
+
+  it("keeps tool-door success coalesced for a second same-content executeToolCall", async () => {
+    let posts = 0;
+    const tools = deliveringMessages(
+      toolsWith(async (toolName) => {
+        if (toolName === SEND_MESSAGE_TOOL_NAME) {
+          posts += 1;
+          return { success: true, id: `tool-${posts}` };
+        }
+        return {};
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "dedupe",
+      mentions: ["@a"],
+    });
+    const second = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "dedupe",
+      mentions: ["@a"],
+    });
+    expect(posts).toBe(1);
+    expect(second).toBe(first);
+    expect(first).toMatchObject({ id: "tool-1" });
+  });
+
+  it("joins in-flight cross-door same-content sends into one POST", async () => {
+    let posts = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "executeToolCall") {
+            return async (toolName: string) => {
+              if (toolName !== SEND_MESSAGE_TOOL_NAME) return {};
+              posts += 1;
+              await gate;
+              return { success: true, id: "tool-inflight" };
+            };
+          }
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              await gate;
+              return { success: true, id: "send-inflight" };
+            };
+          }
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    const viaTool = tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "race",
+      mentions: ["@a"],
+    });
+    const viaSend = tools.sendMessage("race", ["@a"]);
+    release();
+    const [toolResult, sendResult] = await Promise.all([viaTool, viaSend]);
+    expect(posts).toBe(1);
+    expect(toolResult).toBe(sendResult);
+    expect(toolResult).toMatchObject({ id: "tool-inflight" });
+  });
+
+  it("treats omitted tool mentions and sendMessage([]) as the same key after delivery_unknown", async () => {
+    let posts = 0;
+    const toolUnknown = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: SEND_MESSAGE_TOOL_NAME,
+      message: "delivery unknown",
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-null-empty" },
+    });
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "executeToolCall") {
+            return async (toolName: string) => {
+              if (toolName === SEND_MESSAGE_TOOL_NAME) {
+                posts += 1;
+                return toolUnknown;
+              }
+              return {};
+            };
+          }
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              return { success: true, id: "should-not-post" };
+            };
+          }
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "held" });
+    expect(isToolExecutorError(first)).toBe(true);
+
+    const error: unknown = await tools.sendMessage("held", []).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(DeliveryUnknownError);
+    expect((error as DeliveryUnknownError).publicationId).toBe("pub-null-empty");
+    expect(posts).toBe(1);
+  });
+
+  it("treats reordered mentions as the same key after delivery_unknown", async () => {
+    let posts = 0;
+    const toolUnknown = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: SEND_MESSAGE_TOOL_NAME,
+      message: "delivery unknown",
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-order" },
+    });
+    const tools = deliveringMessages(
+      toolsWith(async (toolName) => {
+        if (toolName === SEND_MESSAGE_TOOL_NAME) {
+          posts += 1;
+          return toolUnknown;
+        }
+        return {};
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "held",
+      mentions: ["@a", "@b"],
+    });
+    const second = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, {
+      content: "held",
+      mentions: ["@b", "@a"],
+    });
+    expect(posts).toBe(1);
+    expect(second).toBe(first);
+  });
+
   it("coalesces direct sendMessage after DeliveryUnknown so a second same-content send does not POST again", async () => {
     let posts = 0;
     const unknown = new DeliveryUnknownError(serverError(), "pub-2");
