@@ -244,7 +244,7 @@ describe("agent.control from Band", () => {
 
     // Band played the execution in room A: the serving flips, and the push names the execution with no room.
     platform.control("play", ROOM_A, { delivered: false });
-    platform.transport.pushControl({ mode: "play", scope: "agent", agent_id: AGENT_ID, room_id: null, correlation_id: "sig-exec-play", execution_id: "exec-1" });
+    platform.control("play", null, { executionId: "exec-1" });
 
     // A caught up because its /next served the message; B stays stopped, its own play never came.
     await next(is("room.resumed", ROOM_A));
