@@ -10,7 +10,9 @@ export type AgentControlMode = "interrupt" | "stop" | "play";
  * An `agent.control` signal Band pushes on the agent's control channel:
  * `interrupt` ends the running turn and consumes its message, `stop` pauses
  * the room until a `play` (the stopped turn's message is replayed then).
- * `roomId` is null for a signal to all of the agent's rooms (`scope: "agent"`).
+ * `roomId` is null for agent-scope pushes (`scope: "agent"`). Null without
+ * an `executionId` is agent-wide; null with an `executionId` is per-execution
+ * (runtime drops stop/interrupt; play only probes Band-stopped rooms).
  * Band does not deduplicate, so a consumer dedupes on `correlationId`.
  */
 export interface AgentControl {

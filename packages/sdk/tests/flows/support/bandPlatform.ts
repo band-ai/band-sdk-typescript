@@ -125,6 +125,7 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly peerCalls = new RecordLog<number>();
   public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
+  public readonly historyRequests = new RecordLog<{ chatId: string; cursor?: string; limit: number }>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -404,6 +405,16 @@ export class RecordingRestApi extends FakeRestApi {
     const end = start + limit;
     const hasMore = end < conversation.length;
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
+  }
+
+  /** The room's messages newest first, as Band's agent message list serves `status=all&sort_order=desc`: keyset pages. */
+  public async listRoomHistory(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
+    this.historyRequests.record(request);
+    const newestFirst = this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item).reverse();
+    const start = request.cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === request.cursor) + 1;
+    const data = newestFirst.slice(start, start + request.limit);
+    const hasMore = start + request.limit < newestFirst.length;
+    return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
   }
 
   public remember(roomId: string, item: PlatformChatMessage): void {
@@ -735,22 +746,31 @@ export class BandPlatform implements AsyncDisposable {
   /**
    * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
    * its rooms for null, as its `agent.control` push does; a stopped room's
-   * `/messages/next` serves nothing until a play, as on Band. With
-   * `delivered: false` the agent misses the push. Returns its correlation id.
+   * `/messages/next` serves nothing until a play, as on Band. A push that
+   * names an `executionId` and no room is per-execution only: the control
+   * frame is sent, but durable stop/play is not fan-out across rooms (callers
+   * that need a room served again keep using room-scoped control, optionally
+   * with `delivered: false`). With `delivered: false` the agent misses the
+   * push. Returns its correlation id.
    */
   public control(
     mode: AgentControlMode,
     roomId: string | null,
-    options: { delivered?: boolean; correlationId?: string } = {},
+    options: { delivered?: boolean; correlationId?: string; executionId?: string | null } = {},
   ): string {
-    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
-      if (mode === "stop") this.rest.stoppedRooms.add(room);
-      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    // Per-execution pushes name an execution and no room; Band does not stop
+    // or play every room for that shape, so neither does the fake.
+    const executionAddressed = roomId === null && options.executionId != null;
+    if (!executionAddressed) {
+      for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+        if (mode === "stop") this.rest.stoppedRooms.add(room);
+        if (mode === "play") this.rest.stoppedRooms.delete(room);
+      }
     }
     const correlationId = options.correlationId ?? randomUUID();
     if (options.delivered !== false) {
       this.transport.pushControl({
-        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: options.executionId ?? null,
       });
     }
     return correlationId;

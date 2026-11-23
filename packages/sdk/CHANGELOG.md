@@ -1,6 +1,26 @@
 # Changelog
 
 
+## [2.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.2.0...sdk-v2.3.0) (2026-11-23)
+
+
+### Features
+
+* **adapters:** run Claude rooms under the CLI's own auto review ([#448](https://github.com/band-ai/band-sdk-typescript/issues/448)) ([035f9d0](https://github.com/band-ai/band-sdk-typescript/commit/035f9d03bdb6f16ce5a376ceacc48a8a3561aebd))
+* **adapters:** send ACP session settings as _meta, and bind the session mode ([#438](https://github.com/band-ai/band-sdk-typescript/issues/438)) ([fdac71c](https://github.com/band-ai/band-sdk-typescript/commit/fdac71cb9ca87d77535bf3d453878189add62ad6))
+* **adapters:** send ACP session settings as _meta, and bind the session mode ([#450](https://github.com/band-ai/band-sdk-typescript/issues/450)) ([f9b1229](https://github.com/band-ai/band-sdk-typescript/commit/f9b1229c8a76fafd394960eb9046cd77449aeb1d))
+* **runtime:** page a room's history newest first, pinning the turn's message ([#442](https://github.com/band-ai/band-sdk-typescript/issues/442)) ([420f86a](https://github.com/band-ai/band-sdk-typescript/commit/420f86a1d418f0757c18b31a61ddfe58ec92710c))
+
+
+### Bug Fixes
+
+* **adapters:** close an ACP session the agent rejected on its first prompt ([#453](https://github.com/band-ai/band-sdk-typescript/issues/453)) ([3f44444](https://github.com/band-ai/band-sdk-typescript/commit/3f44444ab2fafbcd967e7a9a1bc9daf6ea9920bd))
+* **adapters:** preserve cancellation across OpenCode session startup ([#454](https://github.com/band-ai/band-sdk-typescript/issues/454)) ([a7f210c](https://github.com/band-ai/band-sdk-typescript/commit/a7f210c31f5ddecb2d7dc0792184c68c112fbed0))
+* **adapters:** refuse server requests from another thread or turn ([#455](https://github.com/band-ai/band-sdk-typescript/issues/455)) ([125a6ec](https://github.com/band-ai/band-sdk-typescript/commit/125a6ec13188ec0525e22640e8684b9c118aa541))
+* **adapters:** replay a room's history after a dropped restored ACP session ([#451](https://github.com/band-ai/band-sdk-typescript/issues/451)) ([50f251e](https://github.com/band-ai/band-sdk-typescript/commit/50f251ed541f5c16dbc3364e116b438c1541f229))
+* **adapters:** retire the ACP connection when a cancelled session setup times out ([#452](https://github.com/band-ai/band-sdk-typescript/issues/452)) ([5241176](https://github.com/band-ai/band-sdk-typescript/commit/5241176b3e6937df677bb78c3262d1475c463d8f))
+* **runtime:** drop control signals addressed to one execution ([#441](https://github.com/band-ai/band-sdk-typescript/issues/441)) ([c84cb36](https://github.com/band-ai/band-sdk-typescript/commit/c84cb36bc5365700ef4a3dd5eaff332a46ea63a8))
+
 ## [2.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.1.0...sdk-v2.2.0) (2026-11-15)
 
 

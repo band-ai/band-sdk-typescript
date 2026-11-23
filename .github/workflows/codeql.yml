@@ -1,0 +1,78 @@
+name: CodeQL
+
+# Advanced CodeQL setup (replaces GitHub's default setup).
+#
+# Why not default setup: it never analyzes pull requests from forks
+# (docs.github.com → "About setup types for code scanning"). This repo's
+# `main-branch-protection` ruleset requires CodeQL results before merge, so a
+# fork PR would wait forever for a scan that is never scheduled. An ordinary
+# `pull_request` workflow runs for forks (after the usual outside-contributor
+# approval) and can upload SARIF with the restricted token GitHub grants for
+# that purpose.
+#
+# Do not re-enable default setup while this workflow is active: advanced
+# uploads fail with a configuration error when default setup is configured.
+#
+# Languages and weekly cadence match the previous default-setup config
+# (actions, javascript-typescript, python; default query suite). The folded
+# `javascript` / `typescript` entries from default setup are covered by
+# `javascript-typescript`. Job names stay `Analyze (<language>)` and
+# `category` stays `/language:<language>` so PR-vs-base alert comparison and
+# any ruleset check contexts keep resolving.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Merge-queue commits should stay covered even though the ruleset's
+  # code_scanning rule does not apply to merge groups.
+  merge_group:
+  schedule:
+    # Weekly, similar to default setup's schedule after recent activity.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+  # Required to upload SARIF / open code-scanning alerts.
+  security-events: write
+  # Private CodeQL packs / private registry support for the action.
+  actions: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-{1}', github.workflow, github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    # Drafts get no scan; ready_for_review above fires the first real run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

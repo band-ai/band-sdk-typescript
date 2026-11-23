@@ -30,6 +30,7 @@ import {
   parseInitReport,
   parseInboundRequest,
   parseResult,
+  parseStatusPermissionMode,
   parseSystemInit,
   type ClaudeEvent,
   type ClaudeInitReport,
@@ -88,8 +89,8 @@ export interface ClaudeProcessHandle {
   endStdin(): void;
   /** The last lines the process wrote to stderr, for a diagnostic when it dies. */
   stderrTail(): string;
-  /** Escalates from SIGTERM to SIGKILL until the process is gone. */
-  stop(): Promise<void>;
+  /** Terminates the process and waits for exit. The default POSIX handle skips EOF when forced. */
+  stop(options?: { force?: boolean }): Promise<void>;
 }
 
 export interface ClaudeProcessOptions {
@@ -150,7 +151,11 @@ export const spawnClaudeProcess: ClaudeProcessFactory = async ({ command, cwd, e
     exited,
     endStdin: () => stdin.end(),
     stderrTail: () => tail.join("\n"),
-    stop: () => stopChildProcess(child),
+    stop: async ({ force = false } = {}) => {
+      // Windows signals terminate abruptly, so preserve the CLI's chance to clean up on EOF.
+      await stopChildProcess(child, { drainStdin: !force || process.platform === "win32" });
+      await exited;
+    },
   };
 };
 
@@ -162,6 +167,8 @@ export interface ClaudeIdentity {
 
 /** What a turn does with the CLI's events while it runs. */
 export interface ClaudeTurnHandlers {
+  /** Checks mode reports before the first assistant frame. A throw fails the turn. */
+  validateStartupPermissionMode?(mode: string | null): void;
   /** Each frame's events, synchronously and in the order the CLI wrote them. */
   onEvent(event: ClaudeEvent): void;
 }
@@ -201,6 +208,7 @@ interface PendingControl {
 
 interface TurnRun {
   handlers: ClaudeTurnHandlers;
+  hasAssistantFrame: boolean;
   result?: ClaudeResultFrame;
   interrupted: boolean;
   outcome: Deferred<ClaudeTurnOutcome | Error>;
@@ -309,11 +317,7 @@ export class ClaudeCliClient {
     return this.identity;
   }
 
-  /**
-   * What `initialize` reported beyond the version: the permission mode the
-   * session started in and the capabilities it offers this host. A caller that
-   * must not assume either reads them here rather than re-parsing the frame.
-   */
+  /** The permission mode and capabilities reported in the `initialize` response. */
   public get initReport(): ClaudeInitReport | null {
     return this.init;
   }
@@ -344,7 +348,7 @@ export class ClaudeCliClient {
     if (this.turn) {
       throw new ClaudeProcessError("a turn is already running on this Claude CLI process");
     }
-    const run: TurnRun = { handlers, interrupted: false, outcome: createDeferred(), settled: false };
+    const run: TurnRun = { handlers, hasAssistantFrame: false, interrupted: false, outcome: createDeferred(), settled: false };
     this.turn = run;
     this.lastTurnEndedWithResult = false;
     try {
@@ -379,21 +383,24 @@ export class ClaudeCliClient {
   }
 
   /**
-   * Closes stdin so the process can leave, waits `drainMs` for that, then stops
-   * it for real. Returns only once the exit has been observed, so a caller never
-   * leaves a running process behind, and reports whether the drain was clean.
+   * Gives a healthy process up to `drainMs` to exit on EOF. Transport failure
+   * ends the drain and requests a forced stop. Returns after observing exit.
    */
   public async close(options: { drainMs?: number } = {}): Promise<ClaudeDrainReport> {
     this.closing = true;
-    this.handle.endStdin();
-    const drained = await Promise.race([
-      this.handle.exited.then(() => true),
-      new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), options.drainMs ?? CLAUDE_DRAIN_TIMEOUT_MS);
-        timer.unref();
-      }),
-    ]);
-    await this.handle.stop();
+    let drained = false;
+    if (!this.error) {
+      this.handle.endStdin();
+      drained = await Promise.race([
+        this.handle.exited.then(() => true),
+        this.failed.then(() => false),
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), options.drainMs ?? CLAUDE_DRAIN_TIMEOUT_MS);
+          timer.unref();
+        }),
+      ]);
+    }
+    await this.handle.stop({ force: this.error !== null });
     const exit = await this.handle.exited;
     // A CLI that saw its stdin close, wrote everything it had and left is a
     // transport that finished its work, not one that broke: no failure is recorded
@@ -592,14 +599,22 @@ export class ClaudeCliClient {
       case CLAUDE_FRAME.controlRequest:
         return this.onInboundRequest(frame);
       case CLAUDE_FRAME.system: {
+        const run = this.turn;
         const init = parseSystemInit(frame);
-        if (!init) {
-          return;
+        if (init) {
+          run?.handlers.validateStartupPermissionMode?.(init.permissionMode);
+          this.sessionId = init.sessionId;
+          return this.emit({ type: "system_init", init });
         }
-        this.sessionId = init.sessionId;
-        return this.emit({ type: "system_init", init });
+        // Model eligibility can resolve after system/init and before output.
+        if (run && !run.hasAssistantFrame) {
+          const mode = parseStatusPermissionMode(frame);
+          if (mode !== null) run.handlers.validateStartupPermissionMode?.(mode);
+        }
+        return;
       }
       case CLAUDE_FRAME.assistant:
+        if (this.turn) this.turn.hasAssistantFrame = true;
         return this.emitAll(eventsFromAssistant(frame));
       case CLAUDE_FRAME.user:
         return this.emitAll(eventsFromUser(frame));

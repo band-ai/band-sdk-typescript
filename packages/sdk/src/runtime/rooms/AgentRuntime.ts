@@ -486,6 +486,17 @@ export class AgentRuntime {
     return execution?.state.status === "running" ? execution.play() : false;
   }
 
+  /**
+   * Runs the missed-play check in every room Band has stopped, for a play
+   * that named an execution but no room. Each room resumes only if its own
+   * `/next` serves a message, so no other room's pause is lifted.
+   */
+  public probeBandStoppedRooms(): void {
+    for (const execution of this.executions.values()) {
+      execution.probeMissedPlay();
+    }
+  }
+
   /** The room's pause record, which each of its executions shares. */
   private pausesOf(roomId: string): Set<RoomPauseSource> {
     let sources = this.roomPauses.get(roomId);
