@@ -242,6 +242,23 @@ export class PlatformRuntime implements AsyncDisposable {
    * still apply once the room is handled.
    */
   private applyControl(control: AgentControl): void {
+    // Every agent.control push from Band carries an execution id, and the
+    // per-execution endpoint's push names that id and no room. A stop or
+    // interrupt there would fan out to every room, which no per-execution
+    // cancel asks for: drop it and log. A play lifts no pause either: it
+    // runs the missed-play check in every room Band has stopped, and a room
+    // resumes only once its own /next serves it a message. Agent-wide
+    // pushes without an execution id are not sent by the platform; that path
+    // stays as the SDK's contract.
+    if (control.roomId === null && control.executionId !== null) {
+      if (control.mode === "play") {
+        this.logger.info("Control play addressed to one execution named no room; checking the Band-stopped rooms for their own plays", { correlationId: control.correlationId, executionId: control.executionId });
+        this.runtime?.probeBandStoppedRooms();
+      } else {
+        this.logger.info("Control signal addressed to one execution named no room; dropping it", { mode: control.mode, correlationId: control.correlationId, executionId: control.executionId });
+      }
+      return;
+    }
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
     const roomIds = runtime ? controlTargets(control, runtime.handledRoomIds()) : [];
