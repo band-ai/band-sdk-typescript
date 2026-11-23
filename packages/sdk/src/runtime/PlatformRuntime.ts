@@ -546,14 +546,14 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
- * The platform identity this start's journal generation binds its rooms to.
- * A standard link's identity is the canonical form of its REST endpoint; a
- * custom REST adapter's URL cannot stand for the platform, so the deployment
- * must name one in `sessionConfig.journalPlatformIdentity`. An explicit value
- * that names a different platform than the link speaks to refuses the start:
- * binding the journal to the wrong platform would let a restart under another
- * deployment replay this one's replies as unsettled.
- */
+   * The platform identity this start's journal generation binds its rooms to.
+   * A standard link's identity is the canonical form of its REST endpoint; a
+   * custom REST adapter's URL cannot stand for the platform, so the deployment
+   * must name one in `sessionConfig.journalPlatformIdentity`. An explicit value
+   * that names a different platform than the link speaks to refuses the start:
+   * binding the journal to the wrong platform would let a restart under another
+   * deployment replay this one's replies as unsettled.
+   */
   private journalIdentity(): string {
     const link = this.link;
     const explicit = this.sessionConfig.journalPlatformIdentity;
@@ -1213,16 +1213,13 @@ export class PlatformRuntime implements AsyncDisposable {
     return await this.settleCutShortMessage(context, message, mode, journal);
   }
 
-/**
- * The room's turn journal. A configured journal that will not open — corrupt,
- * unreadable, or its path taken — rejects, and the turn fails before its
- * adapter runs: only a runtime with no generation runs turns without one.
- */
+  /**
+   * The room's turn journal. A configured journal that will not open — corrupt,
+   * unreadable, or refused — rejects so the turn fails rather than run
+   * unjournaled; only a runtime with no generation posts without one.
+   */
   private async openJournal(roomId: string): Promise<RoomJournal | undefined> {
     if (!this.generation) return undefined;
-    // A configured journal that will not open (corrupt, unreadable, refused)
-    // fails the turn rather than letting it run unjournaled: only a runtime
-    // with no generation posts without a journal.
     return await this.generation.room(roomId);
   }
 
@@ -1335,10 +1332,10 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   /**
- * Closes the start generation: its in-flight publications, its rooms, then
- * the ownership those held. A failed close falls back like every other
- * journal failure: it is logged, never the stop's failure.
- */
+   * Closes the start generation: its in-flight publications, its rooms, then
+   * the ownership those held. A failed close falls back like every other
+   * journal failure: it is logged, never the stop's failure.
+   */
   private async closeGeneration(): Promise<void> {
     const generation = this.generation;
     if (!generation) return;

@@ -195,6 +195,11 @@ export class AgentTools implements AgentToolsProtocol {
     return this.postMessage(content, mentions, "notice");
   }
 
+  /** The inbound a reply or decline settles under: the turn's scope, else the tools' bound id. */
+  private publicationInboundId(): string | undefined {
+    return currentTurnInbound() ?? this.inboundMessageId?.();
+  }
+
   private async postMessage(
     content: string,
     mentions: MentionInput,
@@ -221,7 +226,7 @@ export class AgentTools implements AgentToolsProtocol {
     // notice (and a reply with nothing in flight) posts unrecorded, exactly
     // as before the journal existed.
     if (kind === "reply" && this.publication) {
-      const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
+      const messageId = this.publicationInboundId();
       if (messageId !== undefined) {
         return this.publication.publishReply(messageId, post, this.publicationStop?.());
       }
@@ -889,7 +894,7 @@ export class AgentTools implements AgentToolsProtocol {
         // call reports success, so the declined message can never be
         // redelivered. A decline the harness refuses records nothing.
         if (this.publication) {
-          const messageId = currentTurnInbound() ?? this.inboundMessageId?.();
+          const messageId = this.publicationInboundId();
           if (messageId !== undefined) {
             return this.publication.publishDecline(messageId, declined);
           }

@@ -13,7 +13,7 @@ import { TurnCutShortError } from "./journalTools";
  * invoked, and the settlement (accepted, refused, or unknown) is recorded
  * before the post's outcome is returned to the caller.
  *
-* The engine is fail-closed. It stands behind a configured generation, so a
+ * The engine is fail-closed. It stands behind a configured generation, so a
  * reply for a room whose journal will not open, whose generation closed, or
  * whose handle no longer admits records is refused outright: nothing is
  * delivered unjournaled. Only a runtime that never configured the journal
@@ -35,12 +35,10 @@ export class PublicationEngine {
   }
 
   /**
- * The room's publication authority, as it stands. The engine is fail-closed:
- * it exists only behind a configured generation, so anything that breaks the
- * room's handle — a journal that will not open, a generation whose close beat
- * this reply, or a handle that no longer admits records — refuses the
- * publication rather than deliver it unjournaled.
- */
+   * The room's publication authority. Fail-closed: a journal that will not
+   * open, a closed generation, or a handle that no longer admits records
+   * refuses the publication rather than deliver it unjournaled.
+   */
   private async authority(): Promise<RoomJournal | undefined> {
     let room: RoomJournal | undefined;
     try {
@@ -66,7 +64,18 @@ export class PublicationEngine {
     return room;
   }
 
-/**
+  /** The room's journal, or a closed refusal when no authority stands. */
+  private async requireJournal(what: "reply" | "decline"): Promise<RoomJournal> {
+    const journal = await this.authority();
+    if (journal) return journal;
+    // Configured journal with no standing authority: refuse rather than act unjournaled.
+    throw new JournalPublicationError(
+      `The room's turn journal no longer stands behind this ${what}; it is refused rather than ${what === "reply" ? "delivered" : "run"} unjournaled. Stop the runtime, restore the journal, and start again.`,
+      "closed",
+    );
+  }
+
+  /**
    * Posts a reply through the journal: the durable intent is written before
    * `post` runs (a failed write never lets the post out), and the accepted
    * post is settled before its result is returned.
@@ -91,16 +100,7 @@ export class PublicationEngine {
     stopped?: AbortSignal,
   ): Promise<ToolOperationResult> {
     if (stopped?.aborted) throw new TurnCutShortError();
-    const journal = await this.authority();
-    if (!journal) {
-      // The engine stands behind a configured journal: a room whose authority
-      // stands behind nothing is no case of journaling being disabled, and the
-      // reply is refused rather than delivered unjournaled.
-      throw new JournalPublicationError(
-        "The room's turn journal no longer stands behind this reply; it is refused rather than delivered unjournaled. Stop the runtime, restore the journal, and start again.",
-        "closed",
-      );
-    }
+    const journal = await this.requireJournal("reply");
 
     const publicationId = await journal.beginReply(messageId);
     // A turn cut short between the durable intent and the post: the reply is
@@ -178,16 +178,7 @@ export class PublicationEngine {
    * refuses records no settlement.
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
-    const journal = await this.authority();
-    if (!journal) {
-      // A decline that cannot stand on the room's journal records no durable
-      // settlement — a restart would redeliver the message. It is refused
-      // rather than run unjournaled.
-      throw new JournalPublicationError(
-        "The room's turn journal no longer stands behind this decline; it is refused rather than run unjournaled. Stop the runtime, restore the journal, and start again.",
-        "closed",
-      );
-    }
+    const journal = await this.requireJournal("decline");
 
     const tracked = (async (): Promise<T> => {
       const result = await run();
@@ -196,11 +187,6 @@ export class PublicationEngine {
     })();
     this.generation?.trackInflight(tracked, journal.roomId);
     return tracked;
-  }
-
-  /** The journal this engine stands behind, when it admits records; `undefined` when no authority stands. */
-  public async roomJournal(): Promise<RoomJournal | undefined> {
-    return await this.authority();
   }
 }
 

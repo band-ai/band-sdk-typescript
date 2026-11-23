@@ -7,14 +7,18 @@ import { Serializer } from "../../core/singleFlight";
 
 import { JournalFileError, JournalPublicationError } from "./errors";
 import {
+  JOURNAL_FORMAT_VERSION,
   identityDirectoryComponent,
   journalHeaderSchema,
   journalRecordSchema,
   roomFileComponent,
   type JournalHeader,
   type JournalRecord,
+  type PublicationOutcome,
   type PublicationState,
 } from "./records";
+
+export type { PublicationOutcome };
 
 /** A journal read or write failure; the file is in its cause. */
 export function journalFileFailure(error: unknown): JournalFileError {
@@ -89,9 +93,6 @@ export interface RoomJournalOptions {
   markAnnounced?: (publicationId: string) => void;
 }
 
-/** How one admitted reply stands in the journal. */
-export type PublicationOutcome = "pending" | "settled" | "refused" | "unknown";
-
 export interface UnresolvedPublication {
   messageId: string;
   publicationId: string;
@@ -100,16 +101,9 @@ export interface UnresolvedPublication {
   at: number;
 }
 
-interface PublicationIndex {
-  outcome: PublicationOutcome;
-  receiptId?: string;
-  reported: boolean;
-  at: number;
-}
-
 interface InboundIndex {
   answered: boolean;
-  publications: Map<string, PublicationIndex>;
+  publications: Map<string, PublicationState>;
   at: number;
 }
 
@@ -120,7 +114,7 @@ function toLine(record: Record<string, unknown>): string {
 }
 
 function headerLine(identity: string, agentId: string, roomId: string, at: number): string {
-  return toLine({ t: "header", v: 2, platformIdentity: identity, agentId, roomId, at });
+  return toLine({ t: "header", v: JOURNAL_FORMAT_VERSION, platformIdentity: identity, agentId, roomId, at });
 }
 
 /**

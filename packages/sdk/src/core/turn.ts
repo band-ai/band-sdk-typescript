@@ -96,7 +96,7 @@ export class Turn {
   /** True once the turn replied or declined, so its closing text must not be relayed. */
   public get replied(): boolean {
     return this.ledger.replySettled();
-}
+  }
 
   /** The turn outlives `onMessage` (it was released to wait on a decision), so
    * the adapter judges it at its real end with {@link reportUnsettledTurn}.
@@ -115,19 +115,17 @@ export class Turn {
     return this.isDetached;
   }
 
-  /** The turn's closing text must not be relayed as a reply: a reply whose
-   * delivery stands unknown may already be in the room, and an unkeyed relay
-   * would post replacement text on top of it. The fence stands on the turn's
-   * runtime side, so a late result fences the turn it ran on and cannot reach
-   * a successor.
-   */
-  public get relayProhibited(): boolean {
-    return this.fenceSource?.() ?? false;
-  }
-
   /** This turn's reply delivery stands unknown: the reply may already be in the room. */
   public get hasUnknownDelivery(): boolean {
     return this.fenceSource?.() ?? false;
+  }
+
+  /**
+   * The turn's closing text must not be relayed: an unknown delivery may
+   * already be in the room, and an unkeyed relay would post on top of it.
+   */
+  public get relayProhibited(): boolean {
+    return this.hasUnknownDelivery;
   }
 
   /** Settles when a turn detached with its end has really ended; never rejects. */

@@ -193,14 +193,10 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
         return { found };
       }
     }
-    if (!cutShort) {
-      if (!resendsLeft) throw failure;
-      logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
-      continue;
-    }
-    // Cut short: surface the failure the transport itself reported, so the
-    // publication settles on the transport's actual outcome, never on the cut.
-    throw failure;
+    // Cut short: surface the transport's failure, never the cut — so the
+    // publication settles on the post's actual outcome.
+    if (cutShort || !resendsLeft) throw failure;
+    logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
   }
 }
 

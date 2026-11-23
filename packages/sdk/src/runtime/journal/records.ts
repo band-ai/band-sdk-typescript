@@ -69,14 +69,6 @@ export function roomFileComponent(roomId: string): string {
   return createHash("sha256").update(roomId, "utf8").digest("hex");
 }
 
-/** How one inbound's records have left it. Settled states never un-settle. */
-export interface InboundState {
-  /** A turn ended, or a reply/decline settled for it: it is answered and answered again never. */
-  answered: boolean;
-  /** Its publications' delivery states, keyed by `publicationId`. */
-  publications: ReadonlyMap<string, PublicationState>;
-}
-
 /** How one admitted reply stands: unposted-and-pending, or one terminal state. */
 export type PublicationOutcome = "pending" | "settled" | "refused" | "unknown";
 

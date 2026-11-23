@@ -3,9 +3,8 @@ import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { BandSdkError, ValidationError } from "../../core/errors";
-import type { Logger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { isolateTeardown } from "../../core/teardown";
-import { resolveLogger } from "../../core/logger";
 
 import { JournalFileError } from "./errors";
 import {
@@ -135,7 +134,7 @@ export class TurnJournal {
     this.prepared = true;
   }
 
-/**
+  /**
    * Opens the agent's journal under `identity` for one start generation:
    * acquires the agent's exclusive ownership, resumes a migration a crash
    * left mid-commit, and refuses to start over legacy files no migration
@@ -199,7 +198,7 @@ class Generation implements JournalGeneration {
   /** A turn is still using the room: a close owed to it is deferred until the last hold ends. */
   private readonly turnHolds = new Map<string, number>();
   /** A release landed on a held room; its close runs when the last hold ends. */
-  private readonly deferredCloses = new Map<string, boolean>();
+  private readonly deferredCloses = new Set<string>();
   /** What this generation announced, per room: one announcement per publication, across the room's handles. */
   private readonly announced = new Map<string, Set<string>>();
   private closed = false;
@@ -241,8 +240,7 @@ class Generation implements JournalGeneration {
       return;
     }
     this.turnHolds.delete(roomId);
-    if (!this.deferredCloses.get(roomId)) return;
-    this.deferredCloses.delete(roomId);
+    if (!this.deferredCloses.delete(roomId)) return;
     const room = this.rooms.get(roomId);
     if (room) {
       this.rooms.delete(roomId);
@@ -255,12 +253,12 @@ class Generation implements JournalGeneration {
     if (!room) {
       // A held room's close is owed, but a turn still uses its handle; it runs
       // when the last hold ends. An already closed room stands behind its close.
-      return (this.deferredCloses.get(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
+      return (this.deferredCloses.has(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
     }
     if (!force && (this.turnHolds.get(roomId) ?? 0) > 0) {
       // A turn is still writing to the room: its handle stays open, and the
       // close runs when the turn's hold ends.
-      this.deferredCloses.set(roomId, true);
+      this.deferredCloses.add(roomId);
       return;
     }
     this.rooms.delete(roomId);
@@ -273,10 +271,10 @@ class Generation implements JournalGeneration {
     // outcome is never lost to the close racing the post.
     const held = this.roomInflight.get(roomId);
     if (held) this.roomInflight.delete(roomId);
-    const closing = (held && held.size > 0
-      ? Promise.allSettled([...held]).then(() => closeRoom(room))
-      : Promise.resolve().then(() => closeRoom(room))
-    ).finally(() => {
+    const closing = (async () => {
+      if (held && held.size > 0) await Promise.allSettled([...held]);
+      await closeRoom(room);
+    })().finally(() => {
       if (this.releasing.get(roomId) === closing) this.releasing.delete(roomId);
     });
     this.releasing.set(roomId, closing);
@@ -316,7 +314,7 @@ class Generation implements JournalGeneration {
       await isolateTeardown(errors, () => this.release(roomId));
     }
     // A close a turn deferred: the generation's close stands behind no turn, so it runs now.
-    for (const roomId of [...this.deferredCloses.keys()]) {
+    for (const roomId of [...this.deferredCloses]) {
       this.deferredCloses.delete(roomId);
       const room = this.rooms.get(roomId);
       if (room) {
