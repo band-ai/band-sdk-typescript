@@ -6,7 +6,9 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import type { PaginatedResponse, PlatformChatMessage } from "../src/client/rest/types";
+import { RestFacade } from "../src/client/rest/RestFacade";
+import { readRoomHistoryPage } from "../src/client/rest/pagination";
+import type { PaginatedResponse, PaginationMetadata, PlatformChatMessage } from "../src/client/rest/types";
 import type { PlatformMessageLike, RoomHistoryPage } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import type { McpToolRegistration } from "../src/mcp/registrations";
@@ -105,8 +107,42 @@ describe("AgentTools.readRoomHistory", () => {
   });
 
   it("throws, rather than returning an empty page, when the REST client cannot list history", async () => {
-    const tools = new AgentTools({ roomId: ROOM, rest: new FakeRestApi() });
-    await expect(tools.readRoomHistory()).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    await expect(new AgentTools({ roomId: ROOM, rest: new FakeRestApi() }).readRoomHistory()).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    await expect(readRoomHistoryPage(new RestFacade({ api: new FakeRestApi() }), ROOM)).rejects.toBeInstanceOf(UnsupportedFeatureError);
+  });
+
+  it("reads through a RestFacade to the API it wraps", async () => {
+    const api = new HistoryRestApi([chatMessage(1), chatMessage(2)]);
+    const page = await readRoomHistoryPage(new RestFacade({ api }), ROOM, { cursor: "m2", limit: 1 });
+    expect(api.requests).toEqual([{ chatId: ROOM, cursor: "m2", limit: 1 }]);
+    expect(page.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(page.nextCursor).toBeNull();
+  });
+});
+
+describe("where a room-history page ends", () => {
+  class OnePageHistoryApi extends FakeRestApi {
+    public constructor(private readonly metadata?: PaginationMetadata) {
+      super();
+    }
+
+    public async listRoomHistory(): Promise<PaginatedResponse<PlatformChatMessage>> {
+      return { data: [chatMessage(1)], ...(this.metadata ? { metadata: this.metadata } : {}) };
+    }
+  }
+
+  it.each([
+    { name: "no more after a cursor", metadata: { has_more: false, next_cursor: "stale" }, next: null },
+    { name: "no metadata", metadata: undefined, next: null },
+    { name: "more and a cursor", metadata: { has_more: true, next_cursor: "older" }, next: "older" },
+  ])("$name", async ({ metadata, next }) => {
+    const page = await readRoomHistoryPage(new OnePageHistoryApi(metadata), ROOM);
+    expect(page.nextCursor).toBe(next);
+  });
+
+  it("refuses a page that has more but no cursor", async () => {
+    await expect(readRoomHistoryPage(new OnePageHistoryApi({ has_more: true, next_cursor: "" }), ROOM)).rejects.toBeInstanceOf(ValidationError);
+    await expect(readRoomHistoryPage(new OnePageHistoryApi({ has_more: true }), ROOM)).rejects.toBeInstanceOf(ValidationError);
   });
 });
 

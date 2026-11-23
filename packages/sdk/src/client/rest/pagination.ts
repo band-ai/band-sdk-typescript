@@ -330,10 +330,11 @@ export async function readRoomHistoryPage(
     throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
   }
   const { data, metadata } = await listRoomHistory({ chatId, ...(cursor === undefined ? {} : { cursor }), limit }, options);
-  const next = metadata?.next_cursor;
-  // Unlike `nextCursorOf`, a missing `has_more` still pages when a cursor is present:
-  // Band's agent message list has handed back a next key without always setting the flag.
-  return { messages: data, nextCursor: typeof next === "string" && next !== "" && metadata?.has_more !== false ? next : null };
+  const nextCursor = nextCursorOf(metadata);
+  if (nextCursor === null && metadata?.has_more === true) {
+    throw new ValidationError("Band reported more room history without a cursor");
+  }
+  return { messages: data, nextCursor };
 }
 
 /** Band's chat message type for ordinary agent text posts. */

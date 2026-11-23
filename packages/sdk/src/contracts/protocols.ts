@@ -189,7 +189,7 @@ export interface RoomContextTools {
 export interface ReadRoomHistoryArgs {
   /** `nextCursor` from the previous page; omit for the newest page. */
   cursor?: string;
-  /** History messages per page, 1 to 100; 20 by default. */
+  /** History messages per page, at most `MAX_ROOM_HISTORY_PAGE`; `DEFAULT_ROOM_HISTORY_PAGE` by default. */
   limit?: number;
   /**
    * Put first on every page, and only there. During a turn the runtime pins
