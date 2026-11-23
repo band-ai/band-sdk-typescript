@@ -22,16 +22,19 @@ import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 export class PublicationEngine {
   private constructor(
     private readonly room: () => Promise<RoomJournal | undefined>,
+    private readonly roomId: string,
     private readonly generation: JournalGeneration | undefined,
     private readonly logger: Logger,
   ) {}
 
   public static create(options: {
     room: () => Promise<RoomJournal | undefined>;
+    /** Known at construction so trackInflight can run before any journal await. */
+    roomId: string;
     generation?: JournalGeneration;
     logger: Logger;
   }): PublicationEngine {
-    return new PublicationEngine(options.room, options.generation, options.logger);
+    return new PublicationEngine(options.room, options.roomId, options.generation, options.logger);
   }
 
   /**
@@ -103,11 +106,11 @@ export class PublicationEngine {
       const refused = cutShort(stopped);
       if (refused) throw refused;
     }
-    const journal = await this.requireJournal("reply");
-
-    // Track before any await that can interleave with release/drain: a force
-    // close or stop drain must wait on this admission, including through beginReply.
-    const tracked = this.runTracked(journal.roomId, async () => {
+    // Track before any await that can interleave with release/drain — including
+    // requireJournal/room(): force-close must not observe an empty inflight set
+    // then let the post run while the handle is closing.
+    return this.runTracked(this.roomId, async () => {
+      const journal = await this.requireJournal("reply");
       const publicationId = await journal.beginReply(messageId);
       // A turn cut short between the durable intent and the post: the reply is
       // refused, not delivered — the platform never saw it.
@@ -143,7 +146,6 @@ export class PublicationEngine {
       }
       return result;
     });
-    return tracked;
   }
 
   /**
@@ -187,8 +189,8 @@ export class PublicationEngine {
    * refuses records no settlement.
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
-    const journal = await this.requireJournal("decline");
-    return this.runTracked(journal.roomId, async () => {
+    return this.runTracked(this.roomId, async () => {
+      const journal = await this.requireJournal("decline");
       const result = await run();
       await journal.settleDecline(messageId);
       return result;

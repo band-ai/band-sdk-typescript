@@ -608,6 +608,7 @@ export class PlatformRuntime implements AsyncDisposable {
             // admits records refuses it as poisoned. Only a runtime that never
             // configured the journal posts without one.
             room: () => generation.room(roomId),
+            roomId,
             generation,
             logger: this.logger,
           })
@@ -1073,16 +1074,39 @@ export class PlatformRuntime implements AsyncDisposable {
     let stopMode: TurnStopMode | null = null;
     // The adapter handed the turn's reply to work that outlives it (a decision wait).
     let detached = false;
+    // When the room is held past untilStopped (detach or a cut-short adapter that
+    // cannot cancel), publicationStop stays installed until every such hold ends —
+    // not cleared in finally — so a late reply still sees a mid-flight abort.
+    // Clear is chained into the hold promise (before the room wakes) and is not
+    // awaited here: stop()/idle do not wait on publicationStop.
+    let retainPublicationStop = false;
+    let publicationHold: Promise<void> = Promise.resolve();
+    let publicationClearGeneration = 0;
+    const holdTurn = (ended: Promise<void>): void => {
+      retainPublicationStop = true;
+      const generation = ++publicationClearGeneration;
+      publicationHold = Promise.all([
+        publicationHold,
+        ended.then(() => undefined, () => undefined),
+      ]).then(() => undefined);
+      holdRoomUntil(
+        publicationHold.then(() => {
+          if (generation === publicationClearGeneration) {
+            context.setPublicationStop(undefined);
+          }
+        }),
+      );
+    };
     try {
       await lease?.ready;
       if (!admitted()) return false;
       if (!stopped.aborted) {
         this.events.emit({ type: "turn.started", roomId, messageId });
         started = true;
-        // History reads pin this turn's inbound (#442). A reply settles under
-        // this turn's inbound through the turn's scope — one the turn's work
-        // keeps when it is handed off and outlives the turn — never under
-        // whatever the room is turning to next.
+        // History reads pin this turn's inbound. A reply settles under this
+        // turn's inbound through the turn's scope — one the turn's work keeps
+        // when it is handed off and outlives the turn — never under whatever
+        // the room is turning to next.
         const pinned = pinTurnInbound(input.tools, input.message);
         const cycled = lease ? bindWorkingCycle(pinned, lease) : pinned;
         // The turn's own side of the runtime's publications: a reply the turn
@@ -1111,7 +1135,7 @@ export class PlatformRuntime implements AsyncDisposable {
           tools,
           holdRoomUntil: (ended) => {
             detached = true;
-            holdRoomUntil(ended);
+            holdTurn(ended);
           },
         });
         const cut = await untilStopped(
@@ -1122,14 +1146,16 @@ export class PlatformRuntime implements AsyncDisposable {
         stopMode = cut ? stopModeOf(stopped) : null;
         if (stopMode) {
           // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
-          holdRoomUntil(turn.then(() => undefined, () => undefined));
+          holdTurn(turn.then(() => undefined, () => undefined));
         }
       }
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
-      context.setPublicationStop(undefined);
+      if (!retainPublicationStop) {
+        context.setPublicationStop(undefined);
+      }
       await lease?.end();
     }
     if (!started) {
@@ -1338,17 +1364,24 @@ export class PlatformRuntime implements AsyncDisposable {
     });
   }
 
-  /** Runs `work` with at most {@link RECOVERY_SLOTS} room recoveries open at once. */
+  /**
+   * Runs `work` with at most {@link RECOVERY_SLOTS} room recoveries open at once.
+   * A freed slot is transferred to a waiter (wake without re-increment) so a
+   * stealer cannot claim the same grant the waiter was woken for.
+   */
   private async withRecoverySlot<T>(work: () => Promise<T>): Promise<T> {
-    if (this.recoverySlots <= 0) {
+    if (this.recoverySlots > 0) {
+      this.recoverySlots -= 1;
+    } else {
       await new Promise<void>((resolve) => this.recoveryQueue.push(resolve));
+      // Woken with the slot already transferred.
     }
-    this.recoverySlots -= 1;
     try {
       return await work();
     } finally {
-      this.recoverySlots += 1;
-      this.recoveryQueue.shift()?.();
+      const next = this.recoveryQueue.shift();
+      if (next) next();
+      else this.recoverySlots += 1;
     }
   }
 

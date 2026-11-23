@@ -4,14 +4,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * The turn a tool call runs in: the inbound message its replies settle under,
  * carried in the call's async scope rather than in the tools it runs on.
  *
- * The runtime runs every turn's adapter inside {@link runTurnInboundScope}, so
- * whatever tool composition the turn was given — the host's, wrapped or not —
- * settles its replies under that turn's inbound: the tools keep the host's
- * composition exactly as the preprocessor gave them, and work the turn hands
- * off that outlives it keeps the scope it was handed in, so a late reply
- * settles under the message it answers, never under whatever the room is
- * turning to next. Outside a runtime turn no scope stands: a direct
- * construction of the room's tools settles under whatever it was told to.
+ * {@link scopeTurnTools} binds that inbound onto the tools' methods themselves:
+ * each invocation enters {@link runTurnInboundScope}, so whatever composition
+ * the turn was given — the host's, wrapped or not — settles its replies under
+ * that turn's inbound. Work the turn hands off that outlives it keeps the
+ * scope by calling those methods, so a late reply settles under the message it
+ * answers, never under whatever the room is turning to next. The adapter run
+ * itself is not wrapped in the scope. Outside a runtime turn no scope stands:
+ * a direct construction of the room's tools settles under whatever it was told.
  */
 const turnInboundScope = new AsyncLocalStorage<string | undefined>();
 

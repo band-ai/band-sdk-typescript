@@ -250,13 +250,13 @@ async function main(): Promise<void> {
           const hold = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
           const pending = args.tools.sendMessage("tool answer", ["@owner"]);
           await hold;
-          // The cut's added proof over a post-hoc observation: the tool's
-          // response is still outstanding while its publication stands paused.
+          // At hold entry the settle append is parked before the engine can
+          // resolve the tool: the response is still outstanding without a
+          // wall-clock wait as evidence.
           let resolved = false;
           void pending.then(() => {
             resolved = true;
           });
-          await sleep(150);
           if (resolved) throw new Error("the tool response returned while its publication stood paused");
           report("paused");
           await pending; // never reached: the process dies at the cut

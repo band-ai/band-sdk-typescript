@@ -266,6 +266,8 @@ class Generation implements JournalGeneration {
   public async release(roomId: string, force = false): Promise<void> {
     const room = this.rooms.get(roomId);
     if (!room) {
+      // Force already closed (or never opened): no close is owed to a later endHold.
+      if (force) this.deferredCloses.delete(roomId);
       // A held room's close is owed, but a turn still uses its handle; it runs
       // when the last hold ends. An already closed room stands behind its close.
       return (this.deferredCloses.has(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
@@ -276,6 +278,8 @@ class Generation implements JournalGeneration {
       this.deferredCloses.add(roomId);
       return;
     }
+    // Closing now: drop any deferred close so a later endHold does not close a reopened handle.
+    this.deferredCloses.delete(roomId);
     this.rooms.delete(roomId);
     await this.closeRoomNow(roomId, room);
   }

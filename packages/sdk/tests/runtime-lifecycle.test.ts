@@ -1171,3 +1171,72 @@ describe("cross-runtime lifecycle contract: stop() after a failed start", () => 
     await expect(stop()).rejects.toBe(failure);
   });
 });
+
+describe("PlatformRuntime recovery slot semaphore", () => {
+  it("does not over-admit when a stealer races a woken waiter", async () => {
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: API_KEY,
+      link: new BandLink({
+        agentId: AGENT_ID,
+        apiKey: API_KEY,
+        transport: new FakeTransport(),
+        restApi: new FakeRestApi(),
+      }),
+    });
+    const slots = runtime as unknown as {
+      recoverySlots: number;
+      withRecoverySlot: <T>(work: () => Promise<T>) => Promise<T>;
+    };
+    const capacity = slots.recoverySlots;
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const unlocks: Array<() => void> = [];
+
+    const held = Array.from({ length: capacity }, () =>
+      slots.withRecoverySlot(
+        () =>
+          new Promise<void>((resolve) => {
+            concurrent += 1;
+            maxConcurrent = Math.max(maxConcurrent, concurrent);
+            unlocks.push(() => {
+              concurrent -= 1;
+              resolve();
+            });
+          }),
+      ),
+    );
+    await Promise.resolve();
+    expect(concurrent).toBe(capacity);
+
+    let waiterEntered = false;
+    const waiter = slots.withRecoverySlot(async () => {
+      waiterEntered = true;
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      concurrent -= 1;
+    });
+    await Promise.resolve();
+    expect(waiterEntered).toBe(false);
+
+    // Free one slot (wakes the waiter) then immediately steal in this turn,
+    // before the waiter's microtask runs — the old check-then-act grant over-admitted here.
+    const unlock = unlocks.pop();
+    expect(unlock).toBeDefined();
+    unlock!();
+    const stealer = slots.withRecoverySlot(async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      concurrent -= 1;
+    });
+
+    await Promise.all([waiter, stealer]);
+    expect(waiterEntered).toBe(true);
+    expect(maxConcurrent).toBeLessThanOrEqual(capacity);
+
+    while (unlocks.length > 0) {
+      unlocks.pop()!();
+    }
+    await Promise.all(held);
+  });
+});

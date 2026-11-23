@@ -1,15 +1,10 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { isToolExecutorError } from "../../contracts/protocols";
 import { BAND_TOOL_EFFECTS } from "../../contracts/toolSchemas";
 import { overrideTools } from "../../core/overrideTools";
 import { bandToolOverrides } from "../../core/turn";
-import { DeliveryUnknownError } from "../../core/deliveryFailedError";
+import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
 import { cutShort } from "../turnRevocation";
-
-function isDeliveryUnknownToolResult(result: unknown): boolean {
-  return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
-}
 
 /**
  * Wraps the tools a turn runs on, keeping the turn's side of the runtime's
@@ -41,7 +36,7 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     if (refused) throw refused;
     return call().then(
       (result) => {
-        if (isDeliveryUnknownToolResult(result)) {
+        if (isDeliveryUnknownOutput(result)) {
           fenced = true;
         }
         return result;

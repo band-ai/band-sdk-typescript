@@ -661,6 +661,12 @@ function importedFactsOf(stagingFile: string, records: LegacyRecord[]): Imported
  * (a crash between the manifest's write and the file's); a committed
  * migration's missing destination is refused — its authority is gone, and
  * nothing here may guess it back.
+ *
+ * When `restageIfInvalid` is set (a prepared binding **extension** — e.g. the
+ * operator added a surplus remnant after an earlier prepare), a destination
+ * that no longer matches the amended import is rewritten from the coalesced
+ * sources instead of refusing: the earlier staging could not have held
+ * settlements the new attestation just admitted.
  */
 async function stageDestination(
   agentDir: string,
@@ -671,6 +677,7 @@ async function stageDestination(
   state: "prepared" | "committed",
   logger: Logger,
   explicitSources: Set<string>,
+  restageIfInvalid = false,
 ): Promise<void> {
   const destination = destinationOf(agentDir, binding);
   const existing = await readFile(destination, "utf8").catch((error: unknown) => {
@@ -678,8 +685,13 @@ async function stageDestination(
     throw error;
   });
   if (existing !== null) {
-    await validateDestination(destination, binding, agentId, legacyDir, { checkSources: state === "committed" }, explicitSources);
-    return;
+    try {
+      await validateDestination(destination, binding, agentId, legacyDir, { checkSources: state === "committed" }, explicitSources);
+      return;
+    } catch (error) {
+      if (!restageIfInvalid || !(error instanceof JournalFileError) || state !== "prepared") throw error;
+      // Amended prepared import no longer matches what stands: restage below.
+    }
   }
   if (state === "committed") {
     throw new JournalFileError(
@@ -819,7 +831,11 @@ async function checkSource(legacyDir: string, binding: PreparedBinding, logger: 
  * each staged destination, then the committed manifest — so a crash at any
  * point leaves a state the next apply or start resumes: a destination that
  * stands is kept with whatever records it has since, and a committed
- * migration's missing destination is refused, never guessed back.
+ * migration's missing destination is refused, never guessed back. A prepared
+ * migration may be amended when the next apply's bindings keep every
+ * previously attested file unchanged and only add sources (for example a
+ * surplus remnant the earlier prepare lacked); a rewrite of an existing
+ * attestation, or any change after commit, is still refused.
  */
 export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): Promise<MigrationResult> {
   const now = options.now ?? Date.now;
@@ -886,27 +902,39 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       }
       return { mode: "already-committed", sources: await reportSources(legacyDir, legacy, prepared) };
     }
+    let manifest: Manifest;
+    let restageIfInvalid = false;
     if (existing !== null) {
-      // A prepared manifest from an earlier interrupted run: it must be this same set of bindings.
-      if (!sameBindings(existing.bindings, prepared)) {
+      // A prepared manifest from an earlier interrupted run: resume when the
+      // bindings are the same; amend when this apply only adds sources (e.g. a
+      // surplus remnant) without rewriting any attestation already prepared;
+      // refuse any other rewrite so an unrelated re-prepare cannot displace a
+      // prepared import mid-flight.
+      if (sameBindings(existing.bindings, prepared)) {
+        manifest = existing;
+      } else if (bindingsExtendPrepared(existing.bindings, prepared)) {
+        manifest = { v: 2, state: "prepared", createdAt: existing.createdAt, bindings: prepared };
+        restageIfInvalid = true;
+        await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
+        await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
+      } else {
         throw new JournalFileError(
           "The agent's journal holds a prepared migration for different bindings than this one applies; an interrupted migration is resumed as prepared, not replaced. " +
-            "Let it finish (re-run apply with its bindings), or reconcile the attestations first.",
+            "Let it finish (re-run apply with its bindings), amend by binding additional sources its prepare lacked, or reconcile the attestations first.",
           "corrupt",
           manifestPath(agentDir),
         );
       }
-    }
-    const manifest: Manifest = existing !== null ? existing : { v: 2, state: "prepared", createdAt: now(), bindings: prepared };
-    if (existing === null) {
+    } else {
       // The prepared manifest is durable before any destination is staged: a
       // crash afterwards is a resume, never an empty initialization.
+      manifest = { v: 2, state: "prepared", createdAt: now(), bindings: prepared };
       await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
       await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
     }
     for (const binding of prepared) {
       if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
-      await stageDestination(agentDir, legacyDir, options.agentId, binding, manifest.createdAt, "prepared", logger, explicit);
+      await stageDestination(agentDir, legacyDir, options.agentId, binding, manifest.createdAt, "prepared", logger, explicit, restageIfInvalid);
     }
     await commitManifest(agentDir, manifest, now);
     return { mode: "committed", sources: await reportSources(legacyDir, legacy, prepared) };
@@ -1108,9 +1136,27 @@ async function reportSources(legacyDir: string, legacy: string[], bindings: Arra
   return reports;
 }
 
+function bindingAttestationKey(binding: Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">): string {
+  return `${binding.sourceFile}|${binding.sourceSha256}|${binding.platformIdentity}|${binding.provenance}`;
+}
+
 function sameBindings(a: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>, b: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>): boolean {
   if (a.length !== b.length) return false;
-  const key = (binding: Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">): string => `${binding.sourceFile}|${binding.sourceSha256}|${binding.platformIdentity}|${binding.provenance}`;
-  const right = new Map(b.map((binding) => [binding.sourceFile, key(binding)]));
-  return a.every((binding) => right.get(binding.sourceFile) === key(binding));
+  const right = new Map(b.map((binding) => [binding.sourceFile, bindingAttestationKey(binding)]));
+  return a.every((binding) => right.get(binding.sourceFile) === bindingAttestationKey(binding));
+}
+
+/**
+ * Whether `next` keeps every attestation in `existing` unchanged and may only
+ * add sources — the prepared-amend case for binding a surplus remnant after an
+ * interrupted journal-only prepare. A rewrite or drop of an existing file is
+ * not an extension.
+ */
+function bindingsExtendPrepared(
+  existing: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>,
+  next: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>,
+): boolean {
+  if (next.length <= existing.length) return false;
+  const right = new Map(next.map((binding) => [binding.sourceFile, bindingAttestationKey(binding)]));
+  return existing.every((binding) => right.get(binding.sourceFile) === bindingAttestationKey(binding));
 }

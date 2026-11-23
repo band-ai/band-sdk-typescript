@@ -76,7 +76,7 @@ export interface PublicationState {
   outcome: PublicationOutcome;
   /** The receipt Band returned for the settled reply, when it gave one. */
   receiptId?: string;
-  /** Whether its uncertainty was announced to the operator in this handle's lifetime. */
+  /** Whether its uncertainty was announced to the operator (durable via publication.reported). */
   reported: boolean;
   /** When its last record landed. */
   at: number;

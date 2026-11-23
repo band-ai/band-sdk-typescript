@@ -1,7 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { DeliveryUnknownError } from "../core/deliveryFailedError";
+import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../core/deliveryFailedError";
 import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
@@ -311,7 +311,7 @@ async function executeToolCall(
       // boundary: the result says the post's delivery is unknown and Band may
       // already hold it — nothing to call a plain tool failure, and no
       // adapter text or recovery advice is carried with it.
-      if (result.details?.kind === DeliveryUnknownError.KIND) {
+      if (isDeliveryUnknownOutput(result)) {
         return unknownDeliveryResult();
       }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);

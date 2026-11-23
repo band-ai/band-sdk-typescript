@@ -2,9 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import type { MentionInput } from "../contracts/dtos";
-import { isFailedToolOutput, isToolExecutorError, type AdapterToolsProtocol } from "../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
-import { DeliveryUnknownError } from "../core/deliveryFailedError";
+import {
+  DeliveryUnknownError,
+  deliveryUnknownPublicationId,
+  isDeliveryUnknownOutput,
+} from "../core/deliveryFailedError";
 import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
 
@@ -37,16 +41,15 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
   return overrideTools(tools, overrides as Partial<T>);
 }
 
-/** A tool result that says delivery is unknown: Band may already hold the post. */
-function isDeliveryUnknownOutput(result: unknown): boolean {
-  return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
-}
-
 /**
  * One coalesce map for `executeToolCall(band_send_message)` and direct
  * `sendMessage`: in-flight, success, and delivery_unknown (resolved tool
  * error or thrown DeliveryUnknownError) keep the key so a same-content
  * retry cannot POST again; a definite refusal still clears.
+ *
+ * The sendMessage door never resolves a delivery_unknown ToolExecutorError as
+ * success: when the standing result came from the tool door, it rejects with
+ * DeliveryUnknownError instead.
  */
 function coalesceSendMessage(
   execute: AdapterToolsProtocol["executeToolCall"],
@@ -77,6 +80,14 @@ function coalesceSendMessage(
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
       return admit(args.content, args.mentions ?? null, () => execute(toolName, args));
     },
-    sendMessage: (content, mentions) => admit(content, mentions ?? null, () => sendMessage(content, mentions)),
+    sendMessage: (content, mentions) =>
+      admit(content, mentions ?? null, () => sendMessage(content, mentions)).then((result) => {
+        // Tool-door delivery_unknown resolves a ToolExecutorError; the send
+        // door must reject so deliverReply never treats it as a successful post.
+        if (isDeliveryUnknownOutput(result)) {
+          throw new DeliveryUnknownError(result, deliveryUnknownPublicationId(result));
+        }
+        return result;
+      }),
   };
 }

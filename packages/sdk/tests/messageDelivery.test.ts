@@ -226,4 +226,48 @@ describe("same-turn band_send_message coalescing after delivery_unknown", () => 
     expect(toolPosts).toBe(1);
     expect(second).toBe(first);
   });
+
+  it("rejects sendMessage after executeToolCall delivery_unknown instead of resolving the tool error as success", async () => {
+    let posts = 0;
+    const toolUnknown = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: SEND_MESSAGE_TOOL_NAME,
+      message: "delivery unknown",
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-cross" },
+    });
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "executeToolCall") {
+            return async (toolName: string) => {
+              if (toolName === SEND_MESSAGE_TOOL_NAME) {
+                posts += 1;
+                return toolUnknown;
+              }
+              return {};
+            };
+          }
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              return { success: true, id: "should-not-post" };
+            };
+          }
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "cross", mentions: ["@a"] });
+    expect(isToolExecutorError(first)).toBe(true);
+    expect(first).toMatchObject({ details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-cross" } });
+
+    const error: unknown = await tools.sendMessage("cross", ["@a"]).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(DeliveryUnknownError);
+    expect((error as DeliveryUnknownError).publicationId).toBe("pub-cross");
+    expect(posts).toBe(1);
+  });
 });

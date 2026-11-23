@@ -228,6 +228,7 @@ describe("publications", () => {
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
       room: async () => room,
+      roomId: ROOM,
       generation,
       logger: new NoopLogger(),
     });
@@ -285,6 +286,7 @@ describe("publications", () => {
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
       room: async () => room,
+      roomId: ROOM,
       generation,
       logger: new NoopLogger(),
     });
@@ -364,6 +366,7 @@ describe("publications", () => {
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
       room: async () => room,
+      roomId: ROOM,
       generation,
       logger: new NoopLogger(),
     });
@@ -378,6 +381,45 @@ describe("publications", () => {
     // on the tracked admission, not close under an in-flight post.
     const releasing = generation.release(ROOM, true);
     append.release();
+    await expect(publish).resolves.toMatchObject({ success: true });
+    await releasing;
+    expect(posted).toBe(true);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
+  });
+
+  it("keeps a force-closed room from posting while requireJournal is still awaiting authority", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const authorityEntered = createDeferred();
+    const releaseAuthority = createDeferred();
+    const engine = PublicationEngine.create({
+      room: async () => {
+        authorityEntered.resolve();
+        await releaseAuthority.promise;
+        return room;
+      },
+      roomId: ROOM,
+      generation,
+      logger: new NoopLogger(),
+    });
+    let posted = false;
+    const publish = engine.publishReply("msg-1", async () => {
+      posted = true;
+      return { success: true, message: { id: "posted-1" } };
+    });
+    await authorityEntered.promise;
+    // Force-close while requireJournal is still held: trackInflight must already
+    // cover this await, so close waits and the post still settles durably.
+    const releasing = generation.release(ROOM, true);
+    let releaseDone = false;
+    void releasing.then(() => {
+      releaseDone = true;
+    });
+    await Promise.resolve();
+    expect(releaseDone).toBe(false);
+    expect(posted).toBe(false);
+    releaseAuthority.resolve();
     await expect(publish).resolves.toMatchObject({ success: true });
     await releasing;
     expect(posted).toBe(true);
@@ -599,6 +641,25 @@ describe("ownership and generations", () => {
     const reopened = await reopening;
     expect(reopened.answered("msg-1")).toBe(true);
   });
+
+  it("does not close a reopened handle when endHold follows a force release that cleared a deferred close (S1)", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const held = await generation.room(ROOM);
+    generation.holdRoom(ROOM);
+    // Non-force release while held owes a close; the handle stays open.
+    await generation.release(ROOM);
+    expect(held.isClosed).toBe(false);
+    // Force closes now; the deferred close must not survive for a later endHold.
+    await generation.release(ROOM, true);
+    expect(held.isClosed).toBe(true);
+    const reopened = await generation.room(ROOM);
+    await generation.endHoldRoom(ROOM);
+    expect(reopened.isClosed).toBe(false);
+    expect(reopened.accepting).toBe(true);
+    await reopened.turnDone("msg-after-end-hold");
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+  });
 });
 
 describe("a room's journal opened directly", () => {
@@ -628,6 +689,7 @@ describe("a publication against a closed generation", () => {
   it("refuses a reply rather than deliver it unjournaled", async () => {
     const engine = PublicationEngine.create({
       room: () => closedGeneration.room(ROOM),
+      roomId: ROOM,
       generation: closedGeneration,
       logger: new NoopLogger(),
     });
@@ -642,6 +704,7 @@ describe("a publication against a closed generation", () => {
   it("refuses a decline rather than run it unjournaled", async () => {
     const engine = PublicationEngine.create({
       room: () => closedGeneration.room(ROOM),
+      roomId: ROOM,
       generation: closedGeneration,
       logger: new NoopLogger(),
     });

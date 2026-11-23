@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import type { MessagingTools } from "../contracts/protocols";
+import { isToolExecutorError, type MessagingTools } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -41,6 +41,21 @@ export class DeliveryUnknownError extends DeliveryFailedError {
     this.message =
       "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
   }
+}
+
+/**
+ * True when a tool or MCP result says delivery is unknown: Band may already
+ * hold the post, so a same-content retry must not POST again.
+ */
+export function isDeliveryUnknownOutput(value: unknown): boolean {
+  return isToolExecutorError(value) && value.details?.kind === DeliveryUnknownError.KIND;
+}
+
+/** Publication id carried on a delivery_unknown tool result, when present. */
+export function deliveryUnknownPublicationId(value: unknown): string | undefined {
+  if (!isToolExecutorError(value) || value.details?.kind !== DeliveryUnknownError.KIND) return undefined;
+  const publicationId = value.details?.publicationId;
+  return typeof publicationId === "string" ? publicationId : undefined;
 }
 
 async function delivered(post: () => Promise<ToolOperationResult>): Promise<ToolOperationResult> {

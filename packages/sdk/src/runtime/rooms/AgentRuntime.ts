@@ -297,12 +297,8 @@ export class AgentRuntime {
     const errors: unknown[] = [];
     await isolateTeardown(errors, () => this.link.disconnect());
 
-    const failure = this.lifecycle.is("failed") ? this.lifecycle.state.error : null;
-    if (failure) {
-      if (!this.lifecycle.is("failed")) {
-        this.lifecycle.transition({ status: "failed", error: failure }, "stopped-after-failure");
-      }
-    } else if (this.lifecycle.is("stopping")) {
+    // Already-failed stays failed; only a quiesced "stopping" runtime reaches stopped here.
+    if (this.lifecycle.is("stopping")) {
       this.lifecycle.transition({ status: "stopped" }, "stopped");
     }
 

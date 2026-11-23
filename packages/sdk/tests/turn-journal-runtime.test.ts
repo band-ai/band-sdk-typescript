@@ -20,6 +20,7 @@ import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
+import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
@@ -329,6 +330,49 @@ describe("the turn journal across a restart", () => {
     expect(await room.outcome(inbound)).toBe("processed");
     expect(room.messages).toEqual([]);
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done", "reply.refused"]);
+  });
+
+  it("keeps publicationStop through a cut-short hold so a late reply is refused", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const parked = createDeferred();
+    onTestFinished(() => parked.resolve());
+    const late = createDeferred<unknown>();
+    const stopSignals: Array<AbortSignal | undefined> = [];
+    const setStop = ExecutionContext.prototype.setPublicationStop;
+    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
+      this: ExecutionContext,
+      signal: AbortSignal | undefined,
+    ) {
+      stopSignals.push(signal);
+      return setStop.call(this, signal);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await parked.promise;
+      await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await events.next((event) => event.type === "turn.started");
+
+    platform.control("interrupt", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+    // untilStopped has settled (the former clear point): the cut-short hold must
+    // still own publicationStop so the late reply sees the abort.
+    expect(stopSignals.at(-1)).toBeInstanceOf(AbortSignal);
+    expect(stopSignals.at(-1)?.aborted).toBe(true);
+
+    parked.resolve();
+    const error = await late.promise;
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("cut short");
+    expect(room.messages).toEqual([]);
+    expect(await room.outcome(inbound)).toBe("processed");
+    await vi.waitFor(() => {
+      expect(stopSignals.some((signal) => signal === undefined)).toBe(true);
+    });
   });
 });
 
@@ -1426,7 +1470,7 @@ describe("a reply's origin across turns", () => {
 });
 
 describe("the recovery resource budget", () => {
-  it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async () => {
+  it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async (ctx) => {
     const journalDir = tmpRoot();
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // Measured in a child process: the platform's file-descriptor enumeration
@@ -1464,8 +1508,9 @@ describe("the recovery resource budget", () => {
     expect(report.rooms).toBe(300);
     if (!report.supported || report.control === undefined || report.baseline === undefined || report.peak === undefined || report.after === undefined) {
       // No file-descriptor enumeration stands on this platform (Windows): the
-      // budget proof's measurement does not reach it. Recorded as a gap.
-      console.warn(`the budget proof's descriptor gauge is unavailable on ${process.platform}; the recovery budget is unmeasured there`);
+      // budget proof's measurement does not reach it. Skip as an explicit gap,
+      // never a soft pass.
+      ctx.skip(`the budget proof's descriptor gauge is unavailable on ${process.platform}; the recovery budget is unmeasured there`);
       return;
     }
     // The enumeration showed the three scratch files the child opened, and
