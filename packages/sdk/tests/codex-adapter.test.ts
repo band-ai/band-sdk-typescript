@@ -587,6 +587,37 @@ describe("CodexAdapter", () => {
     expect(reports.map(({ content }) => JSON.parse(content).tool_call_id)).toEqual(["current-custom", "current-custom"]);
   });
 
+  it("keeps the active turn when refusing a stale server request fails to reply", async () => {
+    class FailingRefuseClient extends FakeCodexClient {
+      public override async respondError(): Promise<void> {
+        throw new Error("stdin write failed while refusing stale request");
+      }
+    }
+    const client = new FailingRefuseClient({
+      events: [
+        {
+          kind: "request", id: 101, method: "item/tool/call",
+          params: {
+            threadId: "thread-1", turnId: "obsolete-turn", callId: "obsolete-reply",
+            tool: SEND_MESSAGE_TOOL_NAME, arguments: { content: "stale", mentions: ["owner"] },
+          },
+        },
+        {
+          kind: "notification", method: "item/completed",
+          params: { item: { type: "agentMessage", id: "msg-1", text: "current reply" } },
+        },
+        TURN_COMPLETED,
+      ],
+    });
+    const adapter = new CodexAdapter({
+      factory: async () => client,
+      config: { cwd: tmpRoot(), enableExecutionReporting: true },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "act"))).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["current reply"]);
+  });
+
   it("falls back to a new thread and injects history when resume fails", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({

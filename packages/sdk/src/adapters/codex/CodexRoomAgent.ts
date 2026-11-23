@@ -996,7 +996,19 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     const { client, tools, event } = input;
     const requestParams = asOptionalRecord(event.params);
     if (requestParams?.threadId !== input.threadId || requestParams?.turnId !== input.turnId) {
-      await client.respondError(event.id, -32602, "Server request does not belong to the active turn");
+      // Best-effort: a failed refuse must not take down the active turn via the
+      // runEventLoop request catch (reportTurnFailure) — the stale call is already skipped.
+      try {
+        await client.respondError(event.id, -32602, "Server request does not belong to the active turn");
+      } catch (error) {
+        this.logger.warn("codex_adapter.stale_server_request_reply_failed", {
+          roomId: input.roomId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          requestId: event.id,
+          error,
+        });
+      }
       return;
     }
 
