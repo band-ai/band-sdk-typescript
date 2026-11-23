@@ -171,10 +171,12 @@ export class PublicationEngine {
       });
     }
     if (poisonWriter || !recorded) journal.poison();
-    this.logger.warn("reply delivery is unknown; the publication is recorded as unknown and the room reports it instead of reposting it", {
-      roomId: journal.roomId,
-      error,
-    });
+    if (recorded) {
+      this.logger.warn("reply delivery is unknown; the publication is recorded as unknown and the room reports it instead of reposting it", {
+        roomId: journal.roomId,
+        error,
+      });
+    }
     throw new DeliveryUnknownError(error, publicationId);
   }
 

@@ -231,18 +231,50 @@ describe("publications", () => {
       generation,
       logger: new NoopLogger(),
     });
-    const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
+    const intentEntered = createDeferred();
+    const releaseIntent = createDeferred();
+    const settleEntered = createDeferred();
+    const releaseSettle = createDeferred();
+    onTestFinished(() => {
+      releaseIntent.resolve();
+      releaseSettle.resolve();
+    });
+    let holdingIntent = false;
+    let holdingSettle = false;
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (!holdingIntent && line.includes('"t":"reply.intent"')) {
+        holdingIntent = true;
+        intentEntered.resolve();
+        await releaseIntent.promise;
+      } else if (!holdingSettle && line.includes('"t":"reply.settled"')) {
+        holdingSettle = true;
+        settleEntered.resolve();
+        await releaseSettle.promise;
+      }
+      return original.apply(self, args);
+    });
     const posted = { ran: false };
     const publish = engine.publishReply("msg-1", async () => {
       posted.ran = true;
       return { success: true, message: { id: "posted-1" } };
     });
-    await append.entered;
+    await intentEntered.promise;
     // The intent is not on disk yet: the post that waits on it has not run.
     expect(posted.ran).toBe(false);
-    append.release();
-    await publish;
+    releaseIntent.resolve();
+    await settleEntered.promise;
     expect(posted.ran).toBe(true);
+    // Settlement is not durable yet: publishReply must stay pending.
+    let returned = false;
+    void publish.then(() => {
+      returned = true;
+    });
+    await Promise.resolve();
+    expect(returned).toBe(false);
+    releaseSettle.resolve();
+    await publish;
+    expect(returned).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
     expect(room.answered("msg-1")).toBe(true);
   });
@@ -369,18 +401,22 @@ describe("publications", () => {
     await second.close();
   });
 
-  it("announces an unknown publication once, on first open, and never again", async () => {
+  it("announces an unknown publication on the same handle, then never again after reopen", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     const publicationId = await room.beginReply("msg-1");
     await room.markUnknown("msg-1", publicationId);
+    // Same-handle recover must still return the unknown so stop/play can emit delivery.unrecorded.
+    expect(await room.recoverUnresolved()).toEqual([
+      { messageId: "msg-1", publicationId, outcome: "unknown", at: expect.any(Number) },
+    ]);
+    expect(await room.recoverUnresolved()).toEqual([]);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
     await generation.close();
 
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     const reopened = await second.room(ROOM);
-    const found = await reopened.recoverUnresolved();
-    expect(found).toEqual([{ messageId: "msg-1", publicationId, outcome: "unknown", at: expect.any(Number) }]);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
     await second.close();

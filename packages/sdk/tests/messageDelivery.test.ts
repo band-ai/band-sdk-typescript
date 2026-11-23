@@ -177,4 +177,53 @@ describe("same-turn band_send_message coalescing after delivery_unknown", () => 
     expect(isToolExecutorError(first)).toBe(true);
     expect(second).toMatchObject({ success: true, id: "posted" });
   });
+
+  it("coalesces direct sendMessage after DeliveryUnknown so a second same-content send does not POST again", async () => {
+    let posts = 0;
+    const unknown = new DeliveryUnknownError(serverError(), "pub-2");
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "sendMessage") {
+            return async () => {
+              posts += 1;
+              throw unknown;
+            };
+          }
+          if (key === "executeToolCall") return async () => ({});
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    await expect(tools.sendMessage("held", ["@a"])).rejects.toBe(unknown);
+    await expect(tools.sendMessage("held", ["@a"])).rejects.toBe(unknown);
+    expect(posts).toBe(1);
+
+    // executeToolCall path still coalesces on the shared map.
+    let toolPosts = 0;
+    const toolUnknown = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: SEND_MESSAGE_TOOL_NAME,
+      message: "delivery unknown",
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-3" },
+    });
+    const viaTool = deliveringMessages(
+      toolsWith(async (toolName) => {
+        if (toolName === SEND_MESSAGE_TOOL_NAME) {
+          toolPosts += 1;
+          return toolUnknown;
+        }
+        return {};
+      }),
+      delivery,
+    );
+    const first = await viaTool.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "tool-held", mentions: ["@b"] });
+    const second = await viaTool.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "tool-held", mentions: ["@b"] });
+    expect(toolPosts).toBe(1);
+    expect(second).toBe(first);
+  });
 });

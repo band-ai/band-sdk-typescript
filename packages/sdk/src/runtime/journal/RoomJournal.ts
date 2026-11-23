@@ -387,7 +387,8 @@ export class RoomJournal {
     const publication = this.touch(messageId).publications.get(publicationId);
     if (publication) {
       publication.outcome = "unknown";
-      publication.reported = true;
+      // Leave reported false until recoverUnresolved writes publication.reported /
+      // markAnnounced: same-handle stop/play must still announce delivery.unrecorded.
       publication.at = at;
     }
     this.unresolved.set(publicationId, { messageId, at });

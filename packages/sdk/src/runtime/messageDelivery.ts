@@ -21,12 +21,18 @@ export function currentDelivery(): MessageDelivery | undefined {
  * by name (an MCP call arriving from another async context included) or by
  * direct method, and every notice runs in its scope. A `band_send_message`
  * call the model or an MCP client repeats while the first is in flight, or
- * after it posted, returns the first one's result instead of posting again.
+ * after it posted, returns the first one's result instead of posting again —
+ * including a direct `sendMessage` (GenericAdapter / deliverReply).
  */
 export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, delivery: MessageDelivery): T {
   const inScope = <R>(call: () => Promise<R>): Promise<R> => deliveryScope.run(delivery, call);
   const overrides = bandToolOverrides(tools, (_toolName, call) => inScope(call));
-  overrides.executeToolCall = sendingRepeatsOnce(overrides.executeToolCall as T["executeToolCall"]);
+  const coalesced = coalesceSendMessage(
+    overrides.executeToolCall as T["executeToolCall"],
+    overrides.sendMessage as T["sendMessage"],
+  );
+  overrides.executeToolCall = coalesced.executeToolCall;
+  overrides.sendMessage = coalesced.sendMessage;
   overrides.sendNotice = (content: string, mentions?: MentionInput) => inScope(() => tools.sendNotice(content, mentions));
   return overrideTools(tools, overrides as Partial<T>);
 }
@@ -36,21 +42,41 @@ function isDeliveryUnknownOutput(result: unknown): boolean {
   return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
 }
 
-function sendingRepeatsOnce(execute: AdapterToolsProtocol["executeToolCall"]): AdapterToolsProtocol["executeToolCall"] {
+/**
+ * One coalesce map for `executeToolCall(band_send_message)` and direct
+ * `sendMessage`: in-flight, success, and delivery_unknown (resolved tool
+ * error or thrown DeliveryUnknownError) keep the key so a same-content
+ * retry cannot POST again; a definite refusal still clears.
+ */
+function coalesceSendMessage(
+  execute: AdapterToolsProtocol["executeToolCall"],
+  sendMessage: AdapterToolsProtocol["sendMessage"],
+): {
+  executeToolCall: AdapterToolsProtocol["executeToolCall"];
+  sendMessage: AdapterToolsProtocol["sendMessage"];
+} {
   const sends = new Map<string, Promise<unknown>>();
-  return (toolName, args) => {
-    if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
-    const key = JSON.stringify([args.content, args.mentions ?? null]);
+  const admit = <R>(content: unknown, mentions: unknown, call: () => Promise<R>): Promise<R> => {
+    const key = JSON.stringify([content, mentions ?? null]);
     const standing = sends.get(key);
-    if (standing) return standing;
-    const sent = execute(toolName, args);
+    if (standing) return standing as Promise<R>;
+    const sent = call();
     sends.set(key, sent);
-    // A send in flight, posted, or whose delivery stands unknown answers a
-    // repeat: clearing after delivery_unknown would let the same content post
-    // again while the journal still admits. A definite refusal still clears.
-    sent.then((result) => {
-      if (isFailedToolOutput(result) && !isDeliveryUnknownOutput(result)) sends.delete(key);
-    }, () => sends.delete(key));
+    sent.then(
+      (result) => {
+        if (isFailedToolOutput(result) && !isDeliveryUnknownOutput(result)) sends.delete(key);
+      },
+      (error) => {
+        if (!(error instanceof DeliveryUnknownError)) sends.delete(key);
+      },
+    );
     return sent;
+  };
+  return {
+    executeToolCall: (toolName, args) => {
+      if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
+      return admit(args.content, args.mentions ?? null, () => execute(toolName, args));
+    },
+    sendMessage: (content, mentions) => admit(content, mentions ?? null, () => sendMessage(content, mentions)),
   };
 }

@@ -17,7 +17,7 @@ export class JournalFileError extends BandSdkError {
 }
 
 /** Why the room's publications are not admitted; the room's replies refuse to post until it is resolved. */
-export type JournalPublicationKind = "poisoned" | "closed" | "inactive";
+export type JournalPublicationKind = "poisoned" | "closed";
 
 /** A publication the room's journal will not admit; the reply does not post. */
 export class JournalPublicationError extends BandSdkError {
