@@ -157,13 +157,15 @@ interface DeliverMessageOptions<T> {
   stopped?: AbortSignal;
   logger: Logger;
   roomId: string;
+  /** Invoked when a pause between attempts begins, before the delay timer runs. */
+  onResendPause?: () => void;
 }
 
 /**
  * Posts until a status or a read-back shows the message in the room, within
  * `MESSAGE_SEND_MAX_RETRIES` resends; then the last failure surfaces.
  */
-export async function deliverMessage<T>({ post, findPosted, stopped, logger, roomId }: DeliverMessageOptions<T>): Promise<Delivered<T>> {
+export async function deliverMessage<T>({ post, findPosted, stopped, logger, roomId, onResendPause }: DeliverMessageOptions<T>): Promise<Delivered<T>> {
   for (let attempt = 0; ; attempt += 1) {
     let failure: unknown;
     try {
@@ -179,7 +181,7 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
     // Before the read-back too: a commit still in flight gets the pause to land.
     let cutShort = false;
     try {
-      await pause(resendDelayMs(attempt, failure), stopped);
+      await pause(resendDelayMs(attempt, failure), stopped, onResendPause);
     } catch {
       // The turn was cut short mid-pause. The cut is not the post's outcome:
       // the failure it interrupted stands, and the read-back still settles a
@@ -214,7 +216,7 @@ function retryAfterMs(failure: unknown): number | undefined {
     : undefined;
 }
 
-function pause(ms: number, stopped?: AbortSignal): Promise<void> {
+function pause(ms: number, stopped?: AbortSignal, onPause?: () => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const cut = () => reject(new RuntimeStateError("The turn was cut short; its message post stopped"));
     if (stopped?.aborted) {
@@ -230,6 +232,7 @@ function pause(ms: number, stopped?: AbortSignal): Promise<void> {
       cut();
     };
     stopped?.addEventListener("abort", onAbort, { once: true });
+    onPause?.();
   });
 }
 

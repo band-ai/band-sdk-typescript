@@ -35,15 +35,22 @@ export function currentTurnInbound(): string | undefined {
  * exactly where it was created, and that context is nothing to do with which
  * turn the tools stand for; the scope the methods enter on invocation is.
  *
- * `capabilities` is consulted, not called, so it runs unscoped; the scope
- * enters before the method is awaited, so the method's whole run — post,
- * settlement, the result it returns — settles under the turn's inbound.
+ * `capabilities` and `unknownDeliveryFenced` are consulted, not called, so
+ * they run unscoped; the scope enters before the method is awaited, so the
+ * method's whole run — post, settlement, the result it returns — settles
+ * under the turn's inbound.
  */
 export function scopeTurnTools<T extends object>(tools: T, inboundMessageId: string | undefined): T {
   return new Proxy(tools, {
     get(target, key, receiver) {
       const value: unknown = Reflect.get(target, key, receiver);
-      if (typeof value !== "function" || typeof key === "symbol" || key === "then" || key === "capabilities") {
+      if (
+        typeof value !== "function"
+        || typeof key === "symbol"
+        || key === "then"
+        || key === "capabilities"
+        || key === "unknownDeliveryFenced"
+      ) {
         return value;
       }
       return function (

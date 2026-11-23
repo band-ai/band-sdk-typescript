@@ -21,7 +21,11 @@ const DESCRIBING_TOOLS: ReadonlySet<PropertyKey> = new Set(Object.keys({
  * reply and the replay's.
  */
 export function revokedOnStop<T extends object>(tools: T, stopped: AbortSignal): T {
-  return guardedTools(tools, (key) => (DESCRIBING_TOOLS.has(key) ? null : cutShort(stopped)));
+  return guardedTools(tools, (key) => {
+    // Schema probes and the delivery-unknown fence are consulted, not acting calls.
+    if (DESCRIBING_TOOLS.has(key) || key === "capabilities" || key === "unknownDeliveryFenced") return null;
+    return cutShort(stopped);
+  });
 }
 
 /** The error a cut-short turn's call is refused with, or null while the turn runs. */

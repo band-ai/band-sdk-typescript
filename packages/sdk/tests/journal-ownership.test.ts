@@ -140,12 +140,29 @@ describe("journal ownership", () => {
     expect(error.message).toContain("not a database");
   });
 
-  it.skipIf(process.platform === "win32")("fails closed when the journal's directory cannot be written", async () => {
-    // A read-only directory makes the lock file unwritable: SQLite reports the
-    // attempt to write a readonly database, and the acquisition fails closed.
+  it("fails closed when the journal's directory cannot be written", async () => {
     const subdir = path.join(dir, "unwritable");
     await mkdir(subdir);
     const file = path.join(subdir, "locked.sqlite");
+    if (process.platform === "win32") {
+      // Windows ACL/chmod semantics do not make the directory unwritable the
+      // same way; prove the same fail-closed IO kind via the open classifier.
+      const error = await JournalOwnership.acquire(file, {
+        loadSqlite: async () =>
+          ({
+            DatabaseSync: class {
+              constructor() {
+                throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: "EACCES" });
+              }
+            },
+          }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
+      }).catch((e: unknown) => e);
+      expectKind(error, "io");
+      expect(error.message).toContain(file);
+      return;
+    }
+    // A read-only directory makes the lock file unwritable: SQLite reports the
+    // attempt to write a readonly database, and the acquisition fails closed.
     await writeFile(file, "");
     await chmod(subdir, 0o555);
     onTestFinished(async () => {

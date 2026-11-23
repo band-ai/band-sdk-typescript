@@ -371,6 +371,10 @@ describe("an unresolved publication through a restart", () => {
       "reply.intent", "reply.settled", "turn.done", // A: settled, its turn ended, its mark landed.
       "reply.intent", "reply.unknown", // B: delivery unknown, its turn failed.
     ]);
+    // An uncertain delivery's record leaves the writer admitting: only a lost owed write poisons.
+    const afterUnknown = await new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY);
+    expect((await afterUnknown.room(ROOM)).accepting).toBe(true);
+    await afterUnknown.close();
 
     const second = await startProcess(platform, journalDir, async ({ tools }) => {
       void tools;
@@ -490,11 +494,16 @@ describe("an unresolved publication with no inbound to ride on", () => {
   it("admits rooms without journals, creating no file and holding no handle for them", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     await platform.room(ROOM);
-    for (const n of [1, 2, 3, 4, 5]) await platform.room(`idle-${n}`);
+    const idleRooms = [1, 2, 3, 4, 5].map((n) => `idle-${n}`);
+    for (const id of idleRooms) await platform.room(id);
     const journalDir = tmpRoot();
-    const { runtime } = await startProcess(platform, journalDir, async () => undefined);
-    // Let every room's admission run, whatever it does for them.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const { runtime, events } = await startProcess(platform, journalDir, async () => undefined);
+    // Wait until every room's admission has been observed — not a fixed sleep.
+    const expected = [ROOM, ...idleRooms];
+    await events.until(() => {
+      const joined = new Set(events.entries.flatMap((event) => (event.type === "room.joined" ? [event.roomId] : [])));
+      return expected.every((roomId) => joined.has(roomId));
+    });
 
     // None of these rooms ever recorded a journal: admission must not create the
     // file to report from, and must not keep a handle open on one.
@@ -871,7 +880,7 @@ describe("the turn journal against a failed start and a stale generation", () =>
     });
     onTestFinished(() => postSpy.mockRestore());
     const adapterConnectivity: boolean[] = [];
-    const { runtime } = await startProcess(platform, journalDir, async ({ tools }) => {
+    const { runtime, events } = await startProcess(platform, journalDir, async ({ tools }) => {
       await tools.sendMessage("late", ["@owner"]);
       // The adapter's own continuation after the receipt runs while the platform still stands.
       adapterConnectivity.push(platform.link.transport.isConnected());
@@ -882,9 +891,9 @@ describe("the turn journal against a failed start and a stale generation", () =>
     await hold.sending;
 
     const stopping = runtime.stop(50);
-    // Past the stop's budget: the rooms are torn down, the state is stopping, and the
-    // start's start is refused while the last publication drains.
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    // Past the stop's room budget: the held post keeps the turn busy, so the room
+    // stop times out and emits room.stopped while ownership still drains.
+    await events.next((event) => event.type === "room.stopped" && event.roomId === ROOM);
     expect(runtime.state.status).toBe("stopping");
     await expect(runtime.start(new GenericAdapter(async () => undefined))).rejects.toBeInstanceOf(Error);
     await expect(new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);

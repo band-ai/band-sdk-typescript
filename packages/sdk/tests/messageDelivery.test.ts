@@ -20,12 +20,6 @@ const stored = {
   inserted_at: "2026-01-01T00:00:00.000Z",
 } as unknown as PlatformChatMessage;
 
-/** The pause before a resend is at least a second; the turn can be cut anywhere inside it. */
-async function enterFirstPause(controller: AbortController, afterMs = 50): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, afterMs));
-  controller.abort();
-}
-
 describe("a post cut short while it settles before a resend", () => {
   it("keeps the failure the transport reported, never the cut", async () => {
     const controller = new AbortController();
@@ -43,10 +37,9 @@ describe("a post cut short while it settles before a resend", () => {
       stopped: controller.signal,
       logger: new NoopLogger(),
       roomId: "room-1",
+      // Abort from the pause hook: the cut lands as soon as the resend pause arms.
+      onResendPause: () => controller.abort(),
     });
-    // The first attempt fails; the delivery settles it in the pause before a resend.
-    // Mid that pause, the turn is cut short.
-    void enterFirstPause(controller);
     const error: unknown = await delivery.catch((thrown: unknown) => thrown);
 
     // The transport's own uncertainty stands: the failure that surfaces is the one it
@@ -69,8 +62,8 @@ describe("a post cut short while it settles before a resend", () => {
       stopped: controller.signal,
       logger: new NoopLogger(),
       roomId: "room-1",
+      onResendPause: () => controller.abort(),
     });
-    void enterFirstPause(controller);
     const result = await delivery;
 
     // The room holds the post: it is found, not resent, and nothing failed.
@@ -80,6 +73,7 @@ describe("a post cut short while it settles before a resend", () => {
   it("still surfaces the transport's failure when the cut comes in a later pause", async () => {
     const controller = new AbortController();
     let attempts = 0;
+    let pauses = 0;
     const delivery = deliverMessage({
       post: async () => {
         attempts += 1;
@@ -88,16 +82,12 @@ describe("a post cut short while it settles before a resend", () => {
       stopped: controller.signal,
       logger: new NoopLogger(),
       roomId: "room-1",
+      onResendPause: () => {
+        pauses += 1;
+        // First pause completes so a resend runs; cut on the pause before the next resend.
+        if (pauses >= 2) controller.abort();
+      },
     });
-    // No read-back is wired. The first failure burns its pause and resends; cut the
-    // turn in the pause before the second resend, and the transport's failure stands.
-    const waitedForSecondAttempt = new Promise<void>((resolve) => {
-      const check = () => (attempts >= 2 ? resolve() : setTimeout(check, 10));
-      check();
-    });
-    await waitedForSecondAttempt;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    controller.abort();
     const error: unknown = await delivery.catch((thrown: unknown) => thrown);
 
     expect(error).toBeInstanceOf(BandError);

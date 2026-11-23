@@ -2,10 +2,10 @@ import type { ToolOperationResult } from "../../contracts/dtos";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
+import { cutShort } from "../turnRevocation";
 import { JournalPublicationError } from "./errors";
 import { RoomJournal } from "./RoomJournal";
 import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
-import { TurnCutShortError } from "./journalTools";
 
 /**
  * The engine that turns a reply post or an accepted decline into the room's
@@ -99,19 +99,27 @@ export class PublicationEngine {
     post: () => Promise<ToolOperationResult>,
     stopped?: AbortSignal,
   ): Promise<ToolOperationResult> {
-    if (stopped?.aborted) throw new TurnCutShortError();
+    if (stopped) {
+      const refused = cutShort(stopped);
+      if (refused) throw refused;
+    }
     const journal = await this.requireJournal("reply");
 
-    const publicationId = await journal.beginReply(messageId);
-    // A turn cut short between the durable intent and the post: the reply is
-    // refused, not delivered — the platform never saw it.
-    if (stopped?.aborted) {
-      await journal.markRefused(messageId, publicationId).catch((error: unknown) => {
-        this.logger.warn("the interrupted reply's refusal could not be recorded", { roomId: journal.roomId, error });
-      });
-      throw new TurnCutShortError();
-    }
-    const tracked = (async (): Promise<ToolOperationResult> => {
+    // Track before any await that can interleave with release/drain: a force
+    // close or stop drain must wait on this admission, including through beginReply.
+    const tracked = this.runTracked(journal.roomId, async () => {
+      const publicationId = await journal.beginReply(messageId);
+      // A turn cut short between the durable intent and the post: the reply is
+      // refused, not delivered — the platform never saw it.
+      if (stopped) {
+        const cut = cutShort(stopped);
+        if (cut) {
+          await journal.markRefused(messageId, publicationId).catch((error: unknown) => {
+            this.logger.warn("the interrupted reply's refusal could not be recorded", { roomId: journal.roomId, error });
+          });
+          throw cut;
+        }
+      }
       let result: ToolOperationResult;
       try {
         result = await post();
@@ -134,8 +142,7 @@ export class PublicationEngine {
         return await this.settleAsUnknown(journal, messageId, publicationId, error, { poisonWriter: true });
       }
       return result;
-    })();
-    this.generation?.trackInflight(tracked, journal.roomId);
+    });
     return tracked;
   }
 
@@ -179,13 +186,27 @@ export class PublicationEngine {
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
     const journal = await this.requireJournal("decline");
-
-    const tracked = (async (): Promise<T> => {
+    return this.runTracked(journal.roomId, async () => {
       const result = await run();
       await journal.settleDecline(messageId);
       return result;
-    })();
-    this.generation?.trackInflight(tracked, journal.roomId);
+    });
+  }
+
+  /**
+   * Runs `work` as a generation-tracked admission: the promise is registered
+   * synchronously before `work` is entered, so release/drain cannot close the
+   * room under an in-flight publication that has not yet called trackInflight.
+   */
+  private runTracked<T>(roomId: string, work: () => Promise<T>): Promise<T> {
+    let finish!: (value: T | PromiseLike<T>) => void;
+    let fail!: (reason?: unknown) => void;
+    const tracked = new Promise<T>((resolve, reject) => {
+      finish = resolve;
+      fail = reject;
+    });
+    this.generation?.trackInflight(tracked, roomId);
+    void work().then(finish, fail);
     return tracked;
   }
 }

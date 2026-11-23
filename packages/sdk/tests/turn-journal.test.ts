@@ -224,21 +224,51 @@ describe("publications", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      generation,
+      logger: new NoopLogger(),
+    });
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
-    const begin = room.beginReply("msg-1");
     const posted = { ran: false };
-    const settle = begin.then(async (publicationId) => {
+    const publish = engine.publishReply("msg-1", async () => {
       posted.ran = true;
-      return room.settleReply("msg-1", publicationId, "posted-1");
+      return { success: true, message: { id: "posted-1" } };
     });
     await append.entered;
     // The intent is not on disk yet: the post that waits on it has not run.
     expect(posted.ran).toBe(false);
     append.release();
-    await settle;
+    await publish;
     expect(posted.ran).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
     expect(room.answered("msg-1")).toBe(true);
+  });
+
+  it("keeps a force-closed room from posting while beginReply is still admitting, and settlement stays writable under drain", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      generation,
+      logger: new NoopLogger(),
+    });
+    const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
+    let posted = false;
+    const publish = engine.publishReply("msg-1", async () => {
+      posted = true;
+      return { success: true, message: { id: "posted-1" } };
+    });
+    await append.entered;
+    // Force-close while the durable intent is still held: the generation must wait
+    // on the tracked admission, not close under an in-flight post.
+    const releasing = generation.release(ROOM, true);
+    append.release();
+    await expect(publish).resolves.toMatchObject({ success: true });
+    await releasing;
+    expect(posted).toBe(true);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
   });
 
   it("keeps a refused reply's inbound unanswered, and it is not announced", async () => {
@@ -474,6 +504,7 @@ describe("a publication against a closed generation", () => {
     release: async () => undefined,
     trackInflight: () => undefined,
     drain: async () => undefined,
+    roomPath: () => roomFile(tmpRoot()),
     close: async () => undefined,
   };
 

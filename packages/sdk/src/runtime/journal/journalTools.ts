@@ -5,14 +5,7 @@ import { overrideTools } from "../../core/overrideTools";
 import { bandToolOverrides } from "../../core/turn";
 import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
-
-/** Thrown for a reply or decline made after its turn was cut short: the post must not go out. */
-export class TurnCutShortError extends Error {
-  public constructor() {
-    super("The turn was cut short; its reply must not be posted");
-    this.name = "TurnCutShortError";
-  }
-}
+import { cutShort } from "../turnRevocation";
 
 function isDeliveryUnknownToolResult(result: unknown): boolean {
   return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
@@ -44,9 +37,8 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   let fenced = false;
 
   const wrapCall = (call: () => Promise<unknown>): Promise<unknown> => {
-    if (stopped.aborted) {
-      throw new TurnCutShortError();
-    }
+    const refused = cutShort(stopped);
+    if (refused) throw refused;
     return call().then(
       (result) => {
         if (isDeliveryUnknownToolResult(result)) {
@@ -73,5 +65,5 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   return overrideTools(tools, {
     ...overrides,
     unknownDeliveryFenced: () => fenced,
-  } as unknown as Partial<T>);
+  } as Partial<T>);
 }

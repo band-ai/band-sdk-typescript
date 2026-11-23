@@ -113,7 +113,8 @@ function toLine(record: Record<string, unknown>): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-function headerLine(identity: string, agentId: string, roomId: string, at: number): string {
+/** The durable header line a v2 journal opens with, bound to its identity, agent and room. */
+export function headerLine(identity: string, agentId: string, roomId: string, at: number): string {
   return toLine({ t: "header", v: JOURNAL_FORMAT_VERSION, platformIdentity: identity, agentId, roomId, at });
 }
 

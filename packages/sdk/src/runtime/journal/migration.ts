@@ -9,7 +9,7 @@ import { resolveLogger } from "../../core/logger";
 import { agentJournalDir, legacyAgentDir } from "./TurnJournal";
 import { JournalFileError } from "./errors";
 import { JournalOwnership } from "./ownership";
-import { RoomJournal, hasErrorCode, rewriteFile } from "./RoomJournal";
+import { RoomJournal, hasErrorCode, headerLine, rewriteFile } from "./RoomJournal";
 import { identityDirectoryComponent, roomFileComponent } from "./records";
 import { canonicalPlatformIdentity } from "./identity";
 
@@ -600,22 +600,27 @@ function parseLegacyRecords(file: string, text: string): LegacyRecord[] {
   return records;
 }
 
+/**
+ * The stable publication id a legacy intent becomes under migration: derived
+ * from the staging file, the inbound, and which intent it is for that inbound,
+ * so convert and imported-facts checks name the same publication.
+ */
+function stablePublicationId(sourceFile: string, messageId: string, n: number): string {
+  return createHash("sha256").update(`${sourceFile}:${messageId}:${n}`).digest("hex");
+}
+
 /** The v2 destination of one legacy file under one binding: a header binding it to the attested identity, then the file's records converted. Legacy intents keep their uncertainty — none of them was ever proven posted — and a valid turn.done settles its inbound without claiming any post. */
 function convertLegacy(sourceFile: string, text: string, binding: MigrationBinding, agentId: string, headerAt: number): string {
   const records = parseLegacyRecords(path.join("<agent>", sourceFile), text);
   const roomId = binding.roomId;
-  const lines: string[] = [
-    `${JSON.stringify({ t: "header", v: 2, platformIdentity: binding.platformIdentity, agentId, roomId, at: headerAt })}\n`,
-  ];
+  const lines: string[] = [headerLine(binding.platformIdentity, agentId, roomId, headerAt)];
   const seenIntent = new Map<string, number>();
-  const stableId = (messageId: string, n: number): string =>
-    createHash("sha256").update(`${sourceFile}:${messageId}:${n}`).digest("hex");
   for (const record of records) {
     switch (record.t) {
       case "reply.intent": {
         const n = (seenIntent.get(record.messageId) ?? 0) + 1;
         seenIntent.set(record.messageId, n);
-        const publicationId = stableId(record.messageId, n);
+        const publicationId = stablePublicationId(sourceFile, record.messageId, n);
         lines.push(`${JSON.stringify({ t: "reply.intent", messageId: record.messageId, publicationId, at: record.at })}\n`);
         lines.push(`${JSON.stringify({ t: "reply.unknown", messageId: record.messageId, publicationId, at: record.at })}\n`);
         break;
@@ -639,7 +644,7 @@ function importedFactsOf(stagingFile: string, records: LegacyRecord[]): Imported
     if (record.t === "reply.intent") {
       const n = (seen.get(record.messageId) ?? 0) + 1;
       seen.set(record.messageId, n);
-      publicationIds.push(createHash("sha256").update(`${stagingFile}:${record.messageId}:${n}`).digest("hex"));
+      publicationIds.push(stablePublicationId(stagingFile, record.messageId, n));
     } else if (record.t === "turn.done") {
       turnDone.push(record.messageId);
     }
@@ -705,17 +710,58 @@ async function commitManifest(agentDir: string, manifest: Manifest, now: () => n
 }
 
 /**
+ * Whether `identity` is one the migration attested: start may only open under
+ * an attested identity, or it would serve empty journals beside the settled
+ * ones the migration staged under other identities.
+ */
+function startIdentityMatchesMigration(manifest: Manifest, identity: string): boolean {
+  return manifest.bindings.some((binding) => binding.platformIdentity === identity);
+}
+
+/**
+ * Refuses a start whose identity is not among the migration's attested
+ * platform identities: resuming or opening under another identity would leave
+ * settled journals under the attested paths while Generation served empty
+ * authority under the start identity.
+ */
+function assertStartIdentityCompatible(manifest: Manifest, identity: string, agentDir: string): void {
+  if (startIdentityMatchesMigration(manifest, identity)) return;
+  throw new JournalFileError(
+    `This start's platform identity is not among the identities the journal's migration attested; ` +
+      `opening under it would serve empty room journals while settled authority stands under the attested identities. ` +
+      `Start with an attested identity, or re-run the migration with bindings for this identity.`,
+    "corrupt",
+    agentDir,
+  );
+}
+
+/**
+ * When a migration stands (prepared or committed), refuses a start identity
+ * none of its bindings attested — so Generation cannot open empty authority
+ * beside settled journals under other identities.
+ */
+export async function assertMigrationStartIdentity(agentDir: string, identity: string): Promise<void> {
+  const manifest = await readManifest(agentDir);
+  if (manifest === null) return;
+  assertStartIdentityCompatible(manifest, identity, agentDir);
+}
+
+/**
  * Completes a prepared migration a crash left mid-commit, under the caller's
  * ownership: every source is re-verified by hash, every missing destination
  * is restaged from its preserved source (a destination that stands is kept —
  * it may hold records appended after the crash), and only then is the
  * manifest committed. It never initializes empty over a half-migrated journal.
+ *
+ * The start identity must be one the prepared manifest attested: staging under
+ * attested identities and then opening rooms under a different start identity
+ * would leave settled authority unreachable beside empty journals.
  */
 export async function resumeInterruptedMigration(
   agentDir: string,
   legacyDir: string,
   agentId: string,
-  _identity: string,
+  identity: string,
   options: { now?: () => number; logger?: Logger; loadSqlite?: () => Promise<Pick<typeof import("node:sqlite"), "DatabaseSync">> } = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;
@@ -724,6 +770,7 @@ export async function resumeInterruptedMigration(
   if (manifest === null || manifest.state !== "prepared") {
     throw new JournalFileError("The journal's migration is not in a resumable prepared state.", "corrupt", manifestPath(agentDir));
   }
+  assertStartIdentityCompatible(manifest, identity, agentDir);
   for (const binding of manifest.bindings) {
     await checkSource(legacyDir, binding, logger);
   }

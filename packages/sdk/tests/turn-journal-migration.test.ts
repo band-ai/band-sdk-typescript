@@ -9,7 +9,7 @@ import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/jo
 import { migrateTurnJournals, type MigrationBinding } from "../src/runtime/journal/migration";
 import { TurnJournal, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/TurnJournal";
 import { tmpRoot } from "./testUtils";
-import { AGENT, IDENTITY, ROOM, generationIn, legacyRoomFile, recordTypes, roomFile, seedLegacyFile } from "./turnJournalSupport";
+import { AGENT, IDENTITY, OTHER_IDENTITY, ROOM, generationIn, legacyRoomFile, recordTypes, roomFile, seedLegacyFile } from "./turnJournalSupport";
 
 const V1_ROOM_FILE = legacyRoomFile(ROOM);
 
@@ -327,7 +327,47 @@ describe("migration phases survive interruption", () => {
     await rm(roomFile(dir));
     await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "corrupt" });
   });
+
+  it("refuses to resume a prepared migration under a start identity none of its bindings attested", async () => {
+    const dir = tmpRoot();
+    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
+    const sourceSha256 = sha256(await readFile(source, "utf8"));
+    const agentDir = agentJournalDir(dir, AGENT);
+    const manifestDir = path.join(agentDir, "migration");
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      path.join(manifestDir, "manifest.json"),
+      `${JSON.stringify({
+        v: 2,
+        state: "prepared",
+        createdAt: 1,
+        bindings: [
+          {
+            sourceFile: V1_ROOM_FILE,
+            roomId: ROOM,
+            sourceSha256,
+            platformIdentity: IDENTITY,
+            provenance: "crash",
+            stagesFrom: V1_ROOM_FILE,
+            stagingSha256: sourceSha256,
+            importedFacts: { publicationIds: [], turnDone: ["old"] },
+          },
+        ],
+      }, null, 2)}\n`,
+    );
+
+    // Opening under another identity would stage settlements under IDENTITY and
+    // serve an empty journal under OTHER_IDENTITY — refuse rather than re-answer.
+    await expect(new TurnJournal(dir, AGENT).activate(OTHER_IDENTITY)).rejects.toMatchObject({ kind: "corrupt" });
+    expect(await migrationStateOf(agentDir)).toBe("prepared");
+    await expect(readFile(roomFile(dir, OTHER_IDENTITY), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
+
+async function migrationStateOf(agentDir: string): Promise<string> {
+  const text = await readFile(path.join(agentDir, "migration", "manifest.json"), "utf8");
+  return (JSON.parse(text) as { state: string }).state;
+}
 
 describe("migration identity and imported authority", () => {
   it("stages a noncanonical identity spelling under the canonical layout, bound canonically", async () => {

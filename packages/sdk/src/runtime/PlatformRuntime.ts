@@ -1,5 +1,4 @@
 import { stat } from "node:fs/promises";
-import path from "node:path";
 import { bindWorkingCycle } from "./workingState";
 import { isSyntheticTurn, type FrameworkAdapter, type FrameworkAdapterInput, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
@@ -37,11 +36,10 @@ import { AgentEventHub } from "./agentEvents";
 import { journalingTools } from "./journal/journalTools";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
-import { bestEffort, GenerationClosedError, roomFileName, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
+import { bestEffort, GenerationClosedError, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
 import { hasErrorCode, type RoomJournal, type UnresolvedPublication } from "./journal/RoomJournal";
 import { PublicationEngine } from "./journal/publication";
 import { canonicalPlatformIdentity } from "./journal/identity";
-import { identityDirectoryComponent } from "./journal/records";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -1242,11 +1240,17 @@ export class PlatformRuntime implements AsyncDisposable {
 
   /**
    * Closes a room's journal once its handling stopped, so a left room holds no
-   * file open. Forced: a turn still settling in the room must not write to the
-   * released journal.
+   * file open. Forced while the runtime is running: a turn still settling in
+   * the room must not write to the released journal. During stop, the generation
+   * drains then closes — force-closing here would race publications still
+   * admitting under beginReply before trackInflight.
    */
   private releaseJournal(roomId: string): void {
-    void bestEffort(async () => this.generation?.release(roomId, true), this.logger, "Failed to close a room's turn journal", { roomId });
+    void bestEffort(async () => {
+      const status = this.state.status;
+      if (status === "stopping" || status === "stopped") return;
+      await this.generation?.release(roomId, true);
+    }, this.logger, "Failed to close a room's turn journal", { roomId });
   }
 
   /**
@@ -1291,12 +1295,11 @@ export class PlatformRuntime implements AsyncDisposable {
    */
   private async announceUnresolvedForRoom(roomId: string): Promise<void> {
     const generation = this.generation;
-    const journals = this.journals;
-    if (!generation || journals === undefined) return;
+    if (!generation) return;
     // A room whose journal does not stand has nothing to recover: admission must
     // not create the file, and one that stands opens through the generation, so a
     // turn running in the room shares the same handle rather than a second one.
-    const file = path.join(journals.dir, identityDirectoryComponent(generation.identity), roomFileName(roomId));
+    const file = generation.roomPath(roomId);
     const stands = stat(file).then(
       () => true,
       (error: unknown) => {

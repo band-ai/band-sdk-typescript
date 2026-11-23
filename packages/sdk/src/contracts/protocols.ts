@@ -317,12 +317,18 @@ export interface AdapterToolsProtocol
     Partial<RoomContextTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
+  /**
+   * When the runtime journals replies: true once this turn had a delivery whose
+   * outcome stands unknown, so closing text must not be relayed as a replacement.
+   * A probe, not an acting call — stop/scope wrappers leave it readable.
+   */
+  readonly unknownDeliveryFenced?: () => boolean;
   readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
-export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities" | "unknownDeliveryFenced">;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

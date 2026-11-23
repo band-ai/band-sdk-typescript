@@ -14,7 +14,13 @@ import {
 } from "./records";
 import { RoomJournal, type RoomJournalOptions } from "./RoomJournal";
 import { JournalOwnership } from "./ownership";
-import { resumeInterruptedMigration, unboundLegacyFiles, migrationState, validateCommittedDestinations } from "./migration";
+import {
+  assertMigrationStartIdentity,
+  resumeInterruptedMigration,
+  unboundLegacyFiles,
+  migrationState,
+  validateCommittedDestinations,
+} from "./migration";
 
 /** A journal operation (a write, a close) whose failure must not stop the runtime: it is logged where it happens. */
 export async function bestEffort(operation: () => Promise<unknown>, logger: Logger, failure: string, context: Record<string, unknown>): Promise<void> {
@@ -84,6 +90,8 @@ export interface JournalGeneration {
   trackInflight(promise: Promise<unknown>, roomId: string): void;
   /** Waits for publications the generation admitted, their outcomes durable. */
   drain(): Promise<void>;
+  /** The path of `roomId`'s journal file under this generation's identity. */
+  roomPath(roomId: string): string;
   /** Closes the generation's rooms, then releases its ownership; safe to call more than once. */
   close(): Promise<void>;
 }
@@ -151,6 +159,9 @@ export class TurnJournal {
     try {
       // A migration a crash left prepared is resumed under this ownership, or the start refuses:
       // it never initializes empty over a half-migrated journal.
+      // A migration's attested identities are the only ones start may open under:
+      // another identity would serve empty room journals beside settled ones.
+      await assertMigrationStartIdentity(this.dir, identity);
       const state = await migrationState(this.dir);
       if (state === "prepared") {
         await resumeInterruptedMigration(this.dir, legacyAgentDir(this.root, this.agentId), this.agentId, identity, { now: this.now, logger: this.logger });
@@ -193,7 +204,11 @@ class Generation implements JournalGeneration {
   /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
   private readonly releasing = new Map<string, Promise<void>>();
   private readonly inflight: Set<Promise<unknown>> = new Set();
-  /** The publications in flight per room: a room's release drains its own before closing its file. */
+  /**
+   * Publications in flight per room for this generation's lifetime. The set for
+   * a room is never replaced or deleted on close: a concurrent track after a
+   * snapshot would otherwise install a new set the closer never waits on.
+   */
   private readonly roomInflight = new Map<string, Set<Promise<unknown>>>();
   /** A turn is still using the room: a close owed to it is deferred until the last hold ends. */
   private readonly turnHolds = new Map<string, number>();
@@ -268,11 +283,14 @@ class Generation implements JournalGeneration {
   /** Closes `roomId`'s handle, once its publications stand on disk. */
   private async closeRoomNow(roomId: string, room: Promise<RoomJournal>): Promise<void> {
     // A publication still in flight must stand on disk before the file closes, so its
-    // outcome is never lost to the close racing the post.
-    const held = this.roomInflight.get(roomId);
-    if (held) this.roomInflight.delete(roomId);
+    // outcome is never lost to the close racing the post. The room's set lives for
+    // the generation: drain it in place rather than snapshot-and-delete, so a
+    // concurrent track still lands in the set this close waits on.
+    const held = this.roomInflightSet(roomId);
     const closing = (async () => {
-      if (held && held.size > 0) await Promise.allSettled([...held]);
+      while (held.size > 0) {
+        await Promise.allSettled([...held]);
+      }
       await closeRoom(room);
     })().finally(() => {
       if (this.releasing.get(roomId) === closing) this.releasing.delete(roomId);
@@ -282,9 +300,12 @@ class Generation implements JournalGeneration {
   }
 
   public async drain(): Promise<void> {
-    while (this.inflight.size > 0) {
+    for (;;) {
       const batch = [...this.inflight];
-      this.inflight.clear();
+      for (const rooms of this.roomInflight.values()) {
+        for (const promise of rooms) batch.push(promise);
+      }
+      if (batch.length === 0) return;
       await Promise.allSettled(batch);
     }
   }
@@ -292,18 +313,27 @@ class Generation implements JournalGeneration {
   /** Tracks a publication admitted by this generation until its outcome is durable. */
   public trackInflight(promise: Promise<unknown>, roomId: string): void {
     this.inflight.add(promise);
-    let rooms = this.roomInflight.get(roomId);
-    if (!rooms) {
-      rooms = new Set();
-      this.roomInflight.set(roomId, rooms);
-    }
-    rooms.add(promise);
+    this.roomInflightSet(roomId).add(promise);
     const forget = (): void => {
       this.inflight.delete(promise);
       this.roomInflight.get(roomId)?.delete(promise);
     };
     // `promise.finally` would derive a rejecting promise no one handles; settle both ways.
     void promise.then(forget, forget);
+  }
+
+  public roomPath(roomId: string): string {
+    return this.roomFile(roomId);
+  }
+
+  /** The generation-stable inflight set for `roomId`; created once and never replaced. */
+  private roomInflightSet(roomId: string): Set<Promise<unknown>> {
+    let rooms = this.roomInflight.get(roomId);
+    if (!rooms) {
+      rooms = new Set();
+      this.roomInflight.set(roomId, rooms);
+    }
+    return rooms;
   }
 
   public async close(): Promise<void> {
