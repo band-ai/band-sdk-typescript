@@ -1005,6 +1005,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
           roomId: input.roomId,
           threadId: input.threadId,
           turnId: input.turnId,
+          requestThreadId: requestParams?.threadId,
+          requestTurnId: requestParams?.turnId,
           requestId: event.id,
           error,
         });

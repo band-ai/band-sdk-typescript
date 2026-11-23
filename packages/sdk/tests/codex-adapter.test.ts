@@ -1775,6 +1775,10 @@ describe("CodexAdapter", () => {
           id: 1,
           method: "item/tool/call",
           params: {
+            // Active-turn identity so the stale-request guard does not fire;
+            // callId is omitted so parseDynamicToolCallParams fails.
+            threadId: "thread-1",
+            turnId: "turn-1",
             tool: "band_send_message",
             arguments: {
               content: "hello",
@@ -1809,7 +1813,12 @@ describe("CodexAdapter", () => {
     );
 
     expect(tools.toolCalls).toEqual([]);
-    expect(fakeClient.responses.find(({ id }) => id === 1)).toMatchObject({ error: { code: -32602 } });
+    expect(fakeClient.responses.find(({ id }) => id === 1)).toMatchObject({
+      error: {
+        code: -32602,
+        message: "Invalid params for item/tool/call",
+      },
+    });
   });
 
   it("reports custom tool failures with structured output while returning compatible text to Codex", async () => {
