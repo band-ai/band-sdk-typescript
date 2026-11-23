@@ -307,9 +307,10 @@ export async function fetchContextPage(
   return { messages: data, nextCursor };
 }
 
-/** History messages per room-history page by default, and at most: Band serves up to 100. */
+/** History messages per room-history page by default. */
 export const DEFAULT_ROOM_HISTORY_PAGE = 20;
-export const MAX_ROOM_HISTORY_PAGE = 100;
+/** At most Band serves on one room-history page; same ceiling as other cursor pages. */
+export const MAX_ROOM_HISTORY_PAGE = MAX_CURSOR_PAGE;
 
 /**
  * One page of a room's messages of every type and status, newest first, and
@@ -320,18 +321,18 @@ export const MAX_ROOM_HISTORY_PAGE = 100;
 export async function readRoomHistoryPage(
   rest: RoomHistoryRestApi,
   chatId: string,
-  { cursor, limit = DEFAULT_ROOM_HISTORY_PAGE }: { cursor?: string; limit?: number },
+  { cursor, limit = DEFAULT_ROOM_HISTORY_PAGE }: Partial<CursorPageRequest> = {},
   options?: RestRequestOptions,
 ): Promise<{ messages: PlatformChatMessage[]; nextCursor: string | null }> {
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ROOM_HISTORY_PAGE) {
-    throw new ValidationError(`limit must be an integer from 1 to ${MAX_ROOM_HISTORY_PAGE}`);
-  }
+  assertCursorLimit(limit);
   const listRoomHistory = rest.listRoomHistory?.bind(rest);
   if (!listRoomHistory) {
     throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
   }
   const { data, metadata } = await listRoomHistory({ chatId, ...(cursor === undefined ? {} : { cursor }), limit }, options);
   const next = metadata?.next_cursor;
+  // Unlike `nextCursorOf`, a missing `has_more` still pages when a cursor is present:
+  // Band's agent message list has handed back a next key without always setting the flag.
   return { messages: data, nextCursor: typeof next === "string" && next !== "" && metadata?.has_more !== false ? next : null };
 }
 
