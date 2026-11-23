@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, onTestFinished } from "vitest";
 
+import { createDeferred } from "../src/core/deferred";
 import { BandSdkError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
@@ -23,6 +24,7 @@ import {
   generationIn,
   holdJournalAppend,
   interceptJournalAppends,
+  journalLines,
   recordTypes,
   roomFile,
   seedLegacyFile,
@@ -243,6 +245,85 @@ describe("publications", () => {
     expect(posted.ran).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
     expect(room.answered("msg-1")).toBe(true);
+  });
+
+  it("records a top-level post id as the receipt, with nested message.id as fallback", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const engine = PublicationEngine.create({
+      room: async () => room,
+      generation,
+      logger: new NoopLogger(),
+    });
+    // FernRestAdapter createChatMessage exposes top-level `id`, not nested message.id.
+    await engine.publishReply("msg-top", async () => ({ success: true, id: "posted-top" }));
+    await engine.publishReply("msg-nested", async () => ({ success: true, message: { id: "posted-nested" } }));
+    const settled = (await journalLines(roomFile(dir))).filter((line) => line.t === "reply.settled");
+    expect(settled).toEqual([
+      expect.objectContaining({ messageId: "msg-top", receiptId: "posted-top" }),
+      expect.objectContaining({ messageId: "msg-nested", receiptId: "posted-nested" }),
+    ]);
+  });
+
+  it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
+    const beginA = room.beginReply("msg-1");
+    await append.entered;
+    // B passed the outer admit check and queues on the Serializer behind A's held write.
+    const beginB = room.beginReply("msg-2");
+    room.poison();
+    append.release();
+    await expect(beginA).resolves.toEqual(expect.any(String));
+    await expect(beginB).rejects.toMatchObject({ kind: "poisoned" });
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
+  });
+
+  it("refuses a queued beginReply after a mid-write poison so a torn settle cannot sit under a later intent (F2)", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const publicationId = await room.beginReply("msg-1");
+
+    const settleEntered = createDeferred();
+    const releaseSettle = createDeferred();
+    await interceptJournalAppends(async (original, self, args) => {
+      const line = typeof args[0] === "string" ? args[0] : "";
+      if (line.includes("reply.settled")) {
+        settleEntered.resolve();
+        await releaseSettle.promise;
+        const handle = self as unknown as { write: (buffer: Buffer) => Promise<unknown> };
+        await handle.write(Buffer.from(line.slice(0, Math.floor(line.length / 2)), "utf8"));
+        throw diskFull();
+      }
+      return original.apply(self, args);
+    });
+
+    const settle = room.settleReply("msg-1", publicationId, "posted-1");
+    await settleEntered.promise;
+    // B passed the outer admit check while settle is mid-write, then queues.
+    const beginB = room.beginReply("msg-2");
+    releaseSettle.resolve();
+    await expect(settle).rejects.toBeInstanceOf(JournalFileError);
+    await expect(beginB).rejects.toMatchObject({ kind: "poisoned" });
+    expect(room.accepting).toBe(false);
+
+    const text = await readFile(roomFile(dir), "utf8");
+    // Intent, then a torn settle fragment — no second intent after the tear.
+    expect(text).not.toContain('"messageId":"msg-2"');
+    const lines = text.split("\n");
+    expect(JSON.parse(lines[1])).toMatchObject({ t: "reply.intent", messageId: "msg-1" });
+    expect(() => JSON.parse(lines[lines.length - 1] || "")).toThrow();
+
+    await generation.close();
+    const reopened = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    onTestFinished(() => reopened.close());
+    const journal = await reopened.room(ROOM);
+    expect(journal.accepting).toBe(true);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
   });
 
   it("keeps a force-closed room from posting while beginReply is still admitting, and settlement stays writable under drain", async () => {

@@ -4,6 +4,7 @@ import { currentDelivery } from "../messageDelivery";
 import { currentTurnInbound } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
+import { JournalPublicationError } from "../journal/errors";
 import type { PublicationEngine } from "../journal/publication";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
@@ -473,6 +474,18 @@ export class AgentTools implements AgentToolsProtocol {
         });
       }
 
+      // A journal that will not admit the reply is a routine refusal, not an
+      // unexpected break: convert it without the unexpected-error log.
+      if (error instanceof JournalPublicationError) {
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message: error.message,
+          legacyMessage: `Error executing ${toolName}: ${error.message}`,
+          details: { kind: error.kind },
+        });
+      }
+
       if (error instanceof ValidationError) {
         return createToolExecutorError({
           errorType: "ToolArgumentsValidationError",
@@ -482,7 +495,7 @@ export class AgentTools implements AgentToolsProtocol {
         });
       }
 
-      // Unlike the two branches above (routine, expected failures), reaching
+      // Unlike the branches above (routine, expected failures), reaching
       // here means something unclassified broke - log it so it's debuggable,
       // since createToolExecutorError below only returns it as tool-call data.
       this.logger.error("unexpected tool execution error", { toolName, error });

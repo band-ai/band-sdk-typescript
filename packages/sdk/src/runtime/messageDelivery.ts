@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import type { MentionInput } from "../contracts/dtos";
-import { isFailedToolOutput, type AdapterToolsProtocol } from "../contracts/protocols";
+import { isFailedToolOutput, isToolExecutorError, type AdapterToolsProtocol } from "../contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
+import { DeliveryUnknownError } from "../core/deliveryFailedError";
 import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
 
@@ -30,6 +31,11 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
   return overrideTools(tools, overrides as Partial<T>);
 }
 
+/** A tool result that says delivery is unknown: Band may already hold the post. */
+function isDeliveryUnknownOutput(result: unknown): boolean {
+  return isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND;
+}
+
 function sendingRepeatsOnce(execute: AdapterToolsProtocol["executeToolCall"]): AdapterToolsProtocol["executeToolCall"] {
   const sends = new Map<string, Promise<unknown>>();
   return (toolName, args) => {
@@ -39,9 +45,11 @@ function sendingRepeatsOnce(execute: AdapterToolsProtocol["executeToolCall"]): A
     if (standing) return standing;
     const sent = execute(toolName, args);
     sends.set(key, sent);
-    // Only a send in flight or posted answers a repeat: after a failure, the retry posts.
+    // A send in flight, posted, or whose delivery stands unknown answers a
+    // repeat: clearing after delivery_unknown would let the same content post
+    // again while the journal still admits. A definite refusal still clears.
     sent.then((result) => {
-      if (isFailedToolOutput(result)) sends.delete(key);
+      if (isFailedToolOutput(result) && !isDeliveryUnknownOutput(result)) sends.delete(key);
     }, () => sends.delete(key));
     return sent;
   };

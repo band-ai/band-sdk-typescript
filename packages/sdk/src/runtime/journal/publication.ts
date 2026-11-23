@@ -211,8 +211,16 @@ export class PublicationEngine {
   }
 }
 
+/**
+ * The post id Band attributed, matching FernRestAdapter's top-level `id` on
+ * a createChatMessage result; nested `message.id` remains a fallback for
+ * older or alternate envelopes.
+ */
 function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
+  if ("id" in result && typeof result.id === "string" && result.id.length > 0) {
+    return result.id;
+  }
   if (!("message" in result)) return undefined;
   const message = result.message;
   if (typeof message !== "object" || message === null) return undefined;

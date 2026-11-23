@@ -3,8 +3,17 @@ import { describe, expect, it } from "vitest";
 import { BandError } from "@band-ai/rest-client";
 import { RuntimeStateError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
-import { deliverMessage, classifyFailedAttempt } from "../src/client/rest/messageDelivery";
+import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
+import {
+  createToolExecutorError,
+  DEFAULT_AGENT_TOOLS_CAPABILITIES,
+  isToolExecutorError,
+  type AdapterToolsProtocol,
+} from "../src/contracts/protocols";
+import { SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { deliverMessage, classifyFailedAttempt, type MessageDelivery } from "../src/client/rest/messageDelivery";
 import type { PlatformChatMessage } from "../src/client/rest/types";
+import { deliveringMessages } from "../src/runtime/messageDelivery";
 
 /** A 503: the transport cannot say whether Band took the request. */
 function serverError(): BandError {
@@ -94,5 +103,78 @@ describe("a post cut short while it settles before a resend", () => {
     expect(classifyFailedAttempt(error)).toBe("uncertain");
     // The cut ended the retries; the second resend never ran.
     expect(attempts).toBe(2);
+  });
+});
+
+describe("same-turn band_send_message coalescing after delivery_unknown", () => {
+  const delivery: MessageDelivery = {
+    selfId: "agent-1",
+    anchor: { id: "anchor-1", createdAt: new Date("2026-01-01T00:00:00.000Z") },
+    attributed: { has: () => false, add: () => undefined },
+  };
+
+  function toolsWith(execute: AdapterToolsProtocol["executeToolCall"]): AdapterToolsProtocol {
+    return new Proxy({} as AdapterToolsProtocol, {
+      get(_target, key) {
+        if (key === "executeToolCall") return execute;
+        if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+        if (typeof key === "string") return async () => ({});
+        return undefined;
+      },
+    });
+  }
+
+  it("keeps the coalesce key after delivery_unknown so a second same executeToolCall does not post again", async () => {
+    let posts = 0;
+    const unknown = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: SEND_MESSAGE_TOOL_NAME,
+      message: "delivery unknown",
+      details: { kind: DeliveryUnknownError.KIND, publicationId: "pub-1" },
+    });
+    const tools = deliveringMessages(
+      toolsWith(async (toolName) => {
+        if (toolName === SEND_MESSAGE_TOOL_NAME) {
+          posts += 1;
+          return unknown;
+        }
+        return {};
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "held", mentions: ["@a"] });
+    const second = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "held", mentions: ["@a"] });
+
+    expect(posts).toBe(1);
+    expect(second).toBe(first);
+    expect(isToolExecutorError(first)).toBe(true);
+    expect(first).toMatchObject({ details: { kind: DeliveryUnknownError.KIND } });
+  });
+
+  it("still clears after a definite refusal so a retry can post", async () => {
+    let posts = 0;
+    const tools = deliveringMessages(
+      toolsWith(async (toolName) => {
+        if (toolName !== SEND_MESSAGE_TOOL_NAME) return {};
+        posts += 1;
+        if (posts === 1) {
+          return createToolExecutorError({
+            errorType: "ToolExecutionError",
+            toolName: SEND_MESSAGE_TOOL_NAME,
+            message: "refused",
+          });
+        }
+        return { success: true, id: "posted" };
+      }),
+      delivery,
+    );
+
+    const first = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "retry", mentions: ["@a"] });
+    const second = await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "retry", mentions: ["@a"] });
+
+    expect(posts).toBe(2);
+    expect(isToolExecutorError(first)).toBe(true);
+    expect(second).toMatchObject({ success: true, id: "posted" });
   });
 });

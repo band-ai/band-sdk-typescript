@@ -377,14 +377,15 @@ describe("an unresolved publication through a restart", () => {
     await afterUnknown.close();
 
     const second = await startProcess(platform, journalDir, async ({ tools }) => {
-      void tools;
+      // Settle the re-run on purpose: do not rely on missing-reply giveUp for processed.
+      await tools.executeToolCall("band_no_reply", { reason: "already reported as unknown" });
     });
     const postedBeforeRestart = posts.length;
 
     // A: settled before the process died — Band holds its processed mark, nothing is redelivered.
     expect(room.outcomes(a)).toEqual(["processed"]);
-    // B: its turn failed without ending durably — it runs again, posts nothing, and its
-    // unknown publication is reported when the room's journal reopens; the re-run ends processed.
+    // B: its turn failed without ending durably — it runs again, posts nothing, reports the
+    // unknown publication on reopen, and settles deliberately with band_no_reply.
     await platform.rest.settled.next((settled) => settled.messageId === b && settled.outcome === "processed");
 
     expect(second.handled).toEqual([b]);
@@ -392,8 +393,8 @@ describe("an unresolved publication through a restart", () => {
     expect(reported(second.events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: b }]);
     expect(await journalRecords(journalDir)).toEqual([
       "reply.intent", "reply.settled", "turn.done",
-      // B's re-run ends on a poisoned journal: its end stands unrecorded, and the mark settles it.
       "reply.intent", "reply.unknown", "publication.reported",
+      "decline.settled", "turn.done",
     ]);
   });
 });

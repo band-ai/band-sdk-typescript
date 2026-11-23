@@ -19,6 +19,7 @@ import {
   toLegacyToolExecutorErrorMessage,
 } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
+import { JournalPublicationError } from "../src/runtime/journal/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { makeRoster } from "./testUtils";
 
@@ -483,6 +484,41 @@ describe("AgentTools", () => {
     expect(errorLogs).toHaveLength(1);
     expect(errorLogs[0]?.message).toBe("unexpected tool execution error");
     expect(errorLogs[0]?.context).toMatchObject({ toolName: "band_list_memories" });
+  });
+
+  it("converts a JournalPublicationError without logging it as unexpected", async () => {
+    const errorLogs: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FakeRestApi() }),
+      inboundMessageId: () => "msg-1",
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: (message, context) => errorLogs.push({ message, context }),
+      },
+      publication: {
+        publishReply: async () => {
+          throw new JournalPublicationError(
+            "The room's journal can no longer record what this reply owes",
+            "poisoned",
+          );
+        },
+      } as never,
+    });
+
+    const result = await tools.executeToolCall("band_send_message", {
+      content: "hello",
+      mentions: ["@owner"],
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolExecutionError",
+      toolName: "band_send_message",
+      details: { kind: "poisoned" },
+    });
+    expect(errorLogs).toEqual([]);
   });
 
   it("leaves another handler's own {ok:false} business result untouched, unlike send_event", async () => {

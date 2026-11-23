@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
-import type { Logger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { Serializer } from "../../core/singleFlight";
 
 import { JournalFileError, JournalPublicationError } from "./errors";
@@ -107,8 +107,6 @@ interface InboundIndex {
   at: number;
 }
 
-const NOOP_LOGGER: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-
 function toLine(record: Record<string, unknown>): string {
   return `${JSON.stringify(record)}\n`;
 }
@@ -158,7 +156,7 @@ export class RoomJournal {
     private readonly options: RoomJournalOptions,
   ) {
     this.now = options.now ?? Date.now;
-    this.logger = options.logger ?? NOOP_LOGGER;
+    this.logger = resolveLogger(options.logger);
   }
 
   /**
@@ -439,6 +437,10 @@ export class RoomJournal {
 
   private append(record: Record<string, unknown>): Promise<void> {
     return this.writes.run(async () => {
+      // Re-check inside the queue: a caller may have passed assertAdmitting
+      // before a concurrent write poisoned the handle, and must not append
+      // beneath a torn or half-recorded line.
+      this.assertAdmitting();
       const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
       try {
         this.lineCut = true;
