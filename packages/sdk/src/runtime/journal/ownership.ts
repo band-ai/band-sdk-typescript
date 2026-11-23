@@ -123,9 +123,7 @@ function classify(file: string, error: unknown): JournalOwnershipError {
   const lowered = message.toLowerCase();
   const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
   const code =
-    error !== null && typeof error === "object" && "code" in error
-      ? String((error as { code: unknown }).code).toUpperCase()
-      : "";
+    error !== null && typeof error === "object" && "code" in error ? String(error.code).toUpperCase() : "";
   if (
     code === "SQLITE_BUSY" ||
     code === "SQLITE_LOCKED" ||
