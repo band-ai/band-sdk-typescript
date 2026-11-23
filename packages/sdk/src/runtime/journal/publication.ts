@@ -71,7 +71,6 @@ export class PublicationEngine {
   private async requireJournal(what: "reply" | "decline"): Promise<RoomJournal> {
     const journal = await this.authority();
     if (journal) return journal;
-    // Configured journal with no standing authority: refuse rather than act unjournaled.
     throw new JournalPublicationError(
       `The room's turn journal no longer stands behind this ${what}; it is refused rather than ${what === "reply" ? "delivered" : "run"} unjournaled. Stop the runtime, restore the journal, and start again.`,
       "closed",

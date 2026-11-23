@@ -174,9 +174,8 @@ export class TurnJournal {
       if ((await migrationState(this.dir)) === "committed") {
         await validateCommittedDestinations(this.dir, this.agentId);
       }
-      // A commit — resumed or already made — binds a set of files; anything the
-      // agent's legacy directory holds beyond it might belong to any deployment,
-      // and no record says which.
+      // Anything the agent's legacy directory holds beyond that commit might
+      // belong to any deployment, and no record says which.
       const legacy = await unboundLegacyFiles(legacyAgentDir(this.root, this.agentId), this.dir);
       if (legacy.length > 0) {
         throw new JournalFileError(

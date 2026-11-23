@@ -49,9 +49,13 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
 
 export type JournalRecord = z.infer<typeof journalRecordSchema>;
 
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {
-  return createHash("sha256").update(identity, "utf8").digest("hex");
+  return sha256Hex(identity);
 }
 
 /**
@@ -61,12 +65,12 @@ export function identityDirectoryComponent(identity: string): string {
  * in every file's header, which is what is validated on open.
  */
 export function agentDirectoryComponent(agentId: string): string {
-  return createHash("sha256").update(agentId, "utf8").digest("hex");
+  return sha256Hex(agentId);
 }
 
 /** The file-name component of a room id in the journal's file layout. Hashed, for the same reason. */
 export function roomFileComponent(roomId: string): string {
-  return createHash("sha256").update(roomId, "utf8").digest("hex");
+  return sha256Hex(roomId);
 }
 
 /** How one admitted reply stands: unposted-and-pending, or one terminal state. */

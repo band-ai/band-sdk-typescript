@@ -207,8 +207,9 @@ export class RoomJournal {
 
       const lines = text.split("\n");
       // A crash may have cut the final line short of its newline.
-      const tornTail = text.endsWith("\n") ? null : (lines.pop() ?? null);
-      const wholeLines = text.endsWith("\n") ? lines.slice(0, -1) : lines;
+      const complete = text.endsWith("\n");
+      const tornTail = complete ? null : (lines.pop() ?? null);
+      const wholeLines = complete ? lines.slice(0, -1) : lines;
 
       const header = parseHeader(file, wholeLines[0], options);
       const records: Array<{ line: string; record: JournalRecord }> = [];

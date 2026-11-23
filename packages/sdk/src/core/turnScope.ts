@@ -57,8 +57,6 @@ export function scopeTurnTools<T extends object>(tools: T, inboundMessageId: str
         this: unknown,
         ...args: unknown[]
       ): Promise<unknown> {
-        // A tool method answers with a promise: the call's result is the
-        // publication it stands for, resolved in the turn's scope.
         return runTurnInboundScope(inboundMessageId, () =>
           Reflect.apply(value as (...a: unknown[]) => Promise<unknown>, this === undefined ? target : this, args),
         );

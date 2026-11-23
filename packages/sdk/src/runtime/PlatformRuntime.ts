@@ -602,11 +602,6 @@ export class PlatformRuntime implements AsyncDisposable {
       ...defaults,
       publication: generation
         ? PublicationEngine.create({
-            // The room's authority, as it stands: a journal that will not open
-            // fails the reply rather than deliver it unjournaled, a closed
-            // generation refuses it, and a handle that opened but no longer
-            // admits records refuses it as poisoned. Only a runtime that never
-            // configured the journal posts without one.
             room: () => generation.room(roomId),
             roomId,
             generation,
@@ -1355,14 +1350,12 @@ export class PlatformRuntime implements AsyncDisposable {
     // not create the file, and one that stands opens through the generation, so a
     // turn running in the room shares the same handle rather than a second one.
     const file = generation.roomPath(roomId);
-    const stands = stat(file).then(
-      () => true,
-      (error: unknown) => {
-        if (hasErrorCode(error, "ENOENT")) return false;
-        throw error;
-      },
-    );
-    if (!(await stands)) return;
+    try {
+      await stat(file);
+    } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) return;
+      throw error;
+    }
     await this.withRecoverySlot(async () => {
       const journal = await generation.room(roomId);
       try {

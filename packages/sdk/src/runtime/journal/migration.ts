@@ -166,9 +166,12 @@ async function readManifest(agentDir: string): Promise<Manifest | null> {
   return text === null ? null : parseManifest(text);
 }
 
-async function sha256File(file: string): Promise<string> {
-  const text = await readFile(file);
+function sha256Text(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+async function sha256File(file: string): Promise<string> {
+  return sha256Text(await readFile(file));
 }
 
 /**
@@ -301,13 +304,11 @@ function parseRemnantRecords(file: string, text: string): Array<{ line: string; 
   });
   if (tornTail !== null && tornTail.trim() !== "") {
     try {
-      // A whole record at EOF, with or without its newline: it is a record,
-      // and it is held to the record's rule — a record the importer does not
-      // know is refused, not dropped.
+      // A whole record at EOF is held to the record's rule (unknown → refuse);
+      // a torn tail that is not a whole record leaves the records above.
       check(tornTail, lines.length + 1, JSON.parse(tornTail));
     } catch (error) {
       if (error instanceof JournalFileError) throw error;
-      // A torn tail that is not a whole record: the records above stand.
     }
   }
   return entries;
@@ -531,7 +532,7 @@ async function validateDestination(
       // stand now, so a journal or a copy that moved since the import is
       // refused, not imported past.
       const staging = await coalescedStaging(legacyDir, binding, legacy, explicitSources);
-      const stagingSha256 = createHash("sha256").update(staging.text).digest("hex");
+      const stagingSha256 = sha256Text(staging.text);
       if (stagingSha256 !== binding.stagingSha256) {
         throw new JournalFileError(
           `The journal ${binding.stagesFrom} and the compaction copies beside it no longer match the import the migration recorded (observed ${stagingSha256}); they changed after the migration ran, so its import no longer describes them. Re-run the migration against the current files.`,
@@ -888,7 +889,7 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       const staging = await coalescedStaging(legacyDir, binding, legacy, explicit);
       prepared.push({
         ...binding,
-        stagingSha256: createHash("sha256").update(staging.text).digest("hex"),
+        stagingSha256: sha256Text(staging.text),
         importedFacts: importedFactsOf(binding.stagesFrom, staging.records),
       });
     }
@@ -955,6 +956,11 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
   } finally {
     await ownership.release().catch(() => undefined);
   }
+}
+
+/** A binding accepted for staging; its hash and imported facts are filled when the import runs. */
+function pendingStaging(binding: MigrationBinding, stagesFrom: string): PreparedBinding {
+  return { ...binding, stagesFrom, stagingSha256: "", importedFacts: { publicationIds: [], turnDone: [] } };
 }
 
 /**
@@ -1050,9 +1056,10 @@ async function validateBindings(
       // that arrived first anchors the destination only until the journal it
       // is the output of arrives too, and later copies are paired against the
       // journal, not against the copy they were filed beside.
+      const claimingPrimary = remnantPrimaryOf(claimingRoom.sourceFile);
       const isCopyPair =
         remnantPrimaryOf(binding.sourceFile) === claimingRoom.sourceFile ||
-        (remnantPrimaryOf(claimingRoom.sourceFile) !== undefined && remnantPrimaryOf(claimingRoom.sourceFile) === binding.sourceFile);
+        (claimingPrimary !== undefined && claimingPrimary === binding.sourceFile);
       // Two copies beside the journal they both stage through are pending that
       // journal's binding, whatever order they arrived in: one room's journal
       // is one authority, and the copies are its outputs. Copies whose journal
@@ -1061,16 +1068,17 @@ async function validateBindings(
         const primary = remnantPrimaryOf(file);
         return primary !== undefined && legacy.includes(primary) ? primary : file;
       };
+      const claimingStagesFrom = stagesThrough(claimingRoom.sourceFile);
       const bothPendingSamePrimary =
-        stagesThrough(claimingRoom.sourceFile) !== claimingRoom.sourceFile &&
-        stagesThrough(claimingRoom.sourceFile) === stagesThrough(binding.sourceFile);
+        claimingStagesFrom !== claimingRoom.sourceFile &&
+        claimingStagesFrom === stagesThrough(binding.sourceFile);
       if ((isCopyPair || bothPendingSamePrimary) && claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
         // The same room's journal, attested twice (a journal and the copy it
         // crashed from): one migration, staged through the journal. The
         // copy's attestation still stands in the migration: its surplus,
         // where it holds any, is imported only because it is bound.
-        normalized.push({ ...binding, stagesFrom, stagingSha256: "", importedFacts: { publicationIds: [], turnDone: [] } });
-        if (remnantPrimaryOf(claimingRoom.sourceFile) === binding.sourceFile) {
+        normalized.push(pendingStaging(binding, stagesFrom));
+        if (claimingPrimary === binding.sourceFile) {
           destinations.set(destination, binding);
         }
         continue;
@@ -1084,7 +1092,7 @@ async function validateBindings(
       );
     }
     destinations.set(destination, binding);
-    normalized.push({ ...binding, stagesFrom, stagingSha256: "", importedFacts: { publicationIds: [], turnDone: [] } });
+    normalized.push(pendingStaging(binding, stagesFrom));
   }
   // A compaction copy is its journal's output: where the journal is bound too,
   // the two attestations must agree, or the copy claims a platform the journal
@@ -1101,11 +1109,8 @@ async function validateBindings(
       );
     }
   }
-  // A compaction copy is its journal's output: where the journal is bound too,
-  // the two attestations must agree, or the copy claims a platform the journal
-  // binds the room to and the room's authority is two files apart. A copy
-  // beside a bound journal that holds nothing its journal does not rides the
-  // journal's binding; one that holds more stands for authority of its own,
+  // A copy beside a bound journal that holds nothing its journal does not rides
+  // the journal's binding; one that holds more stands for authority of its own,
   // and a filename attests nothing — it needs a binding of its own, or it is
   // reconciled away before the migration commits.
   const stagedPrimaries = new Set(normalized.map((binding) => binding.stagesFrom));

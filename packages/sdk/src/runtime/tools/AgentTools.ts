@@ -212,7 +212,6 @@ export class AgentTools implements AgentToolsProtocol {
     const post = async (): Promise<ToolOperationResult> => {
       const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
 
-      // The REST adapter owns the post's attempts; the turn's delivery lets it read the room back.
       const delivery = currentDelivery();
       return this.rest.createChatMessage(
         this.roomId,
@@ -224,11 +223,8 @@ export class AgentTools implements AgentToolsProtocol {
       );
     };
 
-    // A reply settles under the turn that makes it: the runtime runs the turn
-    // inside its inbound's scope, so whatever tool composition it ran on —
-    // the host's, wrapped or not — settles under the message it answers. A
-    // notice (and a reply with nothing in flight) posts unrecorded, exactly
-    // as before the journal existed.
+    // A reply settles under the turn's inbound scope; a notice (and a reply
+    // with nothing in flight) posts unrecorded.
     if (kind === "reply" && this.publication) {
       const messageId = this.publicationInboundId();
       if (messageId !== undefined) {
