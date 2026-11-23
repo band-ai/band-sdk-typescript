@@ -285,6 +285,15 @@ export class Execution {
     return this.pausedBy.has("band");
   }
 
+  /**
+   * Band played an execution of this room without naming the room: run the
+   * missed-play check now. The room resumes only if the check's `/next`
+   * serves it a message, so one execution's play cannot lift another room.
+   */
+  public probeMissedPlay(): void {
+    this.probeSoon();
+  }
+
   /** Queues one check for a missed play now, unless one is already waiting. */
   private probeSoon(): void {
     if (!this.isBandStopped() || !this.isActive()) return;

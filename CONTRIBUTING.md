@@ -298,8 +298,16 @@ GitHub's authoritative base SHA, preventing an earlier commit in a multi-commit
 topology from hiding a version transition.
 
 **Required status checks:** `ci-status` and `Validate PR Title`. CodeQL gates
-PRs through the ruleset's code scanning rule instead of a status check, because
-that rule does not apply to merge groups, where CodeQL default setup never runs.
+PRs through the ruleset's `code_scanning` rule (tool `CodeQL`) instead of a
+named status check. That rule does not apply to merge groups.
+
+CodeQL runs as **advanced setup** via [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml)
+(`pull_request`, `push` to `main`, `merge_group`, weekly schedule). Do **not**
+re-enable GitHub's CodeQL **default setup** while that workflow is active —
+default setup skips fork PRs, so a ruleset that requires CodeQL results leaves
+those PRs permanently "waiting for results", and advanced SARIF uploads fail
+while default setup is configured. Prefer a same-repo head when practical;
+fork PRs still get scanned after any outside-contributor workflow approval.
 
 Rulesets are external GitHub state that no file in this repository can assert, so
 this section describes the intended configuration rather than proving what is

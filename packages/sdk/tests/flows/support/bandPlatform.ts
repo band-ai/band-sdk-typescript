@@ -684,22 +684,31 @@ export class BandPlatform implements AsyncDisposable {
   /**
    * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
    * its rooms for null, as its `agent.control` push does; a stopped room's
-   * `/messages/next` serves nothing until a play, as on Band. With
-   * `delivered: false` the agent misses the push. Returns its correlation id.
+   * `/messages/next` serves nothing until a play, as on Band. A push that
+   * names an `executionId` and no room is per-execution only: the control
+   * frame is sent, but durable stop/play is not fan-out across rooms (callers
+   * that need a room served again keep using room-scoped control, optionally
+   * with `delivered: false`). With `delivered: false` the agent misses the
+   * push. Returns its correlation id.
    */
   public control(
     mode: AgentControlMode,
     roomId: string | null,
-    options: { delivered?: boolean; correlationId?: string } = {},
+    options: { delivered?: boolean; correlationId?: string; executionId?: string | null } = {},
   ): string {
-    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
-      if (mode === "stop") this.rest.stoppedRooms.add(room);
-      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    // Per-execution pushes name an execution and no room; Band does not stop
+    // or play every room for that shape, so neither does the fake.
+    const executionAddressed = roomId === null && options.executionId != null;
+    if (!executionAddressed) {
+      for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+        if (mode === "stop") this.rest.stoppedRooms.add(room);
+        if (mode === "play") this.rest.stoppedRooms.delete(room);
+      }
     }
     const correlationId = options.correlationId ?? randomUUID();
     if (options.delivered !== false) {
       this.transport.pushControl({
-        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: options.executionId ?? null,
       });
     }
     return correlationId;
