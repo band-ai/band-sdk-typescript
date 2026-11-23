@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { BandSdkError } from "../../core/errors";
 
@@ -116,8 +117,21 @@ export class JournalOwnership {
 /** The lock failure of `file`: contention, a corrupt file, or an I/O fault. */
 function classify(file: string, error: unknown): JournalOwnershipError {
   const message = error instanceof Error ? error.message : String(error);
-  const text = message.toLowerCase();
-  if (text.includes("busy") || text.includes("locked")) {
+  // Strip the path (and its basename) before substring kind checks so a file
+  // named e.g. `locked.sqlite` inside an EACCES message is not treated as
+  // SQLite lock contention.
+  const lowered = message.toLowerCase();
+  const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
+  const code =
+    error !== null && typeof error === "object" && "code" in error
+      ? String((error as { code: unknown }).code).toUpperCase()
+      : "";
+  if (
+    code === "SQLITE_BUSY" ||
+    code === "SQLITE_LOCKED" ||
+    haystack.includes("busy") ||
+    haystack.includes("locked")
+  ) {
     return new JournalOwnershipError(
       `Another process owns the journal at ${file}. Stop that process (or the runtime that started it) and try again; ` +
         `the lock is never stolen, and the journal stays closed meanwhile.`,
@@ -126,7 +140,7 @@ function classify(file: string, error: unknown): JournalOwnershipError {
       error,
     );
   }
-  if (text.includes("not a database")) {
+  if (haystack.includes("not a database")) {
     return new JournalOwnershipError(
       `The journal lock file ${file} is corrupt (it is not a database). Restore it from backup or point the runtime at ` +
         `the journal directory this agent's earlier processes used; deleting it discards the journal's authority, so do not do that casually.`,

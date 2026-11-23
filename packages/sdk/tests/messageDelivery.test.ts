@@ -178,6 +178,31 @@ describe("same-turn band_send_message coalescing after delivery_unknown", () => 
     expect(second).toMatchObject({ success: true, id: "posted" });
   });
 
+  it("posts each successful direct sendMessage: only tool-door successes stay coalesced", async () => {
+    let posts = 0;
+    const tools = deliveringMessages(
+      new Proxy({} as AdapterToolsProtocol, {
+        get(_target, key) {
+          if (key === "sendMessage") {
+            return async (content: string) => {
+              posts += 1;
+              return { success: true, id: `posted-${posts}`, content };
+            };
+          }
+          if (key === "executeToolCall") return async () => ({});
+          if (key === "capabilities") return DEFAULT_AGENT_TOOLS_CAPABILITIES;
+          if (typeof key === "string") return async () => ({});
+          return undefined;
+        },
+      }),
+      delivery,
+    );
+
+    await expect(tools.sendMessage("again", ["@a"])).resolves.toMatchObject({ id: "posted-1" });
+    await expect(tools.sendMessage("again", ["@a"])).resolves.toMatchObject({ id: "posted-2" });
+    expect(posts).toBe(2);
+  });
+
   it("coalesces direct sendMessage after DeliveryUnknown so a second same-content send does not POST again", async () => {
     let posts = 0;
     const unknown = new DeliveryUnknownError(serverError(), "pub-2");

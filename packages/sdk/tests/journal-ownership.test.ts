@@ -140,9 +140,27 @@ describe("journal ownership", () => {
     expect(error.message).toContain("not a database");
   });
 
+  it("classifies EACCES as io even when the path basename contains locked", async () => {
+    const file = path.join(dir, "locked.sqlite");
+    const error = await JournalOwnership.acquire(file, {
+      loadSqlite: async () =>
+        ({
+          DatabaseSync: class {
+            constructor() {
+              throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: "EACCES" });
+            }
+          },
+        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
+    }).catch((e: unknown) => e);
+    expectKind(error, "io");
+    expect(error.message).toContain(file);
+  });
+
   it("fails closed when the journal's directory cannot be written", async () => {
     const subdir = path.join(dir, "unwritable");
     await mkdir(subdir);
+    // Basename includes "locked" so a classifier that matches the path would
+    // mis-report EACCES as contention (Windows mock embeds this path).
     const file = path.join(subdir, "locked.sqlite");
     if (process.platform === "win32") {
       // Windows ACL/chmod semantics do not make the directory unwritable the

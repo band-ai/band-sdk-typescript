@@ -27,10 +27,13 @@ export function currentDelivery(): MessageDelivery | undefined {
 /**
  * `tools` whose message posts settle under `delivery`: every Band tool call,
  * by name (an MCP call arriving from another async context included) or by
- * direct method, and every notice runs in its scope. A `band_send_message`
- * call the model or an MCP client repeats while the first is in flight, or
- * after it posted, returns the first one's result instead of posting again —
- * including a direct `sendMessage` (GenericAdapter / deliverReply).
+ * direct method, and every notice runs in its scope. A model/MCP
+ * `band_send_message` that repeats while the first is in flight, or after it
+ * posted (or settled delivery_unknown), returns the first one's result
+ * instead of posting again. A direct `sendMessage` (GenericAdapter /
+ * deliverReply) still posts each successful call; it only joins a standing
+ * same-content promise while that call is in flight or already
+ * delivery_unknown, so an uncertain post cannot be resent blindly.
  */
 export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, delivery: MessageDelivery): T {
   const inScope = <R>(call: () => Promise<R>): Promise<R> => deliveryScope.run(delivery, call);
@@ -47,9 +50,11 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
 
 /**
  * One coalesce map for `executeToolCall(band_send_message)` and direct
- * `sendMessage`: in-flight, success, and delivery_unknown (resolved tool
- * error or thrown DeliveryUnknownError) keep the key so a same-content
- * retry cannot POST again; a definite refusal still clears.
+ * `sendMessage`. In-flight and delivery_unknown (resolved tool error or
+ * thrown DeliveryUnknownError) keep the key so a same-content retry cannot
+ * POST again; a definite refusal clears. Tool-door successes also keep the
+ * key (model/MCP dedupe). Send-door successes clear it so intentional
+ * repeated direct replies each post.
  *
  * The map stores the raw first-call promise. Each door adapts at exit so the
  * other door's contract still holds: send never resolves a delivery_unknown
@@ -64,7 +69,12 @@ function coalesceSendMessage(
   sendMessage: AdapterToolsProtocol["sendMessage"];
 } {
   const sends = new Map<string, Promise<unknown>>();
-  const admit = <R>(content: unknown, mentions: unknown, call: () => Promise<R>): Promise<R> => {
+  const admit = <R>(
+    content: unknown,
+    mentions: unknown,
+    call: () => Promise<R>,
+    retainOnSuccess: boolean,
+  ): Promise<R> => {
     const key = JSON.stringify([content, mentions ?? null]);
     const standing = sends.get(key);
     if (standing) return standing as Promise<R>;
@@ -72,7 +82,8 @@ function coalesceSendMessage(
     sends.set(key, sent);
     sent.then(
       (result) => {
-        if (isFailedToolOutput(result) && !isDeliveryUnknownOutput(result)) sends.delete(key);
+        if (isDeliveryUnknownOutput(result)) return;
+        if (isFailedToolOutput(result) || !retainOnSuccess) sends.delete(key);
       },
       (error) => {
         if (!(error instanceof DeliveryUnknownError)) sends.delete(key);
@@ -83,7 +94,7 @@ function coalesceSendMessage(
   return {
     executeToolCall: (toolName, args) => {
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
-      return admit(args.content, args.mentions ?? null, () => execute(toolName, args)).catch(
+      return admit(args.content, args.mentions ?? null, () => execute(toolName, args), true).catch(
         (error: unknown) => {
           // Send-door delivery_unknown rejects; the tool door must resolve a
           // ToolExecutorError so model/MCP callers see structured failure data.
@@ -101,7 +112,7 @@ function coalesceSendMessage(
       );
     },
     sendMessage: (content, mentions) =>
-      admit(content, mentions ?? null, () => sendMessage(content, mentions)).then((result) => {
+      admit(content, mentions ?? null, () => sendMessage(content, mentions), false).then((result) => {
         // Tool-door delivery_unknown resolves a ToolExecutorError; the send
         // door must reject so deliverReply never treats it as a successful post.
         if (isDeliveryUnknownOutput(result)) {
