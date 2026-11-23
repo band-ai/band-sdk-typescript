@@ -194,9 +194,11 @@ describe("agent.control from Band", () => {
     // A's hanging turn was neither paused nor interrupted: the execution-addressed signals reached no room.
     expect(of(ROOM_A)).toEqual(["room.joined", "turn.started"]);
 
-    // Release A's hanging turn, so teardown finds a settled agent.
+    // Release A's hanging turn; settlement must stay processed with no later
+    // observeBandStop pause — the dropped pushes must not have marked A stopped.
     release();
     await next(is("turn.completed", ROOM_A));
+    expect(of(ROOM_A)).toEqual(["room.joined", "turn.started", "turn.completed"]);
   });
 
   it("lets a later agent-wide stop apply under the same correlation id after dropping an execution-addressed one", async () => {
