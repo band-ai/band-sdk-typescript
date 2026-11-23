@@ -448,6 +448,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
             client,
             tools,
             roomId,
+            threadId,
+            turnId,
             event,
             enableExecutionReporting: config.enableExecutionReporting ?? false,
           });
@@ -986,10 +988,31 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     client: CodexClientLike;
     tools: TurnTools;
     roomId: string;
+    threadId: string;
+    turnId: string;
     event: CodexRpcEvent & { kind: "request" };
     enableExecutionReporting: boolean;
   }): Promise<void> {
     const { client, tools, event } = input;
+    const requestParams = asOptionalRecord(event.params);
+    if (requestParams?.threadId !== input.threadId || requestParams?.turnId !== input.turnId) {
+      // Best-effort: a failed refuse must not take down the active turn via the
+      // runEventLoop request catch (reportTurnFailure) — the stale call is already skipped.
+      try {
+        await client.respondError(event.id, -32602, "Server request does not belong to the active turn");
+      } catch (error) {
+        this.logger.warn("codex_adapter.stale_server_request_reply_failed", {
+          roomId: input.roomId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          requestThreadId: requestParams?.threadId,
+          requestTurnId: requestParams?.turnId,
+          requestId: event.id,
+          error,
+        });
+      }
+      return;
+    }
 
     if (event.method === "item/tool/call") {
       const params = parseDynamicToolCallParams(event.params);

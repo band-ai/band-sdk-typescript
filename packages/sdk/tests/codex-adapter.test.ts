@@ -540,6 +540,84 @@ describe("CodexAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "task" && event.metadata?.codex_thread_id === "thread-1")).toBe(true);
   });
 
+  it.each([
+    { threadId: "obsolete-thread", turnId: "turn-1" },
+    { threadId: "thread-1", turnId: "obsolete-turn" },
+  ])("refuses server requests outside the active native operation ($threadId/$turnId)", async (identity) => {
+    const executed: string[] = [];
+    const client = new FakeCodexClient({
+      events: [
+        {
+          kind: "request", id: 101, method: "item/tool/call",
+          params: { ...identity, callId: "obsolete-reply", tool: SEND_MESSAGE_TOOL_NAME,
+            arguments: { content: "obsolete reply", mentions: ["owner"] } },
+        },
+        {
+          kind: "request", id: 102, method: "item/tool/call",
+          params: { ...identity, callId: "obsolete-custom", tool: "record_action", arguments: { text: "obsolete" } },
+        },
+        {
+          kind: "request", id: 103, method: "item/tool/call",
+          params: { threadId: "thread-1", turnId: "turn-1", callId: "current-custom",
+            tool: "record_action", arguments: { text: "current" } },
+        },
+        {
+          kind: "request", id: 104, method: "item/tool/call",
+          params: { threadId: "thread-1", turnId: "turn-1", callId: "current-reply", tool: SEND_MESSAGE_TOOL_NAME,
+            arguments: { content: "current reply", mentions: ["owner"] } },
+        },
+        TURN_COMPLETED,
+      ],
+    });
+    const adapter = new CodexAdapter({
+      factory: async () => client,
+      config: { cwd: tmpRoot(), enableExecutionReporting: true },
+      customTools: [{
+        name: "record_action", description: "Record an action", schema: z.object({ text: z.string() }),
+        handler: async (args) => { executed.push(String(args.text)); return "recorded"; },
+      }],
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "act"))).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["current reply"]);
+    expect(executed).toEqual(["current"]);
+    expect(client.responses.find(({ id }) => id === 101)).toMatchObject({ error: { code: -32602 } });
+    expect(client.responses.find(({ id }) => id === 102)).toMatchObject({ error: { code: -32602 } });
+    const reports = [...session.room.events("tool_call"), ...session.room.events("tool_result")];
+    expect(reports.map(({ content }) => JSON.parse(content).tool_call_id)).toEqual(["current-custom", "current-custom"]);
+  });
+
+  it("keeps the active turn when refusing a stale server request fails to reply", async () => {
+    class FailingRefuseClient extends FakeCodexClient {
+      public override async respondError(): Promise<void> {
+        throw new Error("stdin write failed while refusing stale request");
+      }
+    }
+    const client = new FailingRefuseClient({
+      events: [
+        {
+          kind: "request", id: 101, method: "item/tool/call",
+          params: {
+            threadId: "thread-1", turnId: "obsolete-turn", callId: "obsolete-reply",
+            tool: SEND_MESSAGE_TOOL_NAME, arguments: { content: "stale", mentions: ["owner"] },
+          },
+        },
+        {
+          kind: "notification", method: "item/completed",
+          params: { item: { type: "agentMessage", id: "msg-1", text: "current reply" } },
+        },
+        TURN_COMPLETED,
+      ],
+    });
+    const adapter = new CodexAdapter({
+      factory: async () => client,
+      config: { cwd: tmpRoot(), enableExecutionReporting: true },
+    });
+    await using session = await BandPlatform.join(adapter, [person("owner")]);
+    expect(await session.room.outcome(await session.room.say("owner", "act"))).toBe("processed");
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["current reply"]);
+  });
+
   it("falls back to a new thread and injects history when resume fails", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
@@ -1697,6 +1775,10 @@ describe("CodexAdapter", () => {
           id: 1,
           method: "item/tool/call",
           params: {
+            // Active-turn identity so the stale-request guard does not fire;
+            // callId is omitted so parseDynamicToolCallParams fails.
+            threadId: "thread-1",
+            turnId: "turn-1",
             tool: "band_send_message",
             arguments: {
               content: "hello",
@@ -1731,8 +1813,7 @@ describe("CodexAdapter", () => {
     );
 
     expect(tools.toolCalls).toEqual([]);
-    expect(fakeClient.responses).toContainEqual({
-      id: 1,
+    expect(fakeClient.responses.find(({ id }) => id === 1)).toMatchObject({
       error: {
         code: -32602,
         message: "Invalid params for item/tool/call",
