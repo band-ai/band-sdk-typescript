@@ -12,7 +12,7 @@ import { JournalFileError, JournalPublicationError } from "../src/runtime/journa
 import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals } from "../src/runtime/journal/migration";
 import { RoomJournal, roomFileName } from "../src/runtime/journal/RoomJournal";
-import { TurnJournal, GenerationClosedError, agentJournalDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { TurnJournal, agentJournalDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { tmpRoot } from "./testUtils";
@@ -230,7 +230,6 @@ describe("publications", () => {
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
-      room: async () => room,
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -286,9 +285,7 @@ describe("publications", () => {
   it("records a top-level post id as the receipt, with nested message.id as fallback", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
-      room: async () => room,
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -308,7 +305,6 @@ describe("publications", () => {
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
-      room: async () => room,
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -369,7 +365,6 @@ describe("publications", () => {
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     const engine = PublicationEngine.create({
-      room: async () => room,
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -414,7 +409,7 @@ describe("publications", () => {
   it("keeps another reply's owed settlement poison when a refusal queued behind it lands", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({ room: () => generation.room(ROOM), roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
     const settleEntered = createDeferred();
     const failSettle = createDeferred();
     await interceptJournalAppends(async (original, self, args) => {
@@ -571,69 +566,37 @@ describe("publications", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
   });
 
-  it("keeps a force-closed room from posting while beginReply is still admitting, and settlement stays writable under drain", async () => {
+  it("closes a released room's handle only once a reply admitted before the release settles on it", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({
-      room: async () => room,
-      roomId: ROOM,
-      generation,
-      logger: new NoopLogger(),
-    });
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
-    let posted = false;
-    const publish = engine.publishReply("msg-1", async () => {
-      posted = true;
-      return { success: true, message: { id: "posted-1" } };
-    });
+    const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
     await append.entered;
-    // Force-close while the durable intent is still held: the generation must wait
-    // on the tracked admission, not close under an in-flight post.
-    const releasing = generation.release(ROOM, true);
+    // The room is left while the reply's durable intent is still being written.
+    generation.release(ROOM);
+    expect(room.isClosed).toBe(false);
     append.release();
     await expect(publish).resolves.toMatchObject({ success: true });
-    await releasing;
-    expect(posted).toBe(true);
+    expect(room.isClosed).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
   });
 
-  it("keeps a force-closed room from posting while requireJournal is still awaiting authority", async () => {
+  it("keeps the journal owned while a reply's room journal is still opening, and the reply settles durably", async () => {
     const dir = tmpRoot();
-    const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
-    const authorityEntered = createDeferred();
-    const releaseAuthority = createDeferred();
-    const engine = PublicationEngine.create({
-      room: async () => {
-        authorityEntered.resolve();
-        await releaseAuthority.promise;
-        return room;
-      },
-      roomId: ROOM,
-      generation,
-      logger: new NoopLogger(),
-    });
-    let posted = false;
-    const publish = engine.publishReply("msg-1", async () => {
-      posted = true;
-      return { success: true, message: { id: "posted-1" } };
-    });
-    await authorityEntered.promise;
-    // Force-close while requireJournal is still held: trackInflight must already
-    // cover this await, so close waits and the post still settles durably.
-    const releasing = generation.release(ROOM, true);
-    let releaseDone = false;
-    void releasing.then(() => {
-      releaseDone = true;
-    });
-    await Promise.resolve();
-    expect(releaseDone).toBe(false);
-    expect(posted).toBe(false);
-    releaseAuthority.resolve();
+    const { journals, generation } = await generationIn(dir);
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const rewrite = await holdJournalRewrite();
+    const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
+    await rewrite.entered;
+    // The runtime stops while the reply's journal is still opening: the stop waits for the reply.
+    const closing = generation.close();
+    await flushMicrotasks();
+    await expect(journals.activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);
+    rewrite.release();
     await expect(publish).resolves.toMatchObject({ success: true });
-    await releasing;
-    expect(posted).toBe(true);
+    await closing;
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled"]);
   });
 
@@ -902,9 +865,8 @@ describe("ownership and generations", () => {
     expect(reopened.answered("msg-1")).toBe(true);
     // The superseded generation cannot reach the successor's rooms.
     await expect(first.room(ROOM)).rejects.toBeInstanceOf(BandSdkError);
-    await expect(first.release(ROOM)).resolves.toBeUndefined();
+    expect(() => first.release(ROOM)).not.toThrow();
     await expect(first.close()).resolves.toBeUndefined();
-    await second.drain();
     expect(reopened.accepting).toBe(true);
     await second.close();
   });
@@ -913,33 +875,55 @@ describe("ownership and generations", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    await room.turnDone("msg-1");
+    let opens = 0;
+    const open = RoomJournal.open.bind(RoomJournal);
+    const spy = vi.spyOn(RoomJournal, "open").mockImplementation(async (...args) => {
+      opens += 1;
+      return await open(...args);
+    });
+    onTestFinished(() => spy.mockRestore());
+    const append = await holdJournalAppend((line) => line.includes('"t":"turn.done"'));
+    const done = room.turnDone("msg-1");
+    await append.entered;
+    generation.release(ROOM);
     const reopening = generation.room(ROOM);
-    await generation.release(ROOM);
+    await flushMicrotasks();
+    // The closing handle still owes its write: the room's next handle has not begun to open.
+    expect(opens).toBe(0);
+    append.release();
+    await done;
     const reopened = await reopening;
+    expect(reopened).not.toBe(room);
     expect(reopened.answered("msg-1")).toBe(true);
   });
 
-  it("does not close a reopened handle when endHold follows a force release that cleared a deferred close (S1)", async () => {
+  it("keeps a handle a turn took over from a released room's reply open for the turn's end", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const held = await generation.room(ROOM);
-    generation.holdRoom(ROOM);
-    // Non-force release while held owes a close; the handle stays open.
-    await generation.release(ROOM);
-    expect(held.isClosed).toBe(false);
-    // Force closes now; the deferred close must not survive for a later endHold.
-    await generation.release(ROOM, true);
-    expect(held.isClosed).toBe(true);
-    const reopened = await generation.room(ROOM);
-    await generation.endHoldRoom(ROOM);
-    expect(reopened.isClosed).toBe(false);
-    expect(reopened.accepting).toBe(true);
-    await reopened.turnDone("msg-after-end-hold");
-    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    // The room is left while a reply posts.
+    const posting = createDeferred();
+    const post = createDeferred<{ success: true; id: string }>();
+    const reply = engine.publishReply("m1", async () => {
+      posting.resolve();
+      return await post.promise;
+    });
+    await posting.promise;
+    generation.release(ROOM);
+
+    // The room is admitted again, and its next turn holds the room before the reply settles.
+    const turn = generation.holdRoom(ROOM);
+    const journal = await turn.journal;
+    post.resolve({ success: true, id: "posted-1" });
+    await reply;
+
+    expect(journal.accepting).toBe(true);
+    await journal.turnDone("m2");
+    turn.end();
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled", "turn.done"]);
   });
 
-  it("closes what an open in flight opens when a force release overtakes it, and opens the room afresh after", async () => {
+  it("hands an open the room's release overtook to the turn holding it, and opens afresh after the hold ends", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const openEntered = createDeferred();
@@ -956,25 +940,23 @@ describe("ownership and generations", () => {
     onTestFinished(() => spy.mockRestore());
 
     // A turn holds the room and opens its journal; the room is left meanwhile.
-    generation.holdRoom(ROOM);
-    const opening = generation.room(ROOM);
+    const turn = generation.holdRoom(ROOM);
     await openEntered.promise;
-    const releasing = generation.release(ROOM, true);
-    // The room comes back while the stale open is still in flight.
-    const reopening = generation.room(ROOM);
+    generation.release(ROOM);
     releaseOpen.resolve();
-    await releasing;
 
-    // The turn gets no handle, and the one its open produced is closed.
-    await expect(opening).rejects.toBeInstanceOf(GenerationClosedError);
-    expect(opened[0]?.isClosed).toBe(true);
-    await generation.endHoldRoom(ROOM);
+    // The turn keeps the handle it holds; it closes once the hold ends.
+    const held = await turn.journal;
+    expect(held).toBe(opened[0]);
+    await held.turnDone("during-release");
+    turn.end();
+    expect(held.isClosed).toBe(true);
     // The room's next open is a fresh, live handle.
-    const room = await reopening;
+    const room = await generation.room(ROOM);
     expect(room).toBe(opened[1]);
     expect(room.accepting).toBe(true);
     await room.turnDone("after-open-race");
-    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done", "turn.done"]);
   });
 
   it("stays owned until a room open in flight ends, so a successor's records are never renamed over", async () => {
@@ -990,18 +972,18 @@ describe("ownership and generations", () => {
     await expect(journals.activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);
     rewrite.release();
     await closing;
-    await expect(opening).rejects.toBeInstanceOf(GenerationClosedError);
+    expect((await opening).isClosed).toBe(true);
 
     const { generation: successor } = await generationIn(dir);
     await (await successor.room(ROOM)).turnDone("msg-1");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 
-  it("finishes a force release whose drained publications open the room meanwhile", async () => {
+  it("finishes a release whose room's publications use the room meanwhile", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     await generation.room(ROOM);
-    const engine = PublicationEngine.create({ room: () => generation.room(ROOM), roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
     const posting = createDeferred();
     const postEntered = createDeferred();
     const reply = engine.publishReply("msg-1", async () => {
@@ -1012,14 +994,45 @@ describe("ownership and generations", () => {
     await postEntered.promise;
 
     // The room is left while its reply posts; a decline admitted meanwhile opens the room the release drains.
-    const releasing = generation.release(ROOM, true);
+    generation.release(ROOM);
     const decline = engine.publishDecline("msg-2", async () => undefined);
     posting.resolve();
 
     await expect(reply).resolves.toMatchObject({ id: "post-1" });
     await expect(decline).resolves.toBeUndefined();
-    await releasing;
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.settled", "decline.settled"]);
+  });
+
+  it("waits for the publications serving a message to settle, and no other message's", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const posting = { m1: createDeferred(), m2: createDeferred() };
+    const posts = { m1: createDeferred<{ success: true; id: string }>(), m2: createDeferred<{ success: true; id: string }>() };
+    const first = engine.publishReply("m1", async () => {
+      posting.m1.resolve();
+      return await posts.m1.promise;
+    });
+    const second = engine.publishReply("m2", async () => {
+      posting.m2.resolve();
+      return await posts.m2.promise;
+    });
+    await posting.m1.promise;
+    await posting.m2.promise;
+
+    let settled = false;
+    const waiting = generation.settled(ROOM, "m1").then(() => {
+      settled = true;
+    });
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    posts.m1.resolve({ success: true, id: "posted-1" });
+    await first;
+    // m2's reply still posts: only m1's publications are waited for.
+    await waiting;
+    expect((await generation.room(ROOM)).answered("m1")).toBe(true);
+    posts.m2.resolve({ success: true, id: "posted-2" });
+    await second;
   });
 });
 
@@ -1032,26 +1045,17 @@ describe("a room's journal opened directly", () => {
 });
 
 describe("a publication against a closed generation", () => {
-  /** A generation whose close beat the publication: every room it opens is gone. */
-  const closedGeneration: JournalGeneration = {
-    identity: IDENTITY,
-    room: async () => {
-      throw new GenerationClosedError();
-    },
-    holdRoom: () => undefined,
-    endHoldRoom: async () => undefined,
-    release: async () => undefined,
-    trackInflight: () => undefined,
-    drain: async () => undefined,
-    roomPath: () => roomFile(tmpRoot()),
-    close: async () => undefined,
-  };
+  /** A generation whose close beat the publication: its rooms are gone. */
+  async function closedGeneration(): Promise<JournalGeneration> {
+    const { generation } = await generationIn(tmpRoot());
+    await generation.close();
+    return generation;
+  }
 
   it("refuses a reply rather than deliver it unjournaled", async () => {
     const engine = PublicationEngine.create({
-      room: () => closedGeneration.room(ROOM),
       roomId: ROOM,
-      generation: closedGeneration,
+      generation: await closedGeneration(),
       logger: new NoopLogger(),
     });
     let posted = false;
@@ -1064,9 +1068,8 @@ describe("a publication against a closed generation", () => {
 
   it("refuses a decline rather than run it unjournaled", async () => {
     const engine = PublicationEngine.create({
-      room: () => closedGeneration.room(ROOM),
       roomId: ROOM,
-      generation: closedGeneration,
+      generation: await closedGeneration(),
       logger: new NoopLogger(),
     });
     let ran = false;

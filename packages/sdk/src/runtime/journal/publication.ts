@@ -21,20 +21,13 @@ import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
  */
 export class PublicationEngine {
   private constructor(
-    private readonly room: () => Promise<RoomJournal | undefined>,
     private readonly roomId: string,
-    private readonly generation: JournalGeneration | undefined,
+    private readonly generation: JournalGeneration,
     private readonly logger: Logger,
   ) {}
 
-  public static create(options: {
-    room: () => Promise<RoomJournal | undefined>;
-    /** Known at construction so trackInflight can run before any journal await. */
-    roomId: string;
-    generation?: JournalGeneration;
-    logger: Logger;
-  }): PublicationEngine {
-    return new PublicationEngine(options.room, options.roomId, options.generation, options.logger);
+  public static create(options: { roomId: string; generation: JournalGeneration; logger: Logger }): PublicationEngine {
+    return new PublicationEngine(options.roomId, options.generation, options.logger);
   }
 
   /**
@@ -42,10 +35,10 @@ export class PublicationEngine {
    * open, a closed generation, or a handle that no longer admits records
    * refuses the publication rather than deliver it unjournaled.
    */
-  private async authority(): Promise<RoomJournal | undefined> {
-    let room: RoomJournal | undefined;
+  private async authority(held: Promise<RoomJournal>): Promise<RoomJournal> {
+    let room: RoomJournal;
     try {
-      room = await this.room();
+      room = await held;
     } catch (error) {
       // A closed generation is no authority at all, and it is not the journal
       // being disabled: the runtime stopped the room's handling, and the
@@ -58,23 +51,13 @@ export class PublicationEngine {
       }
       throw error;
     }
-    if (room !== undefined && !room.accepting) {
+    if (!room.accepting) {
       throw new JournalPublicationError(
         "The room's turn journal can no longer record what this reply owes; it refuses the post rather than deliver it unrecorded. Stop the runtime, restore the journal, and start again.",
         "poisoned",
       );
     }
     return room;
-  }
-
-  /** The room's journal, or a closed refusal when no authority stands. */
-  private async requireJournal(what: "reply" | "decline"): Promise<RoomJournal> {
-    const journal = await this.authority();
-    if (journal) return journal;
-    throw new JournalPublicationError(
-      `The room's turn journal no longer stands behind this ${what}; it is refused rather than ${what === "reply" ? "delivered" : "run"} unjournaled. Stop the runtime, restore the journal, and start again.`,
-      "closed",
-    );
   }
 
   /**
@@ -95,11 +78,7 @@ export class PublicationEngine {
       const refused = cutShort(stopped);
       if (refused) throw refused;
     }
-    // Track before any await that can interleave with release/drain — including
-    // requireJournal/room(): force-close must not observe an empty inflight set
-    // then let the post run while the handle is closing.
-    return this.runTracked(this.roomId, async () => {
-      const journal = await this.requireJournal("reply");
+    return this.runTracked(messageId, async (journal) => {
       const publicationId = await journal.beginReply(messageId);
       // A turn cut short between the durable intent and the post: the reply is
       // refused, not delivered — the platform never saw it. Refusal must land
@@ -176,8 +155,7 @@ export class PublicationEngine {
    * refuses records no settlement.
    */
   public async publishDecline<T>(messageId: string, run: () => Promise<T>): Promise<T> {
-    return this.runTracked(this.roomId, async () => {
-      const journal = await this.requireJournal("decline");
+    return this.runTracked(messageId, async (journal) => {
       const result = await run();
       await journal.settleDecline(messageId);
       return result;
@@ -185,15 +163,16 @@ export class PublicationEngine {
   }
 
   /**
-   * Runs `work` as a generation-tracked admission: the promise is registered
-   * synchronously before `work` is entered, so release/drain cannot close the
-   * room under an in-flight publication that has not yet called trackInflight.
+   * Runs `work` on the room's journal under a tracked hold, taken before any
+   * await: the handle never closes under the publication, and a stop waits
+   * for its outcome. The hold ends before the caller sees the outcome.
    */
-  private runTracked<T>(roomId: string, work: () => Promise<T>): Promise<T> {
-    const tracked = Promise.withResolvers<T>();
-    this.generation?.trackInflight(tracked.promise, roomId);
-    void work().then(tracked.resolve, tracked.reject);
-    return tracked.promise;
+  private runTracked<T>(messageId: string, work: (journal: RoomJournal) => Promise<T>): Promise<T> {
+    const hold = this.generation.trackRoom(this.roomId, messageId);
+    const run = (async () => await work(await this.authority(hold.journal)))();
+    const end = (): void => hold.end();
+    void run.then(end, end);
+    return run;
   }
 }
 

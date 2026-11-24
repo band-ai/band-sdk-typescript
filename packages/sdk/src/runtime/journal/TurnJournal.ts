@@ -4,8 +4,6 @@ import path from "node:path";
 
 import { BandSdkError, ValidationError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
-import { KeyedSingleFlight } from "../../core/singleFlight";
-import { isolateTeardown } from "../../core/teardown";
 
 import { JournalFileError } from "./errors";
 import { agentDirectoryComponent, identityDirectoryComponent } from "./records";
@@ -59,34 +57,34 @@ export const OWNERSHIP_FILE = ".ownership.sqlite";
 export interface JournalGeneration {
   /** The identity the generation's rooms' journals are bound to. */
   readonly identity: string;
-  /** The room's journal, opened on first use and kept open until its handling stops. */
+  /** The room's journal, opened on first use and kept open until the room is released. */
   room(roomId: string): Promise<RoomJournal>;
   /**
-   * Holds `roomId`'s journal open for a turn: while any hold stands, a release
-   * of the room defers its close until the last hold ends, so a turn never
-   * loses the handle (or the poisoned state of it) it is still writing to.
+   * A turn's hold on `roomId`'s journal: the handle stays open until the hold
+   * ends, and the room counts as in use again. Only the generation's close
+   * closes the handle under it: a stop never waits on a turn.
    */
-  holdRoom(roomId: string): void;
+  holdRoom(roomId: string): RoomHold;
   /**
-   * Ends a turn's hold on `roomId`; when the last hold ends, a close a
-   * release deferred while it stood runs then.
+   * Tracked work on `roomId`'s journal — a publication serving `messageId`, or
+   * the room's recovery: the handle stays open, and the generation's close
+   * waits, until the hold ends.
    */
-  endHoldRoom(roomId: string): Promise<void>;
-  /**
-   * Closes `roomId`'s journal once its handling stopped; it reopens on the room's
-   * next turn. A turn's hold defers the close until it ends — except when `force`
-   * says the room's handling stopped for good (the room was left, the runtime
-   * stopped): a turn still settling there must not write to the released journal.
-   */
-  release(roomId: string, force?: boolean): Promise<void>;
-  /** Tracks a publication the generation admitted, so its stop waits for the outcome. */
-  trackInflight(promise: Promise<unknown>, roomId: string): void;
-  /** Waits for publications the generation admitted, their outcomes durable. */
-  drain(): Promise<void>;
+  trackRoom(roomId: string, messageId?: string): RoomHold;
+  /** The room's handling stopped: its handle closes once its last hold ends, and a later hold opens it afresh. */
+  release(roomId: string): void;
+  /** Settles once the tracked work serving `messageId` in `roomId` now has ended. */
+  settled(roomId: string, messageId: string): Promise<void>;
   /** The path of `roomId`'s journal file under this generation's identity. */
   roomPath(roomId: string): string;
-  /** Closes the generation's rooms, then releases its ownership; safe to call more than once. */
+  /** Waits for tracked work and opens, closes every room, then releases ownership; safe to call more than once. */
   close(): Promise<void>;
+}
+
+/** One use of a room's journal handle; `end` is idempotent. */
+export interface RoomHold {
+  readonly journal: Promise<RoomJournal>;
+  end(): void;
 }
 
 export interface TurnJournalOptions {
@@ -190,33 +188,33 @@ export class TurnJournal {
   }
 }
 
+/**
+ * A room's journal handle and what uses it. The handle closes only once no
+ * use stands — every use but a turn's, when the generation closes — and the
+ * room is released, so no use ever loses the handle it is writing to.
+ */
+interface Slot {
+  readonly journal: Promise<RoomJournal>;
+  opened?: RoomJournal;
+  readonly holds: Set<Hold>;
+  closing: boolean;
+  /** Settles once the handle closed (or never opened); the room's next handle opens after it. */
+  readonly done: PromiseWithResolvers<void>;
+}
+
+interface Hold {
+  /** Tracked work, which the generation's close waits for; a turn's hold is not. */
+  readonly tracked: boolean;
+  readonly messageId?: string;
+  readonly ended: PromiseWithResolvers<void>;
+}
+
 class Generation implements JournalGeneration {
   public readonly identity: string;
-  /** Open handles; a release keeps the room's published while it drains the room's tracked work. */
-  private readonly rooms = new Map<string, Promise<RoomJournal>>();
-  /** In-flight opens, one per room and release epoch; published into `rooms` only once open. */
-  private readonly opens = new KeyedSingleFlight<RoomJournal>();
-  /**
-   * Bumped by each forced release of the room: an open that began under an
-   * older epoch closes the handle it opened instead of publishing it, so a
-   * room whose handling stopped keeps no file open, whoever was opening it.
-   */
-  private readonly epochs = new Map<string, number>();
-  /** Releases in progress (draining, then closing); a later release of the room joins it. */
-  private readonly releasing = new Map<string, Promise<void>>();
-  /** Handles being closed; reopening the room waits, so it reads every record the closing handle wrote. */
-  private readonly closing = new Map<string, Promise<void>>();
-  private readonly inflight: Set<Promise<unknown>> = new Set();
-  /**
-   * Publications in flight per room for this generation's lifetime. The set for
-   * a room is never replaced or deleted on close: a concurrent track after a
-   * snapshot would otherwise install a new set the closer never waits on.
-   */
-  private readonly roomInflight = new Map<string, Set<Promise<unknown>>>();
-  /** A turn is still using the room: a close owed to it is deferred until the last hold ends. */
-  private readonly turnHolds = new Map<string, number>();
-  /** A release landed on a held room; its close runs when the last hold ends. */
-  private readonly deferredCloses = new Set<string>();
+  /** Each room's current handle; a hold joins it unless it is closing. */
+  private readonly slots = new Map<string, Slot>();
+  /** Rooms whose handling stopped: their handle closes once its last hold ends. */
+  private readonly released = new Set<string>();
   /** What this generation announced, per room: one announcement per publication, across the room's handles. */
   private readonly announced = new Map<string, Set<string>>();
   private closed = false;
@@ -230,172 +228,109 @@ class Generation implements JournalGeneration {
     this.identity = identity;
   }
 
-  public room(roomId: string): Promise<RoomJournal> {
-    if (this.closed) return Promise.reject(new GenerationClosedError());
-    const existing = this.rooms.get(roomId);
-    if (existing) return existing;
-    const epoch = this.epochOf(roomId);
-    return this.opens.run(openKey(roomId, epoch), () => this.openRoom(roomId, epoch));
-  }
-
-  /** Opens `roomId` after any close of its handle, and publishes it into `rooms` unless a forced release overtook the open. */
-  private async openRoom(roomId: string, epoch: number): Promise<RoomJournal> {
-    await this.closing.get(roomId);
-    this.assertOpenable(roomId, epoch);
-    const journal = await RoomJournal.open(this.roomFile(roomId), this.roomOptions(roomId));
+  public async room(roomId: string): Promise<RoomJournal> {
+    const hold = this.holdRoom(roomId);
     try {
-      this.assertOpenable(roomId, epoch);
-    } catch (error) {
-      await bestEffort(() => journal.close(), this.journal.logger, "Failed to close a room journal opened after its room was released", { roomId });
-      throw error;
-    }
-    this.rooms.set(roomId, Promise.resolve(journal));
-    return journal;
-  }
-
-  /** Throws when the generation closed, or a forced release of the room overtook an open begun under `epoch`. */
-  private assertOpenable(roomId: string, epoch: number): void {
-    if (this.closed) throw new GenerationClosedError();
-    if (this.epochOf(roomId) !== epoch) {
-      throw new GenerationClosedError("The room's journal was released while it opened; its handling stopped");
+      return await hold.journal;
+    } finally {
+      hold.end();
     }
   }
 
-  private epochOf(roomId: string): number {
-    return this.epochs.get(roomId) ?? 0;
+  public holdRoom(roomId: string): RoomHold {
+    if (!this.closed) this.released.delete(roomId);
+    return this.hold(roomId, false);
   }
 
-  public holdRoom(roomId: string): void {
-    if (this.closed) return;
-    const n = this.turnHolds.get(roomId) ?? 0;
-    this.turnHolds.set(roomId, n + 1);
+  public trackRoom(roomId: string, messageId?: string): RoomHold {
+    return this.hold(roomId, true, messageId);
   }
 
-  public async endHoldRoom(roomId: string): Promise<void> {
-    const n = (this.turnHolds.get(roomId) ?? 0) - 1;
-    if (n > 0) {
-      this.turnHolds.set(roomId, n);
-      return;
-    }
-    this.turnHolds.delete(roomId);
-    if (this.deferredCloses.delete(roomId)) await this.release(roomId);
+  public release(roomId: string): void {
+    this.released.add(roomId);
+    const slot = this.slots.get(roomId);
+    if (slot) this.closeIfIdle(roomId, slot);
   }
 
-  public async release(roomId: string, force = false): Promise<void> {
-    if (force) {
-      // The room's handling stopped for good: no close is owed to a later
-      // endHold, and an open in flight closes what it opens. A later open
-      // waits until it has.
-      this.deferredCloses.delete(roomId);
-      const opening = this.opens.current(openKey(roomId, this.epochOf(roomId)));
-      this.epochs.set(roomId, this.epochOf(roomId) + 1);
-      if (opening) {
-        await this.whileClosing(roomId, opening.then(() => undefined, () => undefined));
-        return;
-      }
-    }
-    const inProgress = this.releasing.get(roomId);
-    if (inProgress) return await inProgress;
-    const room = this.rooms.get(roomId);
-    if (!room) return await this.closing.get(roomId);
-    const releasing = this.drainThenClose(roomId, room, force).finally(() => {
-      if (this.releasing.get(roomId) === releasing) this.releasing.delete(roomId);
-    });
-    this.releasing.set(roomId, releasing);
-    await releasing;
-  }
-
-  /**
-   * Closes `roomId`'s handle once its tracked work stands on disk. The handle
-   * stays published while the work drains, so work that opens the room gets
-   * it rather than wait on this release; it is unpublished in the tick the
-   * drain ends. A turn holding the room by then defers the close to its last
-   * hold, unless the release is forced: by its caller, by a forced release
-   * that joined it (the room's epoch moved), or by the generation's close.
-   */
-  private async drainThenClose(roomId: string, room: Promise<RoomJournal>, force: boolean): Promise<void> {
-    const epoch = this.epochOf(roomId);
-    await this.drainRoomInflight(roomId);
-    const forced = force || this.closed || this.epochOf(roomId) !== epoch;
-    if (!forced && (this.turnHolds.get(roomId) ?? 0) > 0) {
-      this.deferredCloses.add(roomId);
-      return;
-    }
-    this.deferredCloses.delete(roomId);
-    this.rooms.delete(roomId);
-    await this.whileClosing(roomId, closeRoom(room));
-  }
-
-  /** Stands `closing` as the room's handle close: opens of the room wait for it, whatever its outcome. */
-  private whileClosing(roomId: string, closing: Promise<void>): Promise<void> {
-    const standing: Promise<void> = closing.then(() => undefined, () => undefined).finally(() => {
-      if (this.closing.get(roomId) === standing) this.closing.delete(roomId);
-    });
-    this.closing.set(roomId, standing);
-    return closing;
-  }
-
-  /** Waits for every promise tracked against `roomId` until the set is empty. */
-  private async drainRoomInflight(roomId: string): Promise<void> {
-    const held = this.roomInflight.get(roomId);
-    if (!held) return;
-    while (held.size > 0) {
-      await Promise.allSettled([...held]);
-    }
-  }
-
-  public async drain(): Promise<void> {
-    for (;;) {
-      const batch = [...this.inflight];
-      for (const rooms of this.roomInflight.values()) {
-        for (const promise of rooms) batch.push(promise);
-      }
-      if (batch.length === 0) return;
-      await Promise.allSettled(batch);
-    }
-  }
-
-  /** Tracks a publication admitted by this generation until its outcome is durable. */
-  public trackInflight(promise: Promise<unknown>, roomId: string): void {
-    this.inflight.add(promise);
-    this.roomInflightSet(roomId).add(promise);
-    const forget = (): void => {
-      this.inflight.delete(promise);
-      this.roomInflight.get(roomId)?.delete(promise);
-    };
-    // `promise.finally` would derive a rejecting promise no one handles; settle both ways.
-    void promise.then(forget, forget);
+  public async settled(roomId: string, messageId: string): Promise<void> {
+    const serving = [...(this.slots.get(roomId)?.holds ?? [])].filter((hold) => hold.messageId === messageId);
+    await Promise.all(serving.map((hold) => hold.ended.promise));
   }
 
   public roomPath(roomId: string): string {
     return this.roomFile(roomId);
   }
 
-  /** The generation-stable inflight set for `roomId`; created once and never replaced. */
-  private roomInflightSet(roomId: string): Set<Promise<unknown>> {
-    let rooms = this.roomInflight.get(roomId);
-    if (!rooms) {
-      rooms = new Set();
-      this.roomInflight.set(roomId, rooms);
-    }
-    return rooms;
-  }
-
   public async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    const errors: unknown[] = [];
-    // Closed, every release is forced: the generation's close stands behind no turn.
-    for (const roomId of new Set([...this.rooms.keys(), ...this.releasing.keys()])) {
-      await isolateTeardown(errors, () => this.release(roomId));
-    }
-    // An open in flight may still rewrite its file: it ends, closing what it opened, before a successor may own the journal.
-    await this.opens.settled();
-    for (const closing of this.closing.values()) await closing;
-    if (errors.length > 0) {
-      this.journal.logger.warn("Failed to close some of the generation's room journals", { agentId: this.journal.agentId, errors });
-    }
+    const slots = [...this.slots];
+    for (const [roomId, slot] of slots) this.closeIfIdle(roomId, slot);
+    // A room's next handle opens only after its previous one closed, so the current handles' closes cover every earlier one.
+    await Promise.all(slots.map(([, slot]) => slot.done.promise));
     await this.releaseOwnership();
+  }
+
+  private hold(roomId: string, tracked: boolean, messageId?: string): RoomHold {
+    if (this.closed) {
+      return { journal: Promise.reject(new GenerationClosedError()), end: () => undefined };
+    }
+    const slot = this.currentSlot(roomId);
+    const hold: Hold = { tracked, messageId, ended: Promise.withResolvers<void>() };
+    slot.holds.add(hold);
+    return {
+      journal: slot.journal,
+      end: () => {
+        if (!slot.holds.delete(hold)) return;
+        hold.ended.resolve();
+        this.closeIfIdle(roomId, slot);
+      },
+    };
+  }
+
+  /** The room's handle to join; once it is closing, a fresh one that opens after it closed, with every record it wrote. */
+  private currentSlot(roomId: string): Slot {
+    const current = this.slots.get(roomId);
+    if (current && !current.closing) return current;
+    const slot: Slot = {
+      // Referenced only once the previous handle closed, by when `slot` stands.
+      journal: Promise.resolve(current?.done.promise).then(() => this.open(roomId, slot)),
+      holds: new Set(),
+      closing: false,
+      done: Promise.withResolvers<void>(),
+    };
+    void slot.journal.catch(() => undefined);
+    this.slots.set(roomId, slot);
+    return slot;
+  }
+
+  private async open(roomId: string, slot: Slot): Promise<RoomJournal> {
+    try {
+      slot.opened = await RoomJournal.open(this.roomFile(roomId), this.roomOptions(roomId));
+      return slot.opened;
+    } catch (error) {
+      // Nothing opened: the room's next hold tries again.
+      slot.closing = true;
+      if (this.slots.get(roomId) === slot) this.slots.delete(roomId);
+      slot.done.resolve();
+      throw error;
+    }
+  }
+
+  /** Closes the room's handle when nothing holds it — no tracked work, once the generation closed — and the room is released. */
+  private closeIfIdle(roomId: string, slot: Slot): void {
+    if (slot.closing) return;
+    const held = [...slot.holds].some((hold) => hold.tracked || !this.closed);
+    if (held || !(this.closed || this.released.has(roomId))) return;
+    slot.closing = true;
+    // Closed in this tick when the handle is open, so no write can slip in after the last hold ended.
+    const closing = slot.opened ? slot.opened.close() : slot.journal.then((journal) => journal.close(), () => undefined);
+    void closing
+      .catch((error: unknown) => this.journal.logger.warn("Failed to close a room's turn journal", { roomId, error }))
+      .finally(() => {
+        if (this.slots.get(roomId) === slot) this.slots.delete(roomId);
+        slot.done.resolve();
+      });
   }
 
   private async releaseOwnership(): Promise<void> {
@@ -428,19 +363,10 @@ class Generation implements JournalGeneration {
   }
 }
 
-/** The room's handling stopped before its journal opened: the generation closed, or a forced release let the room go. */
+/** The generation closed before the room's journal was held: its start ended. */
 export class GenerationClosedError extends BandSdkError {
-  constructor(message = "The journal generation is closed; its start ended") {
-    super(message);
+  constructor() {
+    super("The journal generation is closed; its start ended");
     this.name = "GenerationClosedError";
   }
-}
-
-/** The single-flight key of `roomId`'s open under `epoch`: an open begun before a forced release is never joined after it. */
-function openKey(roomId: string, epoch: number): string {
-  return `${epoch}:${roomId}`;
-}
-
-async function closeRoom(room: Promise<RoomJournal>): Promise<void> {
-  await (await room.catch(() => null))?.close();
 }
