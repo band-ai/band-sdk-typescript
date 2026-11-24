@@ -36,3 +36,16 @@ export class JournalPublicationError extends BandSdkError {
     this.name = "JournalPublicationError";
   }
 }
+
+/** The room's handling stopped: its journal, or the generation it belongs to, closed. */
+export function closedJournalError(): JournalPublicationError {
+  return new JournalPublicationError("The room's journal is closed: its handling stopped, so the publication is refused rather than delivered unrecorded", "closed");
+}
+
+/** The room's journal failed a write it owed, and admits nothing until it reopens. */
+export function poisonedJournalError(): JournalPublicationError {
+  return new JournalPublicationError(
+    "The room's journal cannot record a publication outcome it owes, so it refuses new replies; restart the runtime so the journal reopens and reports what is unresolved",
+    "poisoned",
+  );
+}

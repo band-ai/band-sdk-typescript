@@ -3,8 +3,8 @@ import { DeliveryUnknownError } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import { cutShort } from "../turnRevocation";
-import { JournalPublicationError } from "./errors";
-import { RoomJournal } from "./RoomJournal";
+import { closedJournalError, poisonedJournalError } from "./errors";
+import type { RoomJournal } from "./RoomJournal";
 import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 
 /**
@@ -43,20 +43,10 @@ export class PublicationEngine {
       // A closed generation is no authority at all, and it is not the journal
       // being disabled: the runtime stopped the room's handling, and the
       // publication is refused rather than delivered unjournaled.
-      if (error instanceof GenerationClosedError) {
-        throw new JournalPublicationError(
-          "The room's handling stopped before this publication could be recorded; it is refused rather than delivered unjournaled",
-          "closed",
-        );
-      }
+      if (error instanceof GenerationClosedError) throw closedJournalError();
       throw error;
     }
-    if (!room.accepting) {
-      throw new JournalPublicationError(
-        "The room's turn journal can no longer record what this reply owes; it refuses the post rather than deliver it unrecorded. Stop the runtime, restore the journal, and start again.",
-        "poisoned",
-      );
-    }
+    if (!room.accepting) throw poisonedJournalError();
     return room;
   }
 
@@ -192,20 +182,8 @@ export class PublicationEngine {
   }
 }
 
-/**
- * The post id Band attributed, matching FernRestAdapter's top-level `id` on
- * a createChatMessage result; nested `message.id` remains a fallback for
- * older or alternate envelopes.
- */
+/** The post id Band attributed: the top-level `id` FernRestAdapter's createChatMessage returns. */
 function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
-  if ("id" in result && typeof result.id === "string" && result.id.length > 0) {
-    return result.id;
-  }
-  if (!("message" in result)) return undefined;
-  const message = result.message;
-  if (typeof message !== "object" || message === null) return undefined;
-  if (!("id" in message)) return undefined;
-  const id = message.id;
-  return typeof id === "string" && id.length > 0 ? id : undefined;
+  return "id" in result && typeof result.id === "string" && result.id.length > 0 ? result.id : undefined;
 }

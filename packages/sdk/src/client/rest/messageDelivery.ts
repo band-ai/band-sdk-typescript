@@ -6,7 +6,6 @@
  * means resend. A commit landing after the read-back costs a duplicate, never
  * a loss. No decision here reads a clock.
  */
-import { BandError } from "@band-ai/rest-client";
 
 import {
   BandSdkError,
@@ -132,11 +131,11 @@ export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
 export function classifyFailedAttempt(error: unknown): FailedAttempt {
   if (error instanceof RoomExecutionStoppedError) return "refused";
-  if (error instanceof BandError) {
-    const status = statusCodeOf(error);
+  // Read structurally: a caller's REST client may be another copy of the generated one.
+  const status = statusCodeOf(error);
+  if (status !== undefined) {
     if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
-    if (status !== undefined && status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR) return "refused";
-    return "uncertain";
+    return status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR ? "refused" : "uncertain";
   }
   // A failure the platform never answered (a mention it cannot resolve, an
   // invalid argument): the post was never sent, so it is a refusal, not an

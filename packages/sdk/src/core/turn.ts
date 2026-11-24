@@ -38,16 +38,16 @@ export class Turn {
   private isDetached = false;
   private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
-  /** The turn's runtime side, when the turn runs on the runtime's tools: it fences the turn when a reply's delivery stands unknown. */
-  private fenceSource: (() => boolean) | undefined;
 
-  /** Binds the runtime's fence for this turn's replies, when its tools carry one. */
-  public useFenceSource(source: () => boolean): void {
-    this.fenceSource = source;
-  }
-
-  /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
-  public constructor(public readonly judged = true) {}
+  /**
+   * `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn.
+   * `fenceSource`: the runtime's side of the turn, when it runs on the runtime's tools; it fences
+   * the turn once a reply's delivery stands unknown.
+   */
+  public constructor(
+    public readonly judged = true,
+    private readonly fenceSource?: () => boolean,
+  ) {}
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
@@ -98,7 +98,8 @@ export class Turn {
     return this.ledger.replySettled();
   }
 
-  /** The turn outlives `onMessage` (it was released to wait on a decision), so
+  /**
+   * The turn outlives `onMessage` (it was released to wait on a decision), so
    * the adapter judges it at its real end with {@link reportUnsettledTurn}.
    * `untilEnded` is that end: the runtime holds the room's other work until it
    * settles. Without it the room takes its next message at once.
@@ -199,12 +200,8 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
-  const turn = new Turn(judged);
   // A journaling runtime fences the turn once a reply's delivery stands unknown.
-  const fence = tools.unknownDeliveryFenced;
-  if (fence) {
-    turn.useFenceSource(fence);
-  }
+  const turn = new Turn(judged, tools.unknownDeliveryFenced);
   return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }
 

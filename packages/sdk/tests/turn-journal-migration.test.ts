@@ -9,7 +9,7 @@ import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { agentJournalDir, identityDirectoryComponent, legacyAgentDir, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals, type MigrationBinding } from "../src/runtime/journal/migration";
 import { TurnJournal } from "../src/runtime/journal/TurnJournal";
-import { tmpRoot } from "./testUtils";
+import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import {
   AGENT,
   IDENTITY,
@@ -419,8 +419,11 @@ describe("migration phases survive interruption", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
 
     // sameBindings resume (not amend): prepared validate must restage the surplus.
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: amended });
+    const logger = makeLoggerSpy();
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: amended, logger });
     expect(result.mode).toBe("committed");
+    // The overwrite of the standing destination is visible to the operator.
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Restaging"), expect.objectContaining({ destination: roomFile(dir), kind: "corrupt" }));
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("b")).toBe(true);

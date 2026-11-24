@@ -640,7 +640,12 @@ async function stageDestination(
       return;
     } catch (error) {
       if (!restageIfInvalid || !(error instanceof JournalFileError) || state !== "prepared") throw error;
-      // Prepared resume/amend import no longer matches what stands: restage below.
+      logger.warn("Restaging a prepared migration's destination that no longer matches its import", {
+        destination,
+        source: binding.sourceFile,
+        kind: error.kind,
+        reason: error.message,
+      });
     }
   }
   if (state === "committed") {

@@ -828,20 +828,23 @@ export class PlatformRuntime implements AsyncDisposable {
       // recorded failure (a start that blew up before it built anything) still
       // has to reach this caller. Reporting a graceful shutdown while `state`
       // says "failed" is the same lie this lifecycle exists to remove.
-      if (this.lifecycle.is("failed")) {
-        this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: this.lifecycle.state.error });
-        // A start may have activated the journal generation before it failed.
-        await this.closeGeneration();
-        throw this.lifecycle.state.error;
-      }
+      const failure = this.lifecycle.is("failed") ? this.lifecycle.state.error : undefined;
       // "running" never reaches here: state only becomes "running" in runStart()
       // after `runtime`/`activeAdapter` are already assigned, which the guard
       // above (`!runtime && !adapter`) rules out.
-      if (this.lifecycle.is("starting")) {
-        this.lifecycle.transition({ status: "stopped" }, trigger);
-      }
-      // A start superseded mid-initialization may have activated the generation already.
+      const closing = failure !== undefined || this.lifecycle.is("starting");
+      // A start superseded mid-initialization, or one that failed, may have
+      // activated the generation already. The state reads "stopping" until it
+      // is closed, so a start() meanwhile is refused rather than contending
+      // for the ownership it still holds.
+      if (closing) this.lifecycle.transition({ status: "stopping" }, trigger);
       await this.closeGeneration();
+      if (failure !== undefined) {
+        this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: failure });
+        this.lifecycle.fail(failure, trigger);
+        throw failure;
+      }
+      if (closing) this.lifecycle.transition({ status: "stopped" }, trigger);
       return true;
     }
 

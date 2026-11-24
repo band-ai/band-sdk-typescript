@@ -260,7 +260,7 @@ describe("publications", () => {
     const posted = { ran: false };
     const publish = engine.publishReply("msg-1", async () => {
       posted.ran = true;
-      return { success: true, message: { id: "posted-1" } };
+      return { success: true, id: "posted-1" };
     });
     await intentEntered.promise;
     // The intent is not on disk yet: the post that waits on it has not run.
@@ -282,7 +282,7 @@ describe("publications", () => {
     expect(room.answered("msg-1")).toBe(true);
   });
 
-  it("records a top-level post id as the receipt, with nested message.id as fallback", async () => {
+  it("records the post id as the receipt", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const engine = new PublicationEngine({
@@ -290,14 +290,10 @@ describe("publications", () => {
       generation,
       logger: new NoopLogger(),
     });
-    // FernRestAdapter createChatMessage exposes top-level `id`, not nested message.id.
+    // FernRestAdapter's createChatMessage returns the post's top-level `id`.
     await engine.publishReply("msg-top", async () => ({ success: true, id: "posted-top" }));
-    await engine.publishReply("msg-nested", async () => ({ success: true, message: { id: "posted-nested" } }));
     const settled = (await journalLines(roomFile(dir))).filter((line) => line.t === "reply.settled");
-    expect(settled).toEqual([
-      expect.objectContaining({ messageId: "msg-top", receiptId: "posted-top" }),
-      expect.objectContaining({ messageId: "msg-nested", receiptId: "posted-nested" }),
-    ]);
+    expect(settled).toEqual([expect.objectContaining({ messageId: "msg-top", receiptId: "posted-top" })]);
   });
 
   it("records a cut-short refusal durably when the refuse append fails, so reopen does not announce pending", async () => {
@@ -350,7 +346,11 @@ describe("publications", () => {
       return original.apply(self, args);
     });
 
-    await expect(room.settleReply("msg-A", pubA, "receipt-A")).rejects.toBeTruthy();
+    await expect(room.settleReply("msg-A", pubA, "receipt-A")).rejects.toMatchObject({
+      name: "JournalFileError",
+      kind: "io",
+      cause: expect.objectContaining({ code: "ENOSPC" }),
+    });
     expect(room.accepting).toBe(false);
 
     await room.markRefused("msg-B", pubB);
@@ -572,7 +572,7 @@ describe("publications", () => {
     const room = await generation.room(ROOM);
     const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
-    const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
+    const publish = engine.publishReply("msg-1", async () => ({ success: true, id: "posted-1" }));
     await append.entered;
     // The room is left while the reply's durable intent is still being written.
     generation.release(ROOM);
@@ -588,7 +588,7 @@ describe("publications", () => {
     const { journals, generation } = await generationIn(dir);
     const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const rewrite = await holdJournalRewrite();
-    const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
+    const publish = engine.publishReply("msg-1", async () => ({ success: true, id: "posted-1" }));
     await rewrite.entered;
     // The runtime stops while the reply's journal is still opening: the stop waits for the reply.
     const closing = generation.close();

@@ -124,7 +124,7 @@ export async function recordTypes(file: string): Promise<string[]> {
   return (await journalLines(file)).map((line) => String(line.t));
 }
 
-/** One agent's journal under `dir`, on `clock` when given, activated under `identity`; its generation closes when the test ends. */
+/** One agent's journal under `dir`, activated under `identity`; its generation closes when the test ends. */
 export async function generationIn(
   dir: string,
   options: { identity?: string; agentId?: string; logger?: Logger } = {},

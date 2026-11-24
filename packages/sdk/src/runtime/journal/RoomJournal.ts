@@ -5,7 +5,7 @@ import path from "node:path";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { Serializer } from "../../core/singleFlight";
 
-import { JournalFileError, JournalPublicationError } from "./errors";
+import { JournalFileError, closedJournalError, poisonedJournalError } from "./errors";
 import {
   JOURNAL_FORMAT_VERSION,
   compactingCopyName,
@@ -22,7 +22,8 @@ import {
   type PublicationState,
 } from "./records";
 
-export type { PublicationOutcome };
+/** What an operator does with a journal file this version cannot trust. */
+const UNTRUSTED_JOURNAL_REMEDIATION = "Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.";
 
 /** A journal read or write failure; `file` is the path that failed. */
 function journalFileFailure(error: unknown, file: string): JournalFileError {
@@ -72,11 +73,6 @@ export async function rewriteFile(file: string, text: string): Promise<void> {
     throw error;
   }
   await syncDirectory(path.dirname(file));
-}
-
-/** The handle closed: its room's handling stopped. */
-function closedJournalError(): JournalPublicationError {
-  return new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
 }
 
 export interface RoomJournalOptions {
@@ -423,10 +419,7 @@ export class RoomJournal {
       throw closedJournalError();
     }
     if (this.poisoned) {
-      throw new JournalPublicationError(
-        "The room's journal cannot record a publication outcome it owes, so it refuses new replies; restart the runtime so the journal reopens and reports what is unresolved",
-        "poisoned",
-      );
+      throw poisonedJournalError();
     }
   }
 
@@ -551,7 +544,7 @@ function parseHeader(file: string, line: string | undefined, options: RoomJourna
     json = JSON.parse(line ?? "");
   } catch {
     throw new JournalFileError(
-      `The journal at ${file} has no readable header line; it is not a journal this version can trust. Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.`,
+      `The journal at ${file} has no readable header line; it is not a journal this version can trust. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
       "corrupt",
       file,
     );
@@ -559,7 +552,7 @@ function parseHeader(file: string, line: string | undefined, options: RoomJourna
   const check = journalHeaderSchema.safeParse(json);
   if (!check.success) {
     throw new JournalFileError(
-      `The journal at ${file} has a header this version does not understand. Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.`,
+      `The journal at ${file} has a header this version does not understand. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
       "unsupported",
       file,
     );
@@ -594,7 +587,7 @@ function parseRecord(file: string, line: string): JournalRecord {
     json = JSON.parse(line);
   } catch {
     throw new JournalFileError(
-      `The journal at ${file} holds a line that is not a record; it may be corrupt. Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.`,
+      `The journal at ${file} holds a line that is not a record; it may be corrupt. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
       "corrupt",
       file,
     );
@@ -602,7 +595,7 @@ function parseRecord(file: string, line: string): JournalRecord {
   const check = journalRecordSchema.safeParse(json);
   if (!check.success) {
     throw new JournalFileError(
-      `The journal at ${file} holds a record this version does not understand. It may be corrupt, or it was written by another version or tool. Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.`,
+      `The journal at ${file} holds a record this version does not understand. It may be corrupt, or it was written by another version or tool. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
       "unsupported",
       file,
     );

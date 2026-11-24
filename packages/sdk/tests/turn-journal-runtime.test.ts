@@ -1475,6 +1475,10 @@ describe("the turn journal against a failed start and a stale generation", () =>
     // does not release the journal while that activation still holds it.
     const stopping = runtime.stop();
     await expect(new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);
+    // Until it is released, the stop is still stopping: a start now is refused,
+    // rather than contending for the ownership the activation still holds.
+    expect(runtime.state.status).toBe("stopping");
+    await expect(runtime.start(new GenericAdapter(answers))).rejects.toBeInstanceOf(RuntimeStateError);
     activateHeld.resolve();
     expect(await stopping).toBe(true);
 

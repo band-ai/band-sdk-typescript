@@ -161,7 +161,7 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly logger: Logger;
   private readonly publication: PublicationEngine | undefined;
   private readonly inboundMessageId: (() => string | undefined) | undefined;
-  private readonly publicationStop: ((inboundMessageId: string) => AbortSignal | undefined) | undefined;
+  private readonly publicationStop: AgentToolsOptions["publicationStop"];
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;

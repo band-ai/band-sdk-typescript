@@ -114,13 +114,12 @@ function coalesceSendMessage(
     content: unknown,
     mentions: unknown,
     call: () => Promise<R>,
-    retainOnSuccess: boolean,
-    /** Send door skips retained tool successes; tool door joins every standing. */
-    joinRetainedSuccess: boolean,
+    /** The tool door retains its successes and joins every standing send; the send door joins only one in flight or unknown. */
+    door: "tool" | "send",
   ): Promise<R> => {
     const key = coalesceKey(content, mentions);
     const standing = sends.get(key);
-    if (standing && (joinRetainedSuccess || standing.outcome !== "done")) {
+    if (standing && (door === "tool" || standing.outcome !== "done")) {
       return standing.promise as Promise<R>;
     }
     const sent = call();
@@ -132,7 +131,7 @@ function coalesceSendMessage(
           entry.outcome = "unknown";
           return;
         }
-        if (isFailedToolOutput(result) || !retainOnSuccess) {
+        if (isFailedToolOutput(result) || door === "send") {
           sends.delete(key);
           return;
         }
@@ -152,12 +151,12 @@ function coalesceSendMessage(
     executeToolCall: (toolName, args) => {
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
       // A joined send-door call rejects; model/MCP callers read a result.
-      return admit(args.content, args.mentions, () => execute(toolName, args), true, true).catch(
+      return admit(args.content, args.mentions, () => execute(toolName, args), "tool").catch(
         (error: unknown) => toolErrorResult(toolName, error),
       );
     },
     sendMessage: (content, mentions) =>
-      admit(content, mentions, () => sendMessage(content, mentions), false, false).then((result) => {
+      admit(content, mentions, () => sendMessage(content, mentions), "send").then((result) => {
         // A joined tool-door call resolves its failure; a reply must never take it for a post.
         if (isDeliveryUnknownOutput(result)) {
           throw new DeliveryUnknownError(result, deliveryUnknownPublicationId(result));

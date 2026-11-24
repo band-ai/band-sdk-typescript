@@ -1,3 +1,6 @@
+import { createRequire } from "node:module";
+
+import { BandError } from "@band-ai/rest-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AttributedPosts, contextCursorAfter, sortsAfterAnchor, type MessageDelivery } from "../src/client/rest/messageDelivery";
@@ -124,6 +127,18 @@ describe("message delivery", () => {
   it("does not read back or resend a post Band refused", async () => {
     await expect(settleThroughRetries(send([{ kind: "refused", status: 422 }]))).rejects.toMatchObject({ statusCode: 422 });
 
+    expect(room.posts).toHaveLength(1);
+    expect(room.contextCursors).toEqual([]);
+  });
+
+  it("does not read back or resend a refusal from another copy of the REST client", async () => {
+    // The CommonJS build of the generated client: its errors are not this module's BandError.
+    const other = createRequire(import.meta.url)("@band-ai/rest-client") as typeof import("@band-ai/rest-client");
+    expect(other.BandError).not.toBe(BandError);
+    room.script({ kind: "refused", status: 422 });
+    const sent = room.adapter(other.BandClient).createChatMessage(ROOM, { content: REPLY, mentions: [{ id: USER, handle: USER }] }, { delivery });
+
+    await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: 422 });
     expect(room.posts).toHaveLength(1);
     expect(room.contextCursors).toEqual([]);
   });

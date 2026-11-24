@@ -41,8 +41,6 @@ export interface ExecutionContextOptions extends SessionConfig {
    * runtime turn settles under its inbound through the turn's scope instead.
    */
   inboundMessageId?: () => string | undefined;
-  /** The stop of the turn answering an inbound, while it stands: that turn's reply is refused once it is cut short. */
-  publicationStop?: (inboundMessageId: string) => AbortSignal | undefined;
 }
 
 const DEDUP_CACHE_MAX = 500;
@@ -67,7 +65,6 @@ export class ExecutionContext {
   private contextCacheExpiresAt = 0;
 
   private workingReporter?: WorkingStateReporter;
-  private readonly publication: PublicationEngine | undefined;
   private readonly sessionConfig: ResolvedSessionConfig;
   /** Each standing turn's stop, by the inbound it answers: a reply is refused only when its own turn is cut short. */
   private readonly publicationStops = new Map<string, AbortSignal>();
@@ -90,7 +87,6 @@ export class ExecutionContext {
     this.contextCacheTtlMs = sessionConfig.contextCacheTtlSeconds * 1000;
     this.enableContextHydration = sessionConfig.enableContextHydration;
     this.retryTrackerInstance = new RetryTracker(sessionConfig.maxMessageRetries);
-    this.publication = options.publication;
     this.tools = new AgentTools({
       roomId: this.roomId,
       rest: this.link.rest,
