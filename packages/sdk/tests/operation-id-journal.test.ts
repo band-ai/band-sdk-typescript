@@ -96,14 +96,16 @@ describe("a keyed operation's identity", () => {
   });
 
   it("refuses a keyed call before any record when its id cannot stand", async () => {
-    const { generation } = await generationIn(tmpRoot());
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
     const engine = engineFor(generation);
     await expect(
       engine.publishOperation({ operationId: "", kind: "send", content: "x", messageId: "msg-1", prepare: sendPreparation(async () => ({})) }),
     ).rejects.toThrowError(OperationIdError);
     const room = await openRoom(generation, ROOM);
-    expect(room.operation(ID)).toBeUndefined();
+    expect(room.operation("")).toBeUndefined();
     await generation.close();
+    expect((await recordTypes(roomFile(dir))).filter((record) => record.startsWith("op."))).toEqual([]);
   });
 });
 
@@ -121,6 +123,8 @@ describe("a keyed send's outcomes", () => {
       messageId: "msg-1",
       prepare: sendPreparation(post.post, ["user-owner"]),
     });
+    await post.started;
+    expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients"]);
     post.resolve({ id: "posted-1" });
     const result = await done;
     expect(result).toMatchObject({ id: "posted-1" });
