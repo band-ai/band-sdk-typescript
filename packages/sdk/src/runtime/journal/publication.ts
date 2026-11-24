@@ -20,14 +20,14 @@ import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
  * posts without one, as it would anyway.
  */
 export class PublicationEngine {
-  private constructor(
-    private readonly roomId: string,
-    private readonly generation: JournalGeneration,
-    private readonly logger: Logger,
-  ) {}
+  private readonly roomId: string;
+  private readonly generation: JournalGeneration;
+  private readonly logger: Logger;
 
-  public static create(options: { roomId: string; generation: JournalGeneration; logger: Logger }): PublicationEngine {
-    return new PublicationEngine(options.roomId, options.generation, options.logger);
+  public constructor(options: { roomId: string; generation: JournalGeneration; logger: Logger }) {
+    this.roomId = options.roomId;
+    this.generation = options.generation;
+    this.logger = options.logger;
   }
 
   /**
@@ -86,10 +86,7 @@ export class PublicationEngine {
       // a never-posted intent as recoverable pending on reopen.
       if (stopped) {
         const cut = cutShort(stopped);
-        if (cut) {
-          await journal.markRefused(messageId, publicationId);
-          throw cut;
-        }
+        if (cut) return await this.settleAsRefused(journal, messageId, publicationId, cut);
       }
       let result: ToolOperationResult;
       try {
@@ -98,8 +95,7 @@ export class PublicationEngine {
         if (classifyFailedAttempt(error) === "uncertain") {
           return await this.settleAsUnknown(journal, messageId, publicationId, error, { poisonWriter: false });
         }
-        await journal.markRefused(messageId, publicationId);
-        throw error;
+        return await this.settleAsRefused(journal, messageId, publicationId, error);
       }
       // The transport said yes; the yes must stand on disk before the result
       // does. The settlement's own failure is not a transport refusal — the
@@ -112,6 +108,26 @@ export class PublicationEngine {
       }
       return result;
     });
+  }
+
+  /**
+   * Records that the publication was refused, and throws the refusal. When
+   * the record fails, its error is what the caller sees; the refusal it
+   * replaces is logged with it so it is not lost.
+   */
+  private async settleAsRefused(journal: RoomJournal, messageId: string, publicationId: string, refusal: unknown): Promise<never> {
+    try {
+      await journal.markRefused(messageId, publicationId);
+    } catch (recordError) {
+      this.logger.error("the reply was refused, and its refusal record failed to land", {
+        roomId: journal.roomId,
+        publicationId,
+        error: refusal,
+        recordError,
+      });
+      throw recordError;
+    }
+    throw refusal;
   }
 
   /**

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import { z } from "zod";
 
@@ -63,6 +64,9 @@ export function sha256Hex(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+/** What {@link sha256Hex} returns. */
+export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 /** Whether `error` is a file system error with `code`. */
 export function hasErrorCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
@@ -90,24 +94,46 @@ export function compactingCopyTarget(name: string): string | undefined {
   return suffix === null || suffix.index === 0 ? undefined : name.slice(0, suffix.index);
 }
 
+/** The agent's exclusive ownership lock file under its journal directory. */
+export const OWNERSHIP_FILE = ".ownership.sqlite";
+
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {
   return sha256Hex(identity);
 }
 
-/**
- * The directory component of an agent id in the journal's file layout. It is
- * hashed, never percent-encoded: an agent id must not reach the file system
- * as a path component it can steer (dots, slashes, NULs). The full id stands
- * in every file's header, which is what is validated on open.
- */
-export function agentDirectoryComponent(agentId: string): string {
-  return sha256Hex(agentId);
-}
-
-/** The file-name component of a room id in the journal's file layout. Hashed, for the same reason. */
+/** The file-name component of a room id in the journal's file layout. Hashed, for the same reason as the agent's. */
 export function roomFileComponent(roomId: string): string {
   return sha256Hex(roomId);
+}
+
+/**
+ * The directory of one agent's v2 journal under `journalDir`. The agent id is
+ * hashed, never percent-encoded: a caller-controlled id must not reach the
+ * file system as a path component it can steer. The full id stands in every
+ * file's header, which is what is validated on open.
+ */
+export function agentJournalDir(journalDir: string, agentId: string): string {
+  return path.join(journalDir, sha256Hex(agentId));
+}
+
+/**
+ * The directory a pre-v2 (legacy) process of `agentId` journaled under. Kept
+ * verbatim — percent-encoded, as the legacy layout wrote it — because that
+ * is where legacy files actually live and where the migration reads them.
+ */
+export function legacyAgentDir(journalDir: string, agentId: string): string {
+  return path.join(journalDir, encodeURIComponent(agentId));
+}
+
+/** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
+export function roomFileName(roomId: string): string {
+  return `${roomFileComponent(roomId)}${JOURNAL_FILE_EXTENSION}`;
+}
+
+/** The path of `roomId`'s v2 journal under the agent directory `agentDir`, in `identity`'s directory. */
+export function identityRoomFile(agentDir: string, identity: string, roomId: string): string {
+  return path.join(agentDir, identityDirectoryComponent(identity), roomFileName(roomId));
 }
 
 /** How one admitted reply stands: unposted-and-pending, or one terminal state. */

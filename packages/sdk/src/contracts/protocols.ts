@@ -270,6 +270,17 @@ export function createToolExecutorError(input: {
   };
 }
 
+/** A tool call that ran and failed, with the legacy `Error executing …` text. */
+export function toolExecutionError(toolName: string, message: string, details?: MetadataMap): ToolExecutorError {
+  return createToolExecutorError({
+    errorType: "ToolExecutionError",
+    toolName,
+    message,
+    legacyMessage: `Error executing ${toolName}: ${message}`,
+    details,
+  });
+}
+
 export function isToolExecutorError(value: unknown): value is ToolExecutorError {
   if (!value || typeof value !== "object") {
     return false;

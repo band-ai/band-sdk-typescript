@@ -6,6 +6,7 @@ import {
   createToolExecutorError,
   isFailedToolOutput,
   isToolExecutorError,
+  toolExecutionError,
   type AdapterToolsProtocol,
   type ToolExecutorError,
 } from "../contracts/protocols";
@@ -17,6 +18,7 @@ import {
   deliveryUnknownToolError,
   isDeliveryUnknownOutput,
 } from "../core/deliveryFailedError";
+import { asErrorMessage } from "../core/coercion";
 import { ValidationError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { overrideTools } from "../core/overrideTools";
@@ -73,16 +75,12 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
     });
   }
   // A journal that will not admit the reply is a routine refusal, not an unexpected break.
-  const details = error instanceof JournalPublicationError ? { kind: error.kind } : undefined;
-  if (details === undefined) logger?.error("unexpected tool execution error", { toolName, error });
-  const message = error instanceof Error ? error.message : String(error);
-  return createToolExecutorError({
-    errorType: "ToolExecutionError",
-    toolName,
-    message,
-    legacyMessage: `Error executing ${toolName}: ${message}`,
-    ...(details !== undefined ? { details } : {}),
-  });
+  if (error instanceof JournalPublicationError) {
+    logger?.debug("the room's journal refused a tool call", { toolName, kind: error.kind });
+    return toolExecutionError(toolName, error.message, { kind: error.kind });
+  }
+  logger?.error("unexpected tool execution error", { toolName, error });
+  return toolExecutionError(toolName, asErrorMessage(error));
 }
 
 /**
@@ -176,11 +174,10 @@ function coalesceSendMessage(
  * duplicates (`['@a','@a']` vs `['@a']`), or string vs `{handle}` cannot miss a
  * standing delivery_unknown.
  *
- * Token form matches AgentTools' mention normalization when both id and a
- * handle-like field are on one object (prefer handle). This layer has no room
- * roster, so an id-only `{id}` and a bare `@handle` string stay distinct keys
- * even when they name the same peer — resolving them would need the same
- * participant map AgentTools uses at send time.
+ * An object mention keys by what names one peer: its handle, else its id. A
+ * display name (`name`, `username`) is not unique, so it keys only a mention
+ * with neither — two peers sharing one must not coalesce. This layer has no
+ * room roster, so `{id}` and a bare `@handle` naming the same peer stay distinct.
  */
 function coalesceKey(content: unknown, mentions: unknown): string {
   return JSON.stringify([content, coalesceMentionTokens(mentions)]);
@@ -196,13 +193,12 @@ function coalesceMentionToken(mention: unknown): string {
   if (typeof mention === "string") return normalizeMentionHandle(mention);
   if (mention && typeof mention === "object" && !Array.isArray(mention)) {
     const ref = mention as Record<string, unknown>;
-    // Same preference as AgentTools.normalizeMentionInput / roster resolve:
-    // a handle-like field wins over id when both are present.
-    for (const field of ["handle", "username", "name"] as const) {
+    if (typeof ref.handle === "string" && ref.handle.length > 0) return normalizeMentionHandle(ref.handle);
+    if (typeof ref.id === "string") return `id:${ref.id.toLowerCase()}`;
+    for (const field of ["username", "name"] as const) {
       const value = ref[field];
       if (typeof value === "string" && value.length > 0) return normalizeMentionHandle(value);
     }
-    if (typeof ref.id === "string") return `id:${ref.id.toLowerCase()}`;
   }
   return JSON.stringify(mention);
 }

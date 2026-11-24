@@ -105,6 +105,22 @@ describe("message delivery", () => {
     expect(ownPosts()).toEqual([]);
   });
 
+  describe("a resend Band refuses after an earlier uncertain attempt", () => {
+    const stopped = { kind: "refused", status: 403, body: { error: { code: "forbidden", message: "Agent execution is stopped in this room" } } } as const;
+
+    it("stays uncertain when no read-back could show the first attempt absent", async () => {
+      room.failContext(2);
+
+      await expect(settleThroughRetries(send([{ kind: "committedThen", status: UNAVAILABLE }, stopped]))).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(ownPosts()).toEqual(["stored-1"]);
+    });
+
+    it("surfaces the refusal once a read-back showed the first attempt absent", async () => {
+      await expect(settleThroughRetries(send([{ kind: "refused", status: UNAVAILABLE }, stopped]))).rejects.toBeInstanceOf(RoomExecutionStoppedError);
+      expect(ownPosts()).toEqual([]);
+    });
+  });
+
   it("does not read back or resend a post Band refused", async () => {
     await expect(settleThroughRetries(send([{ kind: "refused", status: 422 }]))).rejects.toMatchObject({ statusCode: 422 });
 

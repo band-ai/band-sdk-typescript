@@ -200,11 +200,10 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
   const turn = new Turn(judged);
-  // The runtime's journaling wrapper exposes a typed fence probe; stop/scope leave it
-  // readable (like capabilities), so Turn binds it without casting through unknown.
+  // A journaling runtime fences the turn once a reply's delivery stands unknown.
   const fence = tools.unknownDeliveryFenced;
   if (fence) {
-    turn.useFenceSource(() => fence() === true);
+    turn.useFenceSource(fence);
   }
   return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }

@@ -152,7 +152,7 @@ type Delivered<T> = { posted: T } | { found: PlatformChatMessage };
 interface DeliverMessageOptions<T> {
   /** One attempt, with no retries of its own. */
   post: () => Promise<T>;
-  /** The post's own message in the room, or null when not found or not readable. Absent: no read-back. */
+  /** The post's own message in the room, or null when absent; throws when the room cannot be read. Absent: no read-back. */
   findPosted?: () => Promise<PlatformChatMessage | null>;
   stopped?: AbortSignal;
   logger: Logger;
@@ -161,9 +161,17 @@ interface DeliverMessageOptions<T> {
 
 /**
  * Posts until a status or a read-back shows the message in the room, within
- * `MESSAGE_SEND_MAX_RETRIES` resends; then the last failure surfaces.
+ * `MESSAGE_SEND_MAX_RETRIES` resends; then the last failure surfaces, unless
+ * an earlier attempt may have committed and no read-back showed it absent:
+ * that attempt's failure surfaces instead, so the post stands uncertain.
  */
 export async function deliverMessage<T>({ post, findPosted, stopped, logger, roomId }: DeliverMessageOptions<T>): Promise<Delivered<T>> {
+  let unsettled: { failure: unknown } | null = null;
+  const surfaced = (failure: unknown): unknown => {
+    if (!unsettled || unsettled.failure === failure) return failure;
+    logger.warn("Message post failed after an earlier attempt Band may hold; the post stays uncertain", { roomId, error: failure });
+    return unsettled.failure;
+  };
   for (let attempt = 0; ; attempt += 1) {
     let failure: unknown;
     try {
@@ -173,7 +181,7 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
     }
     const outcome = classifyFailedAttempt(failure);
     const resendsLeft = attempt < MESSAGE_SEND_MAX_RETRIES;
-    if (outcome === "refused" || (outcome === "notCommitted" && !resendsLeft)) throw failure;
+    if (outcome === "refused" || (outcome === "notCommitted" && !resendsLeft)) throw surfaced(failure);
 
     logger.warn("Message post failed; settling it before any resend", { roomId, attempt, outcome, status: statusCodeOf(failure) });
     // Before the read-back too: a commit still in flight gets the pause to land.
@@ -186,16 +194,24 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
       // commit that may have landed in the pause.
       cutShort = true;
     }
-    if (outcome === "uncertain" && findPosted) {
-      const found = await findPosted();
-      if (found) {
-        logger.info("Message post found in the room; not resending", { roomId, attempt, messageId: found.id });
-        return { found };
+    if (outcome === "uncertain") {
+      unsettled = { failure };
+      if (findPosted) {
+        try {
+          const found = await findPosted();
+          if (found) {
+            logger.info("Message post found in the room; not resending", { roomId, attempt, messageId: found.id });
+            return { found };
+          }
+          unsettled = null;
+        } catch {
+          // Unreadable: every attempt so far may hold, and stays unsettled.
+        }
       }
     }
     // Cut short: surface the transport's failure, never the cut — so the
     // publication settles on the post's actual outcome.
-    if (cutShort || !resendsLeft) throw failure;
+    if (cutShort || !resendsLeft) throw surfaced(failure);
     logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
   }
 }

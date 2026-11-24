@@ -701,6 +701,23 @@ describe("AgentRuntime lifecycle", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["after a quiesce", false],
+    ["while a quiesce is in flight", true],
+  ])("stop() %s still disconnects and reaches stopped", async (_when, concurrent) => {
+    const transport = new FakeTransport();
+    const runtime = makeAgentRuntime(transport);
+    await runtime.start();
+
+    const quiescing = runtime.quiesce();
+    if (!concurrent) await quiescing;
+    expect(await runtime.stop()).toBe(true);
+    await quiescing;
+
+    expect(transport.disconnectCount).toBe(1);
+    expect(runtime.state).toEqual({ status: "stopped" });
+  });
+
   it("start() does not resolve a pending waitUntilStopped()", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);

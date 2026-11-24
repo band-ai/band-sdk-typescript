@@ -9,10 +9,10 @@ import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { BandSdkError, ValidationError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
-import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
+import { agentJournalDir, identityDirectoryComponent, roomFileComponent, roomFileName } from "../src/runtime/journal/records";
 import { migrateTurnJournals } from "../src/runtime/journal/migration";
-import { RoomJournal, roomFileName } from "../src/runtime/journal/RoomJournal";
-import { TurnJournal, agentJournalDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { RoomJournal } from "../src/runtime/journal/RoomJournal";
+import { TurnJournal, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { tmpRoot } from "./testUtils";
@@ -229,7 +229,7 @@ describe("publications", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -285,7 +285,7 @@ describe("publications", () => {
   it("records a top-level post id as the receipt, with nested message.id as fallback", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -304,7 +304,7 @@ describe("publications", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -364,7 +364,7 @@ describe("publications", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
       logger: new NoopLogger(),
@@ -409,7 +409,7 @@ describe("publications", () => {
   it("keeps another reply's owed settlement poison when a refusal queued behind it lands", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const settleEntered = createDeferred();
     const failSettle = createDeferred();
     await interceptJournalAppends(async (original, self, args) => {
@@ -570,7 +570,7 @@ describe("publications", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
     const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
     await append.entered;
@@ -586,7 +586,7 @@ describe("publications", () => {
   it("keeps the journal owned while a reply's room journal is still opening, and the reply settles durably", async () => {
     const dir = tmpRoot();
     const { journals, generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const rewrite = await holdJournalRewrite();
     const publish = engine.publishReply("msg-1", async () => ({ success: true, message: { id: "posted-1" } }));
     await rewrite.entered;
@@ -900,7 +900,7 @@ describe("ownership and generations", () => {
   it("keeps a handle a turn took over from a released room's reply open for the turn's end", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     // The room is left while a reply posts.
     const posting = createDeferred();
     const post = createDeferred<{ success: true; id: string }>();
@@ -983,7 +983,7 @@ describe("ownership and generations", () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     await generation.room(ROOM);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const posting = createDeferred();
     const postEntered = createDeferred();
     const reply = engine.publishReply("msg-1", async () => {
@@ -1006,7 +1006,7 @@ describe("ownership and generations", () => {
   it("waits for the publications serving a message to settle, and no other message's", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = PublicationEngine.create({ roomId: ROOM, generation, logger: new NoopLogger() });
+    const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const posting = { m1: createDeferred(), m2: createDeferred() };
     const posts = { m1: createDeferred<{ success: true; id: string }>(), m2: createDeferred<{ success: true; id: string }>() };
     const first = engine.publishReply("m1", async () => {
@@ -1053,7 +1053,7 @@ describe("a publication against a closed generation", () => {
   }
 
   it("refuses a reply rather than deliver it unjournaled", async () => {
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation: await closedGeneration(),
       logger: new NoopLogger(),
@@ -1067,7 +1067,7 @@ describe("a publication against a closed generation", () => {
   });
 
   it("refuses a decline rather than run it unjournaled", async () => {
-    const engine = PublicationEngine.create({
+    const engine = new PublicationEngine({
       roomId: ROOM,
       generation: await closedGeneration(),
       logger: new NoopLogger(),

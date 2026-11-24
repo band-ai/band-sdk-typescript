@@ -52,11 +52,6 @@ export class KeyedSingleFlight<T = void> {
     return promise;
   }
 
-  /** Settles once every operation in flight now has settled, whatever its outcome. */
-  public async settled(): Promise<void> {
-    await Promise.allSettled([...this.flights.values()].flatMap((flight) => flight.current ?? []));
-  }
-
   /** Drops every key without waiting for its in-flight operation to settle. */
   public clear(): void {
     this.flights.clear();

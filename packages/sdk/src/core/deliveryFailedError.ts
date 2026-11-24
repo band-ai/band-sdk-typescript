@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import { createToolExecutorError, isToolExecutorError, type MessagingTools, type ToolExecutorError } from "../contracts/protocols";
+import { isToolExecutorError, toolExecutionError, type MessagingTools, type ToolExecutorError } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -49,26 +49,23 @@ export class DeliveryUnknownError extends DeliveryFailedError {
  * Band may already hold the message.
  */
 export function deliveryUnknownToolError(toolName: string, error: DeliveryUnknownError): ToolExecutorError {
-  return createToolExecutorError({
-    errorType: "ToolExecutionError",
-    toolName,
-    message: error.message,
-    legacyMessage: `Error executing ${toolName}: ${error.message}`,
-    details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
-  });
+  return toolExecutionError(toolName, error.message, { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId });
 }
+
+/** A tool result whose `details` classify the delivery as unknown. */
+type DeliveryUnknownOutput = ToolExecutorError & { details: { kind: typeof DeliveryUnknownError.KIND } };
 
 /**
  * True when a tool or MCP result says delivery is unknown: Band may already
  * hold the post, so a same-content retry must not POST again.
  */
-export function isDeliveryUnknownOutput(value: unknown): boolean {
+export function isDeliveryUnknownOutput(value: unknown): value is DeliveryUnknownOutput {
   return isToolExecutorError(value) && value.details?.kind === DeliveryUnknownError.KIND;
 }
 
 /** Publication id carried on a delivery_unknown tool result, when present. */
 export function deliveryUnknownPublicationId(value: unknown): string | undefined {
-  if (!isDeliveryUnknownOutput(value) || !isToolExecutorError(value)) return undefined;
+  if (!isDeliveryUnknownOutput(value)) return undefined;
   const publicationId = value.details?.publicationId;
   return typeof publicationId === "string" ? publicationId : undefined;
 }

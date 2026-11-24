@@ -5,10 +5,9 @@ import { onTestFinished, vi } from "vitest";
 import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
-import { identityDirectoryComponent } from "../src/runtime/journal/records";
-import { TurnJournal, agentJournalDir, legacyAgentDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
-import type { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { RoomJournal as RoomJournalCtor, roomFileName } from "../src/runtime/journal/RoomJournal";
+import { identityRoomFile, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/records";
+import { TurnJournal, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { tmpRoot } from "./testUtils";
 
 /** The canonical platform identity the tests bind their journals to. */
@@ -59,6 +58,27 @@ export async function holdJournalRewrite(): Promise<{ entered: Promise<void>; re
   return { entered: entered.promise, release: () => released.resolve() };
 }
 
+/**
+ * Whole-file journal write faults: `failNext` fails the next write whose text
+ * matches with a full disk. Nothing of it lands, so the files stand as a crash
+ * at that write leaves them.
+ */
+export async function journalRewriteFaults(): Promise<{ failNext: (matches: (text: string) => boolean) => void }> {
+  let armed: ((text: string) => boolean) | undefined;
+  await interceptFileHandle("writeFile", async (original, self, args) => {
+    if (armed !== undefined && typeof args[0] === "string" && armed(args[0])) {
+      armed = undefined;
+      throw diskFull();
+    }
+    return original.apply(self, args);
+  });
+  return {
+    failNext: (matches) => {
+      armed = matches;
+    },
+  };
+}
+
 /** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. */
 export async function holdJournalAppend(matches: (line: string) => boolean): Promise<{ entered: Promise<void>; release: () => void }> {
   const entered = createDeferred();
@@ -83,7 +103,7 @@ export function roomFile(
   agentId: string = AGENT,
   roomId: string = ROOM,
 ): string {
-  return path.join(agentJournalDir(dir, agentId), identityDirectoryComponent(identity), roomFileName(roomId));
+  return identityRoomFile(agentJournalDir(dir, agentId), identity, roomId);
 }
 
 /** The file name a v1 process gave `roomId`'s journal: its id, percent-encoded. */
@@ -127,7 +147,7 @@ export function roomJournalIn(
   const identity = options.identity ?? IDENTITY;
   const agentId = options.agentId ?? AGENT;
   const roomId = options.roomId ?? ROOM;
-  return RoomJournalCtor.open(roomFile(dir, identity, agentId, roomId), {
+  return RoomJournal.open(roomFile(dir, identity, agentId, roomId), {
     platformIdentity: identity,
     agentId,
     roomId,

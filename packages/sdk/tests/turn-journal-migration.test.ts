@@ -6,11 +6,23 @@ import { describe, expect, it } from "vitest";
 
 import { JournalFileError } from "../src/runtime/journal/errors";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
-import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
+import { agentJournalDir, identityDirectoryComponent, legacyAgentDir, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals, type MigrationBinding } from "../src/runtime/journal/migration";
-import { TurnJournal, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/TurnJournal";
+import { TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { tmpRoot } from "./testUtils";
-import { AGENT, IDENTITY, OTHER_IDENTITY, ROOM, generationIn, legacyRoomFile, recordTypes, roomFile, seedLegacyFile } from "./turnJournalSupport";
+import {
+  AGENT,
+  IDENTITY,
+  OTHER_IDENTITY,
+  ROOM,
+  generationIn,
+  holdJournalRewrite,
+  journalRewriteFaults,
+  legacyRoomFile,
+  recordTypes,
+  roomFile,
+  seedLegacyFile,
+} from "./turnJournalSupport";
 
 const V1_ROOM_FILE = legacyRoomFile(ROOM);
 
@@ -247,34 +259,21 @@ describe("migrateTurnJournals apply", () => {
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: conflicting })).rejects.toBeInstanceOf(JournalFileError);
   });
 
-  it("commits a migration only once when two applies race for it: the other contends, or finds it committed", async () => {
+  it("refuses a second apply while the first owns the journal, and commits the first", async () => {
     const dir = tmpRoot();
     const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })] });
-    // Two applies for the same journal race: the ownership lock admits one at a
-    // time, and a committed migration is not committed a second time.
-    const results = await Promise.allSettled([
-      migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }),
-      migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }),
-    ]);
-    const outcomes = results.map((result) => (result.status === "fulfilled" ? result.value.mode : result.reason instanceof Error ? `error: ${result.reason.message.split("\n")[0]}` : "unknown"));
-    const committed = results.filter((result) => result.status === "fulfilled" && result.value.mode === "committed").length;
-    // Exactly one apply commits; the other contends for the ownership it never gets,
-    // or acquires it after the commit and reports the migration already made.
-    expect(committed).toBe(1);
-    const other = results.find((result) => !(result.status === "fulfilled" && result.value.mode === "committed"));
-    if (other !== undefined) {
-      // Fail-closed journal errors only — not a bare Error, which would pass any throw.
-      expect(
-        other.status === "fulfilled"
-          ? other.value.mode === "already-committed"
-          : other.reason instanceof JournalFileError || other.reason instanceof JournalOwnershipError,
-        `the losing apply must fail closed (JournalFileError / JournalOwnershipError) or find the commit: ${JSON.stringify(outcomes)}`,
-      ).toBe(true);
-    }
-    // The journal stands on the one commit: its records are the room's authority.
+    // The first apply holds at its prepared manifest's write, after it took the ownership lock.
+    const held = await holdJournalRewrite();
+    const first = migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    await held.entered;
+
+    const second = migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    await expect(second).rejects.toBeInstanceOf(JournalOwnershipError);
+    await expect(second).rejects.toMatchObject({ kind: "contention" });
+    held.release();
+    expect((await first).mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
-    expect(room.answered("m")).toBe(true);
+    expect((await generation.room(ROOM)).answered("m")).toBe(true);
   });
 
   it("keeps records appended after the commit on a reapply, and reports nothing to do", async () => {
@@ -322,51 +321,47 @@ describe("migrateTurnJournals apply", () => {
   });
 });
 
+/** The prepared manifest's commit write. */
+const commitWrite = (text: string): boolean => text.includes('"state": "committed"');
+/** A destination's staging write. */
+const stagingWrite = (text: string): boolean => text.startsWith('{"t":"header"');
+
 describe("migration phases survive interruption", () => {
+  /** Applies `bindings` with the write `crashAt` matches failing: the migration stands prepared, as a crash there leaves it. */
+  async function crashedApply(
+    faults: Awaited<ReturnType<typeof journalRewriteFaults>>,
+    dir: string,
+    bindings: MigrationBinding[],
+    crashAt: (text: string) => boolean,
+  ): Promise<void> {
+    faults.failNext(crashAt);
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings })).rejects.toMatchObject({ code: "ENOSPC" });
+    expect(await migrationStateOf(agentJournalDir(dir, AGENT))).toBe("prepared");
+  }
+
+  /** A remnant copy of the room's journal holding `legacy` plus a settlement only it records, with its own binding. */
+  async function seedSurplusRemnant(dir: string, legacy: string[], provenance: string): Promise<MigrationBinding> {
+    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
+    await writeFile(path.join(legacyAgentDir(dir, AGENT), V1_REMNANT_FILE), copyText);
+    return { sourceFile: V1_REMNANT_FILE, roomId: roomOfLegacyFile(V1_REMNANT_FILE), sourceSha256: sha256(copyText), platformIdentity: IDENTITY, provenance };
+  }
+
   it("commits a prepared migration a crash left with its destination staged, keeping what stands", async () => {
     const dir = tmpRoot();
-    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
-    const sourceSha256 = sha256(await readFile(source, "utf8"));
-    const agentDir = agentJournalDir(dir, AGENT);
-    const manifestDir = path.join(agentDir, "migration");
-    await mkdir(manifestDir, { recursive: true });
-    // The prepared manifest, exactly as the migration would have written it before staging:
-    // the import recorded hash-bound, so it stands as authority's record of itself.
-    await writeFile(
-      path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({
-        v: 2,
-        state: "prepared",
-        createdAt: 1,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance: "crash",
-            stagesFrom: V1_ROOM_FILE,
-            stagingSha256: sourceSha256,
-            importedFacts: { publicationIds: [], turnDone: ["old"] },
-          },
-        ],
-      }, null, 2)}\n`,
-    );
-    // The destination already stands, as a crash after staging but before committing leaves it —
-    // with a record an earlier process settled on it.
+    const faults = await journalRewriteFaults();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })] });
+    await crashedApply(faults, dir, bindings, commitWrite);
+    // The staged destination stands, with a record an earlier process settled on it.
     const staged = roomFile(dir);
-    await mkdir(path.dirname(staged), { recursive: true });
-    const stood = `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n${JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })}\n${JSON.stringify({ t: "reply.intent", messageId: "s", publicationId: "p", at: 2 })}\n${JSON.stringify({ t: "reply.settled", messageId: "s", publicationId: "p", at: 3 })}\n`;
-    await writeFile(staged, stood);
+    await appendFile(staged, `${JSON.stringify({ t: "reply.intent", messageId: "s", publicationId: "p", at: 2 })}\n${JSON.stringify({ t: "reply.settled", messageId: "s", publicationId: "p", at: 3 })}\n`);
+    const stood = await readFile(staged, "utf8");
 
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("old")).toBe(true);
-    // The re-staged nothing: the record the earlier process settled is still the authority's.
+    // The resume restaged nothing: the record the earlier process settled is still the authority's.
     expect(await readFile(staged, "utf8")).toBe(stood);
-    const state = JSON.parse(await readFile(path.join(manifestDir, "manifest.json"), "utf8"));
-    expect(state.state).toBe("committed");
-    await generation.close();
+    expect(await migrationStateOf(agentJournalDir(dir, AGENT))).toBe("committed");
   });
 
   it("refuses a start over a committed migration whose journal is gone, never an empty authority", async () => {
@@ -381,96 +376,27 @@ describe("migration phases survive interruption", () => {
 
   it("refuses to resume a prepared migration under a start identity none of its bindings attested", async () => {
     const dir = tmpRoot();
-    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
-    const sourceSha256 = sha256(await readFile(source, "utf8"));
-    const agentDir = agentJournalDir(dir, AGENT);
-    const manifestDir = path.join(agentDir, "migration");
-    await mkdir(manifestDir, { recursive: true });
-    await writeFile(
-      path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({
-        v: 2,
-        state: "prepared",
-        createdAt: 1,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance: "crash",
-            stagesFrom: V1_ROOM_FILE,
-            stagingSha256: sourceSha256,
-            importedFacts: { publicationIds: [], turnDone: ["old"] },
-          },
-        ],
-      }, null, 2)}\n`,
-    );
+    const faults = await journalRewriteFaults();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })] });
+    await crashedApply(faults, dir, bindings, stagingWrite);
 
     // Opening under another identity would stage settlements under IDENTITY and
     // serve an empty journal under OTHER_IDENTITY — refuse rather than re-answer.
     await expect(new TurnJournal(dir, AGENT).activate(OTHER_IDENTITY)).rejects.toMatchObject({ kind: "corrupt" });
-    expect(await migrationStateOf(agentDir)).toBe("prepared");
+    expect(await migrationStateOf(agentJournalDir(dir, AGENT))).toBe("prepared");
     await expect(readFile(roomFile(dir, OTHER_IDENTITY), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("amends a prepared journal-only migration when a surplus remnant is bound later", async () => {
     const dir = tmpRoot();
+    const faults = await journalRewriteFaults();
     const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
-    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
-    const sourceText = await readFile(source, "utf8");
-    const sourceSha256 = sha256(sourceText);
-    const agentDir = agentJournalDir(dir, AGENT);
-    const manifestDir = path.join(agentDir, "migration");
-    await mkdir(manifestDir, { recursive: true });
-    // Prepared from a journal-only apply that crashed before commit: the surplus
-    // remnant was not attested yet, and the destination stands on that import.
-    await writeFile(
-      path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({
-        v: 2,
-        state: "prepared",
-        createdAt: 1,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance: `operator-attested:${V1_ROOM_FILE}`,
-            stagesFrom: V1_ROOM_FILE,
-            stagingSha256: sourceSha256,
-            importedFacts: { publicationIds: [], turnDone: ["b"] },
-          },
-        ],
-      }, null, 2)}\n`,
-    );
-    const staged = roomFile(dir);
-    await mkdir(path.dirname(staged), { recursive: true });
-    await writeFile(
-      staged,
-      `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n${JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })}\n`,
-    );
-    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 })}\n`;
-    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), copyText);
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+    // A journal-only apply crashed before its commit; the surplus remnant was not attested yet.
+    await crashedApply(faults, dir, bindings, commitWrite);
+    const remnant = await seedSurplusRemnant(dir, legacy, bindings[0].provenance);
 
-    const bindings: MigrationBinding[] = [
-      {
-        sourceFile: V1_ROOM_FILE,
-        roomId: ROOM,
-        sourceSha256,
-        platformIdentity: IDENTITY,
-        provenance: `operator-attested:${V1_ROOM_FILE}`,
-      },
-      {
-        sourceFile: V1_REMNANT_FILE,
-        roomId: roomOfLegacyFile(V1_REMNANT_FILE),
-        sourceSha256: sha256(copyText),
-        platformIdentity: IDENTITY,
-        provenance: `operator-attested:${V1_ROOM_FILE}`,
-      },
-    ];
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
@@ -478,136 +404,40 @@ describe("migration phases survive interruption", () => {
     // The amended prepare restaged through the bound surplus: the copy-only
     // settlement stands answered, not left behind by the journal-only staging.
     expect(room.answered("only-in-copy")).toBe(true);
-    await generation.close();
   });
 
   it("resumes after a crash between amend rewrite and restage, restaging the surplus under sameBindings", async () => {
     const dir = tmpRoot();
+    const faults = await journalRewriteFaults();
     const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
-    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, legacy);
-    const sourceText = await readFile(source, "utf8");
-    const sourceSha256 = sha256(sourceText);
-    const agentDir = agentJournalDir(dir, AGENT);
-    const manifestDir = path.join(agentDir, "migration");
-    await mkdir(manifestDir, { recursive: true });
-    // Crash after amend rewrote the prepared manifest with the surplus remnant
-    // bound, but before restage: destination still holds the journal-only import.
-    const copyOnly = JSON.stringify({ t: "turn.done", messageId: "only-in-copy", at: 3 });
-    const copyText = `${legacy.join("\n")}\n${copyOnly}\n`;
-    await writeFile(path.join(path.dirname(source), V1_REMNANT_FILE), copyText);
-    const stagingText = `${sourceText.endsWith("\n") ? sourceText : `${sourceText}\n`}${copyOnly}\n`;
-    const stagingSha256 = sha256(stagingText);
-    const provenance = `operator-attested:${V1_ROOM_FILE}`;
-    await writeFile(
-      path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({
-        v: 2,
-        state: "prepared",
-        createdAt: 1,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance,
-            stagesFrom: V1_ROOM_FILE,
-            stagingSha256,
-            importedFacts: { publicationIds: [], turnDone: ["b", "only-in-copy"] },
-          },
-          {
-            sourceFile: V1_REMNANT_FILE,
-            roomId: roomOfLegacyFile(V1_REMNANT_FILE),
-            sourceSha256: sha256(copyText),
-            platformIdentity: IDENTITY,
-            provenance,
-            stagesFrom: V1_ROOM_FILE,
-            // Folded remnant still records the coalesced staging hash prepare wrote.
-            stagingSha256,
-            importedFacts: { publicationIds: [], turnDone: ["b", "only-in-copy"] },
-          },
-        ],
-      }, null, 2)}\n`,
-    );
-    const staged = roomFile(dir);
-    await mkdir(path.dirname(staged), { recursive: true });
-    await writeFile(
-      staged,
-      `${JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT, roomId: ROOM, at: 1 })}\n${JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })}\n`,
-    );
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+    await crashedApply(faults, dir, bindings, commitWrite);
+    const amended = [...bindings, await seedSurplusRemnant(dir, legacy, bindings[0].provenance)];
+    // The amend rewrote the prepared manifest with the remnant bound, then crashed
+    // restaging: the destination still holds the journal-only import.
+    await crashedApply(faults, dir, amended, stagingWrite);
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
 
-    const bindings: MigrationBinding[] = [
-      {
-        sourceFile: V1_ROOM_FILE,
-        roomId: ROOM,
-        sourceSha256,
-        platformIdentity: IDENTITY,
-        provenance,
-      },
-      {
-        sourceFile: V1_REMNANT_FILE,
-        roomId: roomOfLegacyFile(V1_REMNANT_FILE),
-        sourceSha256: sha256(copyText),
-        platformIdentity: IDENTITY,
-        provenance,
-      },
-    ];
     // sameBindings resume (not amend): prepared validate must restage the surplus.
-    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: amended });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
     expect(room.answered("b")).toBe(true);
     expect(room.answered("only-in-copy")).toBe(true);
-    await generation.close();
   });
 
   it("refuses to rewrite an attestation already recorded in a prepared migration", async () => {
     const dir = tmpRoot();
-    const source = await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })]);
-    const sourceSha256 = sha256(await readFile(source, "utf8"));
-    const agentDir = agentJournalDir(dir, AGENT);
-    const manifestDir = path.join(agentDir, "migration");
-    await mkdir(manifestDir, { recursive: true });
-    await writeFile(
-      path.join(manifestDir, "manifest.json"),
-      `${JSON.stringify({
-        v: 2,
-        state: "prepared",
-        createdAt: 1,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance: "prepared-attestation",
-            stagesFrom: V1_ROOM_FILE,
-            stagingSha256: sourceSha256,
-            importedFacts: { publicationIds: [], turnDone: ["old"] },
-          },
-        ],
-      }, null, 2)}\n`,
-    );
+    const faults = await journalRewriteFaults();
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "old", at: 1 })] });
+    await crashedApply(faults, dir, bindings, commitWrite);
 
     // Same file, different provenance: not an extension, and not a resume.
     await expect(
-      migrateTurnJournals({
-        journalDir: dir,
-        agentId: AGENT,
-        apply: true,
-        bindings: [
-          {
-            sourceFile: V1_ROOM_FILE,
-            roomId: ROOM,
-            sourceSha256,
-            platformIdentity: IDENTITY,
-            provenance: "a different attestation",
-          },
-        ],
-      }),
+      migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [{ ...bindings[0], provenance: "a different attestation" }] }),
     ).rejects.toBeInstanceOf(JournalFileError);
-    expect(await migrationStateOf(agentDir)).toBe("prepared");
+    expect(await migrationStateOf(agentJournalDir(dir, AGENT))).toBe("prepared");
   });
 });
 
@@ -979,6 +809,25 @@ describe("v1 compaction remnants", () => {
     // The copy-only settlement stands answered in the destination: a restart does
     // not answer it again.
     expect(room.answered("only-in-copy")).toBe(true);
+  });
+
+  it("carries an unbound copy whose surplus a bound copy beside it attests, whatever the names' order", async () => {
+    const dir = tmpRoot();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const copyText = `${legacy.join("\n")}\n${JSON.stringify({ t: "turn.done", messageId: "only-in-copies", at: 3 })}\n`;
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+    // Both copies hold the same surplus; only the one that sorts last is bound.
+    const unbound = `${V1_ROOM_FILE}.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.compacting`;
+    const bound = `${V1_ROOM_FILE}.ffffffff-ffff-4fff-8fff-ffffffffffff.compacting`;
+    await seedLegacyFile(dir, AGENT, unbound, [copyText.trimEnd()]);
+    await seedLegacyFile(dir, AGENT, bound, [copyText.trimEnd()]);
+    bindings.push({ sourceFile: bound, roomId: ROOM, sourceSha256: sha256(copyText), platformIdentity: IDENTITY, provenance: bindings[0].provenance });
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
+
+    expect(result.mode).toBe("committed");
+    const { generation } = await generationIn(dir);
+    expect((await generation.room(ROOM)).answered("only-in-copies")).toBe(true);
   });
 
   it("coalesces multiple surplus remnants in lexicographic name order for a stable stagingSha256", async () => {

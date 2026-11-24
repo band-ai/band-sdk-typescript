@@ -33,7 +33,7 @@ const HOST = "thenvoi\\.com";
 const DOC_ENV = "THENVOI_[A-Z]";
 const RETAINED_ENV = /LINEAR_THENVOI_|\.linear-thenvoi/;
 
-/** The branch's contents, from the git index — what it stands to publish. */
+/** The tracked paths in scope, for the sanity check; the scans themselves read the working tree. */
 function scopedFiles(): string[] {
   return execSync("git ls-files", { cwd: REPO_ROOT, encoding: "utf8" })
     .split("\n")

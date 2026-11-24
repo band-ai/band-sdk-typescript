@@ -7,7 +7,6 @@ import { Serializer } from "../../core/singleFlight";
 
 import { JournalFileError, JournalPublicationError } from "./errors";
 import {
-  JOURNAL_FILE_EXTENSION,
   JOURNAL_FORMAT_VERSION,
   compactingCopyName,
   compactingCopyTarget,
@@ -15,7 +14,7 @@ import {
   journalHeaderSchema,
   journalRecordSchema,
   readTextIfExists,
-  roomFileComponent,
+  roomFileName,
   toLine,
   type JournalHeader,
   type JournalRecord,
@@ -25,13 +24,8 @@ import {
 
 export type { PublicationOutcome };
 
-/** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
-export function roomFileName(roomId: string): string {
-  return `${roomFileComponent(roomId)}${JOURNAL_FILE_EXTENSION}`;
-}
-
 /** A journal read or write failure; `file` is the path that failed. */
-export function journalFileFailure(error: unknown, file: string): JournalFileError {
+function journalFileFailure(error: unknown, file: string): JournalFileError {
   if (error instanceof JournalFileError) return error;
   return new JournalFileError("Turn journal I/O failed", "io", file, error);
 }
@@ -40,7 +34,7 @@ export function journalFileFailure(error: unknown, file: string): JournalFileErr
  * Flushes `dir`'s entries, so a file created or renamed in it survives an OS
  * crash, not only a process one. Windows cannot open a directory for this.
  */
-export async function syncDirectory(dir: string): Promise<void> {
+async function syncDirectory(dir: string): Promise<void> {
   if (process.platform === "win32") return;
   const handle = await open(dir, "r");
   try {
@@ -51,7 +45,7 @@ export async function syncDirectory(dir: string): Promise<void> {
 }
 
 /** Removes the copies of `file` a crash left mid-rewrite; they never replaced it. */
-export async function removeOrphanedCopies(file: string): Promise<void> {
+async function removeOrphanedCopies(file: string): Promise<void> {
   const dir = path.dirname(file);
   const base = path.basename(file);
   for (const name of await readdir(dir)) {
@@ -78,6 +72,11 @@ export async function rewriteFile(file: string, text: string): Promise<void> {
     throw error;
   }
   await syncDirectory(path.dirname(file));
+}
+
+/** The handle closed: its room's handling stopped. */
+function closedJournalError(): JournalPublicationError {
+  return new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
 }
 
 export interface RoomJournalOptions {
@@ -135,13 +134,11 @@ export class RoomJournal {
    * here: they are in flight, not a delivery mystery.
    */
   private unresolved = new Map<string, { messageId: string; at: number }>();
-  /** The in-flight or last-finished recovery, so callers queue behind one another. */
-  private recovery: Promise<UnresolvedPublication[]> = Promise.resolve([]);
+  /** Recoveries run one at a time: one in flight marks what it reports before the next looks. */
+  private readonly recoveries = new Serializer();
   private readonly writes = new Serializer();
   private readonly now: () => number;
   private readonly logger: Logger;
-  /** A failed append may have left part of a line; the next one starts a line of its own. */
-  private lineCut = false;
   private closed = false;
   /**
    * Set once an outcome the journal could not record followed a result it
@@ -306,10 +303,7 @@ export class RoomJournal {
    * and never announced here.
    */
   public recoverUnresolved(): Promise<UnresolvedPublication[]> {
-    // Serialized per handle: an announcement in flight marks what it reports
-    // before a second caller may see the same publications again.
-    this.recovery = this.recovery.catch(() => undefined).then(() => this.runRecovery());
-    return this.recovery;
+    return this.recoveries.run(() => this.runRecovery());
   }
 
   private async runRecovery(): Promise<UnresolvedPublication[]> {
@@ -369,7 +363,7 @@ export class RoomJournal {
    */
   public async markRefused(messageId: string, publicationId: string): Promise<void> {
     if (this.closed) {
-      throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
+      throw closedJournalError();
     }
     const record: RefusedRecord = { t: "reply.refused", messageId, publicationId, at: this.now() };
     this.transition(record);
@@ -426,7 +420,7 @@ export class RoomJournal {
 
   private assertAdmitting(): void {
     if (this.closed) {
-      throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
+      throw closedJournalError();
     }
     if (this.poisoned) {
       throw new JournalPublicationError(
@@ -476,7 +470,7 @@ export class RoomJournal {
   private rewriteRefused(record: RefusedRecord): Promise<void> {
     return this.writes.run(async () => {
       if (this.closed) {
-        throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
+        throw closedJournalError();
       }
       const line = JSON.stringify(record);
       try {
@@ -514,7 +508,6 @@ export class RoomJournal {
   private async reopenHandle(): Promise<void> {
     try {
       this.handle = await open(this.file, "a");
-      this.lineCut = false;
     } catch (error) {
       this.poisoned = true;
       this.logger.warn("Failed to reopen a room journal after rewriting it; it admits no records until it reopens", { roomId: this.roomId, file: this.file, error });
@@ -530,12 +523,9 @@ export class RoomJournal {
     // before a concurrent write poisoned the handle, and must not append
     // beneath a torn or half-recorded line.
     this.assertAdmitting();
-    const line = `${this.lineCut ? "\n" : ""}${toLine(record)}`;
     try {
-      this.lineCut = true;
-      await this.handle.appendFile(line, "utf8");
+      await this.handle.appendFile(toLine(record), "utf8");
       await this.handle.datasync();
-      this.lineCut = false;
     } catch (error) {
       // The write or its sync failed: the file may hold a torn record, and the
       // writer that lost the write it owes stops admitting. No later append may

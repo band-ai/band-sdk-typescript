@@ -47,6 +47,7 @@ import {
   isStructuredToolFailure,
   isToolExecutorError,
   sendFailureViaEvent,
+  toolExecutionError,
   type ToolExecutorError,
   type FetchRoomContextArgs,
   type RoomContextPage,
@@ -207,6 +208,9 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput,
     kind: "reply" | "notice",
   ): Promise<ToolOperationResult> {
+    // Read before any await: a turn cut short while the mentions resolve must still refuse this reply.
+    const messageId = kind === "reply" && this.publication ? this.publicationInboundId() : undefined;
+    const stopped = messageId === undefined ? undefined : this.publicationStop?.(messageId);
     // Resolved before the post: a failed participants lookup is no post attempt, so it never stands a reply unknown.
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
     const post = async (): Promise<ToolOperationResult> => {
@@ -223,11 +227,8 @@ export class AgentTools implements AgentToolsProtocol {
 
     // A reply settles under the turn's inbound scope, refused once that turn
     // is cut short; a notice (and a reply with nothing in flight) posts unrecorded.
-    if (kind === "reply" && this.publication) {
-      const messageId = this.publicationInboundId();
-      if (messageId !== undefined) {
-        return this.publication.publishReply(messageId, post, this.publicationStop?.(messageId));
-      }
+    if (messageId !== undefined && this.publication) {
+      return this.publication.publishReply(messageId, post, stopped);
     }
     return post();
   }
@@ -453,12 +454,7 @@ export class AgentTools implements AgentToolsProtocol {
       // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
       // handlers' `ok` fields are legitimate business-result data, not errors.
       if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
-        return createToolExecutorError({
-          errorType: "ToolExecutionError",
-          toolName,
-          message: result.message,
-          legacyMessage: `Error executing ${toolName}: ${result.message}`,
-        });
+        return toolExecutionError(toolName, result.message);
       }
       return result;
     } catch (error) {

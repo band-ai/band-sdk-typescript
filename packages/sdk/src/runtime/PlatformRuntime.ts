@@ -35,6 +35,7 @@ import { ControlDeduplicator, controlTargets } from "./control";
 import { untilStopped } from "../core/signals";
 import { revokedOnStop } from "./turnRevocation";
 import { AgentEventHub } from "./agentEvents";
+import { JournalFileError } from "./journal/errors";
 import { journalingTools } from "./journal/journalTools";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
@@ -603,7 +604,7 @@ export class PlatformRuntime implements AsyncDisposable {
     const extended: ExecutionContextOptions = {
       ...defaults,
       publication: generation
-        ? PublicationEngine.create({
+        ? new PublicationEngine({
             roomId,
             generation,
             logger: this.logger,
@@ -1014,8 +1015,9 @@ export class PlatformRuntime implements AsyncDisposable {
         // is given back — the next turn is prepared as this one was, and a
         // session's first turn still bootstraps. The message settles failed,
         // and the runtime keeps serving the rooms whose journals stand.
-        const reason = error instanceof Error ? error.message : String(error);
-        const label = `The room's turn journal will not open, so the turn failed rather than answer unjournaled: ${reason}`;
+        // Band and the room see only the kind: the error names local paths and identities.
+        this.logger.error("The room's turn journal will not open; the turn fails", { roomId, messageId, error });
+        const label = `The room's turn journal will not open (${journalFailureKind(error)}), so the turn failed rather than answer unjournaled`;
         this.events.emit({ type: "turn.failed", roomId, messageId, error: label });
         context.returnTurnPreparation(input);
         if (message.settles) {
@@ -1025,9 +1027,9 @@ export class PlatformRuntime implements AsyncDisposable {
       }
     }
     if (journal) {
-      await this.announceUnresolvedPublications(journal, roomId);
-      // A reply to this message a cut-short run left posting settles first, so the check below sees it.
+      // A reply to this message a cut-short run left posting settles first, so the announce and the check below see it.
       await this.generation?.settled(roomId, messageId);
+      await this.announceUnresolvedPublications(journal, roomId);
     }
     // Preparing the turn awaits (a session's first turn hydrates its history), so a stop can land meanwhile.
     const stoppedWhilePreparing = stopModeOf(stopped);
@@ -1067,32 +1069,10 @@ export class PlatformRuntime implements AsyncDisposable {
     let stopMode: TurnStopMode | null = null;
     // The adapter handed the turn's reply to work that outlives it (a decision wait).
     let detached = false;
-    // When the room is held past untilStopped (detach or a cut-short adapter that
-    // cannot cancel), publicationStop stays installed until every such hold ends —
-    // not cleared in finally — so a late reply still sees a mid-flight abort.
-    // Release is chained into the hold promise (before the room wakes) and is not
-    // awaited here: stop()/idle do not wait on publicationStop.
-    // The stop is keyed by this turn's inbound, so a control turn running
-    // during the hold never refuses this turn's reply, nor this one its.
-    let retainPublicationStop = false;
-    let publicationHold: Promise<void> = Promise.resolve();
-    let publicationClearGeneration = 0;
-    let releasePublicationStop: (() => void) | undefined;
-    const holdTurn = (ended: Promise<void>): void => {
-      retainPublicationStop = true;
-      const generation = ++publicationClearGeneration;
-      publicationHold = Promise.all([
-        publicationHold,
-        ended.then(() => undefined, () => undefined),
-      ]).then(() => undefined);
-      holdRoomUntil(
-        publicationHold.then(() => {
-          if (generation === publicationClearGeneration) {
-            releasePublicationStop?.();
-          }
-        }),
-      );
-    };
+    const publicationStop = holdPublicationStop(
+      holdRoomUntil,
+      () => context.releasePublicationStop(messageId, stopped),
+    );
     try {
       await lease?.ready;
       if (!admitted()) return false;
@@ -1119,15 +1099,12 @@ export class PlatformRuntime implements AsyncDisposable {
         );
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
         context.setPublicationStop(messageId, stopped);
-        releasePublicationStop = () => {
-          context.releasePublicationStop(messageId, stopped);
-        };
         const turn = adapter.onEvent({
           ...input,
           tools,
           holdRoomUntil: (ended) => {
             detached = true;
-            holdTurn(ended);
+            publicationStop.hold(ended);
           },
         });
         const cut = await untilStopped(
@@ -1138,16 +1115,14 @@ export class PlatformRuntime implements AsyncDisposable {
         stopMode = cut ? stopModeOf(stopped) : null;
         if (stopMode) {
           // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
-          holdTurn(turn.then(() => undefined, () => undefined));
+          publicationStop.hold(turn.then(() => undefined, () => undefined));
         }
       }
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
-      if (!retainPublicationStop) {
-        releasePublicationStop?.();
-      }
+      publicationStop.turnEnded();
       await lease?.end();
     }
     if (!started) {
@@ -1367,4 +1342,37 @@ function pinTurnInbound(tools: AdapterToolsProtocol, inbound: PlatformMessageLik
   return overrideTools(tools, {
     readRoomHistory: (args = {}) => readRoomHistory.call(tools, { ...args, pinned: args.pinned ?? inbound }),
   });
+}
+
+/** What kind of journal failure a label may name without its local details. */
+function journalFailureKind(error: unknown): string {
+  if (error instanceof JournalFileError) return error.kind;
+  return error instanceof Error ? error.name : "unknown";
+}
+
+/**
+ * Keeps a turn's publication stop installed while work that outlives the turn
+ * holds its room (a detach, or a cut-short adapter that cannot cancel), so a
+ * late reply still sees the cut. The stop is released once every hold has
+ * ended — before the room wakes — or when the turn ends with none. Nothing
+ * awaits the release: a stop or idle wait never waits on it.
+ */
+function holdPublicationStop(holdRoomUntil: (ended: Promise<void>) => void, release: () => void) {
+  let held: Promise<void> | null = null;
+  let latestHold = 0;
+  return {
+    hold(ended: Promise<void>): void {
+      const settled = ended.then(() => undefined, () => undefined);
+      const all = held ? Promise.all([held, settled]).then(() => undefined) : settled;
+      held = all;
+      const hold = ++latestHold;
+      // Only the latest hold releases: it waits on every earlier one too.
+      holdRoomUntil(all.then(() => {
+        if (hold === latestHold) release();
+      }));
+    },
+    turnEnded(): void {
+      if (!held) release();
+    },
+  };
 }

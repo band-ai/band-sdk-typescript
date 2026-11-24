@@ -14,14 +14,14 @@ import type { PlatformEvent } from "../src/platform/events";
 import { runUntilReleased } from "../src/adapters/shared/runUntilReleased";
 import type { AgentEvent } from "../src/contracts/events";
 import { createDeferred } from "../src/core/deferred";
-import { ValidationError } from "../src/core/errors";
+import { RuntimeStateError, ValidationError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
 import { RECOVERY_SLOTS } from "../src/runtime/PlatformRuntime";
-import { identityDirectoryComponent } from "../src/runtime/journal/records";
-import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
+import { agentJournalDir, identityDirectoryComponent } from "../src/runtime/journal/records";
+import { TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { JournalPublicationError } from "../src/runtime/journal/errors";
@@ -1142,6 +1142,109 @@ describe("a stopped message whose first reply is still posting", () => {
     expect(room.messages.map((posted) => posted.content)).toEqual(["reply from run 1"]);
     expect(runs).toBe(1);
   });
+
+  it("reports the first reply's unknown delivery before the replay answers the message again", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const firstPost = room.holdMessage((content) => content === "reply from run 1", { error: serviceUnavailable() });
+    const cancelled = createDeferred();
+    onTestFinished(() => cancelled.resolve());
+    let runs = 0;
+    const reportedBeforeReplay: number[] = [];
+    const journalDir = tmpRoot();
+    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      runs += 1;
+      if (runs === 1) {
+        void tools.sendMessage("reply from run 1", ["@owner"]).catch(() => undefined);
+        await cancelled.promise;
+        return;
+      }
+      reportedBeforeReplay.push(reported(events).length);
+      await tools.sendMessage("reply from run 2", ["@owner"]);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await firstPost.sending;
+    platform.control("stop", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+    cancelled.resolve();
+
+    // Band serves the message again on play; the first reply then ends unknown while the replay waits on it.
+    const served = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM);
+    platform.control("play", ROOM);
+    await served.sending;
+    served.release();
+    firstPost.release();
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(reportedBeforeReplay).toEqual([1]);
+    expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
+    expect(room.messages.map((posted) => posted.content)).toEqual(["reply from run 2"]);
+  });
+});
+
+describe("a reply still resolving its mentions when its turn is cut short", () => {
+  /** Starts a turn whose reply to a newly added peer waits on the held participants fetch, as an MCP call the cut turn leaves running. */
+  async function lateReplyWaitingOnMentions(replay: Handler = async () => undefined) {
+    const platform = BandPlatform.host([person(OWNER), person("bob")]);
+    const room = await platform.room(ROOM, [person(OWNER)]);
+    const lookup = createDeferred<HeldCall<[roomId: string]>>();
+    const late = createDeferred<unknown>();
+    const cancelled = createDeferred();
+    onTestFinished(() => cancelled.resolve());
+    let turns = 0;
+    const { events } = await startProcess(platform, tmpRoot(), async (args) => {
+      turns += 1;
+      if (turns > 1) {
+        await replay(args);
+        return;
+      }
+      await platform.rest.addChatParticipant(ROOM, { participantId: "bob" });
+      lookup.resolve(platform.rest.participantHolds.hold(() => true));
+      void args.tools.sendMessage("late", ["@bob"]).then(late.resolve, late.resolve);
+      await cancelled.promise;
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    const fetch = await lookup.promise;
+    await fetch.sending;
+    return { platform, room, events, inbound, fetch, late, cancelled };
+  }
+
+  it("does not post it after an interrupt ended the turn", async () => {
+    const { platform, room, events, inbound, fetch, late, cancelled } = await lateReplyWaitingOnMentions();
+
+    platform.control("interrupt", ROOM);
+    await events.next((event) => event.type === "turn.stopped");
+    expect(await room.outcome(inbound)).toBe("processed");
+    cancelled.resolve();
+    // The room wakes, and serves its next message, only once the cut turn's hold has ended.
+    await room.outcome(await room.say(OWNER, `${MENTION} again`));
+    fetch.release();
+
+    expect(String(await late.promise)).toContain("cut short");
+    expect(room.messages.map((posted) => posted.content)).toEqual([]);
+  });
+
+  it("does not post it beside the replay's reply after a stop and play", async () => {
+    const replayGate = createDeferred();
+    onTestFinished(() => replayGate.resolve());
+    const { platform, room, events, inbound, fetch, late, cancelled } = await lateReplyWaitingOnMentions(async ({ tools }) => {
+      await replayGate.promise;
+      await tools.sendMessage("answered", ["@owner"]);
+    });
+
+    platform.control("stop", ROOM);
+    const stoppedAt = events.entries.length;
+    await events.next((event) => event.type === "turn.stopped");
+    cancelled.resolve();
+    platform.control("play", ROOM);
+    await events.next((event) => event.type === "turn.started", stoppedAt);
+    fetch.release();
+    await late.promise;
+    replayGate.resolve();
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
+  });
 });
 
 describe("a room left while work in it still needs its journal", () => {
@@ -1320,9 +1423,10 @@ describe("a start that cannot or will not journal", () => {
   it("stops cleanly when a room's journal fails to close", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
-    const { runtime } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
+    const answers: Handler = async ({ tools }) => {
       await tools.sendMessage("answered", ["@owner"]);
-    });
+    };
+    const { runtime } = await startProcess(platform, tmpRoot(), answers);
     expect(await room.outcome(await room.say(OWNER, `${MENTION} hello`))).toBe("processed");
     // Really closes, then reports a failure, so no handle outlives the test.
     const realClose = RoomJournal.prototype.close;
@@ -1334,7 +1438,10 @@ describe("a start that cannot or will not journal", () => {
 
     expect(await runtime.stop()).toBe(true);
     expect(close).toHaveBeenCalledTimes(1);
-    expect(runtime.state.status).toBe("stopped");
+    expect(platform.link.transport.isConnected()).toBe(false);
+    // The journal's ownership was released: the next start takes it and answers.
+    await runtime.start(new GenericAdapter(answers));
+    expect(await room.outcome(await room.say(OWNER, `${MENTION} again`))).toBe("processed");
   });
 });
 
@@ -1365,14 +1472,9 @@ describe("the turn journal against a failed start and a stale generation", () =>
     const superseded = runtime.start(new GenericAdapter(answers)).catch((error: unknown) => error);
     await ownershipTaken.promise;
     // The stop takes over while the start's activation holds the ownership: it
-    // does not report the journal free while that activation still holds it.
-    let stopped = false;
-    const stopping = runtime.stop().then((graceful) => {
-      stopped = true;
-      return graceful;
-    });
-    await flushMicrotasks();
-    expect(stopped).toBe(false);
+    // does not release the journal while that activation still holds it.
+    const stopping = runtime.stop();
+    await expect(new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);
     activateHeld.resolve();
     expect(await stopping).toBe(true);
 
@@ -1417,7 +1519,7 @@ describe("the turn journal against a failed start and a stale generation", () =>
     // stop times out and emits room.stopped while ownership still drains.
     await events.next((event) => event.type === "room.stopped" && event.roomId === ROOM);
     expect(runtime.state.status).toBe("stopping");
-    await expect(runtime.start(new GenericAdapter(async () => undefined))).rejects.toBeInstanceOf(Error);
+    await expect(runtime.start(new GenericAdapter(async () => undefined))).rejects.toBeInstanceOf(RuntimeStateError);
     await expect(new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY)).rejects.toBeInstanceOf(JournalOwnershipError);
 
     hold.release();
@@ -1500,6 +1602,10 @@ describe("a turn journal that fails", () => {
     // nothing is delivered unjournaled.
     expect(await room.outcome(inbound)).toBe("failed");
     expect(handled).toEqual([]);
+    // Band learns the kind of failure, never the local journal path it names.
+    expect(room.failureLabels(inbound)).toEqual([
+      "The room's turn journal will not open (corrupt), so the turn failed rather than answer unjournaled",
+    ]);
   });
 
   it("gives a blocked first turn's preparation back, so the room's next dispatch still bootstraps the session", async () => {

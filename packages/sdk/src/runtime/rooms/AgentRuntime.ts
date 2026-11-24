@@ -14,6 +14,7 @@ import {
   TerminalSignal,
   isLegalRuntimeTransition,
   startWithGate,
+  toLifecycleError,
 } from "../lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { RoomPresence } from "./RoomPresence";
@@ -51,6 +52,9 @@ interface AgentRuntimeOptions {
   logger?: Logger;
 }
 
+/** How a stop or quiesce went: whether the rooms stopped in time, and what failed. */
+type StopOutcome = { graceful: boolean; error: Error | null };
+
 export class AgentRuntime {
   public readonly presence: RoomPresence;
   private readonly link: BandLink;
@@ -82,7 +86,9 @@ export class AgentRuntime {
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private readonly startGate = new SingleFlight<void>();
-  private readonly stopGate = new SingleFlight<{ graceful: boolean; error: unknown }>();
+  private readonly stopGate = new SingleFlight<StopOutcome>();
+  /** Apart from stopGate: a stop after or during a quiesce still owes the disconnect. */
+  private readonly quiesceGate = new SingleFlight<StopOutcome>();
   /** Set while a stop waits on a start, so rooms joined meanwhile stop on its terms too. */
   private stopMidStart: { readonly timeoutMs?: number } | null = null;
   /** Cancels the in-flight start's link connect, which can retry for minutes during an outage. */
@@ -207,7 +213,12 @@ export class AgentRuntime {
     await startWithGate({
       lifecycle: this.lifecycle,
       startGate: this.startGate,
-      stopGate: this.stopGate,
+      stopGate: {
+        reset: () => {
+          this.stopGate.reset();
+          this.quiesceGate.reset();
+        },
+      },
       stoppedSignal: this.stoppedSignal,
       ownerName: "AgentRuntime",
       runStart: () => this.runStart(),
@@ -265,7 +276,7 @@ export class AgentRuntime {
   public async stop(timeoutMs?: number): Promise<boolean> {
     const outcome = await this.stopGate.run(() => this.runTeardown(timeoutMs));
     if (outcome.error !== null) {
-      throw outcome.error instanceof Error ? outcome.error : new Error(`stop failed: ${String(outcome.error)}`, { cause: outcome.error });
+      throw outcome.error;
     }
     return outcome.graceful;
   }
@@ -280,8 +291,8 @@ export class AgentRuntime {
    * nothing more from the connection can call {@link stop} instead, which is
    * this half plus the other.
    */
-  public async quiesce(timeoutMs?: number): Promise<{ graceful: boolean; error: unknown }> {
-    return await this.stopGate.run(() => this.runQuiesce(timeoutMs));
+  public async quiesce(timeoutMs?: number): Promise<StopOutcome> {
+    return await this.quiesceGate.run(() => this.runQuiesce(timeoutMs));
   }
 
   /**
@@ -309,20 +320,20 @@ export class AgentRuntime {
     }
   }
 
-  private async runTeardown(timeoutMs?: number): Promise<{ graceful: boolean; error: unknown }> {
-    const outcome = await this.runQuiesce(timeoutMs);
+  private async runTeardown(timeoutMs?: number): Promise<StopOutcome> {
+    const outcome = await this.quiesce(timeoutMs);
     try {
       await this.finishStop();
     } catch (error) {
       // Never leave the runtime latched in "stopping": a teardown that blew up
       // must still be re-attemptable and must not block a later start().
       this.markFailed(error, "stop-failed");
-      return { graceful: outcome.graceful, error };
+      return { graceful: outcome.graceful, error: toLifecycleError(error) };
     }
     return outcome;
   }
 
-  private async runQuiesce(timeoutMs?: number): Promise<{ graceful: boolean; error: unknown }> {
+  private async runQuiesce(timeoutMs?: number): Promise<StopOutcome> {
     // A stop landing mid-start must not report a teardown of resources that
     // start() has not created yet, so wait for it to settle first — which is
     // also what `RoomPresence` does internally, since its own start/stop pair
@@ -397,7 +408,7 @@ export class AgentRuntime {
     if (errors.length > 0) {
       const failure = combineTeardownErrors(errors, "AgentRuntime failed to quiesce cleanly");
       this.markFailed(failure, "stop-failed");
-      return { graceful, error: failure };
+      return { graceful, error: toLifecycleError(failure) };
     }
 
     return { graceful, error: fatalError };

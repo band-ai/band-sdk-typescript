@@ -113,6 +113,22 @@ describe("Message delivery in a Band room", () => {
     expect(session.room.messages.map(({ content }) => content)).toEqual(["again", "again"]);
   });
 
+  it("posts same-content replies in flight to two peers who share a display name", async () => {
+    const alex1 = { ...person("alex-1"), name: "Alex" };
+    const alex2 = { ...person("alex-2"), name: "Alex" };
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      await Promise.all([
+        tools.sendMessage("Thanks!", [{ id: alex1.id, name: "Alex" }]),
+        tools.sendMessage("Thanks!", [{ id: alex2.id, name: "Alex" }]),
+      ]);
+    });
+    await using session = await BandPlatform.join(adapter, [alex1, alex2]);
+
+    await session.room.outcome(await session.room.say(alex1.id, ASK));
+
+    expect(session.room.messages.map(({ mentions }) => mentions)).toEqual([[alex1.id], [alex2.id]]);
+  });
+
   it("credits a fresh session's own posts in history, so none is taken for its new replies", async () => {
     const rest = new RecordingRestApi([ADA]);
     const replying = () => new GenericAdapter(async ({ tools }) => {

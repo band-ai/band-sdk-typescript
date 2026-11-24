@@ -139,7 +139,7 @@ export default defineConfig({
   outDir: "dist",
   ...inlinedSdkBundleOptions,
   // Keep openclaw (and its plugin-sdk subpaths) external — host provides it
-  external: ["openclaw", /^openclaw\//, "node:sqlite", "sqlite"],
+  external: ["openclaw", /^openclaw\//],
   // Bundle the SDK and its dependencies into the plugin
   noExternal: ["phoenix", "@band-ai/sdk", "@band-ai/rest-client", "zod", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
