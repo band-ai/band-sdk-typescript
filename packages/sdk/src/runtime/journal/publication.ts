@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ToolOperationResult } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
-import { DeliveryFailedError, DeliveryUnknownError, isDeliveryUnknownOutput, unknownDeliveryText } from "../../core/deliveryFailedError";
+import { DeliveryUnknownError, isDeliveryUnknownOutput, unknownDeliveryText } from "../../core/deliveryFailedError";
 import { RoomExecutionStoppedError, statusCodeOf } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
@@ -15,6 +15,7 @@ import {
   storedSendResult,
   validateOperationId,
   OperationConflictError,
+  OperationRefusedError,
   OperationUnsupportedError,
 } from "./operations";
 import type { OperationKind } from "./records";
@@ -263,7 +264,7 @@ export class PublicationEngine {
             UNKNOWN_OPERATION_MESSAGES[input.kind],
           );
         case "refused":
-          throw new DeliveryFailedError(check.reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`);
+          throw new OperationRefusedError(check.reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`);
         case "settled": {
           // The stored result stands first: a send whose authority no longer
           // validates throws before the caller's inbound is settled for it,
@@ -336,7 +337,7 @@ export class PublicationEngine {
         return await this.standUnknown(journal, input.kind, operationId, error, { cause: noVerdict() });
       }
       if (committedNothing(error)) {
-        return await this.release(journal, operationId, new DeliveryFailedError(publicRefusalText(error)), error);
+        return await this.release(journal, operationId, new OperationRefusedError(publicRefusalText(error)), error);
       }
       return await this.refuse(journal, operationId, publicRefusalText(error), { failure: error });
     }
@@ -424,7 +425,7 @@ export class PublicationEngine {
 
   /**
    * Records a definite refusal and throws `error`, by default the classified
-   * text's `DeliveryFailedError`. When the record fails, its error is what the
+   * text's `OperationRefusedError`. When the record fails, its error is what the
    * caller sees, as for a reply's refusal. The refusal is logged by its
    * classified text and the class of the `failure` behind it, never the raw
    * failure, which can carry a body.
@@ -433,7 +434,7 @@ export class PublicationEngine {
     journal: RoomJournal,
     operationId: string,
     reasonText: string,
-    { error = new DeliveryFailedError(reasonText), failure }: { error?: Error; failure?: unknown } = {},
+    { error = new OperationRefusedError(reasonText), failure }: { error?: Error; failure?: unknown } = {},
   ): Promise<never> {
     try {
       await journal.refuseOperation(operationId, reasonText);

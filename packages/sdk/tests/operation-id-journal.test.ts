@@ -984,6 +984,31 @@ describe("the operation index a restarted file rebuilds", () => {
     await reopened.close();
   });
 });
+describe("a keyed refusal through the tool door", () => {
+  it("answers a keyed refusal, its replay, and a conflict as routine refusals, never logged as unexpected", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const logger = makeLoggerSpy();
+    const rest = {
+      listChatParticipants: async () => [{ id: "user-1", name: "Owner", type: "User", handle: "owner" }],
+      createChatMessageOnce: async () => {
+        throw bandRefused();
+      },
+      hasOnceCapability: () => true,
+    } as never;
+    const tools = new AgentTools({ roomId: ROOM, rest, publication: engineFor(generation, ROOM, logger), inboundMessageId: () => "msg-1", logger });
+    const send = () => tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: "hello", mentions: ["@owner"], operation_id: ID });
+    const refused = { ok: false, errorType: "ToolExecutionError", message: expect.stringContaining("the platform refused the post (HTTP 422)") };
+    expect(await send()).toMatchObject(refused);
+    expect(await send()).toMatchObject(refused);
+    expect(await tools.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "fyi", operation_id: ID })).toMatchObject({
+      ok: false,
+      message: new OperationConflictError(ID).message,
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+    await generation.close();
+  });
+});
+
 describe("where operation_id is advertised", () => {
   const advertised = (schemas: Array<{ name?: string; input_schema?: { properties: Record<string, unknown> } }>) =>
     schemas.filter((schema) => schema.input_schema !== undefined && "operation_id" in schema.input_schema.properties).map((schema) => schema.name).sort();

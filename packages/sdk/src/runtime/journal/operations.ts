@@ -1,5 +1,6 @@
 import type { MentionReference } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
+import { DeliveryFailedError } from "../../core/deliveryFailedError";
 import { OPERATION_ID_MAX_BYTES } from "../../contracts/toolSchemas";
 import { sha256Hex, type OperationKind } from "./records";
 
@@ -34,6 +35,13 @@ export class OperationConflictError extends Error {
     this.name = "OperationConflictError";
   }
 }
+
+/**
+ * A keyed operation's definite failure under its classified text: a refusal
+ * the journal stands, or a send it released. It reads as the
+ * `DeliveryFailedError` it is; the class only marks it a routine refusal.
+ */
+export class OperationRefusedError extends DeliveryFailedError {}
 
 /** A keyed send the journal cannot durably stand: no journal, no inbound to settle, no once transport, or inputs the record needs. */
 export class OperationUnsupportedError extends Error {

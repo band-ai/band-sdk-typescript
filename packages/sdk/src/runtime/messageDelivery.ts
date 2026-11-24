@@ -25,6 +25,17 @@ import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
 import { normalizeMentionHandle } from "./formatters";
 import { JournalPublicationError } from "./journal/errors";
+import { AdmissionGuardError } from "./journal/journalTools";
+import { OperationConflictError, OperationIdError, OperationRefusedError, OperationUnsupportedError } from "./journal/operations";
+
+/** A keyed call's routine refusal: the journal already logged any it stored, so it is no unexpected break. */
+function isKeyedRefusal(error: unknown): error is Error {
+  return error instanceof OperationRefusedError
+    || error instanceof OperationConflictError
+    || error instanceof OperationUnsupportedError
+    || error instanceof OperationIdError
+    || error instanceof AdmissionGuardError;
+}
 
 /** The delivery of the turn whose tool call is running, in that call's async scope. */
 const deliveryScope = new AsyncLocalStorage<MessageDelivery>();
@@ -76,6 +87,10 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
     if (error.kind === "fenced") logger?.debug("the room's journal refused a tool call", context);
     else logger?.warn("the room's journal refused a tool call", context);
     return toolExecutionError(toolName, error.message, { kind: error.kind });
+  }
+  if (isKeyedRefusal(error)) {
+    logger?.debug("a keyed operation call was refused", { toolName, errorClass: error.name });
+    return toolExecutionError(toolName, asErrorMessage(error));
   }
   logger?.error("unexpected tool execution error", { toolName, error });
   return toolExecutionError(toolName, asErrorMessage(error));
