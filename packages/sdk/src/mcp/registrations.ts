@@ -161,6 +161,7 @@ function dispatchKeyed(
   }
   const { origin } = admission;
   if (origin.roomId !== undefined && roomIdOf(roomIdArg) !== origin.roomId) {
+    admission.logger.debug("a keyed call naming another room than its admission was refused", { roomId: origin.roomId });
     return Promise.resolve(errorResult(wrongRoomResult(roomIdArg, origin.roomId)));
   }
   return admitted(origin.tools);
@@ -311,28 +312,31 @@ export interface BridgeRegistrations {
   registrations: McpToolRegistration[];
   /** Absent unless the bridge serves operation ids: its keyed calls are then refused at admission. */
   originResolver: OriginResolver | undefined;
+  /** Binds host tools added later under the same room scope as `registrations`. */
+  bindAddedTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
 }
 
 /**
- * The registrations and origin resolver of a bridge over `tools`: room-scoped
- * for a resolver with `multiRoom`, else single-context. Admission and dispatch
- * agree on what is served: only a bridge built with `enableOperationIds`
- * resolves origins, consulting `admissionGuard` first.
+ * The bridge over `tools`, and the one owner of its room scope: room-scoped
+ * for a resolver unless `multiRoom` is false, else single-context. Only a
+ * bridge built with `enableOperationIds` resolves origins, consulting
+ * `admissionGuard` first.
  */
 export function buildBridgeRegistrations(
   tools: AdapterToolsProtocol | ToolResolver,
-  multiRoom: boolean,
+  multiRoom: boolean | undefined,
   options: BuildRegistrationsOptions & { admissionGuard?: () => boolean },
 ): BridgeRegistrations {
   const { admissionGuard, ...registrationOptions } = options;
-  const roomScoped = typeof tools === "function" && multiRoom;
-  const registrations = roomScoped
-    ? buildRoomScopedRegistrations(tools, registrationOptions)
-    : buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, registrationOptions);
   const resolver: ToolResolver = typeof tools === "function" ? tools : () => tools;
+  const roomScoped = typeof tools === "function" && multiRoom !== false;
+  const singleTools = typeof tools === "function" ? resolveSingleRoomTools(tools) : tools;
   return {
-    registrations,
+    registrations: roomScoped
+      ? buildRoomScopedRegistrations(resolver, registrationOptions)
+      : buildSingleContextRegistrations(singleTools, registrationOptions),
     originResolver: options.enableOperationIds ? buildOriginResolver(resolver, roomScoped, admissionGuard) : undefined,
+    bindAddedTools: (hostTools) => (roomScoped ? scopeHostTools(hostTools, resolver) : bindHostTools(hostTools, singleTools)),
   };
 }
 

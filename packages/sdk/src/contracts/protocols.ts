@@ -374,13 +374,18 @@ export interface AdapterToolsProtocol
    * outcome) or had a delivery whose outcome stands unknown. A probe, like `unknownDeliveryFenced`.
    */
   readonly relayProhibitedFenced?: () => boolean;
+  /**
+   * When the runtime journals replies: commits this turn to keyed delivery, so the MCP admission
+   * decorator fences the turn before the framework validates a keyed call. Bookkeeping, not an acting call.
+   */
+  readonly keyedAdmissionFence?: () => void;
   readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
 /** Members read as values, never called as acting tools: stop and turn-scope wrappers pass them through. */
-const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced", "relayProhibitedFenced"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
+const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced", "relayProhibitedFenced", "keyedAdmissionFence"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
 
 export type NonActingToolKey = (typeof NON_ACTING_TOOL_MEMBERS)[number];
 

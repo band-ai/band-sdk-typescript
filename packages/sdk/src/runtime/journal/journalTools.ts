@@ -23,12 +23,6 @@ function carriesOperationId(toolName: BandToolName, args: readonly unknown[]): b
   return KEYED_OPERATION_TOOL_NAMES.has(toolName) && carriesOperationIdArg(args[0]);
 }
 
-/**
- * The fence a turn's tools expose to the MCP admission decorator, which
- * fences the turn at the raw call, before the framework validates it.
- */
-export const KEYED_ADMISSION_FENCE = Symbol("band.keyedAdmissionFence");
-
 /** A keyed call whose admission could not be read: it is refused rather than dispatched unfenced. */
 export class AdmissionGuardError extends Error {
   public constructor() {
@@ -41,11 +35,11 @@ export class AdmissionGuardError extends Error {
  * Fences the turn standing behind `tools`, and answers whether the fence
  * stood; when it did not, the caller refuses the dispatch.
  */
-export function fenceTurnForKeyedAdmission(tools: unknown): boolean {
+export function fenceTurnForKeyedAdmission(tools: AdapterToolsProtocol): boolean {
   try {
-    const marker = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } } | undefined)?.[KEYED_ADMISSION_FENCE];
-    if (marker === undefined) return false;
-    marker.fence();
+    const fence = tools.keyedAdmissionFence;
+    if (fence === undefined) return false;
+    fence();
     return true;
   } catch {
     return false;
@@ -64,19 +58,11 @@ export function fenceTurnForKeyedAdmission(tools: unknown): boolean {
  * its own tools. A cut-short turn's calls are refused by the runtime's
  * `revokedOnStop` wrapper around this one.
  *
- * A canonical keyed call — a send or no-reply carrying an `operation_id`, on
- * the field's presence, valid or not — commits this wrapper's turn to keyed
- * delivery before any validation or capability check, whatever the call ends
- * up: the turn's closing text is never relayed as an unkeyed replacement on
- * top of it. A definite refusal blocks that relay and claims no possible
- * remote delivery; only a delivery that stands unknown does.
- *
- * The durable intent and settlement themselves live in the runtime's
- * publication engine, which the context's tools already carry; this wrapper
- * only owns the turn's own behavior around them. The turn's fences stand on
- * this wrapper alone — no room-level side channel — so a call made through a
- * completed turn's tools fences that turn and never a successor, and a call
- * made with no turn standing fences nothing.
+ * A keyed call (an `operation_id` present, valid or not) commits the turn to
+ * keyed delivery before any validation: its closing text is never relayed as
+ * an unkeyed replacement. Only a delivery that stands unknown claims the
+ * reply may be in the room. The fences live on this wrapper alone, so a late
+ * call through a finished turn's tools never fences a successor.
  */
 export function journalingTools<T extends AdapterToolsProtocol>(
   tools: T,
@@ -93,6 +79,11 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   // A turn's replies post one at a time, so each sees the fence the one before
   // it may have raised rather than post beside a reply still in doubt.
   const replies = new Serializer();
+  // Logged once: an operator can tell the turn's closing text was withheld, not absent.
+  const fenceKeyed = (context: { toolName?: string }): void => {
+    if (!keyedFenced) logger?.debug("a keyed call commits this turn to keyed delivery; its closing text will not be relayed", context);
+    keyedFenced = true;
+  };
 
   const observe = (call: () => Promise<unknown>): Promise<unknown> => call().then(
     (result) => {
@@ -130,9 +121,7 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     } catch {
       return Promise.reject(new AdmissionGuardError());
     }
-    if (admitted) {
-      keyedFenced = true;
-    }
+    if (admitted) fenceKeyed({ toolName });
     const effect = BAND_TOOL_EFFECTS[toolName];
     if (effect === "reply") return reply(call);
     return effect === "decline" ? observe(call) : call();
@@ -142,6 +131,6 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     ...overrides,
     unknownDeliveryFenced: () => unknownFenced,
     relayProhibitedFenced: () => keyedFenced || unknownFenced,
-    [KEYED_ADMISSION_FENCE]: { fence: () => { keyedFenced = true; } },
-  } as unknown as Partial<T>);
+    keyedAdmissionFence: () => fenceKeyed({}),
+  } as Partial<T>);
 }

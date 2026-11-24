@@ -10,16 +10,18 @@ import { sha256Hex, type OperationKind } from "./records";
 /** The fingerprint layout's version: a layout change must not collide with this one. */
 const FINGERPRINT_VERSION = 1;
 
+type OperationIdIssue = "empty" | "too-long" | "not-a-string";
+
+const OPERATION_ID_MESSAGES = {
+  empty: "The operation id must not be empty: an id names the operation a retry must be able to find, and no name names anything.",
+  "too-long": `The operation id is longer than ${OPERATION_ID_MAX_BYTES} UTF-8 bytes; shorter ids are accepted, longer ones are not.`,
+  "not-a-string": "The operation id must be a string: the id is opaque, and the journal does not interpret anything else as one.",
+} as const satisfies Record<OperationIdIssue, string>;
+
 /** A supplied operation id is not one the journal can stand behind. */
 export class OperationIdError extends Error {
-  public constructor(public readonly issue: "empty" | "too-long" | "not-a-string") {
-    const message =
-      issue === "empty"
-        ? "The operation id must not be empty: an id names the operation a retry must be able to find, and no name names anything."
-        : issue === "too-long"
-          ? `The operation id is longer than ${OPERATION_ID_MAX_BYTES} UTF-8 bytes; shorter ids are accepted, longer ones are not.`
-          : "The operation id must be a string: the id is opaque, and the journal does not interpret anything else as one.";
-    super(message);
+  public constructor(public readonly issue: OperationIdIssue) {
+    super(OPERATION_ID_MESSAGES[issue]);
     this.name = "OperationIdError";
   }
 }
@@ -46,18 +48,23 @@ export class OperationConflictError extends Error {
  */
 export class OperationRefusedError extends DeliveryFailedError {}
 
+type OperationUnsupportedIssue = "no-journal" | "no-inbound" | "no-once-transport" | "invalid-input";
+
+const OPERATION_UNSUPPORTED_MESSAGES = {
+  "no-journal":
+    "The operation id is accepted, but this room has no turn journal standing behind it, so the operation cannot be recorded durably and is refused before any post. Configure the room's journal to use operation ids.",
+  "no-inbound":
+    "The operation id is accepted, but this turn answers no inbound message the operation could settle (a synthetic turn, such as a contact hub event), so it is refused before any post.",
+  "no-once-transport":
+    "The operation id is accepted, but this room's transport cannot make a single-attempt, redirect-forbidden post, so the operation is refused before any post rather than delivered over the retrying legacy path.",
+  "invalid-input":
+    "The call is missing a field the operation's record needs (a send's content or a mention), so it is refused before any record or post: the operation id was not the problem, the call is not one the journal can stand.",
+} as const satisfies Record<OperationUnsupportedIssue, string>;
+
 /** A keyed send the journal cannot durably stand: no journal, no inbound to settle, no once transport, or inputs the record needs. */
 export class OperationUnsupportedError extends Error {
-  public constructor(public readonly issue: "no-journal" | "no-inbound" | "no-once-transport" | "invalid-input") {
-    const message =
-      issue === "no-journal"
-        ? "The operation id is accepted, but this room has no turn journal standing behind it, so the operation cannot be recorded durably and is refused before any post. Configure the room's journal to use operation ids."
-        : issue === "no-inbound"
-          ? "The operation id is accepted, but this turn answers no inbound message the operation could settle (a synthetic turn, such as a contact hub event), so it is refused before any post."
-        : issue === "no-once-transport"
-          ? "The operation id is accepted, but this room's transport cannot make a single-attempt, redirect-forbidden post, so the operation is refused before any post rather than delivered over the retrying legacy path."
-          : "The call is missing a field the operation's record needs (a send's content or a mention), so it is refused before any record or post: the operation id was not the problem, the call is not one the journal can stand.";
-    super(message);
+  public constructor(public readonly issue: OperationUnsupportedIssue) {
+    super(OPERATION_UNSUPPORTED_MESSAGES[issue]);
     this.name = "OperationUnsupportedError";
   }
 }
@@ -84,15 +91,13 @@ export function mentionInputsAsStrings(mentions: readonly (string | MentionRefer
 
 /**
  * The mention inputs, as the fingerprint carries them: each trimmed, the
- * blanks dropped, the rest sorted, so two calls that mean the same mentions
- * in any order bind to the same operation, and a call that names a different
- * set does not.
+ * blanks and repeats dropped, the rest sorted, so two calls that mean the
+ * same mentions bind to the same operation — the roster posts a repeated
+ * mention once — and a call that names a different set does not.
  */
 function canonicalMentions(mentions: readonly string[]): string[] {
-  return [...mentions]
-    .map((mention) => mention.trim())
-    .filter((mention) => mention.length > 0)
-    .sort();
+  const trimmed = mentions.map((mention) => mention.trim()).filter((mention) => mention.length > 0);
+  return [...new Set(trimmed)].sort();
 }
 
 /**

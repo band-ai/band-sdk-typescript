@@ -65,7 +65,7 @@ export interface BandSdkMcpServer {
 export function createBandSdkMcpServer(
   options: CreateBandSdkMcpServerOptions,
 ): BandSdkMcpServer {
-  const { registrations, originResolver } = buildBridgeRegistrations(options.getToolsForRoom, options.multiRoom !== false, {
+  const { registrations, originResolver } = buildBridgeRegistrations(options.getToolsForRoom, options.multiRoom, {
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
     enableOperationIds: options.enableOperationIds,

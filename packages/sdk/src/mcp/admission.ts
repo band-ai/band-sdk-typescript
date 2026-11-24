@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
 import { asNonEmptyString, asOptionalRecord } from "../adapters/shared/coercion";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
@@ -9,6 +9,7 @@ import { errorClassOf } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import { KEYED_OPERATION_TOOL_NAMES, ROOM_ID_ARG, carriesOperationIdArg } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
+import { ForwardingTransport } from "./forwardingTransport";
 
 /** The actual tools of the turn a keyed call was admitted on, and the room it names. */
 export interface AdmissionOrigin {
@@ -28,7 +29,7 @@ export type OriginResolver = (roomId: string) => AdmissionOrigin | undefined;
  * What the transport recorded for a keyed call running in this async scope:
  * the origin it was pinned and fenced on, or the refusal its dispatch earns.
  */
-export type Admission = { origin: AdmissionOrigin; refusal?: undefined } | { refusal: string };
+export type Admission = { origin: AdmissionOrigin; logger: Logger; refusal?: undefined } | { refusal: string };
 
 const admissionStorage = new AsyncLocalStorage<Admission>();
 
@@ -55,79 +56,29 @@ export const KEYED_ADMISSION_REFUSALS = {
 } as const;
 
 /**
- * The one decorator every Band MCP bridge installs between its client-facing
- * transport and the framework's dispatch: HTTP, SSE, stdio, and the in-process
- * SDK server. A `tools/call` that carries an `operation_id` is admitted here,
- * before the framework's schema, capability, or business validation — the
- * turn it stands on is fenced, the origin's actual tools are pinned, and the
- * call is handed on running in that origin's admission scope. Anything that is
- * not a keyed tool call passes through untouched, and the full transport
- * surface — callbacks, sends, session, protocol, cancellation, cleanup — is
- * forwarded unchanged.
+ * Installed by every Band MCP bridge in front of the framework's dispatch: a
+ * keyed `tools/call` is admitted before the framework validates it — its turn
+ * fenced, its origin's tools pinned — and dispatched in that admission's scope.
  */
-export class AdmissionTransport implements Transport {
-  public onclose?: () => void;
-  public onerror?: (error: Error) => void;
-  public onmessage?: Transport["onmessage"];
-  private readonly inner: Transport;
+export class AdmissionTransport extends ForwardingTransport {
   private readonly originResolver: OriginResolver | undefined;
   private readonly logger: Logger;
 
   public constructor(inner: Transport, originResolver?: OriginResolver, logger?: Logger) {
-    this.inner = inner;
+    super(inner);
     this.originResolver = originResolver;
     this.logger = resolveLogger(logger);
-    if (typeof inner.setProtocolVersion === "function") {
-      const innerSet = inner.setProtocolVersion;
-      this.setProtocolVersion = (version) => innerSet.call(inner, version);
+  }
+
+  protected override receive(message: JSONRPCMessage, extra?: MessageExtraInfo): void {
+    const admission = this.admit(message);
+    if (admission === undefined) {
+      super.receive(message, extra);
+      return;
     }
-  }
-
-  /** `Protocol.connect` sets this transport's handlers just before calling it. */
-  public start(): Promise<void> {
-    const outer = this.onmessage;
-    this.inner.onmessage = (message, extra) => {
-      const admission = this.admit(message);
-      if (admission === undefined) {
-        outer?.(message, extra);
-        return;
-      }
-      // The keyed call's execution, however far it runs and whatever the
-      // framework answers, stays in the admission it was given.
-      admissionStorage.run(admission, () => outer?.(message, extra));
-    };
-    // Compose, never replace: a caller that set handlers on the inner
-    // transport before the decorator stood still gets them called.
-    const innerClose = this.inner.onclose;
-    this.inner.onclose = () => {
-      innerClose?.();
-      this.onclose?.();
-    };
-    const innerError = this.inner.onerror;
-    this.inner.onerror = (error) => {
-      innerError?.(error);
-      this.onerror?.(error);
-    };
-    return this.inner.start();
-  }
-
-  /** The inner transport's session, so a framework that tracks it keeps tracking the real one. */
-  public get sessionId(): string | undefined {
-    return this.inner.sessionId;
-  }
-
-  /**
-   * The framework's protocol version, set on the inner transport it actually
-   * speaks on; present only when the inner supports it.
-   */
-  public setProtocolVersion?: (version: string) => void;
-
-  public async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
-    await this.inner.send(message, options);
-  }
-
-  public close(): Promise<void> {
-    return this.inner.close();
+    // The keyed call's execution, however far it runs and whatever the
+    // framework answers, stays in the admission it was given.
+    admissionStorage.run(admission, () => super.receive(message, extra));
   }
 
   /**
@@ -166,16 +117,12 @@ export class AdmissionTransport implements Transport {
     if (origin === undefined) {
       return this.refuse(name, "noOrigin");
     }
-    return fenceTurnForKeyedAdmission(origin.tools) ? { origin } : this.refuse(name, "notFenced");
+    return fenceTurnForKeyedAdmission(origin.tools) ? { origin, logger: this.logger } : this.refuse(name, "notFenced");
   }
 
   private refuse(tool: string, reason: keyof typeof KEYED_ADMISSION_REFUSALS): Admission {
     this.logger.debug("a keyed call was refused at admission", { tool, reason });
     return { refusal: KEYED_ADMISSION_REFUSALS[reason] };
-  }
-
-  public get innerTransport(): Transport {
-    return this.inner;
   }
 }
 

@@ -2,11 +2,12 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { BandError } from "@band-ai/rest-client";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { NoopLogger } from "../src/core/logger";
 import type { ToolOperationResult } from "../src/contracts/dtos";
 import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
+import type { OperationCheck } from "../src/runtime/journal/RoomJournal";
 import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
   OperationConflictError,
@@ -142,7 +143,8 @@ describe("a keyed send's outcomes", () => {
   });
 
   it("lets a same-id call join the in-flight operation and hear its outcome", async () => {
-    const { generation } = await generationIn(tmpRoot());
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
     const engine = engineFor(generation);
     const post = heldPost();
     const first = engine.publishOperation({
@@ -152,7 +154,16 @@ describe("a keyed send's outcomes", () => {
       messageId: "msg-1",
       prepare: sendPreparation(post.post),
     });
-    // The second call arrives while the first's post is still out.
+    // The second call arrives while the first's post is held out.
+    await post.started;
+    const room = await openRoom(generation, ROOM);
+    const check = room.checkAndReserveOperation.bind(room);
+    const checked = Promise.withResolvers<OperationCheck>();
+    vi.spyOn(room, "checkAndReserveOperation").mockImplementationOnce((input) => {
+      const found = check(input);
+      checked.resolve(found);
+      return found;
+    });
     const second = engine.publishOperation({
       operationId: ID,
       kind: "send",
@@ -162,11 +173,15 @@ describe("a keyed send's outcomes", () => {
         throw new Error("a joiner must never run its own post");
       }),
     });
+    expect((await checked.promise).status).toBe("inflight");
+    // A probe queued behind any write the joiner made: while the post is held,
+    // nothing is settled for either caller.
+    await check({ operationId: ID, fingerprint: operationFingerprint({ kind: "send", content: "hello" }), kind: "send", messageId: "msg-2" });
+    expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients"]);
     post.resolve({ id: "posted-1" });
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toMatchObject({ id: "posted-1" });
     expect(secondResult).toMatchObject({ id: "posted-1" });
-    const room = await openRoom(generation, ROOM);
     // One operation, one post: both callers' inbounds stand answered.
     expect(room.operation(ID)?.outcome).toBe("settled");
     expect(room.answered("msg-1")).toBe(true);
@@ -241,6 +256,33 @@ describe("a keyed send's outcomes", () => {
     expect(room.operation(ID)?.outcome).toBe("settled");
     await generation.close();
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.settled", "turn.done"]);
+  });
+
+  it("replays a same-id retry that drops a repeated mention: the roster posts both as one", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const engine = engineFor(generation);
+    const first = await engine.publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      mentions: ["@bob", "@bob"],
+      messageId: "msg-1",
+      prepare: sendPreparation(async () => ({ id: "posted-1" })),
+    });
+    const retry = await engine.publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      mentions: ["@bob"],
+      messageId: "msg-2",
+      prepare: sendPreparation(async () => {
+        throw new Error("a replay must never post");
+      }),
+    });
+    expect(retry).toEqual(first);
+    const room = await openRoom(generation, ROOM);
+    expect(room.answered("msg-2")).toBe(true);
+    await generation.close();
   });
 
   it("stands two ids for the same content apart: each posts, each settles", async () => {
@@ -555,7 +597,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
     });
     expect(check.status).toBe("unknown");
     expect(await reopened.recoverUnresolved()).toEqual([
-      { messageId: "msg-1", publicationId: "", operationId: ID, outcome: "unknown", at: expect.any(Number) },
+      { kind: "operation", messageId: "msg-1", operationId: ID, outcome: "unknown", at: expect.any(Number) },
     ]);
     await reopened.close();
   });
@@ -1002,7 +1044,7 @@ describe("the operation index a restarted file rebuilds", () => {
     const reopened = await roomJournalIn(dir);
     // The possibly-posted operation stands unknown, announced once with its id.
     const found = await reopened.recoverUnresolved();
-    expect(found).toEqual([{ messageId: "msg-1", publicationId: "", operationId: ID, outcome: "unknown", at: expect.any(Number) }]);
+    expect(found).toEqual([{ kind: "operation", messageId: "msg-1", operationId: ID, outcome: "unknown", at: expect.any(Number) }]);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     // A same-id call to a possibly-posted operation joins the unknown and posts nothing.
     const retry = await reopened.checkAndReserveOperation({ operationId: ID, fingerprint, kind: "send", messageId: "msg-1" });
@@ -1156,7 +1198,7 @@ describe("a keyed operation whose own records fail to land", () => {
     generation.release(ROOM);
     await failAppendsOf("op.reported");
     const first = await (await openRoom(generation, ROOM)).recoverUnresolved();
-    expect(first.map(({ operationId }) => operationId)).toEqual([ID]);
+    expect(first).toEqual([expect.objectContaining({ kind: "operation", operationId: ID })]);
     // The room's next handle reopens a file that never recorded the announcement.
     generation.release(ROOM);
     expect(await (await openRoom(generation, ROOM)).recoverUnresolved()).toEqual([]);

@@ -215,20 +215,11 @@ export class PublicationEngine {
   }
 
   /**
-   * Runs a keyed operation through the journal: a known id is checked before
-   * any roster lookup or transport — a matching call joins the in-flight
-   * promise or replays the stored outcome, a different fingerprint is a
-   * conflict refused before any post, and an id the file left admitted with
-   * no outcome stands unknown on every retry. A new id is reserved durably
-   * before its transport runs: `send` resolves the first send's recipients,
-   * stores them, posts once, and settles the stored public result before it
-   * stands; `decline` runs the harness's decision and settles only when it
-   * stands. A send that provably committed nothing (cut short before its
-   * post, a 408/429, Band's stopped-room answer) is released, not refused:
-   * this call fails, and a later same-id call runs again. The caller's own
-   * inbound settles when the outcome stands for it; a refusal, release, or
-   * unknown settles nothing, and the writer that lost a write it owed stops
-   * admitting.
+   * Runs a keyed operation through the journal. A known id is checked before
+   * any roster lookup or transport: a same-fingerprint call joins or replays,
+   * any other is a conflict. A new id is reserved durably before its transport
+   * runs, and its outcome is durable before the caller hears it. A send that
+   * provably committed nothing is released, so a same-id retry runs again.
    */
   public async publishOperation(input: OperationInput): Promise<ToolOperationResult> {
     const operationId = validateOperationId(input.operationId);

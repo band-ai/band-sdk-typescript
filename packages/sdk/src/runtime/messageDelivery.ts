@@ -19,7 +19,7 @@ import {
   isDeliveryUnknownOutput,
 } from "../core/deliveryFailedError";
 import { asErrorMessage } from "../core/coercion";
-import { ValidationError } from "../core/errors";
+import { ValidationError, errorClassOf } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
@@ -89,7 +89,7 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
     return toolExecutionError(toolName, error.message, { kind: error.kind });
   }
   if (isKeyedRefusal(error)) {
-    logger?.debug("a keyed operation call was refused", { toolName, errorClass: error.name });
+    logger?.debug("a keyed operation call was refused", { toolName, ...errorClassOf(error) });
     return toolExecutionError(toolName, asErrorMessage(error));
   }
   logger?.error("unexpected tool execution error", { toolName, error });

@@ -1264,7 +1264,7 @@ export class PlatformRuntime implements AsyncDisposable {
         type: "delivery.unrecorded",
         roomId,
         messageId: publication.messageId,
-        ...(publication.operationId !== undefined ? { operationId: publication.operationId } : {}),
+        ...(publication.kind === "operation" ? { operationId: publication.operationId } : {}),
       });
     }
   }

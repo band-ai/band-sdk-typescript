@@ -13,6 +13,7 @@ import type { MentionInput } from "../contracts/dtos";
 import { isBlankEventContent } from "../contracts/chatEvents";
 import { isFailedToolOutput, type AdapterToolMethodName, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
 import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS, type ToolName } from "../contracts/toolSchemas";
+import { asOptionalRecord } from "./coercion";
 import { deliverReply } from "./deliveryFailedError";
 import { resolveLogger, type Logger } from "./logger";
 import { overrideTools } from "./overrideTools";
@@ -202,10 +203,7 @@ function sentContentOf(args: readonly unknown[]): unknown {
   if (typeof first === "string") {
     return first;
   }
-  if (typeof first === "object" && first !== null && "content" in first) {
-    return (first as { content?: unknown }).content;
-  }
-  return undefined;
+  return asOptionalRecord(first)?.content;
 }
 
 /** Wrappers for `tools`' Band tool calls that record each one that lands on `turn`, via {@link bandToolOverrides}. */

@@ -654,7 +654,7 @@ describe("publications", () => {
     await room.markUnknown("msg-1", publicationId);
     // Same-handle recover must still return the unknown so stop/play can emit delivery.unrecorded.
     expect(await room.recoverUnresolved()).toEqual([
-      { messageId: "msg-1", publicationId, outcome: "unknown", at: expect.any(Number) },
+      { kind: "reply", messageId: "msg-1", publicationId, outcome: "unknown", at: expect.any(Number) },
     ]);
     expect(await room.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);

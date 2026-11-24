@@ -46,12 +46,7 @@ function toolModelFromSpec(spec: ToolSpec) {
  */
 export const OPERATION_ID_MAX_BYTES = 256;
 
-/**
- * The optional operation id a send or a no-reply may carry, as the tool's
- * published input carries it: a string, advertised strictly; a supplied id of
- * any other type is refused by validation, and the call's admission fencing
- * still stands on the raw invocation.
- */
+/** Advertised as a string; any other type is refused by validation, after admission has fenced the raw call. */
 const OPERATION_ID_PROPERTY = {
   type: "string",
   description:

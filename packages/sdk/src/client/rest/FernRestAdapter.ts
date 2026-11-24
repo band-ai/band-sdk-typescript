@@ -578,7 +578,7 @@ export class FernRestAdapter implements RestApi {
     if (this.onceClientFactory === undefined) {
       throw new UnsupportedFeatureError("The once port has no SDK-controlled client: construct the adapter with an onceClientFactory so the post's redirects and retries are refused, or deliver without an operation id");
     }
-    const onceClient = this.onceClient ?? (this.onceClient = this.onceClientFactory());
+    const onceClient = (this.onceClient ??= this.onceClientFactory());
     const api = chatMessageEndpoint(onceClient, "The once client has no chat message creation endpoint");
     const body = chatMessageBody(message);
     const attemptOptions = { ...mergeOptions(options), ...NO_TRANSPORT_RETRIES };

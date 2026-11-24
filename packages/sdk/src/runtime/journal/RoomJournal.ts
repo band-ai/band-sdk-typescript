@@ -95,15 +95,13 @@ export interface RoomJournalOptions {
   markAnnounced?: (key: string) => void;
 }
 
-export interface UnresolvedPublication {
-  messageId: string;
-  publicationId: string;
-  /** The keyed operation whose delivery stands unresolved, when the authority is an operation, not a reply. */
-  operationId?: string;
-  /** `pending`: nothing says whether Band has it; `unknown`: whether it has it is uncertain. */
-  outcome: "pending" | "unknown";
-  at: number;
-}
+/**
+ * What a reopen found unresolved: a reply (`pending`: nothing says whether Band
+ * has it; `unknown`: whether it has it is uncertain) or a keyed operation.
+ */
+export type UnresolvedPublication =
+  | { kind: "reply"; messageId: string; publicationId: string; outcome: "pending" | "unknown"; at: number }
+  | { kind: "operation"; messageId: string; operationId: string; outcome: "unknown"; at: number };
 
 /** An operation's key in the generation's announced set: namespaced, so an operation id never stands for a publication id. */
 function operationAnnouncementKey(operationId: string): string {
@@ -112,7 +110,7 @@ function operationAnnouncementKey(operationId: string): string {
 
 /** The key the generation records an unresolved publication's announcement under. */
 function announcementKey(unresolved: UnresolvedPublication): string {
-  return unresolved.operationId === undefined ? unresolved.publicationId : operationAnnouncementKey(unresolved.operationId);
+  return unresolved.kind === "reply" ? unresolved.publicationId : operationAnnouncementKey(unresolved.operationId);
 }
 
 /** A record that says nothing was posted: it must land, or a reopen reads a post that never ran as one Band may hold. */
@@ -394,12 +392,12 @@ export class RoomJournal {
       // room stands announced: this handle reopens the same file after one of its
       // earlier handles closed, and the operator hears each recovery once.
       if (publication === undefined || publication.reported || this.announcedByGeneration(publicationId)) continue;
-      found.push({ messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
+      found.push({ kind: "reply", messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
     }
     // A keyed operation the file left unresolved stands unknown the same way, announced once per generation alike.
     for (const [operationId, info] of this.unresolvedOps) {
       if (this.operations.get(operationId)?.reported !== false || this.announcedByGeneration(operationAnnouncementKey(operationId))) continue;
-      found.push({ messageId: info.messageId, publicationId: "", operationId, outcome: "unknown", at: info.at });
+      found.push({ kind: "operation", messageId: info.messageId, operationId, outcome: "unknown", at: info.at });
     }
     if (found.length === 0) return found;
     this.logger.warn(
@@ -411,7 +409,7 @@ export class RoomJournal {
       // handle that reopens the file later does not announce it again.
       this.options.markAnnounced?.(announcementKey(publication));
       await this.recordBestEffort(
-        publication.operationId !== undefined
+        publication.kind === "operation"
           ? { t: "op.reported", messageId: publication.messageId, operationId: publication.operationId, at: this.now() }
           : { t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() },
       );
@@ -608,7 +606,6 @@ export class RoomJournal {
     this.assertAdmitting();
     const operation = this.requireOperation(operationId);
     await this.write({ t: "op.unknown", operationId, messageId: operation.messageId, at: this.now() });
-    this.operations.set(operationId, { ...this.requireOperation(operationId), reported: true });
   }
 
   /**
@@ -687,7 +684,9 @@ export class RoomJournal {
   }
 
   private commitOperation(record: OperationRecord): void {
-    this.operations.set(record.operationId, applyOperation(this.operations.get(record.operationId), record, this.file));
+    const operation = applyOperation(this.operations.get(record.operationId), record, this.file);
+    // A live unknown's caller hears it, so it stands reported in the same step it stands unresolved.
+    this.operations.set(record.operationId, record.t === "op.unknown" ? { ...operation, reported: true } : operation);
     switch (record.t) {
       case "op.settled":
       case "op.refused":

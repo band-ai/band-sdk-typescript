@@ -18,13 +18,7 @@ import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
 } from "./registrations";
-import {
-  bindHostTools,
-  buildBridgeRegistrations,
-  registerTools,
-  resolveSingleRoomTools,
-  scopeHostTools,
-} from "./registrations";
+import { buildBridgeRegistrations, registerTools } from "./registrations";
 import { ToolsListedTransport } from "./toolsListedTransport";
 import { AdmissionTransport, type OriginResolver } from "./admission";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
@@ -92,13 +86,10 @@ export class BandMcpStdioServer {
       // No tools means no origin a keyed call could be pinned to.
       this.originResolver = undefined;
     } else {
-      const multiRoom = typeof tools === "function" && (options.multiRoom ?? true);
-      const bridge = buildBridgeRegistrations(tools, multiRoom, { ...regOptions, admissionGuard: options.admissionGuard });
+      const bridge = buildBridgeRegistrations(tools, options.multiRoom, { ...regOptions, admissionGuard: options.admissionGuard });
       this.registrations = bridge.registrations;
       this.originResolver = bridge.originResolver;
-      const boundTools = typeof tools === "function" ? resolveSingleRoomTools(tools) : tools;
-      this.bindAddedTools = (hostTools) =>
-        typeof tools === "function" && multiRoom ? scopeHostTools(hostTools, tools) : bindHostTools(hostTools, boundTools);
+      this.bindAddedTools = bridge.bindAddedTools;
     }
   }
 

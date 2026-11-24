@@ -88,7 +88,7 @@ export class BandMcpServer {
     };
 
     const { tools } = options;
-    const bridge = buildBridgeRegistrations(tools, options.multiRoom ?? (typeof tools === "function"), {
+    const bridge = buildBridgeRegistrations(tools, options.multiRoom, {
       ...regOptions,
       admissionGuard: options.admissionGuard,
     });
