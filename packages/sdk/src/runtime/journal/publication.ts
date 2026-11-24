@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { ToolOperationResult } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
 import { DeliveryFailedError, DeliveryUnknownError, isDeliveryUnknownOutput, unknownDeliveryText } from "../../core/deliveryFailedError";
-import { statusCodeOf } from "../../core/errors";
+import { RoomExecutionStoppedError, statusCodeOf } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import { cutShort } from "../turnRevocation";
@@ -219,9 +219,12 @@ export class PublicationEngine {
    * before its transport runs: `send` resolves the first send's recipients,
    * stores them, posts once, and settles the stored public result before it
    * stands; `decline` runs the harness's decision and settles only when it
-   * stands. The caller's own inbound settles when the outcome stands for it;
-   * a refusal or unknown settles nothing, and the writer that lost a write it
-   * owed stops admitting.
+   * stands. A send that provably committed nothing (cut short before its
+   * post, a 408/429, Band's stopped-room answer) is released, not refused:
+   * this call fails, and a later same-id call runs again. The caller's own
+   * inbound settles when the outcome stands for it; a refusal, release, or
+   * unknown settles nothing, and the writer that lost a write it owed stops
+   * admitting.
    */
   public async publishOperation(input: OperationInput): Promise<ToolOperationResult> {
     const operationId = validateOperationId(input.operationId);
@@ -317,11 +320,13 @@ export class PublicationEngine {
     if (input.prepare === undefined) {
       return await this.refuse(journal, operationId, "the once transport the operation needs stands unavailable", { error: new OperationUnsupportedError("no-once-transport") });
     }
-    await this.refuseIfCutShort(journal, operationId, input.stopped);
+    // No recipients stand yet: the reservation is re-admissible as it is.
+    const blockedBefore = blockedPost(journal, input.stopped);
+    if (blockedBefore) throw blockedBefore;
     const preparation = await input.prepare();
     await journal.storeOperationRecipients(operationId, preparation.recipients);
-    if (!journal.accepting) throw poisonedJournalError();
-    await this.refuseIfCutShort(journal, operationId, input.stopped);
+    const blocked = blockedPost(journal, input.stopped);
+    if (blocked) return await this.release(journal, operationId, blocked);
 
     let result: ToolOperationResult;
     try {
@@ -329,6 +334,9 @@ export class PublicationEngine {
     } catch (error) {
       if (classifyFailedAttempt(error) === "uncertain") {
         return await this.standUnknown(journal, input.kind, operationId, error, { cause: noVerdict() });
+      }
+      if (committedNothing(error)) {
+        return await this.release(journal, operationId, new DeliveryFailedError(publicRefusalText(error)), error);
       }
       return await this.refuse(journal, operationId, publicRefusalText(error), { failure: error });
     }
@@ -442,15 +450,34 @@ export class PublicationEngine {
       roomId: journal.roomId,
       operationId,
       reason: reasonText,
-      ...(failure !== undefined ? { errorClass: failure instanceof Error ? failure.name : typeof failure } : {}),
+      ...errorClassOf(failure),
     });
     throw error;
   }
 
-  /** A turn cut short before the post: the operation is refused, never posted. */
-  private async refuseIfCutShort(journal: RoomJournal, operationId: string, stopped: AbortSignal | undefined): Promise<void> {
-    const cut = stopped && cutShort(stopped);
-    if (cut) await this.refuse(journal, operationId, "the turn was cut short before the post", { error: cut });
+  /**
+   * Releases a keyed send that provably committed nothing and throws `error`:
+   * this call fails, and a later same-id call is admitted again. Its record
+   * lands as a refusal's does, and its failure is what the caller sees.
+   */
+  private async release(journal: RoomJournal, operationId: string, error: Error, failure?: unknown): Promise<never> {
+    try {
+      await journal.releaseOperation(operationId);
+    } catch (recordError) {
+      this.logger.error("the operation committed nothing, and its release record failed to land", {
+        roomId: journal.roomId,
+        operationId,
+        error,
+        recordError,
+      });
+      throw recordError;
+    }
+    this.logger.warn("a keyed send committed nothing; the journal releases it, and a same-id call is admitted again", {
+      roomId: journal.roomId,
+      operationId,
+      ...errorClassOf(failure ?? error),
+    });
+    throw error;
   }
 
   /**
@@ -514,6 +541,28 @@ export class PublicationEngine {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled operation check: ${JSON.stringify(value)}`);
+}
+
+/** A failure's class, never its message, which can carry a body. */
+function errorClassOf(failure: unknown): { errorClass?: string } {
+  if (failure === undefined) return {};
+  return { errorClass: failure instanceof Error ? failure.name : typeof failure };
+}
+
+/** Why a keyed send's post must not run: its turn was cut short, or its journal stopped admitting. */
+function blockedPost(journal: RoomJournal, stopped: AbortSignal | undefined): Error | undefined {
+  const cut = stopped && cutShort(stopped);
+  if (cut) return cut;
+  return journal.accepting ? undefined : poisonedJournalError();
+}
+
+/**
+ * A failed post that provably committed nothing and is no refusal of the post
+ * itself: a 408/429 from infrastructure in front of Band, or Band's answer for
+ * a room it stopped the agent in, which a play lifts.
+ */
+function committedNothing(error: unknown): boolean {
+  return error instanceof RoomExecutionStoppedError || classifyFailedAttempt(error) === "notCommitted";
 }
 
 /** The stand-in cause of an attempt that ended without a verdict: the transport's raw error never travels. */

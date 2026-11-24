@@ -489,6 +489,44 @@ describe("a keyed operation's process boundary", () => {
   });
 });
 
+describe("a keyed send in a room Band stops", () => {
+  it("releases the send Band refused as stopped: after a play, the re-served inbound's same-id send posts once", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} answer me`);
+    const held = platform.rest.messageHolds.hold((roomId) => roomId === ROOM);
+    const outcomes: unknown[] = [];
+    const agent = await startProcess(platform, journalDir, async ({ tools, message }) => {
+      // A deterministic id: the answer to this inbound, however often it is served.
+      outcomes.push(await tools.executeToolCall("band_send_message", {
+        room_id: ROOM,
+        content: "the answer",
+        mentions: [OWNER],
+        operation_id: `reply-${message.id}`,
+      }));
+    });
+    await held.sending;
+    // The stop's push is missed: Band's refusal of the held post is the only sign of it.
+    platform.control("stop", ROOM, { delivered: false });
+    held.release();
+    await agent.events.until(() => agent.events.entries.some((event) => event.type === "turn.stopped"));
+    expect(await agent.handlerOutcome).toEqual({ ok: true });
+    expect(outcomes).toEqual([expect.objectContaining({ ok: false })]);
+    expect(postedContents(platform, ROOM)).toEqual([]);
+
+    platform.control("play", ROOM);
+    await settledAs(platform, inbound, "processed");
+    expect(agent.handled).toEqual([inbound, inbound]);
+    expect(outcomes[1]).toMatchObject({ status: "ok" });
+    expect(postedContents(platform, ROOM)).toEqual(["the answer"]);
+    const records = await recordsOf(journalDir);
+    expect(records.filter((record) => record === "op.reserved")).toHaveLength(1);
+    expect(records).toContain("op.released");
+    expect(records).not.toContain("op.refused");
+  });
+});
+
 describe("a turn with no inbound to settle", () => {
   it("offers a contact hub's synthetic turn no operation_id, and refuses a keyed call there for what it lacks", async () => {
     const platform = BandPlatform.host([person(OWNER)]);

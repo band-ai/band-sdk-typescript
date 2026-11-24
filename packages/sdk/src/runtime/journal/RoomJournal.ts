@@ -115,7 +115,8 @@ function announcementKey(unresolved: UnresolvedPublication): string {
   return unresolved.operationId === undefined ? unresolved.publicationId : operationAnnouncementKey(unresolved.operationId);
 }
 
-type RefusedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused" }>;
+/** A record that says nothing was posted: it must land, or a reopen reads a post that never ran as one Band may hold. */
+type UnpostedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused" | "op.released" }>;
 
 type OperationRecord = Extract<JournalRecord, { t: `op.${string}` }>;
 
@@ -397,7 +398,7 @@ export class RoomJournal {
     }
     if (found.length === 0) return found;
     this.logger.warn(
-      "Recovering unpublished replies the journal cannot confirm; Band may already hold them",
+      "Recovering publications whose outcome the journal cannot confirm; a reply or send among them may already be in the room",
       { roomId: this.options.roomId, publications: found.length },
     );
     for (const publication of found) {
@@ -452,7 +453,7 @@ export class RoomJournal {
    * lands through a synced rewrite. A refusal that did not stand would be
    * announced on reopen as a publication Band may hold.
    */
-  private async landRefusal(record: RefusedRecord): Promise<void> {
+  private async landRefusal(record: UnpostedRecord): Promise<void> {
     if (this.closed) {
       throw closedJournalError();
     }
@@ -527,7 +528,8 @@ export class RoomJournal {
     const inflight = this.inflightOps.get(input.operationId);
     if (inflight !== undefined) return { status: "inflight", promise: inflight.promise };
     switch (existing.outcome) {
-      // No recipients recorded proves the post never ran: it is re-admitted.
+      // No recipients standing (never recorded, or dropped by a release) proves
+      // the post never ran, or committed nothing: it is re-admitted.
       // Otherwise the post ran, or may have, and stands unknown on every retry.
       case "pending":
         return existing.recipients === undefined ? this.admitOperation(input) : { status: "unknown" };
@@ -582,6 +584,15 @@ export class RoomJournal {
   public async refuseOperation(operationId: string, reasonText?: string): Promise<void> {
     const operation = this.requireOperation(operationId);
     await this.landRefusal({ t: "op.refused", operationId, messageId: operation.messageId, ...(reasonText !== undefined ? { reasonText } : {}), at: this.now() });
+  }
+
+  /**
+   * Records that the keyed send provably committed nothing: its recipients are
+   * dropped and a same-id call is admitted again. It lands as a refusal does.
+   */
+  public async releaseOperation(operationId: string): Promise<void> {
+    const operation = this.requireOperation(operationId);
+    await this.landRefusal({ t: "op.released", operationId, messageId: operation.messageId, at: this.now() });
   }
 
   /**
@@ -672,6 +683,7 @@ export class RoomJournal {
     switch (record.t) {
       case "op.settled":
       case "op.refused":
+      case "op.released":
         this.inflightOps.delete(record.operationId);
         this.unresolvedOps.delete(record.operationId);
         break;
@@ -695,7 +707,7 @@ export class RoomJournal {
    * while it is open on Windows. A line equal to `record` is the refusal's own
    * failed append, unsynced; the rewrite carries it once.
    */
-  private rewriteRefused(record: RefusedRecord): Promise<void> {
+  private rewriteRefused(record: UnpostedRecord): Promise<void> {
     return this.writes.run(async () => {
       if (this.closed) {
         throw closedJournalError();
@@ -919,6 +931,9 @@ function applyOperation(operation: OperationIndex | undefined, record: Operation
       if (operation.kind === "send" && storedSendResult(record.resultJson) === undefined) throw conflict("settles with authority that does not stand");
       return { ...operation, outcome: "settled", at: record.at, receiptId: record.receiptId, resultJson: record.resultJson };
     }
+    case "op.released":
+      if (operation.outcome !== "pending") throw conflict("releases the finished");
+      return { ...operation, recipients: undefined, at: record.at };
     case "op.reported":
       return { ...operation, reported: true };
   }

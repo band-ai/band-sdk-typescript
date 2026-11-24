@@ -416,6 +416,76 @@ describe("a keyed send's outcomes", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.settled", "turn.done"]);
   });
 
+  it("releases a send answered 429: the call fails, and a same-id retry posts exactly once", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const engine = engineFor(generation);
+    const posted: string[] = [];
+    const answers = [
+      () => {
+        throw new BandError({ statusCode: 429, body: { error: { code: "rate_limited", message: "slow down", request_id: "req-429" } } });
+      },
+      () => {
+        posted.push("hello");
+        return { id: "posted-1" };
+      },
+    ];
+    const send = (messageId: string) =>
+      engine.publishOperation({
+        operationId: ID,
+        kind: "send",
+        content: "hello",
+        messageId,
+        prepare: sendPreparation(async () => answers.shift()!()),
+      });
+    await expect(send("msg-1")).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the platform refused the post (HTTP 429)" });
+    // 408/429 come only from infrastructure in front of Band: nothing committed, so the id is not burned.
+    expect((await openRoom(generation, ROOM)).operation(ID)).toMatchObject({ outcome: "pending", recipients: undefined });
+    expect(await send("msg-1")).toMatchObject({ id: "posted-1" });
+    expect(await send("msg-1")).toMatchObject({ id: "posted-1" });
+    expect(posted).toEqual(["hello"]);
+    await generation.close();
+    expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.released", "op.recipients", "op.settled", "turn.done", "turn.done"]);
+  });
+
+  it("releases a send whose turn is cut short after its recipients stand: a reopen announces nothing, and a same-id retry posts", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const stop = new AbortController();
+    let posts = 0;
+    const cut = engineFor(generation).publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      messageId: "msg-1",
+      // The stop lands while the roster resolves: the recipients still stand, the post must not run.
+      prepare: async () => {
+        stop.abort("stop");
+        return await sendPreparation(async () => {
+          posts += 1;
+          return { id: "never" };
+        })();
+      },
+      stopped: stop.signal,
+    });
+    await expect(cut).rejects.toMatchObject({ name: "RuntimeStateError" });
+    expect(posts).toBe(0);
+    await generation.close();
+    expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.released"]);
+
+    const { generation: next } = await generationIn(dir);
+    expect(await (await openRoom(next, ROOM)).recoverUnresolved()).toEqual([]);
+    const retry = await engineFor(next).publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      messageId: "msg-1",
+      prepare: sendPreparation(async () => ({ id: "posted-1" })),
+    });
+    expect(retry).toMatchObject({ id: "posted-1" });
+    await next.close();
+  });
+
 it("stands a post Band answered but the file could not settle unknown, and poisons the writer", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);

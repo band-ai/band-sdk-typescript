@@ -620,9 +620,17 @@ redirect policy stands unchanged.
 **Outcomes.**
 - *Settled.* The post's answer stood committed: a same-`operation_id` call —
   in any later process — replays the stored original result and posts nothing.
-- *Refused.* A definite refusal stands stored and is **terminal by design**:
-  the SDK never resets or retries it. A same-id call with a *changed* payload
-  conflicts with the standing operation and is refused before any post.
+- *Refused.* Band's definite refusal of the post itself (an application 4xx
+  such as a validation or permission error), or the harness's refusal of a
+  no-reply, stands stored and is **terminal by design**: the SDK never resets
+  or retries it, and a same-id call replays the refusal. A same-id call with a
+  *changed* payload conflicts with the standing operation and is refused
+  before any post.
+- *Released.* A send that provably committed nothing — its turn was cut short
+  before the post, infrastructure in front of Band answered 408 or 429, or
+  Band answered that it has stopped the agent in the room — fails for that
+  call but burns nothing: a later same-id call (for example, the answer to an
+  inbound Band serves again after a play) is admitted and posts.
 - *Unknown.* The attempt's report is ambiguous — a redirect away from the
   post's origin, an unanswered 5xx, or a process killed between the post and
   its answer. On restart the SDK announces the operation with its id (a

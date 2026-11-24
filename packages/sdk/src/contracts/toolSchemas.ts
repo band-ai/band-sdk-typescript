@@ -57,8 +57,10 @@ const OPERATION_ID_PROPERTY = {
   description:
     `Optional operation id: an opaque, untrimmed id of at most ${OPERATION_ID_MAX_BYTES} bytes; it is not a path, a handle, or an alias. ` +
     "A later call with the same id and the same content (or no-reply reason) stands for the same operation: a settled " +
-    "operation replays its stored result without a new post, a refused one replays its refusal, and an unknown one stays " +
-    "unknown — Band may already hold it, so do not resend it. Changed content or a different tool under the same id is " +
+    "operation replays its stored result without a new post, one Band refused replays its refusal, and an unknown one stays " +
+    "unknown — Band may already hold it, so do not resend it. A send that committed nothing (rate-limited, timed out at the " +
+    "edge, cut short, or answered while Band stopped the agent) fails but may be retried under the same id. " +
+    "Changed content or a different tool under the same id is " +
     "refused. A different id names a different operation.",
 } as const;
 

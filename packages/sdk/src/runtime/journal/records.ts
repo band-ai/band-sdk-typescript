@@ -90,6 +90,14 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
     t: z.literal("op.refused"),
     reasonText: z.string().optional(),
   }),
+  /**
+   * The keyed send provably committed nothing — cut short before its post, a
+   * 408/429, or Band's stopped-room answer — so it returns to pending with no
+   * recipients: re-admissible, like a reservation whose post never ran.
+   */
+  operationRecordBase.extend({
+    t: z.literal("op.released"),
+  }),
   /** Whether Band has the keyed send is unknown: it may already be in the room. */
   operationRecordBase.extend({
     t: z.literal("op.unknown"),
