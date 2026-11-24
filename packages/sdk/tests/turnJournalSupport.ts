@@ -22,19 +22,41 @@ export const ROOM = "room/with:odd chars";
 
 type AppendFile = (...args: unknown[]) => Promise<void>;
 
+/** Replaces Node's `FileHandle[method]` with `replacement`, which gets the original; restored when the test ends. */
+async function interceptFileHandle(method: "appendFile" | "writeFile", replacement: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
+  const probe = await open(path.join(tmpRoot(), "probe"), "w");
+  const prototype = Object.getPrototypeOf(probe) as Record<typeof method, AppendFile>;
+  await probe.close();
+  const original = prototype[method];
+  const spy = vi.spyOn(prototype, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
+    return replacement(original, this, args);
+  });
+  onTestFinished(() => spy.mockRestore());
+}
+
 /**
  * Replaces Node's `FileHandle.appendFile`, the fs boundary every journal write
  * goes through, with `append`, which gets the original; restored when the test ends.
  */
-export async function interceptJournalAppends(append: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
-  const probe = await open(path.join(tmpRoot(), "probe"), "w");
-  const prototype = Object.getPrototypeOf(probe) as { appendFile: AppendFile };
-  await probe.close();
-  const original = prototype.appendFile;
-  const spy = vi.spyOn(prototype, "appendFile").mockImplementation(function (this: unknown, ...args: unknown[]) {
-    return append(original, this, args);
+export function interceptJournalAppends(append: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
+  return interceptFileHandle("appendFile", append);
+}
+
+/** Holds the first whole-file journal write (a new file's header, a rewrite's copy) until `release()`. */
+export async function holdJournalRewrite(): Promise<{ entered: Promise<void>; release: () => void }> {
+  const entered = createDeferred();
+  const released = createDeferred();
+  onTestFinished(() => released.resolve());
+  let held = false;
+  await interceptFileHandle("writeFile", async (original, self, args) => {
+    if (!held) {
+      held = true;
+      entered.resolve();
+      await released.promise;
+    }
+    return original.apply(self, args);
   });
-  onTestFinished(() => spy.mockRestore());
+  return { entered: entered.promise, release: () => released.resolve() };
 }
 
 /** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. */

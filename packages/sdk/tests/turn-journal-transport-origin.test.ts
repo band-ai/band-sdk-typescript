@@ -147,10 +147,10 @@ describe("a journaled reply made through a long-lived transport settles under th
 
     const tools: { current: AdapterToolsProtocol | undefined } = { current: undefined };
     let bridge: BandSdkMcpServer | undefined;
-    // A dispatch loop created inside the first turn: it keeps the first
-    // turn's scope, as every loop a turn opens does.
-    let tick: ReturnType<typeof setInterval> | undefined;
-    let pendingCall: (() => Promise<unknown>) | undefined;
+    // A dispatcher created inside the first turn: its continuations keep the
+    // first turn's scope, as every loop a turn opens does.
+    const queued = createDeferred<() => Promise<unknown>>();
+    const secondTurnStood = createDeferred();
     // Settle of the bridge's reply: the loop's dispatch resolves it with the
     // call's outcome once the platform accepted the post and the journal
     // recorded the settlement (or with the call's error, which the test rethrows).
@@ -165,11 +165,10 @@ describe("a journaled reply made through a long-lived transport settles under th
     });
 
     let turn = 0;
-    let inSecondTurn = false;
     const stop = runtime.start(new GenericAdapter(async (args) => {
       turn += 1;
       tools.current = args.tools;
-      if (turn === 2) inSecondTurn = true;
+      if (turn === 2) secondTurnStood.resolve();
       if (turn === 1) {
         // Open the bridge inside the first turn, so its dispatch context is
         // that turn's scope.
@@ -180,24 +179,19 @@ describe("a journaled reply made through a long-lived transport settles under th
           multiRoom: false,
         });
         bridge = backend.server as BandSdkMcpServer;
-        tick = setInterval(() => {
+        void (async () => {
+          const call = await queued.promise;
           // Dispatch only once the second turn has stood its tools, so the
           // call cannot race onto the first turn's (now stale) tools.
-          if (pendingCall !== undefined && inSecondTurn) {
-            const call = pendingCall;
-            pendingCall = undefined;
-            void call().then((outcome) => replyCallDone.resolve(outcome), (error) => replyCallDone.resolve(error));
-          }
-        }, 5);
+          await secondTurnStood.promise;
+          replyCallDone.resolve(await call().catch((error: unknown) => error));
+        })();
         await args.tools.sendMessage("first answer", ["@owner"]);
       }
     }));
     stopRuntimeAtEnd(runtime);
     onTestFinished(() => {
-      if (tick !== undefined) {
-        clearInterval(tick);
-        tick = undefined;
-      }
+      secondTurnStood.resolve();
     });
 
     const firstReplyHeld = platform.rest.messageHolds.hold((roomId, content) => roomId === ROOM && content === "second answer");
@@ -207,10 +201,10 @@ describe("a journaled reply made through a long-lived transport settles under th
     expect(bridge).toBeDefined();
     // The second turn's reply goes out the bridge, dispatched by the loop the
     // first turn created.
-    pendingCall = () => inProcessBridgeCall(bridge!, {
+    queued.resolve(() => inProcessBridgeCall(bridge!, {
       name: "band_send_message",
       arguments: { room_id: ROOM, content: "second answer", mentions: ["@owner"] },
-    });
+    }));
     const messageTwo = await room.say(OWNER, `${MENTION} two`);
     // The reply stands at the platform's hold before its turn's end is judged.
     await firstReplyHeld.sending;
@@ -221,10 +215,6 @@ describe("a journaled reply made through a long-lived transport settles under th
     if (replyOutcome instanceof Error) throw replyOutcome;
     await stop;
     await runtime.stop();
-    if (tick !== undefined) {
-      clearInterval(tick);
-      tick = undefined;
-    }
 
     // Both answers stand in the journal, and the second under the second
     // message — not the first, whose scope the bridge's dispatch kept.

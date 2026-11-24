@@ -6,6 +6,9 @@ import { z } from "zod";
 /** The only journal format this version reads and writes. */
 export const JOURNAL_FORMAT_VERSION = 2;
 
+/** The extension of a room's journal file, in v1's layout and v2's alike. */
+export const JOURNAL_FILE_EXTENSION = ".jsonl";
+
 /**
  * The file's first line: who the journal is bound to. The platform identity,
  * the agent, and the room are hashed into the path components the file lives
@@ -49,6 +52,11 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
 ]);
 
 export type JournalRecord = z.infer<typeof journalRecordSchema>;
+
+/** One journal line: the header or a record, as the file stores it. */
+export function toLine(record: JournalHeader | JournalRecord): string {
+  return `${JSON.stringify(record)}\n`;
+}
 
 /** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
 export function sha256Hex(value: string | Buffer): string {

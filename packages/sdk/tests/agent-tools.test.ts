@@ -510,7 +510,7 @@ describe("AgentTools", () => {
 
     const result = await tools.executeToolCall("band_send_message", {
       content: "hello",
-      mentions: ["@owner"],
+      mentions: ["@jane"],
     });
     expect(result).toMatchObject({
       ok: false,

@@ -161,8 +161,9 @@ describe("migrateTurnJournals apply", () => {
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings })).rejects.toMatchObject({ kind: "corrupt" });
   });
 
-  it("refuses a legacy line it cannot parse or a record it does not know", async () => {
-    const corrupt = [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 }), `{"t":"turn.done","messageId":"m"`];
+  it("refuses a legacy line that is no record or a record it does not know", async () => {
+    // No write of a record leaves this line: it is not a torn fragment.
+    const corrupt = [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 }), "not a record", JSON.stringify({ t: "turn.done", messageId: "n", at: 2 })];
     const dir = tmpRoot();
     await seedLegacyFile(dir, AGENT, V1_ROOM_FILE, corrupt);
     await expect(
@@ -200,6 +201,25 @@ describe("migrateTurnJournals apply", () => {
 
     expect(result.mode).toBe("committed");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    await generation.close();
+  });
+
+  it("migrates a v1 journal whose failed append its next append resumed after", async () => {
+    const dir = tmpRoot();
+    // v1's append failed part-way; its next append began on a fresh line, so
+    // the fragment stands inside the journal, as v1's own reader dropped it.
+    const torn = JSON.stringify({ t: "reply.intent", messageId: "cut", at: 2 }).slice(0, 10);
+    const text = `${JSON.stringify({ t: "turn.done", messageId: "done", at: 1 })}\n${torn}\n${JSON.stringify({ t: "turn.done", messageId: "later", at: 3 })}\n`;
+    const legacyDir = legacyAgentDir(dir, AGENT);
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(path.join(legacyDir, V1_ROOM_FILE), text);
+    const binding: MigrationBinding = { sourceFile: V1_ROOM_FILE, roomId: ROOM, sourceSha256: sha256(text), platformIdentity: IDENTITY, provenance: "operator-attested" };
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] });
+
+    expect(result.mode).toBe("committed");
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done", "turn.done"]);
     const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     await generation.close();
   });

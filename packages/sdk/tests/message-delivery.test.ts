@@ -362,17 +362,37 @@ describe("message delivery", () => {
     expect(ownPosts()).toHaveLength(2);
   });
 
-  it("surfaces the transport's failure when the turn is cut short between attempts", async () => {
-    const turn = new AbortController();
-    const sent = send([{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }], { delivery: { ...delivery, stopped: turn.signal } });
-    await room.posted(1);
+  describe("a turn cut short while a post settles", () => {
+    function cutAfterPost(n: number, steps: PostStep[]) {
+      const turn = new AbortController();
+      void room.posted(n).then(() => turn.abort("stop"));
+      return send(steps, { delivery: { ...delivery, stopped: turn.signal } });
+    }
 
-    turn.abort("stop");
+    it("surfaces the transport's failure, never the cut, once the read-back finds nothing", async () => {
+      const sent = cutAfterPost(1, [{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }]);
 
-    // The cut must not stand in for the transport's own failure: the 503 that
-    // started the settle surfaces as the failure, so the publication stands
-    // unknown, and the retry is never attempted.
-    await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
-    expect(room.posts).toHaveLength(1);
+      // The 503 surfaces, so the publication stands unknown; the resend never runs.
+      await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(room.posts).toHaveLength(1);
+      expect(room.contextCursors[0]).toEqual(contextCursorAfter(delivery.anchor));
+      expect(ownPosts()).toEqual([]);
+    });
+
+    it("settles a commit that landed in the room, though the turn was cut", async () => {
+      const sent = cutAfterPost(1, [{ kind: "committedThen", status: UNAVAILABLE }, { kind: "created" }]);
+
+      await expect(settleThroughRetries(sent)).resolves.toEqual({ id: "stored-1", success: true });
+      expect(room.posts).toHaveLength(1);
+      expect(ownPosts()).toEqual(["stored-1"]);
+    });
+
+    it("surfaces the transport's failure when the cut lands in a later pause", async () => {
+      const sent = cutAfterPost(2, [{ kind: "refused", status: UNAVAILABLE }, { kind: "refused", status: UNAVAILABLE }, { kind: "created" }]);
+
+      await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(room.posts).toHaveLength(2);
+      expect(ownPosts()).toEqual([]);
+    });
   });
 });

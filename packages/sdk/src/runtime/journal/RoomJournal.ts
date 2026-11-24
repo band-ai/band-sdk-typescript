@@ -7,6 +7,7 @@ import { Serializer } from "../../core/singleFlight";
 
 import { JournalFileError, JournalPublicationError } from "./errors";
 import {
+  JOURNAL_FILE_EXTENSION,
   JOURNAL_FORMAT_VERSION,
   compactingCopyName,
   compactingCopyTarget,
@@ -15,6 +16,7 @@ import {
   journalRecordSchema,
   readTextIfExists,
   roomFileComponent,
+  toLine,
   type JournalHeader,
   type JournalRecord,
   type PublicationOutcome,
@@ -25,7 +27,7 @@ export type { PublicationOutcome };
 
 /** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
 export function roomFileName(roomId: string): string {
-  return `${roomFileComponent(roomId)}.jsonl`;
+  return `${roomFileComponent(roomId)}${JOURNAL_FILE_EXTENSION}`;
 }
 
 /** A journal read or write failure; `file` is the path that failed. */
@@ -102,16 +104,11 @@ export interface UnresolvedPublication {
   at: number;
 }
 
-type RefusedRecord = { t: "reply.refused"; messageId: string; publicationId: string; at: number };
+type RefusedRecord = Extract<JournalRecord, { t: "reply.refused" }>;
 
 interface InboundIndex {
   answered: boolean;
   publications: Map<string, PublicationState>;
-  at: number;
-}
-
-function toLine(record: Record<string, unknown>): string {
-  return `${JSON.stringify(record)}\n`;
 }
 
 /** The durable header line a v2 journal opens with, bound to its identity, agent and room. */
@@ -232,8 +229,8 @@ export class RoomJournal {
       }
 
       const index = new Map<string, InboundIndex>();
-      for (const entry of keptTail !== null ? [...records, keptTail] : records) {
-        applyChecked(index, entry.record, file);
+      for (const { record } of keptTail !== null ? [...records, keptTail] : records) {
+        index.set(record.messageId, applyRecord(index.get(record.messageId), record, file));
       }
 
       if (tornTail !== null) {
@@ -335,9 +332,11 @@ export class RoomJournal {
       // Stands announced across the room's handles before the record is owed, so a
       // handle that reopens the file later does not announce it again.
       this.options.markAnnounced?.(publication.publicationId);
-      await this.appendBestEffort({ t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() });
-      const record = this.inbounds.get(publication.messageId)?.publications.get(publication.publicationId);
-      if (record) record.reported = true;
+      const reported: JournalRecord = { t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() };
+      this.transition(reported);
+      // The announcement stands in memory whether or not its record lands.
+      await this.appendBestEffort(reported);
+      this.commit(reported);
     }
     return found;
   }
@@ -350,26 +349,14 @@ export class RoomJournal {
   public async beginReply(messageId: string): Promise<string> {
     this.assertAdmitting();
     const publicationId = randomUUID();
-    const at = this.now();
-    await this.append({ t: "reply.intent", messageId, publicationId, at });
-    this.touch(messageId).publications.set(publicationId, { outcome: "pending", reported: false, at });
+    await this.write({ t: "reply.intent", messageId, publicationId, at: this.now() });
     return publicationId;
   }
 
   /** Records that Band acknowledged the reply; the reply is settled and the inbound answered. */
   public async settleReply(messageId: string, publicationId: string, receiptId?: string): Promise<void> {
     this.assertAdmitting();
-    const at = this.now();
-    await this.append({ t: "reply.settled", messageId, publicationId, ...(receiptId !== undefined ? { receiptId } : {}), at });
-    const inbound = this.touch(messageId);
-    inbound.answered = true;
-    const publication = inbound.publications.get(publicationId);
-    if (publication) {
-      publication.outcome = "settled";
-      publication.at = at;
-      if (receiptId !== undefined) publication.receiptId = receiptId;
-    }
-    this.unresolved.delete(publicationId);
+    await this.write({ t: "reply.settled", messageId, publicationId, ...(receiptId !== undefined ? { receiptId } : {}), at: this.now() });
   }
 
   /**
@@ -384,48 +371,41 @@ export class RoomJournal {
     if (this.closed) {
       throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
     }
-    const at = this.now();
-    const record: RefusedRecord = { t: "reply.refused", messageId, publicationId, at };
-    // Whatever the disk says, Band does not hold the reply.
-    this.applyRefused(messageId, publicationId, at);
+    const record: RefusedRecord = { t: "reply.refused", messageId, publicationId, at: this.now() };
+    this.transition(record);
     if (this.accepting) {
       try {
         await this.append(record);
+        this.commit(record);
         return;
       } catch (error) {
         this.logger.warn("Failed to append a refusal; rewriting the journal to land it", { roomId: this.roomId, file: this.file, error });
       }
     }
     await this.rewriteRefused(record);
+    this.commit(record);
   }
 
-  /** Records that whether Band has the reply is unknown: it may already be in the room. */
+  /**
+   * Records that whether Band has the reply is unknown: it may already be in
+   * the room. It stands unresolved, so a recovery on this same handle (a
+   * stop and play) still announces it.
+   */
   public async markUnknown(messageId: string, publicationId: string): Promise<void> {
     this.assertAdmitting();
-    const at = this.now();
-    await this.append({ t: "reply.unknown", messageId, publicationId, at });
-    const publication = this.touch(messageId).publications.get(publicationId);
-    if (publication) {
-      publication.outcome = "unknown";
-      // Leave reported false until recoverUnresolved writes publication.reported /
-      // markAnnounced: same-handle stop/play must still announce delivery.unrecorded.
-      publication.at = at;
-    }
-    this.unresolved.set(publicationId, { messageId, at });
+    await this.write({ t: "reply.unknown", messageId, publicationId, at: this.now() });
   }
 
   /** Records that the inbound's no-reply was accepted: it is answered and answered again never. */
   public async settleDecline(messageId: string): Promise<void> {
     this.assertAdmitting();
-    await this.append({ t: "decline.settled", messageId, at: this.now() });
-    this.touch(messageId).answered = true;
+    await this.write({ t: "decline.settled", messageId, at: this.now() });
   }
 
   /** Records that the inbound's turn ended, before it is marked processed. */
   public async turnDone(messageId: string): Promise<void> {
     this.assertAdmitting();
-    await this.append({ t: "turn.done", messageId, at: this.now() });
-    this.touch(messageId).answered = true;
+    await this.write({ t: "turn.done", messageId, at: this.now() });
   }
 
   /**
@@ -456,13 +436,35 @@ export class RoomJournal {
     }
   }
 
-  private applyRefused(messageId: string, publicationId: string, at: number): void {
-    const publication = this.touch(messageId).publications.get(publicationId);
-    if (publication) {
-      publication.outcome = "refused";
-      publication.at = at;
+  /** Checks `record`'s transition before anything is written; throws on one the journal's state forbids. */
+  private transition(record: JournalRecord): void {
+    applyRecord(this.inbounds.get(record.messageId), record, this.file);
+  }
+
+  /** Appends `record` and, once it stands, applies it. */
+  private async write(record: JournalRecord): Promise<void> {
+    this.transition(record);
+    await this.append(record);
+    this.commit(record);
+  }
+
+  /**
+   * Applies a written record to the state as it stands now (another write
+   * of the inbound may have landed meanwhile), and to what stands unresolved.
+   * A publication this handle admitted is in flight, not unresolved, until
+   * its delivery is recorded unknown.
+   */
+  private commit(record: JournalRecord): void {
+    this.inbounds.set(record.messageId, applyRecord(this.inbounds.get(record.messageId), record, this.file));
+    switch (record.t) {
+      case "reply.settled":
+      case "reply.refused":
+        this.unresolved.delete(record.publicationId);
+        break;
+      case "reply.unknown":
+        this.unresolved.set(record.publicationId, { messageId: record.messageId, at: record.at });
+        break;
     }
-    this.unresolved.delete(publicationId);
   }
 
   /**
@@ -519,11 +521,11 @@ export class RoomJournal {
     }
   }
 
-  private append(record: Record<string, unknown>): Promise<void> {
+  private append(record: JournalRecord): Promise<void> {
     return this.writes.run(() => this.appendNow(record));
   }
 
-  private async appendNow(record: Record<string, unknown>): Promise<void> {
+  private async appendNow(record: JournalRecord): Promise<void> {
     // Re-check inside the queue: a caller may have passed assertAdmitting
     // before a concurrent write poisoned the handle, and must not append
     // beneath a torn or half-recorded line.
@@ -544,21 +546,12 @@ export class RoomJournal {
   }
 
   /** Like `append`, for records whose failure the caller reports rather than throws. */
-  private async appendBestEffort(record: Record<string, unknown>): Promise<void> {
+  private async appendBestEffort(record: JournalRecord): Promise<void> {
     try {
       await this.append(record);
     } catch (error) {
       this.logger.warn("Failed to record a journal record", { roomId: this.options.roomId, t: record.t, error });
     }
-  }
-
-  /** `messageId`'s index, moved to the newest end. */
-  private touch(messageId: string): InboundIndex {
-    const index = this.inbounds.get(messageId) ?? { answered: false, publications: new Map(), at: this.now() };
-    this.inbounds.delete(messageId);
-    index.at = this.now();
-    this.inbounds.set(messageId, index);
-    return index;
   }
 }
 
@@ -627,50 +620,48 @@ function parseRecord(file: string, line: string): JournalRecord {
   return check.data;
 }
 
-function applyChecked(index: Map<string, InboundIndex>, record: JournalRecord, file: string): void {
-  const inbound = index.get(record.messageId) ?? { answered: false, publications: new Map<string, PublicationState>(), at: record.at };
-  try {
-    switch (record.t) {
-      case "reply.intent": {
-        if (inbound.publications.has(record.publicationId)) {
-          throw new JournalFileError(`The journal at ${file} holds a publication's intent twice; its state is in conflict.`, "corrupt", file);
-        }
-        inbound.publications.set(record.publicationId, { outcome: "pending", reported: false, at: record.at });
-        break;
+/**
+ * The inbound `record` leaves behind, its transition checked; `inbound` is
+ * never changed. The one state machine of a room's records: replayed on open,
+ * and applied after each live write.
+ */
+function applyRecord(inbound: InboundIndex | undefined, record: JournalRecord, file: string): InboundIndex {
+  const next: InboundIndex = { answered: inbound?.answered ?? false, publications: new Map(inbound?.publications) };
+  switch (record.t) {
+    case "reply.intent":
+      if (next.publications.has(record.publicationId)) {
+        throw new JournalFileError(`The journal at ${file} holds a publication's intent twice; its state is in conflict.`, "corrupt", file);
       }
-      case "reply.settled":
-      case "reply.refused":
-      case "reply.unknown": {
-        const publication = inbound.publications.get(record.publicationId);
-        if (publication === undefined) {
-          throw new JournalFileError(`The journal at ${file} records an outcome for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
-        }
-        if (publication.outcome !== "pending") {
-          throw new JournalFileError(`The journal at ${file} records ${record.t} twice for ${record.publicationId}; its state is in conflict.`, "corrupt", file);
-        }
-        publication.outcome = record.t === "reply.settled" ? "settled" : record.t === "reply.refused" ? "refused" : "unknown";
-        publication.at = record.at;
-        if (record.t === "reply.settled" && record.receiptId !== undefined) {
-          publication.receiptId = record.receiptId;
-        }
-        if (record.t === "reply.settled") inbound.answered = true;
-        break;
+      next.publications.set(record.publicationId, { outcome: "pending", reported: false, at: record.at });
+      break;
+    case "reply.settled":
+    case "reply.refused":
+    case "reply.unknown": {
+      const publication = next.publications.get(record.publicationId);
+      if (publication === undefined) {
+        throw new JournalFileError(`The journal at ${file} records an outcome for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
       }
-      case "decline.settled":
-      case "turn.done":
-        inbound.answered = true;
-        break;
-      case "publication.reported": {
-        const publication = inbound.publications.get(record.publicationId);
-        if (publication === undefined) {
-          throw new JournalFileError(`The journal at ${file} records a report for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
-        }
-        publication.reported = true;
-        break;
+      if (publication.outcome !== "pending") {
+        throw new JournalFileError(`The journal at ${file} records ${record.t} twice for ${record.publicationId}; its state is in conflict.`, "corrupt", file);
       }
+      const outcome = record.t === "reply.settled" ? "settled" : record.t === "reply.refused" ? "refused" : "unknown";
+      const receipt = record.t === "reply.settled" && record.receiptId !== undefined ? { receiptId: record.receiptId } : {};
+      next.publications.set(record.publicationId, { ...publication, outcome, at: record.at, ...receipt });
+      if (record.t === "reply.settled") next.answered = true;
+      break;
     }
-  } finally {
-    inbound.at = Math.max(inbound.at, record.at);
-    index.set(record.messageId, inbound);
+    case "decline.settled":
+    case "turn.done":
+      next.answered = true;
+      break;
+    case "publication.reported": {
+      const publication = next.publications.get(record.publicationId);
+      if (publication === undefined) {
+        throw new JournalFileError(`The journal at ${file} records a report for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
+      }
+      next.publications.set(record.publicationId, { ...publication, reported: true });
+      break;
+    }
   }
+  return next;
 }

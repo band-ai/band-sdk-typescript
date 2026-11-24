@@ -81,12 +81,6 @@ export interface JournalGeneration {
   release(roomId: string, force?: boolean): Promise<void>;
   /** Tracks a publication the generation admitted, so its stop waits for the outcome. */
   trackInflight(promise: Promise<unknown>, roomId: string): void;
-  /**
-   * Runs `work` tracked against `roomId` once no release of the room is in
-   * progress: a release waits on the room's tracked work, so work that opens
-   * the room must not be tracked while a release it would wait on stands.
-   */
-  trackOnceReleased<T>(roomId: string, work: () => Promise<T>): Promise<T>;
   /** Waits for publications the generation admitted, their outcomes durable. */
   drain(): Promise<void>;
   /** The path of `roomId`'s journal file under this generation's identity. */
@@ -127,7 +121,7 @@ export class TurnJournal {
     this.dir = agentJournalDir(journalDir, agentId);
     this.agentId = agentId;
     this.now = options.now ?? Date.now;
-    this.logger = options.logger ?? resolveLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   /** Creates the agent's directory and checks it is usable, so a bad `journalDir` fails start, not a turn. */
@@ -198,6 +192,7 @@ export class TurnJournal {
 
 class Generation implements JournalGeneration {
   public readonly identity: string;
+  /** Open handles; a release keeps the room's published while it drains the room's tracked work. */
   private readonly rooms = new Map<string, Promise<RoomJournal>>();
   /** In-flight opens, one per room and release epoch; published into `rooms` only once open. */
   private readonly opens = new KeyedSingleFlight<RoomJournal>();
@@ -207,8 +202,10 @@ class Generation implements JournalGeneration {
    * room whose handling stopped keeps no file open, whoever was opening it.
    */
   private readonly epochs = new Map<string, number>();
-  /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
+  /** Releases in progress (draining, then closing); a later release of the room joins it. */
   private readonly releasing = new Map<string, Promise<void>>();
+  /** Handles being closed; reopening the room waits, so it reads every record the closing handle wrote. */
+  private readonly closing = new Map<string, Promise<void>>();
   private readonly inflight: Set<Promise<unknown>> = new Set();
   /**
    * Publications in flight per room for this generation's lifetime. The set for
@@ -241,13 +238,10 @@ class Generation implements JournalGeneration {
     return this.opens.run(openKey(roomId, epoch), () => this.openRoom(roomId, epoch));
   }
 
-  /** Opens `roomId` after any in-flight release, and publishes it into `rooms` unless a forced release overtook the open. */
+  /** Opens `roomId` after any close of its handle, and publishes it into `rooms` unless a forced release overtook the open. */
   private async openRoom(roomId: string, epoch: number): Promise<RoomJournal> {
-    await (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
+    await this.closing.get(roomId);
     this.assertOpenable(roomId, epoch);
-    const afterRelease = this.rooms.get(roomId);
-    if (afterRelease) return afterRelease;
-
     const journal = await RoomJournal.open(this.roomFile(roomId), this.roomOptions(roomId));
     try {
       this.assertOpenable(roomId, epoch);
@@ -284,12 +278,7 @@ class Generation implements JournalGeneration {
       return;
     }
     this.turnHolds.delete(roomId);
-    if (!this.deferredCloses.delete(roomId)) return;
-    const room = this.rooms.get(roomId);
-    if (room) {
-      this.rooms.delete(roomId);
-      await this.closeRoomNow(roomId, room);
-    }
+    if (this.deferredCloses.delete(roomId)) await this.release(roomId);
   }
 
   public async release(roomId: string, force = false): Promise<void> {
@@ -301,48 +290,49 @@ class Generation implements JournalGeneration {
       const opening = this.opens.current(openKey(roomId, this.epochOf(roomId)));
       this.epochs.set(roomId, this.epochOf(roomId) + 1);
       if (opening) {
-        await this.whileReleasing(roomId, opening.then(() => undefined, () => undefined));
+        await this.whileClosing(roomId, opening.then(() => undefined, () => undefined));
         return;
       }
     }
+    const inProgress = this.releasing.get(roomId);
+    if (inProgress) return await inProgress;
     const room = this.rooms.get(roomId);
-    if (!room) {
-      // A held room's close is owed, but a turn still uses its handle; it runs
-      // when the last hold ends. An already closed room stands behind its close.
-      return (this.deferredCloses.has(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
-    }
-    if (!force && (this.turnHolds.get(roomId) ?? 0) > 0) {
-      // A turn is still writing to the room: its handle stays open, and the
-      // close runs when the turn's hold ends.
-      this.deferredCloses.add(roomId);
-      return;
-    }
-    // Closing now: drop any deferred close so a later endHold does not close a reopened handle.
-    this.deferredCloses.delete(roomId);
-    this.rooms.delete(roomId);
-    await this.closeRoomNow(roomId, room);
-  }
-
-  /**
-   * Closes `roomId`'s handle once its publications stand on disk: one in
-   * flight must never lose its outcome to the close racing its post. The
-   * room's set lives for the generation and is drained in place, so a
-   * concurrent track still lands in the set this close waits on.
-   */
-  private closeRoomNow(roomId: string, room: Promise<RoomJournal>): Promise<void> {
-    return this.whileReleasing(roomId, (async () => {
-      await this.drainRoomInflight(roomId);
-      await closeRoom(room);
-    })());
-  }
-
-  /** Stands `closing` as the room's release in progress: opens of the room wait for it. */
-  private whileReleasing(roomId: string, closing: Promise<void>): Promise<void> {
-    const releasing = closing.finally(() => {
+    if (!room) return await this.closing.get(roomId);
+    const releasing = this.drainThenClose(roomId, room, force).finally(() => {
       if (this.releasing.get(roomId) === releasing) this.releasing.delete(roomId);
     });
     this.releasing.set(roomId, releasing);
-    return releasing;
+    await releasing;
+  }
+
+  /**
+   * Closes `roomId`'s handle once its tracked work stands on disk. The handle
+   * stays published while the work drains, so work that opens the room gets
+   * it rather than wait on this release; it is unpublished in the tick the
+   * drain ends. A turn holding the room by then defers the close to its last
+   * hold, unless the release is forced: by its caller, by a forced release
+   * that joined it (the room's epoch moved), or by the generation's close.
+   */
+  private async drainThenClose(roomId: string, room: Promise<RoomJournal>, force: boolean): Promise<void> {
+    const epoch = this.epochOf(roomId);
+    await this.drainRoomInflight(roomId);
+    const forced = force || this.closed || this.epochOf(roomId) !== epoch;
+    if (!forced && (this.turnHolds.get(roomId) ?? 0) > 0) {
+      this.deferredCloses.add(roomId);
+      return;
+    }
+    this.deferredCloses.delete(roomId);
+    this.rooms.delete(roomId);
+    await this.whileClosing(roomId, closeRoom(room));
+  }
+
+  /** Stands `closing` as the room's handle close: opens of the room wait for it, whatever its outcome. */
+  private whileClosing(roomId: string, closing: Promise<void>): Promise<void> {
+    const standing: Promise<void> = closing.then(() => undefined, () => undefined).finally(() => {
+      if (this.closing.get(roomId) === standing) this.closing.delete(roomId);
+    });
+    this.closing.set(roomId, standing);
+    return closing;
   }
 
   /** Waits for every promise tracked against `roomId` until the set is empty. */
@@ -377,16 +367,6 @@ class Generation implements JournalGeneration {
     void promise.then(forget, forget);
   }
 
-  public async trackOnceReleased<T>(roomId: string, work: () => Promise<T>): Promise<T> {
-    for (let releasing = this.releasing.get(roomId); releasing; releasing = this.releasing.get(roomId)) {
-      await releasing.catch(() => undefined);
-    }
-    // No release stands, and none can start before the work is tracked: both happen in this tick.
-    const running = work();
-    this.trackInflight(running, roomId);
-    return await running;
-  }
-
   public roomPath(roomId: string): string {
     return this.roomFile(roomId);
   }
@@ -405,21 +385,13 @@ class Generation implements JournalGeneration {
     if (this.closed) return;
     this.closed = true;
     const errors: unknown[] = [];
-    for (const roomId of [...this.rooms.keys()]) {
+    // Closed, every release is forced: the generation's close stands behind no turn.
+    for (const roomId of new Set([...this.rooms.keys(), ...this.releasing.keys()])) {
       await isolateTeardown(errors, () => this.release(roomId));
     }
-    // A close a turn deferred: the generation's close stands behind no turn, so it runs now.
-    for (const roomId of [...this.deferredCloses]) {
-      this.deferredCloses.delete(roomId);
-      const room = this.rooms.get(roomId);
-      if (room) {
-        this.rooms.delete(roomId);
-        await isolateTeardown(errors, () => this.closeRoomNow(roomId, room));
-      }
-    }
-    for (const closing of this.releasing.values()) {
-      await isolateTeardown(errors, () => closing.catch(() => undefined));
-    }
+    // An open in flight may still rewrite its file: it ends, closing what it opened, before a successor may own the journal.
+    await this.opens.settled();
+    for (const closing of this.closing.values()) await closing;
     if (errors.length > 0) {
       this.journal.logger.warn("Failed to close some of the generation's room journals", { agentId: this.journal.agentId, errors });
     }

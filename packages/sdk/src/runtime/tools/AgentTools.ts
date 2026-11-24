@@ -96,8 +96,8 @@ interface AgentToolsOptions {
   publication?: PublicationEngine;
   /** The room's in-flight inbound message, if any: the publication a reply settles. */
   inboundMessageId?: () => string | undefined;
-  /** The room's current turn, if any: a reply interrupted before its post is refused. */
-  publicationStop?: () => AbortSignal | undefined;
+  /** The stop of the turn answering an inbound, while it stands: that turn's reply is refused once it is cut short. */
+  publicationStop?: (inboundMessageId: string) => AbortSignal | undefined;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -160,7 +160,7 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly logger: Logger;
   private readonly publication: PublicationEngine | undefined;
   private readonly inboundMessageId: (() => string | undefined) | undefined;
-  private readonly publicationStop: (() => AbortSignal | undefined) | undefined;
+  private readonly publicationStop: ((inboundMessageId: string) => AbortSignal | undefined) | undefined;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
@@ -207,9 +207,9 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput,
     kind: "reply" | "notice",
   ): Promise<ToolOperationResult> {
+    // Resolved before the post: a failed participants lookup is no post attempt, so it never stands a reply unknown.
+    const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
     const post = async (): Promise<ToolOperationResult> => {
-      const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
-
       const delivery = currentDelivery();
       return this.rest.createChatMessage(
         this.roomId,
@@ -221,12 +221,12 @@ export class AgentTools implements AgentToolsProtocol {
       );
     };
 
-    // A reply settles under the turn's inbound scope; a notice (and a reply
-    // with nothing in flight) posts unrecorded.
+    // A reply settles under the turn's inbound scope, refused once that turn
+    // is cut short; a notice (and a reply with nothing in flight) posts unrecorded.
     if (kind === "reply" && this.publication) {
       const messageId = this.publicationInboundId();
       if (messageId !== undefined) {
-        return this.publication.publishReply(messageId, post, this.publicationStop?.());
+        return this.publication.publishReply(messageId, post, this.publicationStop?.(messageId));
       }
     }
     return post();

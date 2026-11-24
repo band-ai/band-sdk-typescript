@@ -7,9 +7,18 @@ import { resolveLogger } from "../../core/logger";
 
 import { OWNERSHIP_FILE, agentJournalDir, legacyAgentDir, roomJournalFile } from "./TurnJournal";
 import { JournalFileError } from "./errors";
-import { JournalOwnership } from "./ownership";
+import { JournalOwnership, type JournalOwnershipOptions } from "./ownership";
 import { RoomJournal, headerLine, rewriteFile } from "./RoomJournal";
-import { compactingCopyTarget, hasErrorCode, identityDirectoryComponent, readTextIfExists, sha256Hex } from "./records";
+import {
+  JOURNAL_FILE_EXTENSION,
+  compactingCopyTarget,
+  hasErrorCode,
+  identityDirectoryComponent,
+  readTextIfExists,
+  sha256Hex,
+  toLine,
+  type JournalRecord,
+} from "./records";
 import { canonicalPlatformIdentity } from "./identity";
 
 const MIGRATION_DIR = "migration";
@@ -87,7 +96,7 @@ export interface MigrateTurnJournalsOptions {
   /** Default false: report what a migration would do, without writing anything. */
   apply?: boolean;
   /** A test seam supplying the `node:sqlite` module `apply` locks through. */
-  loadSqlite?: () => Promise<Pick<typeof import("node:sqlite"), "DatabaseSync">>;
+  loadSqlite?: JournalOwnershipOptions["loadSqlite"];
   now?: () => number;
   logger?: Logger;
 }
@@ -175,7 +184,16 @@ async function sha256File(file: string): Promise<string> {
  */
 function remnantPrimaryOf(file: string): string | undefined {
   const target = compactingCopyTarget(file);
-  return target?.endsWith(".jsonl") === true ? target : undefined;
+  return target?.endsWith(JOURNAL_FILE_EXTENSION) === true ? target : undefined;
+}
+
+/**
+ * The file `file`'s records stage through: the journal a compaction copy is
+ * the output of, where that journal stands; otherwise the file itself.
+ */
+function stagesFromOf(file: string, legacy: string[]): string {
+  const primary = remnantPrimaryOf(file);
+  return primary !== undefined && legacy.includes(primary) ? primary : file;
 }
 
 async function legacyFiles(legacyDir: string): Promise<string[]> {
@@ -184,7 +202,7 @@ async function legacyFiles(legacyDir: string): Promise<string[]> {
     throw error;
   });
   return names
-    .filter((entry) => entry.isFile() && (entry.name.endsWith(".jsonl") || entry.name.endsWith(".compacting")))
+    .filter((entry) => entry.isFile() && (entry.name.endsWith(JOURNAL_FILE_EXTENSION) || remnantPrimaryOf(entry.name) !== undefined))
     .map((entry) => entry.name);
 }
 
@@ -194,9 +212,7 @@ async function legacyFiles(legacyDir: string): Promise<string[]> {
  * it — the copy is not a separate authority, so it does not stand unbound.
  */
 function fileIsBound(file: string, bound: Set<string>, legacy: string[]): boolean {
-  if (bound.has(file)) return true;
-  const primary = remnantPrimaryOf(file);
-  return primary !== undefined && legacy.includes(primary) && bound.has(primary);
+  return bound.has(file) || bound.has(stagesFromOf(file, legacy));
 }
 
 /** The agent's legacy files no committed migration bound: they may belong to any deployment. */
@@ -216,9 +232,9 @@ export async function unboundLegacyFiles(legacyDir: string, agentDir: string): P
  */
 function roomIdOfSourceFile(sourceFile: string): string | undefined {
   const name = remnantPrimaryOf(sourceFile) ?? path.basename(sourceFile);
-  if (!name.endsWith(".jsonl")) return undefined;
+  if (!name.endsWith(JOURNAL_FILE_EXTENSION)) return undefined;
   try {
-    return decodeURIComponent(name.slice(0, -".jsonl".length));
+    return decodeURIComponent(name.slice(0, -JOURNAL_FILE_EXTENSION.length));
   } catch {
     return undefined;
   }
@@ -270,33 +286,38 @@ function parseJsonLine(line: string): { json: unknown } | undefined {
 }
 
 /**
- * A v1 file's records, read the way the v1 reader and the runtime read a
- * journal's tail: every whole line must parse to a record the importer knows.
- * A final line a crash cut short of its newline is a torn fragment only while
- * it is not a whole record — a complete record at the end of the file stands
- * whether or not its newline is there, and is held to the same rule as any
- * other line. `refusal` names a line that breaks the rule.
+ * Where a v1 file can hold a torn fragment — the start of a record a failed
+ * write cut short, which never parses and was never acknowledged. Any write
+ * can leave one at the file's end; v1's appender also resumed after a failed
+ * write on a fresh line, leaving its fragment inside the journal.
+ */
+type TornFragments = "tail" | "anywhere";
+
+/**
+ * A v1 file's records: every line must parse to a record the importer knows,
+ * except a torn fragment where `torn` admits one, which is dropped as v1's
+ * own reader dropped it. A complete record is held to the rule wherever it
+ * stands, with or without its newline. `refusal` names a line that breaks it.
  */
 function parseLegacyLines(
   text: string,
+  torn: TornFragments,
   refusal: (problem: LegacyLineProblem, lineNumber: number, line: string) => JournalFileError,
 ): LegacyLine[] {
   const lines = text.split("\n");
-  const tornTail = text.endsWith("\n") ? undefined : lines.pop();
   const entries: LegacyLine[] = [];
-  const admit = (line: string, lineNumber: number, json: unknown): void => {
-    const parsed = legacyRecordSchema.safeParse(json);
-    if (!parsed.success) throw refusal("unknown-record", lineNumber, line);
-    entries.push({ line, record: parsed.data });
-  };
   lines.forEach((line, i) => {
     if (line.trim() === "") return;
     const parsed = parseJsonLine(line);
-    if (parsed === undefined) throw refusal("not-a-record", i + 1, line);
-    admit(line, i + 1, parsed.json);
+    if (parsed === undefined) {
+      const fragmentMayStand = torn === "anywhere" || i === lines.length - 1;
+      if (fragmentMayStand && line.startsWith("{")) return;
+      throw refusal("not-a-record", i + 1, line);
+    }
+    const record = legacyRecordSchema.safeParse(parsed.json);
+    if (!record.success) throw refusal("unknown-record", i + 1, line);
+    entries.push({ line, record: record.data });
   });
-  const tail = tornTail === undefined ? undefined : parseJsonLine(tornTail);
-  if (tornTail !== undefined && tail !== undefined) admit(tornTail, lines.length + 1, tail.json);
   return entries;
 }
 
@@ -306,7 +327,7 @@ function parseLegacyLines(
  * not covered by the name of the journal beside it.
  */
 function parseRemnantRecords(file: string, text: string): LegacyLine[] {
-  return parseLegacyLines(text, (problem, lineNumber, line) =>
+  return parseLegacyLines(text, "tail", (problem, lineNumber, line) =>
     problem === "not-a-record"
       ? new JournalFileError(
           `The compaction copy ${file} beside its journal holds a line that is not a record at line ${lineNumber}; it cannot be verified against the journal, so the journal's binding cannot carry it. Reconcile the copy against the v1 writer that produced it before migrating.`,
@@ -323,7 +344,7 @@ function parseRemnantRecords(file: string, text: string): LegacyLine[] {
 
 /** A v1 journal's records; a journal that holds anything else is refused, never guessed at. */
 function parseLegacyJournal(file: string, text: string): LegacyLine[] {
-  return parseLegacyLines(text, (problem, lineNumber, line) =>
+  return parseLegacyLines(text, "anywhere", (problem, lineNumber, line) =>
     problem === "not-a-record"
       ? new JournalFileError(
           `The legacy journal ${file} holds a line that is not a record at line ${lineNumber}; it is corrupt, and importing it would guess at authority it does not hold. Restore it from a backup before migrating.`,
@@ -608,26 +629,25 @@ function stablePublicationId(sourceFile: string, messageId: string, n: number): 
 function convertLegacy(sourceFile: string, text: string, binding: MigrationBinding, agentId: string, headerAt: number): string {
   const records = parseLegacyRecords(path.join("<agent>", sourceFile), text);
   const roomId = binding.roomId;
-  const lines: string[] = [headerLine(binding.platformIdentity, agentId, roomId, headerAt)];
+  const converted: JournalRecord[] = [];
   const seenIntent = new Map<string, number>();
-  for (const record of records) {
-    switch (record.t) {
+  for (const { t, messageId, at } of records) {
+    switch (t) {
       case "reply.intent": {
-        const n = (seenIntent.get(record.messageId) ?? 0) + 1;
-        seenIntent.set(record.messageId, n);
-        const publicationId = stablePublicationId(sourceFile, record.messageId, n);
-        lines.push(`${JSON.stringify({ t: "reply.intent", messageId: record.messageId, publicationId, at: record.at })}\n`);
-        lines.push(`${JSON.stringify({ t: "reply.unknown", messageId: record.messageId, publicationId, at: record.at })}\n`);
+        const n = (seenIntent.get(messageId) ?? 0) + 1;
+        seenIntent.set(messageId, n);
+        const publicationId = stablePublicationId(sourceFile, messageId, n);
+        converted.push({ t: "reply.intent", messageId, publicationId, at }, { t: "reply.unknown", messageId, publicationId, at });
         break;
       }
       case "turn.done":
-        lines.push(`${JSON.stringify({ t: "turn.done", messageId: record.messageId, at: record.at })}\n`);
+        converted.push({ t: "turn.done", messageId, at });
         break;
       case "replies.reported":
         break;
     }
   }
-  return lines.join("");
+  return headerLine(binding.platformIdentity, agentId, roomId, headerAt) + converted.map(toLine).join("");
 }
 
 /** The settlement facts the staging file imports: its stable publication ids and settled turns. */
@@ -648,24 +668,12 @@ function importedFactsOf(stagingFile: string, records: LegacyRecord[]): Imported
 }
 
 /**
- * Makes the binding's v2 destination stand: if it already stands and is the
- * journal it claims, it is kept as is — records appended to it since the
- * migration (a settlement an earlier process recorded) are the current
- * authority, and restaging from the source would silently lose them. If it
- * does not stand, a prepared migration restages it from the preserved source
- * (a crash between the manifest's write and the file's); a committed
- * migration's missing destination is refused — its authority is gone, and
- * nothing here may guess it back.
- *
- * When `restageIfInvalid` is set (resuming or amending an already-prepared
- * migration), a destination that no longer matches the prepared import is
- * rewritten from the coalesced sources instead of refusing: that covers an
- * amend that added a surplus remnant, and a crash after the amended manifest
- * was durable but before restage finished (resume hits sameBindings with a
- * journal-only destination). First prepare still refuses a pre-existing
- * destination that fails validate. Committed destinations never restage.
- * A destination that still matches is kept, so settlements appended since
- * staging are not restaged away.
+ * Makes the binding's v2 destination stand. A destination that validates is
+ * kept as is: records appended since staging are its authority. A missing
+ * one is staged from the preserved sources while the migration is prepared,
+ * and refused once it is committed. `restageIfInvalid` (an already-prepared
+ * migration) restages a prepared destination that no longer matches its
+ * import instead of refusing; a committed destination never restages.
  */
 async function stageDestination(
   agentDir: string,
@@ -803,10 +811,10 @@ export async function resumeInterruptedMigration(
   legacyDir: string,
   agentId: string,
   identity: string,
-  options: { now?: () => number; logger?: Logger; loadSqlite?: () => Promise<Pick<typeof import("node:sqlite"), "DatabaseSync">> } = {},
+  options: Pick<MigrateTurnJournalsOptions, "now" | "logger"> = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;
-  const logger = options.logger ?? resolveLogger();
+  const logger = resolveLogger(options.logger);
   const manifest = await readManifest(agentDir);
   if (manifest === null || manifest.state !== "prepared") {
     throw new JournalFileError("The journal's migration is not in a resumable prepared state.", "corrupt", manifestPath(agentDir));
@@ -847,32 +855,21 @@ async function checkSource(legacyDir: string, binding: PreparedBinding, logger: 
 
 /**
  * Migrates an agent's legacy (v1) turn journals into v2 journals bound to the
- * platform identities their operator attests, offline: in an ordinary Node
- * script, with the agent's old writers stopped and auto-restart disabled,
- * because they do not honor the ownership lock the new journals hold.
+ * platform identities their operator attests. It runs offline, with the
+ * agent's old writers stopped: they do not honor the ownership lock.
  *
- * Preview is the default: it reports what `apply: true` would do, writing
- * nothing. Applying requires a complete, hash-verified binding for every
- * legacy file; the originals are preserved byte-for-byte. A compaction copy a
- * crashed v1 writer left beside its journal is bound with the journal it is
- * the unrenamed output of — the journal's records are the room's authority,
- * and the copy is not a second one; a copy whose journal is gone is authority
- * in its own right. The phases are durable in order — the prepared manifest,
- * each staged destination, then the committed manifest — so a crash at any
- * point leaves a state the next apply or start resumes: a destination that
- * stands is kept with whatever records it has since, and a committed
- * migration's missing destination is refused, never guessed back. A prepared
- * migration may be amended when the next apply's bindings keep every
- * previously attested file unchanged and only add sources (for example a
- * surplus remnant the earlier prepare lacked); a rewrite of an existing
- * attestation, or any change after commit, is still refused. A crash after
- * that amend rewrote the prepared manifest but before restage finished is
- * resumed under the extended bindings: prepared destinations that fail
- * validate are restaged so the import is not stuck on the journal-only file.
+ * Preview (the default) writes nothing. `apply: true` requires a
+ * hash-verified binding for every legacy file and preserves the originals
+ * byte-for-byte; a compaction copy stages through the journal it is the
+ * output of, where that journal stands. The prepared manifest, each staged
+ * destination, and the committed manifest are durable in that order, so a
+ * crash leaves a state the next apply or start resumes. A prepared migration
+ * accepts the same bindings or bindings that only add sources; any other
+ * change, and any change after commit, is refused.
  */
 export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): Promise<MigrationResult> {
   const now = options.now ?? Date.now;
-  const logger = options.logger ?? resolveLogger();
+  const logger = resolveLogger(options.logger);
   const agentDir = agentJournalDir(options.journalDir, options.agentId);
   const legacyDir = legacyAgentDir(options.journalDir, options.agentId);
   const legacy = await legacyFiles(legacyDir);
@@ -940,19 +937,10 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       return { mode: "already-committed", sources: await reportSources(legacyDir, legacy, prepared) };
     }
     let manifest: Manifest;
-    // Restage on validate failure whenever a prepared manifest already stood:
-    // amend in-process, and sameBindings resume after an amend crash (manifest
-    // extended, destination still journal-only). First prepare keeps refusing
-    // a pre-existing destination that fails validate. Committed sameBindings
-    // refuse for divergent bindings is unchanged above.
-    let restageIfInvalid = false;
+    // Only a prepared manifest this migration already wrote may restage its
+    // destinations; a first prepare refuses a destination it did not stage.
+    const restageIfInvalid = existing !== null;
     if (existing !== null) {
-      // A prepared manifest from an earlier interrupted run: resume when the
-      // bindings are the same; amend when this apply only adds sources (e.g. a
-      // surplus remnant) without rewriting any attestation already prepared;
-      // refuse any other rewrite so an unrelated re-prepare cannot displace a
-      // prepared import mid-flight.
-      restageIfInvalid = true;
       if (sameBindings(existing.bindings, prepared)) {
         manifest = existing;
       } else if (bindingsExtendPrepared(existing.bindings, prepared)) {
@@ -1025,8 +1013,7 @@ async function validateBindings(
     // journal's records, which the journal keeps in full. Where the journal
     // stands it is the room's one authority, and the copy is staged through
     // it; a copy whose journal is gone is authority in its own right.
-    const remnantPrimary = remnantPrimaryOf(binding.sourceFile);
-    const stagesFrom = remnantPrimary !== undefined && legacy.includes(remnantPrimary) ? remnantPrimary : binding.sourceFile;
+    const stagesFrom = stagesFromOf(binding.sourceFile, legacy);
     // A v1 file's name encodes its room; a binding that names another room would
     // stage the records under a journal whose header binds them elsewhere.
     const encoded = roomIdOfSourceFile(binding.sourceFile);
@@ -1093,14 +1080,10 @@ async function validateBindings(
       // journal's binding, whatever order they arrived in: one room's journal
       // is one authority, and the copies are its outputs. Copies whose journal
       // is gone stage through themselves, and two of them are two authorities.
-      const stagesThrough = (file: string): string => {
-        const primary = remnantPrimaryOf(file);
-        return primary !== undefined && legacy.includes(primary) ? primary : file;
-      };
-      const claimingStagesFrom = stagesThrough(claimingRoom.sourceFile);
+      const claimingStagesFrom = stagesFromOf(claimingRoom.sourceFile, legacy);
       const bothPendingSamePrimary =
         claimingStagesFrom !== claimingRoom.sourceFile &&
-        claimingStagesFrom === stagesThrough(binding.sourceFile);
+        claimingStagesFrom === stagesFromOf(binding.sourceFile, legacy);
       if ((isCopyPair || bothPendingSamePrimary) && claimingRoom.platformIdentity === binding.platformIdentity && claimingRoom.provenance === binding.provenance) {
         // The same room's journal, attested twice (a journal and the copy it
         // crashed from): one migration, staged through the journal. The
@@ -1164,7 +1147,10 @@ async function validateBindings(
   return normalized;
 }
 
-async function reportSources(legacyDir: string, legacy: string[], bindings: Array<Pick<MigrationBinding, "sourceFile" | "platformIdentity" | "provenance">>): Promise<MigrationSourceReport[]> {
+/** What the operator attested for one file: a resume or amend must keep it unchanged. */
+type BindingAttestation = Pick<MigrationBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">;
+
+async function reportSources(legacyDir: string, legacy: string[], bindings: BindingAttestation[]): Promise<MigrationSourceReport[]> {
   const reports: MigrationSourceReport[] = [];
   for (const file of legacy) {
     const binding = bindings.find((candidate) => candidate.sourceFile === file);
@@ -1177,27 +1163,21 @@ async function reportSources(legacyDir: string, legacy: string[], bindings: Arra
   return reports;
 }
 
-function bindingAttestationKey(binding: Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">): string {
+function attestationKey(binding: BindingAttestation): string {
   return `${binding.sourceFile}|${binding.sourceSha256}|${binding.platformIdentity}|${binding.provenance}`;
 }
 
-function sameBindings(a: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>, b: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>): boolean {
-  if (a.length !== b.length) return false;
-  const right = new Map(b.map((binding) => [binding.sourceFile, bindingAttestationKey(binding)]));
-  return a.every((binding) => right.get(binding.sourceFile) === bindingAttestationKey(binding));
+/** Whether every attestation in `existing` stands unchanged in `next`. */
+function keepsAttestations(existing: BindingAttestation[], next: BindingAttestation[]): boolean {
+  const attested = new Map(next.map((binding) => [binding.sourceFile, attestationKey(binding)]));
+  return existing.every((binding) => attested.get(binding.sourceFile) === attestationKey(binding));
 }
 
-/**
- * Whether `next` keeps every attestation in `existing` unchanged and may only
- * add sources — the prepared-amend case for binding a surplus remnant after an
- * interrupted journal-only prepare. A rewrite or drop of an existing file is
- * not an extension.
- */
-function bindingsExtendPrepared(
-  existing: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>,
-  next: Array<Pick<PreparedBinding, "sourceFile" | "sourceSha256" | "platformIdentity" | "provenance">>,
-): boolean {
-  if (next.length <= existing.length) return false;
-  const right = new Map(next.map((binding) => [binding.sourceFile, bindingAttestationKey(binding)]));
-  return existing.every((binding) => right.get(binding.sourceFile) === bindingAttestationKey(binding));
+function sameBindings(a: BindingAttestation[], b: BindingAttestation[]): boolean {
+  return a.length === b.length && keepsAttestations(a, b);
+}
+
+/** Whether `next` keeps every attestation in `existing` and adds sources: an amend of a prepared migration. */
+function bindingsExtendPrepared(existing: BindingAttestation[], next: BindingAttestation[]): boolean {
+  return next.length > existing.length && keepsAttestations(existing, next);
 }

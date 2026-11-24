@@ -78,23 +78,13 @@ export class PublicationEngine {
   }
 
   /**
-   * Posts a reply through the journal: the durable intent is written before
-   * `post` runs (a failed write never lets the post out), and the accepted
-   * post is settled before its result is returned.
-   *
-   * - `uncertain` delivery (a 5xx, no response, or an unreadable response):
-   *   the publication is marked unknown and a `DeliveryUnknownError` is
-   *   thrown — it states that Band may already hold the message, so resending
-   *   it blindly is unsafe. Where the unknown's record itself fails to land,
-   *   the journal is poisoned: it owed a write it could not make.
-   * - the transport acknowledged but the acknowledgment's record failed:
-   *   the publication stands unknown — the journal cannot prove what the
-   *   transport said — and the journal is poisoned either way: a writer that
-   *   lost the write it owes is not admitted again until it reopens.
-   *   A `DeliveryUnknownError` is thrown, not a storage failure.
-   * - `refused`/`notCommitted`, or cut short before the post: the publication
-   *   is marked refused durably (rewrite fallback if append fails) and the
-   *   original failure propagates, so the turn fails and may be retried.
+   * Posts a reply through the journal. The intent is durable before `post`
+   * runs; the result returns only once the outcome is durable. A reply cut
+   * short (by `stopped`) or that Band refused is recorded refused and its
+   * error rethrown. An uncertain delivery, or an acknowledgment whose record
+   * failed, stands unknown and throws `DeliveryUnknownError`: Band may hold
+   * it, so it is never resent blindly; a writer that lost a write it owed is
+   * poisoned until it reopens.
    */
   public async publishReply(
     messageId: string,

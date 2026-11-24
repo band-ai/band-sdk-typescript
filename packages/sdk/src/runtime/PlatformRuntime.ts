@@ -25,6 +25,7 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
+import { Limiter } from "../core/singleFlight";
 import { scopeTurnTools } from "../core/turnScope";
 import { turnFailureLabel } from "../core/coercion";
 import { evaluateAdapterResult, isSelfEcho } from "@band-ai/band-sdk-core";
@@ -108,8 +109,7 @@ export class PlatformRuntime implements AsyncDisposable {
    * hundreds of journal files in the same instant, and a start's recovery is
    * measured in descriptors, not just in outcomes.
    */
-  private recoverySlots = RECOVERY_SLOTS;
-  private readonly recoveryQueue: Array<() => void> = [];
+  private readonly recoveries = new Limiter(RECOVERY_SLOTS);
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -1074,11 +1074,8 @@ export class PlatformRuntime implements AsyncDisposable {
     // not cleared in finally — so a late reply still sees a mid-flight abort.
     // Release is chained into the hold promise (before the room wakes) and is not
     // awaited here: stop()/idle do not wait on publicationStop.
-    //
-    // Nested control turns push their own stop onto the context stack. Release
-    // always removes this turn's signal (and its retain), even when it is not
-    // the top — so an outer hold ending during a nested cut-short cannot leave
-    // an orphaned aborted stop after the nested release.
+    // The stop is keyed by this turn's inbound, so a control turn running
+    // during the hold never refuses this turn's reply, nor this one its.
     let retainPublicationStop = false;
     let publicationHold: Promise<void> = Promise.resolve();
     let publicationClearGeneration = 0;
@@ -1123,9 +1120,9 @@ export class PlatformRuntime implements AsyncDisposable {
           message.settles ? messageId : undefined,
         );
         // The turn's replies refuse to post if the turn is cut short while one is in flight.
-        context.setPublicationStop(stopped);
+        context.setPublicationStop(messageId, stopped);
         releasePublicationStop = () => {
-          context.releasePublicationStop(stopped);
+          context.releasePublicationStop(messageId, stopped);
         };
         const turn = adapter.onEvent({
           ...input,
@@ -1348,13 +1345,16 @@ export class PlatformRuntime implements AsyncDisposable {
       throw error;
     }
     try {
-      // Tracked, so a release of the room waits for the announce rather than
-      // close the handle mid-recovery; tracked only once no release stands, or
-      // that release would wait on an open that waits on it.
-      await generation.trackOnceReleased(roomId, () => this.withRecoverySlot(async () => {
-        const journal = await generation.room(roomId);
-        await this.announceUnresolvedPublications(journal, roomId);
-      }));
+      // Tracked once it holds a slot, so a release of the room waits for the
+      // recovery rather than close the handle under it, never for the queue.
+      await this.recoveries.run(() => {
+        const recovery = (async () => {
+          const journal = await generation.room(roomId);
+          await this.announceUnresolvedPublications(journal, roomId);
+        })();
+        generation.trackInflight(recovery, roomId);
+        return recovery;
+      });
     } catch (error) {
       // The room's handling stopped first: there is no one to announce to.
       if (!(error instanceof GenerationClosedError)) throw error;
@@ -1362,27 +1362,6 @@ export class PlatformRuntime implements AsyncDisposable {
       // An idle room holds no file open: the handle is released once its
       // publications stand reported, and a turn running in the room reopens it.
       await bestEffort(() => generation.release(roomId), this.logger, "Failed to close a room's turn journal after announcing it", { roomId });
-    }
-  }
-
-  /**
-   * Runs `work` with at most {@link RECOVERY_SLOTS} room recoveries open at once.
-   * A freed slot is transferred to a waiter (wake without re-increment) so a
-   * stealer cannot claim the same grant the waiter was woken for.
-   */
-  private async withRecoverySlot<T>(work: () => Promise<T>): Promise<T> {
-    if (this.recoverySlots > 0) {
-      this.recoverySlots -= 1;
-    } else {
-      await new Promise<void>((resolve) => this.recoveryQueue.push(resolve));
-      // Woken with the slot already transferred.
-    }
-    try {
-      return await work();
-    } finally {
-      const next = this.recoveryQueue.shift();
-      if (next) next();
-      else this.recoverySlots += 1;
     }
   }
 

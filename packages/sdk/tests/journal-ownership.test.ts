@@ -1,13 +1,22 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { chmod, lstat, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdtempSync as mkdtempSyncSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
 
-import { JournalOwnership, JournalOwnershipError, type JournalOwnershipKind } from "../src/runtime/journal/ownership";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+
+import {
+  JournalOwnership,
+  JournalOwnershipError,
+  type JournalOwnershipKind,
+  type JournalOwnershipOptions,
+} from "../src/runtime/journal/ownership";
+
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 function expectKind(error: unknown, kind: JournalOwnershipKind): asserts error is JournalOwnershipError {
   expect(error).toBeInstanceOf(JournalOwnershipError);
@@ -123,13 +132,16 @@ describe("journal ownership", () => {
   it("holds through an advanced application clock: the lock has no lease to expire", async () => {
     const file = path.join(dir, "paused.sqlite");
     const owner = await JournalOwnership.acquire(file);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     try {
+      vi.setSystemTime(Date.now() + YEAR_MS);
       await expectContention(file);
     } finally {
       await owner.release();
     }
-    const next = await JournalOwnership.acquire(file);
-    await next.release();
   });
 
   it("fails closed on a lock file that is not a database", async () => {
@@ -140,90 +152,43 @@ describe("journal ownership", () => {
     expect(error.message).toContain("not a database");
   });
 
-  it("classifies EACCES as io even when the path basename contains locked", async () => {
-    const file = path.join(dir, "locked.sqlite");
-    const error = await JournalOwnership.acquire(file, {
-      loadSqlite: async () =>
-        ({
-          DatabaseSync: class {
-            constructor() {
-              throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: "EACCES" });
-            }
-          },
-        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
-    }).catch((e: unknown) => e);
-    expectKind(error, "io");
-    expect(error.message).toContain(file);
-  });
-
-  it("classifies filesystem EBUSY / resource busy as io, not contention", async () => {
-    const file = path.join(dir, "resource-busy.sqlite");
-    const error = await JournalOwnership.acquire(file, {
-      loadSqlite: async () =>
-        ({
-          DatabaseSync: class {
-            constructor() {
-              throw Object.assign(new Error(`EBUSY: resource busy, open '${file}'`), { code: "EBUSY" });
-            }
-          },
-        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
-    }).catch((e: unknown) => e);
-    expectKind(error, "io");
-    expect(error.message).toContain(file);
-  });
-
-  it("classifies EACCES as io when locked appears only in a parent path the strip misses", async () => {
-    // Parent directory named `locked`; error message uses the alternate separator so
-    // stripping `file` / basename leaves "locked" in the haystack — bare "locked"
-    // must not become contention.
-    const file = path.join(dir, "locked", "owner.sqlite");
-    const altSep = path.sep === "/" ? "\\" : "/";
-    const echoed = file.split(path.sep).join(altSep);
-    const error = await JournalOwnership.acquire(file, {
-      loadSqlite: async () =>
-        ({
-          DatabaseSync: class {
-            constructor() {
-              throw Object.assign(new Error(`EACCES: permission denied, open '${echoed}'`), { code: "EACCES" });
-            }
-          },
-        }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
-    }).catch((e: unknown) => e);
-    expectKind(error, "io");
-    expect(error.message).toContain(file);
-  });
-
-  it("fails closed when the journal's directory cannot be written", async () => {
-    const subdir = path.join(dir, "unwritable");
-    await mkdir(subdir);
-    // Basename includes "locked" so a classifier that matches the path would
-    // mis-report EACCES as contention (Windows mock embeds this path).
-    const file = path.join(subdir, "locked.sqlite");
-    if (process.platform === "win32") {
-      // Windows ACL/chmod semantics do not make the directory unwritable the
-      // same way; prove the same fail-closed IO kind via the open classifier.
-      const error = await JournalOwnership.acquire(file, {
-        loadSqlite: async () =>
-          ({
-            DatabaseSync: class {
-              constructor() {
-                throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: "EACCES" });
-              }
-            },
-          }) as unknown as Pick<typeof import("node:sqlite"), "DatabaseSync">,
-      }).catch((e: unknown) => e);
-      expectKind(error, "io");
-      expect(error.message).toContain(file);
-      return;
-    }
-    // A read-only directory makes the lock file unwritable: SQLite reports the
-    // attempt to write a readonly database, and the acquisition fails closed.
-    await writeFile(file, "");
-    await chmod(subdir, 0o555);
-    onTestFinished(async () => {
-      await chmod(subdir, 0o755).catch(() => undefined);
-    });
+  it("fails closed as io on a lock file that cannot be opened", async () => {
+    const file = path.join(dir, "missing-parent", "owner.sqlite");
     const error = await JournalOwnership.acquire(file).catch((e: unknown) => e);
+    expectKind(error, "io");
+    expect(error.message).toContain(file);
+  });
+
+  it("reads contention through SQLite's extended busy codes", async () => {
+    // SQLITE_BUSY_SNAPSHOT (517) carries SQLITE_BUSY in its low byte, in the
+    // shape node:sqlite raises it.
+    const busySnapshot = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 517, errstr: "database is locked" });
+    const loadSqlite: JournalOwnershipOptions["loadSqlite"] = async () => ({
+      DatabaseSync: class {
+        public constructor() {
+          throw busySnapshot;
+        }
+      } as unknown as typeof DatabaseSync,
+    });
+    const error = await JournalOwnership.acquire(path.join(dir, "snapshot.sqlite"), { loadSqlite }).catch((e: unknown) => e);
+    expectKind(error, "contention");
+    expect(error.cause).toBe(busySnapshot);
+  });
+
+  it("fails closed as io when SQLite cannot write the lock file", async () => {
+    // SQLITE_READONLY_DIRECTORY (1544), in the shape node:sqlite raises it for
+    // a lock file whose directory is read-only; a real chmod cannot produce it
+    // on Windows, so the shape is driven directly on every platform.
+    const file = path.join(dir, "readonly.sqlite");
+    const readonly = Object.assign(new Error("attempt to write a readonly database"), { code: "ERR_SQLITE_ERROR", errcode: 1544, errstr: "attempt to write a readonly database" });
+    const loadSqlite: JournalOwnershipOptions["loadSqlite"] = async () => ({
+      DatabaseSync: class {
+        public constructor() {
+          throw readonly;
+        }
+      } as unknown as typeof DatabaseSync,
+    });
+    const error = await JournalOwnership.acquire(file, { loadSqlite }).catch((e: unknown) => e);
     expectKind(error, "io");
     expect(error.message).toContain(file);
   });

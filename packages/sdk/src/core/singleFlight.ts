@@ -52,6 +52,11 @@ export class KeyedSingleFlight<T = void> {
     return promise;
   }
 
+  /** Settles once every operation in flight now has settled, whatever its outcome. */
+  public async settled(): Promise<void> {
+    await Promise.allSettled([...this.flights.values()].flatMap((flight) => flight.current ?? []));
+  }
+
   /** Drops every key without waiting for its in-flight operation to settle. */
   public clear(): void {
     this.flights.clear();
@@ -74,5 +79,34 @@ export class Serializer {
       () => undefined,
     );
     return run;
+  }
+}
+
+/**
+ * Runs at most `capacity` bodies at once; the rest wait in arrival order. A
+ * freed slot passes straight to the next waiter, so a newcomer never takes
+ * the slot a waiter was woken for.
+ */
+export class Limiter {
+  private free: number;
+  private readonly waiters: Array<() => void> = [];
+
+  public constructor(capacity: number) {
+    this.free = capacity;
+  }
+
+  public async run<T>(body: () => Promise<T>): Promise<T> {
+    if (this.free > 0) {
+      this.free -= 1;
+    } else {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    try {
+      return await body();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.free += 1;
+    }
   }
 }
