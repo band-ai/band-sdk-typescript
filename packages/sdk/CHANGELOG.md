@@ -1,6 +1,18 @@
 # Changelog
 
 
+## [3.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.3.0...sdk-v3.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** the turn journal format is v2: files stand at <journalDir>/<sha256(agentId)>/<sha256(platformIdentity)>/<sha256(roomId)>.jsonl and every record and header carries the room. Users of 2.2.0 who set sessionConfig.journalDir must run the exported migrateTurnJournals with apply: true and a binding ({sourceFile, roomId, sourceSha256, platformIdentity, provenance}) for every legacy file before starting; unbound v1 files refuse the start.
+
+### Features
+
+* **runtime:** durably settle turn replies, keeping what a restart cannot confirm unsettled ([#443](https://github.com/band-ai/band-sdk-typescript/issues/443)) ([4d99aa0](https://github.com/band-ai/band-sdk-typescript/commit/4d99aa0040e0402b9a227f6ff50b6f196ed431ad))
+* **sdk:** publish a keyed send at most once, admitted on raw operation-id presence ([#444](https://github.com/band-ai/band-sdk-typescript/issues/444)) ([6007bf0](https://github.com/band-ai/band-sdk-typescript/commit/6007bf00eb2e396263b081261cdd5a58c308554e))
+
 ## [2.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.2.0...sdk-v2.3.0) (2026-11-23)
 
 
