@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
-import { asNonEmptyString, asOptionalRecord } from "../adapters/shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../core/coercion";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import { errorClassOf } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
@@ -117,7 +117,16 @@ export class AdmissionTransport extends ForwardingTransport {
     if (origin === undefined) {
       return this.refuse(name, "noOrigin");
     }
-    return fenceTurnForKeyedAdmission(origin.tools) ? { origin, logger: this.logger } : this.refuse(name, "notFenced");
+    let fenced = false;
+    try {
+      fenced = fenceTurnForKeyedAdmission(origin.tools);
+    } catch (error) {
+      this.logger.warn("a keyed call's turn fence threw; the call is refused", {
+        tool: name,
+        ...errorClassOf(error),
+      });
+    }
+    return fenced ? { origin, logger: this.logger } : this.refuse(name, "notFenced");
   }
 
   private refuse(tool: string, reason: keyof typeof KEYED_ADMISSION_REFUSALS): Admission {

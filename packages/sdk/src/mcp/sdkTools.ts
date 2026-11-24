@@ -7,11 +7,17 @@ import { buildZodShape } from "./zod";
 import { AdmissionTransport, type OriginResolver } from "./admission";
 import type { Logger } from "../core/logger";
 
+export interface SdkMcpBridgeOptions {
+  /** Custom tools registered with a loose schema, so the original schema validates every business argument. */
+  portableRegistrations?: McpToolRegistration[];
+  /** Without one the bridge serves no operation ids. */
+  originResolver?: OriginResolver;
+  logger?: Logger;
+}
+
 export function createSdkMcpBridge(
   registrations: McpToolRegistration[],
-  portableRegistrations: McpToolRegistration[] = [],
-  originResolver?: OriginResolver,
-  logger?: Logger,
+  { portableRegistrations = [], originResolver, logger }: SdkMcpBridgeOptions = {},
 ) {
   const nativeDefinitions = registrations.map(toSdkToolDefinition);
   const portableDefinitions = portableRegistrations.map(toSdkToolDefinition);

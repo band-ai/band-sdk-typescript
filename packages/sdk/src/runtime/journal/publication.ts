@@ -6,7 +6,7 @@ import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import { cutShort } from "../turnRevocation";
 import { closedJournalError, JournalPublicationError, poisonedJournalError } from "./errors";
-import type { OperationCheck, RoomJournal } from "./RoomJournal";
+import type { OperationCheck, OperationSettlement, RoomJournal } from "./RoomJournal";
 import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 import {
   committedNothing,
@@ -353,7 +353,7 @@ export class PublicationEngine {
   private async runKeyedDecline(journal: RoomJournal, input: OperationInput, operationId: string): Promise<ToolOperationResult> {
     const harnessRefusal = "the harness could not run this no-reply";
     if (input.runDecline === undefined) {
-      return await this.refuse(journal, operationId, harnessRefusal, { error: new OperationUnsupportedError("no-journal") });
+      return await this.refuse(journal, operationId, harnessRefusal);
     }
     let result: ToolOperationResult;
     try {
@@ -375,7 +375,7 @@ export class PublicationEngine {
     journal: RoomJournal,
     kind: OperationKind,
     operationId: string,
-    settlement: { receiptId?: string; resultJson?: string },
+    settlement: OperationSettlement,
   ): Promise<void> {
     try {
       await journal.settleOperation(operationId, settlement);
@@ -514,6 +514,10 @@ export class PublicationEngine {
     const stored = storedSendResult(check.resultJson);
     if (stored === undefined) {
       journal.poison();
+      this.logger.error("a settled operation's stored result does not stand; the replay is refused, and the room's journal no longer admits records", {
+        roomId: journal.roomId,
+        operationId,
+      });
       throw new JournalPublicationError(
         `The journal records the settled operation ${operationId} without a stored result that stands: the replay is refused rather than invented, and the journal no longer admits records until it is restored.`,
         "poisoned",

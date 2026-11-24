@@ -32,18 +32,14 @@ export class AdmissionGuardError extends Error {
 }
 
 /**
- * Fences the turn standing behind `tools`, and answers whether the fence
- * stood; when it did not, the caller refuses the dispatch.
+ * Fences the turn standing behind `tools`, and answers whether it has a fence;
+ * when it has none, or the fence throws, the caller refuses the dispatch.
  */
 export function fenceTurnForKeyedAdmission(tools: AdapterToolsProtocol): boolean {
-  try {
-    const fence = tools.keyedAdmissionFence;
-    if (fence === undefined) return false;
-    fence();
-    return true;
-  } catch {
-    return false;
-  }
+  const fence = tools.keyedAdmissionFence;
+  if (fence === undefined) return false;
+  fence();
+  return true;
 }
 
 /**

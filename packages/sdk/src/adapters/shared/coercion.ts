@@ -4,7 +4,7 @@ import { asOptionalRecord } from "../../core/coercion";
 // Lives in core/, not here, so runtime/ code needing the same conversion
 // (e.g. ContactCallbackTools) can import it without depending on adapters/ --
 // re-exported for every existing adapter import of it from this module.
-export { asErrorMessage, asNestedMessage, asOptionalRecord, truncate } from "../../core/coercion";
+export { asErrorMessage, asNestedMessage, asNonEmptyString, asOptionalRecord, truncate } from "../../core/coercion";
 
 export function asRecord(value: unknown, context = "value"): Record<string, unknown> {
   const record = asOptionalRecord(value);
@@ -13,15 +13,6 @@ export function asRecord(value: unknown, context = "value"): Record<string, unkn
   }
 
   return record;
-}
-
-export function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function asString(value: unknown): string | undefined {

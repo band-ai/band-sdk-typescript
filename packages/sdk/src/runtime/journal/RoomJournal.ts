@@ -118,6 +118,9 @@ type UnpostedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused"
 
 type OperationRecord = Extract<JournalRecord, { t: `op.${string}` }>;
 
+/** What a settled keyed operation stores for its replays. */
+export type OperationSettlement = Pick<Extract<JournalRecord, { t: "op.settled" }>, "receiptId" | "resultJson">;
+
 /** How one keyed operation stands in the journal, by its id. */
 export interface OperationIndex {
   /** The first caller's inbound: the turn the operation was admitted in. */
@@ -144,7 +147,7 @@ export interface OperationIndex {
 export type OperationCheck =
   | { status: "reserved" }
   | { status: "inflight"; promise: Promise<unknown> }
-  | { status: "settled"; receiptId?: string; resultJson?: string }
+  | ({ status: "settled" } & OperationSettlement)
   | { status: "refused"; reasonText?: string }
   | { status: "unknown" }
   | { status: "conflict" };
@@ -559,8 +562,7 @@ export class RoomJournal {
     this.assertAdmitting();
     const operation = this.requireOperation(operationId);
     if (operation.recipients !== undefined) {
-      this.poison();
-      throw new JournalPublicationError("The journal already records this operation's recipients; a second record is a conflict", "poisoned");
+      throw this.poisonOver(operationId, "The journal already records this operation's recipients; a second record is a conflict");
     }
     await this.write({ t: "op.recipients", operationId, recipients, messageId: operation.messageId, at: this.now() });
   }
@@ -570,7 +572,7 @@ export class RoomJournal {
    * for every later same-id call, and the operation's original inbound is
    * answered.
    */
-  public async settleOperation(operationId: string, settlement: { receiptId?: string; resultJson?: string }): Promise<void> {
+  public async settleOperation(operationId: string, settlement: OperationSettlement): Promise<void> {
     this.assertAdmitting();
     const operation = this.requireOperation(operationId);
     await this.write({
@@ -619,10 +621,16 @@ export class RoomJournal {
   private requireOperation(operationId: string): OperationIndex {
     const operation = this.operations.get(operationId);
     if (operation === undefined) {
-      this.poison();
-      throw new JournalPublicationError("The journal holds no such keyed operation; its record cannot be written", "poisoned");
+      throw this.poisonOver(operationId, "The journal holds no such keyed operation; its record cannot be written");
     }
     return operation;
+  }
+
+  /** Poisons the journal over a keyed operation's broken record invariant, logged with its id, and returns the error to throw. */
+  private poisonOver(operationId: string, message: string): JournalPublicationError {
+    this.poison();
+    this.logger.error("a keyed operation's record invariant broke; the room's journal no longer admits records", { roomId: this.roomId, operationId, reason: message });
+    return new JournalPublicationError(message, "poisoned");
   }
 
   /**

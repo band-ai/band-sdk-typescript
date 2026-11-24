@@ -263,7 +263,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools, isCurrent: () => boolean) {
     const resolve = (id: string): TurnTools | undefined => id === roomId && isCurrent() ? tools : undefined;
     const { registrations, custom, localNames } = this.buildRegistrations(resolve);
-    const bridge = createBridge(registrations, custom);
+    const bridge = createBridge(registrations, { portableRegistrations: custom });
     return {
       bridge,
       localToolNames: new Set([...localNames].map(claudeHookToolName)),

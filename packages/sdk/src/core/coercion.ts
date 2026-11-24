@@ -12,7 +12,7 @@ export function asOptionalRecord(value: unknown): Record<string, unknown> | unde
   return value as Record<string, unknown>;
 }
 
-function asNonEmptyString(value: unknown): string | null {
+export function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }

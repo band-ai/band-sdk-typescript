@@ -74,7 +74,7 @@ export function createBandSdkMcpServer(
     admissionGuard: options.admissionGuard,
   });
 
-  const bridge = createSdkMcpBridge(registrations, undefined, originResolver, options.logger);
+  const bridge = createSdkMcpBridge(registrations, { originResolver, logger: options.logger });
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 

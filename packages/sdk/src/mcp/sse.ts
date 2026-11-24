@@ -121,23 +121,25 @@ export class BandMcpSseServer {
         version: MCP_SERVER_VERSION,
       })
       registerTools(mcpServer, z, this.registrations)
-      // The admission decorator stands between the client and the framework:
-      // a keyed call is fenced and pinned before any validation.
-      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger))
 
       const sessionId = transport.sessionId
-      this.sessions.set(sessionId, {
-        mcpServer,
-        transport,
-        lastSeenAt: Date.now(),
-      })
-
+      // Set before connect: the admission decorator chains these handlers, so
+      // assigning them afterwards would cut the server's own close and error handling.
       transport.onclose = () => {
         this.sessions.delete(sessionId)
       }
       transport.onerror = () => {
         this.sessions.delete(sessionId)
       }
+      // The admission decorator stands between the client and the framework:
+      // a keyed call is fenced and pinned before any validation.
+      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger))
+
+      this.sessions.set(sessionId, {
+        mcpServer,
+        transport,
+        lastSeenAt: Date.now(),
+      })
 
       res.on("close", () => {
         this.sessions.delete(sessionId)
