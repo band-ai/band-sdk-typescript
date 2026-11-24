@@ -5,6 +5,7 @@ import { bandToolOverrides } from "../../core/turn";
 import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
 import { cutShort } from "../turnRevocation";
+import { JournalPublicationError } from "./errors";
 
 /**
  * Wraps the tools a turn runs on, keeping the turn's side of the runtime's
@@ -13,8 +14,9 @@ import { cutShort } from "../turnRevocation";
  * - a reply or decline made after the turn was cut short is refused before
  *   any post, so a reply a turn lost cannot still go out;
  * - a classified delivery-unknown (thrown, or surfaced as a tool-executor
- *   error) fences this turn's closing text. The fence stands on the wrapper
- *   itself — the adapter's turn object reads it through
+ *   error) fences this turn: its later replies and closing text are refused
+ *   rather than posted beside a reply Band may hold. The fence stands on the
+ *   wrapper itself — the adapter's turn object reads it through
  *   `unknownDeliveryFenced` — so a late result fences the turn it ran on and
  *   cannot reach a successor, which wraps its own tools.
  *
@@ -31,9 +33,15 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   // turn reads it through the wrapper it runs on.
   let fenced = false;
 
-  const wrapCall = (call: () => Promise<unknown>): Promise<unknown> => {
+  const wrapCall = (call: () => Promise<unknown>, effect: "reply" | "decline"): Promise<unknown> => {
     const refused = cutShort(stopped);
     if (refused) throw refused;
+    if (fenced && effect === "reply") {
+      throw new JournalPublicationError(
+        "This turn already has a reply whose delivery is unknown; a replacement is refused rather than posted beside it",
+        "fenced",
+      );
+    }
     return call().then(
       (result) => {
         if (isDeliveryUnknownOutput(result)) {
@@ -54,7 +62,7 @@ export function journalingTools<T extends AdapterToolsProtocol>(
 
   const overrides = bandToolOverrides(tools, (toolName, call) => {
     const effect = BAND_TOOL_EFFECTS[toolName];
-    return effect === "reply" || effect === "decline" ? wrapCall(call) : call();
+    return effect === "reply" || effect === "decline" ? wrapCall(call, effect) : call();
   });
 
   return overrideTools(tools, {

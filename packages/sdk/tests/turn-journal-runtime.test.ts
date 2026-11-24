@@ -20,7 +20,6 @@ import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
-import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
@@ -332,24 +331,13 @@ describe("the turn journal across a restart", () => {
     expect(await journalRecords(journalDir)).toEqual(["reply.intent", "turn.done", "reply.refused"]);
   });
 
-  it("keeps publicationStop through a cut-short hold so a late reply is refused", async () => {
+  it("refuses a late reply from a turn cut short while its handler still runs", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
     const parked = createDeferred();
     onTestFinished(() => parked.resolve());
     const late = createDeferred<unknown>();
-    let contextRef: ExecutionContext | undefined;
-    const setStop = ExecutionContext.prototype.setPublicationStop;
-    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
-      this: ExecutionContext,
-      signal: AbortSignal | undefined,
-    ) {
-      contextRef = this;
-      return setStop.call(this, signal);
-    });
-    onTestFinished(() => spy.mockRestore());
-
     const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
       await parked.promise;
       await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
@@ -359,23 +347,17 @@ describe("the turn journal across a restart", () => {
 
     platform.control("interrupt", ROOM);
     await events.next((event) => event.type === "turn.stopped");
-    // untilStopped has settled (the former clear point): the cut-short hold must
-    // still own publicationStop so the late reply sees the abort.
-    expect(contextRef?.getPublicationStop()).toBeInstanceOf(AbortSignal);
-    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
 
+    // The turn stopped while its handler still runs: its late reply must stay refused.
     parked.resolve();
     const error = await late.promise;
     expect(error).toBeInstanceOf(Error);
     expect(String(error)).toContain("cut short");
     expect(room.messages).toEqual([]);
     expect(await room.outcome(inbound)).toBe("processed");
-    await vi.waitFor(() => {
-      expect(contextRef?.getPublicationStop()).toBeUndefined();
-    });
   });
 
-  it("keeps an outer cut-short publicationStop when a nested control turn ends", async () => {
+  it("still refuses a late reply from the outer cut-short turn after a nested control turn ends", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -390,17 +372,6 @@ describe("the turn journal across a restart", () => {
         return message.content === CONTROL;
       }
     }
-
-    let contextRef: ExecutionContext | undefined;
-    const setStop = ExecutionContext.prototype.setPublicationStop;
-    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
-      this: ExecutionContext,
-      signal: AbortSignal | undefined,
-    ) {
-      contextRef = this;
-      return setStop.call(this, signal);
-    });
-    onTestFinished(() => spy.mockRestore());
 
     const events = new RecordLog<AgentEvent>();
     const runtime = new PlatformRuntime({
@@ -436,17 +407,12 @@ describe("the turn journal across a restart", () => {
 
     platform.control("interrupt", ROOM);
     await events.next((event) => event.type === "turn.stopped");
-    const retained = contextRef?.getPublicationStop();
-    expect(retained).toBeInstanceOf(AbortSignal);
-    expect(retained?.aborted).toBe(true);
 
-    // Nested control runs during the cut-short hold; its release must leave the
-    // outer aborted stop on the stack, not clear it or leave the nested signal.
+    // A nested control turn runs and ends during the cut-short hold; the outer
+    // turn's late reply must still be refused after it.
     const control = await room.say(OWNER, CONTROL);
     await controlDone.promise;
     expect(await room.outcome(control)).toBe("processed");
-    expect(contextRef?.getPublicationStop()).toBe(retained);
-    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
 
     parked.resolve();
     const error = await late.promise;
@@ -456,7 +422,7 @@ describe("the turn journal across a restart", () => {
     expect(await room.outcome(inbound)).toBe("processed");
   });
 
-  it("clears publicationStop when a nested control is also cut short during an outer hold", async () => {
+  it("replies normally after a nested control turn is also cut short during an outer hold", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -474,17 +440,6 @@ describe("the turn journal across a restart", () => {
         return message.content === CONTROL;
       }
     }
-
-    let contextRef: ExecutionContext | undefined;
-    const setStop = ExecutionContext.prototype.setPublicationStop;
-    const spy = vi.spyOn(ExecutionContext.prototype, "setPublicationStop").mockImplementation(function (
-      this: ExecutionContext,
-      signal: AbortSignal | undefined,
-    ) {
-      contextRef = this;
-      return setStop.call(this, signal);
-    });
-    onTestFinished(() => spy.mockRestore());
 
     const events = new RecordLog<AgentEvent>();
     const runtime = new PlatformRuntime({
@@ -512,6 +467,10 @@ describe("the turn journal across a restart", () => {
           await nestedParked.promise;
           return;
         }
+        if (message.content.includes("fresh")) {
+          await tools.sendMessage("fresh reply", ["@owner"]);
+          return;
+        }
         await outerParked.promise;
         await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
       }),
@@ -522,7 +481,6 @@ describe("the turn journal across a restart", () => {
 
     platform.control("interrupt", ROOM);
     await events.next((event) => event.type === "turn.stopped");
-    expect(contextRef?.getPublicationStop()?.aborted).toBe(true);
 
     void room.say(OWNER, CONTROL);
     await vi.waitFor(() => expect(nestedStarted).toBe(true));
@@ -537,10 +495,8 @@ describe("the turn journal across a restart", () => {
     await late.promise;
 
     nestedParked.resolve();
-    await vi.waitFor(() => {
-      const stop = contextRef?.getPublicationStop();
-      expect(stop === undefined || stop.aborted === false).toBe(true);
-    });
+    // Once both cut-short turns end, the room's next turn replies normally.
+    expect(await room.exchange(OWNER, `${MENTION} fresh`)).toEqual(["fresh reply"]);
   });
 });
 
@@ -564,16 +520,19 @@ describe("an unresolved publication through a restart", () => {
     onTestFinished(() => spy.mockRestore());
 
     let relayed = true;
+    let replacement: unknown;
     const first = await startProcess(platform, journalDir, async ({ tools, message }) => {
       const isB = message.content.includes("B");
       await tools.sendMessage(isB ? "answer B" : "answer A", ["@owner"]).catch(() => undefined);
       if (isB) {
-        // The turn's own closing text must not go out as a replacement for the unknown reply.
+        // Neither a second reply nor the closing text may go out beside the unknown reply.
+        replacement = await tools.sendMessage("answer B, again", ["@owner"]).catch((error: unknown) => error);
         relayed = await relayReply(tools, "closing text", ["@owner"]);
       }
     });
     await platform.rest.settled.next((settled) => settled.messageId === a && settled.outcome === "processed");
     await platform.rest.settled.next((settled) => settled.messageId === b && settled.outcome === "failed");
+    expect(replacement).toMatchObject({ cause: { kind: "fenced" } });
     expect(relayed).toBe(false);
     // B's unknown reply is fenced: the platform took answer A and answer B's attempt, nothing else.
     expect(posts).toEqual(["answer A", "answer B"]);

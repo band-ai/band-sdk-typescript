@@ -301,9 +301,14 @@ class Generation implements JournalGeneration {
       // Force already closed (or never opened): no close is owed to a later endHold.
       if (force) {
         this.deferredCloses.delete(roomId);
-        // Admit-time announce tracks before rooms.set; drain that inflight so
-        // force does not return while a tracked announce is still pending.
+        // Tracked work (an admit-time announce, a first publication) may open
+        // the room while it drains; force must not return with that handle open.
         await this.drainRoomInflight(roomId);
+        const opened = this.rooms.get(roomId);
+        if (opened) {
+          this.rooms.delete(roomId);
+          await this.closeRoomNow(roomId, opened);
+        }
       }
       // A held room's close is owed, but a turn still uses its handle; it runs
       // when the last hold ends. An already closed room stands behind its close.

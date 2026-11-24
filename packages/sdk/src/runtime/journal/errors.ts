@@ -21,9 +21,8 @@ export class JournalFileError extends BandSdkError {
  * post until it is resolved.
  *
  * - `poisoned` / `closed`: the handle will not take records.
- * - `fenced`: the inbound already has a durable (or write-queue committed)
- *   pending or unknown publication; a replacement must not POST beside a
- *   reply Band may already hold. A rolled-back in-flight intent is not a fence.
+ * - `fenced`: the turn already has a reply whose delivery stands unknown; a
+ *   replacement must not post beside a reply Band may already hold.
  */
 export type JournalPublicationKind = "poisoned" | "closed" | "fenced";
 

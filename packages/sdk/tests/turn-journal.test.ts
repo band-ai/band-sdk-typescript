@@ -5,7 +5,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
-import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { BandSdkError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
@@ -301,37 +300,6 @@ describe("publications", () => {
     ]);
   });
 
-  it("refuses a second publishReply for an inbound whose delivery already stands unknown", async () => {
-    const dir = tmpRoot();
-    const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
-    const engine = PublicationEngine.create({
-      room: async () => room,
-      roomId: ROOM,
-      generation,
-      logger: new NoopLogger(),
-    });
-
-    await expect(
-      engine.publishReply("msg-1", async () => {
-        // Raw transport failure: classifyFailedAttempt treats it as uncertain.
-        throw new Error("socket hang up");
-      }),
-    ).rejects.toBeInstanceOf(DeliveryUnknownError);
-    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown"]);
-
-    let secondPosts = 0;
-    await expect(
-      engine.publishReply("msg-1", async () => {
-        secondPosts += 1;
-        return { success: true, id: "replacement" };
-      }),
-    ).rejects.toMatchObject({ kind: "fenced" });
-    expect(secondPosts).toBe(0);
-    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown"]);
-    expect(room.accepting).toBe(true);
-  });
-
   it("records a cut-short refusal durably when the refuse append fails, so reopen does not announce pending", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
@@ -441,37 +409,24 @@ describe("publications", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
   });
 
-  it("lets a peer beginReply proceed after a rolled-back intent append instead of fencing on memory", async () => {
+  it("stays poisoned when an intent append fails after part of it reached the file", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await generation.room(ROOM);
-
-    let intentCount = 0;
-    const entered = createDeferred();
-    const releaseFail = createDeferred();
-    onTestFinished(() => releaseFail.resolve());
     await interceptJournalAppends(async (original, self, args) => {
       const line = typeof args[0] === "string" ? args[0] : "";
       if (line.includes("reply.intent")) {
-        intentCount += 1;
-        if (intentCount === 1) {
-          entered.resolve();
-          await releaseFail.promise;
-          throw diskFull();
-        }
+        // A full disk takes half the line, then the append rejects.
+        const handle = self as unknown as { write: (buffer: Buffer) => Promise<unknown> };
+        await handle.write(Buffer.from(line.slice(0, Math.floor(line.length / 2)), "utf8"));
+        throw diskFull();
       }
       return original.apply(self, args);
     });
 
-    const beginA = room.beginReply("msg-1");
-    await entered.promise;
-    // Peer queues behind A's serialized begin; it must not sync-fence on the
-    // in-flight reservation that rolls back when append never wrote bytes.
-    const beginB = room.beginReply("msg-1");
-    releaseFail.resolve();
-    await expect(beginA).rejects.toBeTruthy();
-    await expect(beginB).resolves.toEqual(expect.any(String));
-    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
+    await expect(room.beginReply("msg-1")).rejects.toBeInstanceOf(JournalFileError);
+    expect(room.accepting).toBe(false);
+    await expect(room.beginReply("msg-2")).rejects.toMatchObject({ kind: "poisoned" });
   });
 
   it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
@@ -928,34 +883,22 @@ describe("ownership and generations", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 
-  it("awaits tracked announce inflight on force release before rooms.set", async () => {
-    const dir = tmpRoot();
-    const { generation } = await generationIn(dir);
-    // Open then release so the room file exists but rooms has no entry — the
-    // admit-time announce window trackInflight covers before rooms.set.
-    await generation.room(ROOM);
-    await generation.release(ROOM);
-
-    let finishTracked!: () => void;
-    const tracked = new Promise<void>((resolve) => {
-      finishTracked = resolve;
-    });
-    let trackedDone = false;
-    void tracked.then(() => {
-      trackedDone = true;
-    });
+  it("waits for tracked work on force release and closes the handle that work opened meanwhile", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const gate = createDeferred();
+    // Tracked work that opens the room only once force release is already draining:
+    // an admit-time announce or a room's first publication.
+    let opened: RoomJournal | undefined;
+    const tracked = (async () => {
+      await gate.promise;
+      opened = await generation.room(ROOM);
+    })();
     generation.trackInflight(tracked, ROOM);
 
-    const releaseStatus = await Promise.race([
-      generation.release(ROOM, true).then(() => ({ done: true as const, trackedDone })),
-      new Promise<{ done: false; trackedDone: boolean }>((resolve) => {
-        setTimeout(() => resolve({ done: false, trackedDone }), 30);
-      }),
-    ]);
-    expect(releaseStatus).toEqual({ done: false, trackedDone: false });
-    finishTracked();
-    await generation.release(ROOM, true);
-    expect(trackedDone).toBe(true);
+    const releasing = generation.release(ROOM, true);
+    gate.resolve();
+    await releasing;
+    expect(opened?.isClosed).toBe(true);
   });
 });
 

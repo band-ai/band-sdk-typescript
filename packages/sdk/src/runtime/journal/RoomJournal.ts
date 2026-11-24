@@ -373,45 +373,16 @@ export class RoomJournal {
 
   /**
    * Records that a reply is about to begin posting; the post does not run until
-   * this is durable. An inbound that already has a pending or unknown
-   * publication is refused: a replacement must not POST beside a reply Band
-   * may already hold. The fence check, in-memory reserve, and durable append
-   * run as one serialized write so a concurrent beginReply for the same
-   * inbound waits for this attempt's durable outcome — it never fences on a
-   * reservation that then rolls back with a failed append.
+   * this is durable. A failed append leaves the writer poisoned: part of the
+   * intent may stand in the file.
    */
-  public beginReply(messageId: string): Promise<string> {
-    return this.writes.run(async () => {
-      this.assertAdmitting();
-      const inbound = this.touch(messageId);
-      for (const publication of inbound.publications.values()) {
-        if (publication.outcome === "pending" || publication.outcome === "unknown") {
-          throw new JournalPublicationError(
-            "This inbound already has a reply whose delivery is unresolved; a replacement is refused rather than posted beside it",
-            "fenced",
-          );
-        }
-      }
-      const publicationId = randomUUID();
-      const at = this.now();
-      inbound.publications.set(publicationId, { outcome: "pending", reported: false, at });
-      let bytesWritten = false;
-      try {
-        await this.appendUnlocked(
-          { t: "reply.intent", messageId, publicationId, at },
-          { onBytesWritten: () => { bytesWritten = true; } },
-        );
-      } catch (error) {
-        inbound.publications.delete(publicationId);
-        // Intent never stood on disk: this append's poison is not an owed
-        // settlement debt — clear it so a peer queued behind us can retry.
-        // When appendFile succeeded and only sync failed, keep poison: the
-        // intent may already be in the file without a memory reservation.
-        if (!bytesWritten) this.poisoned = false;
-        throw error;
-      }
-      return publicationId;
-    });
+  public async beginReply(messageId: string): Promise<string> {
+    this.assertAdmitting();
+    const publicationId = randomUUID();
+    const at = this.now();
+    await this.append({ t: "reply.intent", messageId, publicationId, at });
+    this.touch(messageId).publications.set(publicationId, { outcome: "pending", reported: false, at });
+    return publicationId;
   }
 
   /** Records that Band acknowledged the reply; the reply is settled and the inbound answered. */
@@ -601,19 +572,10 @@ export class RoomJournal {
   }
 
   private append(record: Record<string, unknown>): Promise<void> {
-    return this.writes.run(() => this.appendUnlocked(record));
+    return this.writes.run(() => this.appendNow(record));
   }
 
-  /**
-   * Appends one record while already holding `writes`. Callers that nest under
-   * the serializer (beginReply) must use this; `append` would deadlock.
-   * `onBytesWritten` runs after `appendFile` succeeds and before `datasync`, so
-   * beginReply can tell a never-written failure from a sync-only one.
-   */
-  private async appendUnlocked(
-    record: Record<string, unknown>,
-    options?: { onBytesWritten?: () => void },
-  ): Promise<void> {
+  private async appendNow(record: Record<string, unknown>): Promise<void> {
     // Re-check inside the queue: a caller may have passed assertAdmitting
     // before a concurrent write poisoned the handle, and must not append
     // beneath a torn or half-recorded line.
@@ -622,7 +584,6 @@ export class RoomJournal {
     try {
       this.lineCut = true;
       await this.handle.appendFile(line, "utf8");
-      options?.onBytesWritten?.();
       await this.handle.datasync();
       this.lineCut = false;
     } catch (error) {
