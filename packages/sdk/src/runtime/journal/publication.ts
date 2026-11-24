@@ -10,14 +10,16 @@ import { closedJournalError, JournalPublicationError, poisonedJournalError } fro
 import type { OperationCheck, RoomJournal } from "./RoomJournal";
 import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 import {
+  isFailedOperationResult,
   operationFingerprint,
+  storedSendResult,
   validateOperationId,
   OperationConflictError,
   OperationUnsupportedError,
 } from "./operations";
 import type { OperationKind } from "./records";
 
-/** The stored public result of a keyed send, as the journal keeps it. */
+/** What a newly reserved keyed send needs before its post: its resolved recipients and its single-attempt post. */
 export interface KeyedSendPreparation {
   /** The first send's resolved recipient identities; the journal stores them before the post. */
   recipients: string[];
@@ -247,22 +249,18 @@ export class PublicationEngine {
 
     const status = check.status;
     try {
-    switch (status) {
+      switch (status) {
         case "conflict":
           throw new OperationConflictError(operationId);
-        case "unknown": {
-          // A stored unknown says what the file proves, and nothing more: a
-          // send may already be in the room, a decline posts nothing at all.
-          // The text each stands under names that difference.
-          const kind = journal.operation(operationId)?.kind;
+        case "unknown":
+          // The fingerprint binds the kind, so the stored operation's kind is this call's.
           throw new DeliveryUnknownError(
             new Error(`operation ${operationId} stands unknown in the journal`),
             operationId,
-            kind === "decline" ? unknownDeclineMessage() : unknownOperationMessage(),
+            unknownMessageFor(input.kind),
           );
-        }
         case "refused":
-          throw this.storedRefusalError(operationId, check.reasonText);
+          throw new DeliveryFailedError(check.reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`);
         case "settled": {
           // The stored result stands first: a send whose authority no longer
           // validates throws before the caller's inbound is settled for it,
@@ -320,8 +318,7 @@ export class PublicationEngine {
 
   private async runKeyedSend(journal: RoomJournal, input: OperationInput, operationId: string): Promise<ToolOperationResult> {
     if (input.prepare === undefined) {
-      await journal.refuseOperation(operationId, "the once transport the operation needs stands unavailable").catch(() => undefined);
-      throw new OperationUnsupportedError("no-once-transport");
+      return await this.refuse(journal, operationId, "the once transport the operation needs stands unavailable", new OperationUnsupportedError("no-once-transport"));
     }
     await this.refuseIfCutShort(journal, operationId, input.stopped);
     const preparation = await input.prepare();
@@ -334,30 +331,29 @@ export class PublicationEngine {
       result = await preparation.post();
     } catch (error) {
       if (classifyFailedAttempt(error) === "uncertain") {
-        return await this.standUnknown(journal, operationId, error, { cause: noVerdict() });
+        return await this.standUnknown(journal, input.kind, operationId, error, { cause: noVerdict() });
       }
       return await this.refuse(journal, operationId, publicRefusalText(error));
     }
     // A resolved delivery-unknown stands unknown, like the thrown one; any
     // other resolved failure is a definite refusal, stored as classified text.
     if (isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND) {
-      return await this.standUnknown(journal, operationId, result, { cause: noVerdict() });
+      return await this.standUnknown(journal, input.kind, operationId, result, { cause: noVerdict() });
     }
-    if (isFailedResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
+    if (isFailedOperationResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
     // The stored result is what every later same-id call replays: one the
     // JSON store would not keep unchanged cannot stand as settled.
     if (!isStorableResult(result)) {
-      return await this.standUnknown(journal, operationId, new Error("the post's acknowledgment does not stand as a stored result"));
+      return await this.standUnknown(journal, input.kind, operationId, new Error("the post's acknowledgment does not stand as a stored result"));
     }
-    await this.settleOrUnknown(journal, operationId, { receiptId: receiptIdOf(result), resultJson: JSON.stringify(result) });
+    await this.settleOrUnknown(journal, input.kind, operationId, { receiptId: receiptIdOf(result), resultJson: JSON.stringify(result) });
     return result;
   }
 
   private async runKeyedDecline(journal: RoomJournal, input: OperationInput, operationId: string): Promise<ToolOperationResult> {
     const harnessRefusal = "the harness could not run this no-reply";
     if (input.runDecline === undefined) {
-      await journal.refuseOperation(operationId, harnessRefusal).catch(() => undefined);
-      throw new OperationUnsupportedError("no-journal");
+      return await this.refuse(journal, operationId, harnessRefusal, new OperationUnsupportedError("no-journal"));
     }
     let result: ToolOperationResult;
     try {
@@ -366,22 +362,25 @@ export class PublicationEngine {
       // The harness's raw error never reaches a caller or the journal.
       return await this.refuse(journal, operationId, harnessRefusal);
     }
-    if (isFailedResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
+    if (isFailedOperationResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
     if (!isStorableResult(result)) {
-      return await this.standUnknown(journal, operationId, new Error("the decline's decision does not stand as a stored result"), {
-        message: unknownDeclineMessage(),
-      });
+      return await this.standUnknown(journal, input.kind, operationId, new Error("the decline's decision does not stand as a stored result"));
     }
-    await this.settleOrUnknown(journal, operationId, {});
+    await this.settleOrUnknown(journal, input.kind, operationId, {});
     return result;
   }
 
   /** Settles the operation; a settlement that cannot be recorded leaves it unknown and poisons the writer that owed it. */
-  private async settleOrUnknown(journal: RoomJournal, operationId: string, settlement: { receiptId?: string; resultJson?: string }): Promise<void> {
+  private async settleOrUnknown(
+    journal: RoomJournal,
+    kind: OperationKind,
+    operationId: string,
+    settlement: { receiptId?: string; resultJson?: string },
+  ): Promise<void> {
     try {
       await journal.settleOperation(operationId, settlement);
     } catch (error) {
-      await this.standUnknown(journal, operationId, error, { poisonWriter: true });
+      await this.standUnknown(journal, kind, operationId, error, { poisonWriter: true });
     }
   }
 
@@ -391,9 +390,10 @@ export class PublicationEngine {
    */
   private async standUnknown(
     journal: RoomJournal,
+    kind: OperationKind,
     operationId: string,
     error: unknown,
-    { poisonWriter = false, cause = error, message = unknownOperationMessage() }: { poisonWriter?: boolean; cause?: unknown; message?: string } = {},
+    { poisonWriter = false, cause = error }: { poisonWriter?: boolean; cause?: unknown } = {},
   ): Promise<never> {
     let recorded = true;
     try {
@@ -408,81 +408,89 @@ export class PublicationEngine {
     }
     // A writer that lost a write it owed stops admitting.
     if (poisonWriter || !recorded) journal.poison();
-    this.logger.warn("operation delivery is unknown; the journal records it as unknown and reports it instead of reposting it", {
-      roomId: journal.roomId,
-      error,
-    });
-    throw new DeliveryUnknownError(cause, operationId, message);
+    if (recorded) {
+      this.logger.warn("operation delivery is unknown; the journal records it as unknown and reports it instead of reposting it", {
+        roomId: journal.roomId,
+        error,
+      });
+    }
+    throw new DeliveryUnknownError(cause, operationId, unknownMessageFor(kind));
   }
 
-  /** Records a definite refusal, best-effort, and throws its classified text. */
-  private async refuse(journal: RoomJournal, operationId: string, refusal: string): Promise<never> {
-    await journal.refuseOperation(operationId, refusal).catch((error: unknown) => {
-      this.logger.warn("the refused operation's record could not be written", { roomId: journal.roomId, error });
-    });
-    throw new DeliveryFailedError(refusal);
+  /**
+   * Records a definite refusal and throws `error`, by default the classified
+   * text's `DeliveryFailedError`. When the record fails, its error is what the
+   * caller sees, as for a reply's refusal.
+   */
+  private async refuse(
+    journal: RoomJournal,
+    operationId: string,
+    reasonText: string,
+    error: Error = new DeliveryFailedError(reasonText),
+  ): Promise<never> {
+    try {
+      await journal.refuseOperation(operationId, reasonText);
+    } catch (recordError) {
+      this.logger.error("the operation was refused, and its refusal record failed to land", {
+        roomId: journal.roomId,
+        operationId,
+        error,
+        recordError,
+      });
+      throw recordError;
+    }
+    throw error;
   }
 
   /** A turn cut short before the post: the operation is refused, never posted. */
   private async refuseIfCutShort(journal: RoomJournal, operationId: string, stopped: AbortSignal | undefined): Promise<void> {
     const cut = stopped && cutShort(stopped);
-    if (!cut) return;
-    await journal.refuseOperation(operationId, "the turn was cut short before the post").catch(() => undefined);
-    throw cut;
-  }
-
-
-
-  /** The caller's inbound settles when the operation's outcome stands: a send or a no-reply answered it. */
-  private async settleOperationCaller(journal: RoomJournal, messageId: string, kind: OperationKind): Promise<void> {
-    if (kind === "decline") {
-      await journal.settleDecline(messageId);
-      return;
-    }
-    await journal.turnDone(messageId);
+    if (cut) await this.refuse(journal, operationId, "the turn was cut short before the post", cut);
   }
 
   /**
- * The stored result of a settled operation, as it stands for a later same-id
- * caller. A settled decline stands as the decline itself. A settled send's
- * authority is its stored result: a send recorded without a result, or with
- * one that is not a parseable plain JSON object, has no replay that stands —
- * inventing success from a receipt, or from nothing, would be a second
- * publication the journal never recorded, so the journal poisons instead of
- * answering.
- */
+   * The caller's inbound settles when the operation's outcome stands: a send
+   * or a no-reply answered it. The outcome is already durable, so a failed
+   * settlement record leaves it standing: the caller hears the outcome, and
+   * the writer that lost the write stops admitting.
+   */
+  private async settleOperationCaller(journal: RoomJournal, messageId: string, kind: OperationKind): Promise<void> {
+    try {
+      if (kind === "decline") {
+        await journal.settleDecline(messageId);
+      } else {
+        await journal.turnDone(messageId);
+      }
+    } catch (error) {
+      journal.poison();
+      this.logger.error("the operation's outcome stands, and its caller's settlement record failed to land; the room's journal no longer admits records", {
+        roomId: journal.roomId,
+        messageId,
+        error,
+      });
+    }
+  }
+
+  /**
+   * The stored result of a settled operation, as it stands for a later same-id
+   * caller. A settled decline stands as the decline itself; a settled send's
+   * authority is its stored result. One that does not stand has no replay:
+   * inventing success would be a publication the journal never recorded, so
+   * the journal poisons instead of answering.
+   */
   private storedOperationResult(journal: RoomJournal, operationId: string, check: Extract<OperationCheck, { status: "settled" }>): ToolOperationResult {
-    const operation = journal.operation(operationId);
-    if (operation?.kind === "decline") {
+    if (journal.operation(operationId)?.kind === "decline") {
       return { status: "ok" };
     }
-    const broken = (): never => {
+    const stored = storedSendResult(check.resultJson);
+    if (stored === undefined) {
       journal.poison();
       throw new JournalPublicationError(
         `The journal records the settled operation ${operationId} without a stored result that stands: the replay is refused rather than invented, and the journal no longer admits records until it is restored.`,
         "poisoned",
       );
-    };
-    if (check.resultJson === undefined) {
-      return broken();
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(check.resultJson);
-    } catch {
-      return broken();
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return broken();
-    }
-    return parsed as ToolOperationResult;
-  }
-
-  private storedRefusalError(operationId: string, reasonText: string | undefined): Error {
-    const message = reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`;
-    const error = new Error(message);
-    error.name = "OperationRefusedError";
-    return error;
+    return stored;
   }
 
   /**
@@ -502,6 +510,11 @@ export class PublicationEngine {
 /** The stand-in cause of an attempt that ended without a verdict: the transport's raw error never travels. */
 function noVerdict(): Error {
   return new Error("the once port's attempt ended without a verdict");
+}
+
+/** The text a keyed operation of `kind` stands unknown under: a send may already be in the room, a decline posts nothing. */
+export function unknownMessageFor(kind: OperationKind): string {
+  return kind === "decline" ? unknownDeclineMessage() : unknownOperationMessage();
 }
 
 /** The text a keyed operation's unknown delivery stands under: the operator reads it in the tool result. */
@@ -539,17 +552,10 @@ function publicRefusalText(value: unknown): string {
   return "the post was refused before it reached Band";
 }
 
-
 /** The post id Band attributed: the top-level `id` FernRestAdapter's createChatMessage returns. */
 function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
   return "id" in result && typeof result.id === "string" && result.id.length > 0 ? result.id : undefined;
-}
-
-/** A resolved outcome that stands as a failure: an executor error, or an explicit failed or not-ok result. */
-function isFailedResult(result: unknown): boolean {
-  if (isToolExecutorError(result)) return true;
-  return typeof result === "object" && result !== null && ((result as { status?: unknown }).status === "failed" || (result as { ok?: unknown }).ok === false);
 }
 
 /**

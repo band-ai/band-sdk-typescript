@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import { NoopLogger } from "../src/core/logger";
 import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { RestFacade } from "../src/client/rest/RestFacade";
+import { classifyFailedAttempt } from "../src/client/rest/messageDelivery";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { PublicationEngine } from "../src/runtime/journal/publication";
@@ -99,7 +101,8 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
     const message = { content: `a ${status} redirect`, mentions: [{ id: USER_ID }] };
 
     // The once port: the redirect lands as an error this caller classifies, never as a second POST.
-    await expect(adapter.createChatMessageOnce(ROOM, message)).rejects.toBeTruthy();
+    const failure = await adapter.createChatMessageOnce(ROOM, message).catch((error: unknown) => error);
+    expect(classifyFailedAttempt(failure)).toBe("uncertain");
     expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);
 
@@ -217,8 +220,27 @@ describe("the production BandLink's once port, through the operation engine", ()
     const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, restApi: injected, logger: new NoopLogger() });
     await expect(
       link.rest.createChatMessageOnce?.(ROOM, { content: "no once port", mentions: [{ id: USER_ID }] }),
-    ).rejects.toBeTruthy();
+    ).rejects.toThrow(/no SDK-controlled client/);
     expect(a.posts).toBe(0);
+    expect(b.posts).toBe(0);
+    await a.close();
+    await b.close();
+  });
+});
+
+describe("a once port behind a RestFacade", () => {
+  it("keeps serving a wrapped adapter's single-attempt post, and keeps refusing where the adapter has none", async () => {
+    const { a, b } = await fixture(307);
+    const legacy = () => new BandClient({ apiKey: API_KEY, baseUrl: a.origin, maxRetries: 0 });
+    const once = () => new BandClient({ apiKey: API_KEY, baseUrl: a.origin, maxRetries: 0, fetch: redirectErrorFetch(a) });
+    const serving = new RestFacade({ api: new FernRestAdapter(legacy(), { onceClientFactory: once, logger: new NoopLogger() }) });
+    const unserving = new RestFacade({ api: new FernRestAdapter(legacy(), { logger: new NoopLogger() }) });
+    expect(serving.hasOnceCapability()).toBe(true);
+    expect(unserving.hasOnceCapability()).toBe(false);
+    const failure = await serving.createChatMessageOnce(ROOM, { content: "through the facade", mentions: [{ id: USER_ID }] }).catch((error: unknown) => error);
+    // The facade forwards to the once client: one POST, its redirect classified, never followed.
+    expect(classifyFailedAttempt(failure)).toBe("uncertain");
+    expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);
     await a.close();
     await b.close();

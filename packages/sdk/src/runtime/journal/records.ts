@@ -27,6 +27,9 @@ export const journalHeaderSchema = z.strictObject({
 
 export type JournalHeader = z.infer<typeof journalHeaderSchema>;
 
+/** The tool a keyed operation stood for. */
+const operationKindSchema = z.enum(["send", "decline"]);
+
 const recordBase = z.strictObject({ messageId: z.string(), at: z.number() });
 
 /**
@@ -59,7 +62,7 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
     t: z.literal("op.reserved"),
     operationId: z.string().min(1),
     fingerprint: z.string().min(1),
-    kind: z.enum(["send", "decline"]),
+    kind: operationKindSchema,
   }),
   /** The first send's resolved recipient identities, as the roster stood when the operation was admitted. */
   recordBase.extend({
@@ -137,8 +140,8 @@ export function compactingCopyTarget(name: string): string | undefined {
 /** The agent's exclusive ownership lock file under its journal directory. */
 export const OWNERSHIP_FILE = ".ownership.sqlite";
 
-/** What a keyed operation stood for: the tool that sent it, and its content or the no-reply's reason. */
-export type OperationKind = "send" | "decline";
+/** What a keyed operation stood for: a send or a no-reply. */
+export type OperationKind = z.infer<typeof operationKindSchema>;
 
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {

@@ -16,11 +16,12 @@ import {
   validateOperationId,
 } from "../src/runtime/journal/operations";
 import { PublicationEngine, unknownDeclineMessage, unknownOperationMessage } from "../src/runtime/journal/publication";
-import { tmpRoot } from "./testUtils";
+import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { ROOM, diskFull, generationIn, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
+import type { Logger } from "../src/core/logger";
 
 /** Band's answers, the way the generated client reports them. */
 const bandRefused = () =>
@@ -33,32 +34,37 @@ function heldPost(): {
   resolve: (value: { id: string }) => void;
   reject: (error: unknown) => void;
   ran: () => boolean;
+  /** Resolves once the post runs: its recipients already stand durable. */
+  started: Promise<void>;
   post: () => Promise<{ id: string }>;
 } {
-  let resolve!: (value: { id: string }) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<{ id: string }>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
+  const answer = Promise.withResolvers<{ id: string }>();
+  const started = Promise.withResolvers<void>();
   let ran = false;
   return {
-    promise,
-    resolve,
-    reject,
+    promise: answer.promise,
+    resolve: answer.resolve,
+    reject: answer.reject,
     ran: () => ran,
+    started: started.promise,
     post: async () => {
       ran = true;
-      return promise;
+      started.resolve();
+      return answer.promise;
     },
   };
 }
 
 /** One engine over `generation`'s room: every keyed operation the tests admit runs through it. */
-function engineFor(generation: JournalGeneration, roomId = ROOM) {
-  return new PublicationEngine({ roomId: roomId,
-    generation,
-    logger: new NoopLogger(),
+function engineFor(generation: JournalGeneration, roomId = ROOM, logger: Logger = new NoopLogger()) {
+  return new PublicationEngine({ roomId, generation, logger });
+}
+
+/** Fails, like a full disk, every journal append whose line carries `record`. */
+function failAppendsOf(record: string): Promise<void> {
+  return interceptJournalAppends(async (original, self, args) => {
+    if (typeof args[0] === "string" && args[0].includes(`"t":"${record}"`)) throw diskFull();
+    await original.apply(self, args);
   });
 }
 
@@ -71,15 +77,6 @@ function sendPreparation(post: () => Promise<unknown>, recipients: string[] = ["
       return result as { id?: string; [key: string]: unknown };
     },
   });
-}
-
-async function until(predicate: () => boolean | Promise<boolean>, timeout = 15000): Promise<void> {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() > deadline) throw new Error("the awaited state never stood");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }
 
 const ID = "op-1";
@@ -197,7 +194,7 @@ describe("a keyed send's outcomes", () => {
     const firstError = first.catch((error: unknown) => error);
     const secondError = second.catch((error: unknown) => error);
     // The post is answered 422 once it stands out: the owner's call has begun awaiting it.
-    await until(() => post.ran());
+    await post.started;
     post.reject(bandRefused());
     const [firstOutcome, secondOutcome] = await Promise.all([firstError, secondError]);
     expect(firstOutcome).toBeInstanceOf(DeliveryFailedError);
@@ -373,7 +370,7 @@ describe("a keyed send's outcomes", () => {
     const other = await openRoom(generation, "room-two");
     const publicationId = await other.beginReply("msg-9");
     const otherPost = other.settleReply("msg-9", publicationId, "posted-9");
-    await until(async () => (await openRoom(generation, ROOM)).operation(ID)?.recipients !== undefined);
+    await post.started;
     expect(post.ran()).toBe(true);
     // Room two's reply settles while room one's post still stands out.
     await otherPost;
@@ -435,7 +432,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
         prepare: sendPreparation(post.post),
       })
       .catch((error: unknown) => error);
-    await until(async () => (await openRoom(generation, ROOM)).operation(ID)?.recipients !== undefined);
+    await post.started;
     // The settle's write, like a full disk, will not land.
     await interceptJournalAppends(async (original, self, args) => {
       if (typeof args[0] === "string" && args[0].includes("op.settled")) throw diskFull();
@@ -581,7 +578,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
             return {};
           }),
         }),
-      ).rejects.toMatchObject({ name: "OperationRefusedError" });
+      ).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the post was refused before it reached Band" });
       expect(posts).toBe(0);
       await generation.close();
       expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.refused"]);
@@ -615,7 +612,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
           return {};
         }),
       }),
-    ).rejects.toMatchObject({ name: "OperationRefusedError" });
+    ).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the platform refused the post (HTTP 422)" });
     expect(posts).toBe(0);
     // The refusal owes no settlement credit to either caller.
     const room = await openRoom(generation, ROOM);
@@ -765,7 +762,7 @@ describe("a keyed no-reply", () => {
             return { status: "ok" };
           },
         }),
-      ).rejects.toMatchObject({ name: "OperationRefusedError" });
+      ).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the post was refused before it reached Band" });
       expect(ran).toBe(0);
       await generation.close();
       expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.refused"]);
@@ -916,8 +913,10 @@ describe("where operation_id is advertised", () => {
     const publication = engineFor(generation);
     try {
       expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true) }).getAnthropicToolSchemas())).toEqual([]);
-      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(false), publication }).getAnthropicToolSchemas())).toEqual([]);
-      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true), publication }).getAnthropicToolSchemas())).toEqual([
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(false), publication, inboundMessageId: () => "msg-1" }).getAnthropicToolSchemas())).toEqual([]);
+      // A turn with no inbound to settle (a contact hub's synthetic turn) serves no keyed operation.
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true), publication }).getAnthropicToolSchemas())).toEqual([]);
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true), publication, inboundMessageId: () => "msg-1" }).getAnthropicToolSchemas())).toEqual([
         NO_REPLY_TOOL_NAME,
         SEND_MESSAGE_TOOL_NAME,
       ]);
@@ -935,5 +934,96 @@ describe("where operation_id is advertised", () => {
         .sort();
     expect(keyed()).toEqual([]);
     expect(keyed(true)).toEqual([NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME]);
+  });
+});
+
+describe("a keyed operation whose own records fail to land", () => {
+  it("lands a definite refusal through a rewrite, so a reopen neither announces it nor reads it unknown", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const engine = engineFor(generation);
+    await failAppendsOf("op.refused");
+    const error = await engine
+      .publishOperation({ operationId: ID, kind: "send", content: "hello", mentions: ["user-1"], messageId: "msg-1", prepare: sendPreparation(async () => { throw bandRefused(); }) })
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(DeliveryFailedError);
+    expect(error).not.toBeInstanceOf(DeliveryUnknownError);
+    await generation.close();
+
+    const reopened = await roomJournalIn(dir);
+    const check = await reopened.checkAndReserveOperation({
+      operationId: ID,
+      fingerprint: operationFingerprint({ kind: "send", content: "hello", mentions: ["user-1"] }),
+      kind: "send",
+      messageId: "msg-2",
+    });
+    const announced = await reopened.recoverUnresolved();
+    await reopened.close();
+    expect(check).toMatchObject({ status: "refused", reasonText: "the platform refused the post (HTTP 422)" });
+    expect(announced).toEqual([]);
+  });
+
+  it("returns a posted send's stored result when only its caller's settlement fails to land", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const engine = engineFor(generation);
+    await failAppendsOf("turn.done");
+    let posts = 0;
+    const result = await engine.publishOperation({
+      operationId: ID,
+      kind: "send",
+      content: "hello",
+      messageId: "msg-1",
+      prepare: sendPreparation(async () => {
+        posts += 1;
+        return { id: "posted-1" };
+      }),
+    });
+    const room = await openRoom(generation, ROOM);
+    expect(result).toEqual({ id: "posted-1" });
+    expect(posts).toBe(1);
+    // The settlement answered the inbound; the writer that lost a write stops admitting.
+    expect(room.operation(ID)?.outcome).toBe("settled");
+    expect(room.answered("msg-1")).toBe(true);
+    expect(room.accepting).toBe(false);
+    await generation.close();
+  });
+
+  it("stands a decline whose settlement fails to land under the decline's unknown text", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const engine = engineFor(generation);
+    await failAppendsOf("op.settled");
+    const error = await engine
+      .publishOperation({ operationId: ID, kind: "decline", reason: "fyi", messageId: "msg-1", runDecline: async () => ({ status: "ok" }) })
+      .catch((thrown: unknown) => thrown);
+    await generation.close();
+    expect(error).toBeInstanceOf(DeliveryUnknownError);
+    expect((error as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+  });
+
+  it("reports a keyed decline's unknown to an MCP client under the decline's text, not a post's", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const publication = engineFor(generation);
+    await failAppendsOf("op.settled");
+    const tools = new AgentTools({ roomId: ROOM, rest: {} as never, publication, inboundMessageId: () => "msg-1" });
+    const noReply = buildSingleContextRegistrations(tools.getAdapterTools(), { enableOperationIds: true })
+      .find((registration) => registration.name === NO_REPLY_TOOL_NAME)!;
+    const result = await noReply.execute({ reason: "fyi", operation_id: ID });
+    await generation.close();
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({ kind: DeliveryUnknownError.KIND, detail: unknownDeclineMessage() });
+  });
+
+  it("warns that an operation stands recorded unknown only when its record landed", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const logger = makeLoggerSpy();
+    const engine = engineFor(generation, ROOM, logger);
+    await failAppendsOf("op.unknown");
+    const error = await engine
+      .publishOperation({ operationId: ID, kind: "send", content: "hello", messageId: "msg-1", prepare: sendPreparation(async () => { throw bandServerDown(); }) })
+      .catch((thrown: unknown) => thrown);
+    await generation.close();
+    expect(error).toBeInstanceOf(DeliveryUnknownError);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("its record failed to land"), expect.anything());
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("records it as unknown"), expect.anything());
   });
 });

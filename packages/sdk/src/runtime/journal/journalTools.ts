@@ -1,7 +1,7 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import {
   BAND_TOOL_EFFECTS,
-  NO_REPLY_TOOL_NAME,
+  KEYED_OPERATION_TOOL_NAMES,
   SEND_MESSAGE_TOOL_NAME,
   carriesOperationIdArg,
   carriesOperationIdOption,
@@ -20,7 +20,7 @@ import { JournalPublicationError } from "./errors";
  */
 function carriesOperationId(toolName: BandToolName, args: readonly unknown[]): boolean {
   if (toolName === SEND_MESSAGE_TOOL_NAME && carriesOperationIdOption(args[2])) return true;
-  return (toolName === SEND_MESSAGE_TOOL_NAME || toolName === NO_REPLY_TOOL_NAME) && carriesOperationIdArg(args[0]);
+  return KEYED_OPERATION_TOOL_NAMES.has(toolName) && carriesOperationIdArg(args[0]);
 }
 
 /**

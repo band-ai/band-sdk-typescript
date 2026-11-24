@@ -82,6 +82,29 @@ export class RestFacade implements RestApi {
     });
   }
 
+  public async createChatMessageOnce(
+    chatId: string,
+    message: {
+      content: string;
+      messageType?: string;
+      metadata?: MetadataMap;
+      mentions?: MentionReference[];
+    },
+    options?: RestRequestOptions,
+  ): Promise<ToolOperationResult> {
+    return this.callOptional(
+      "createChatMessageOnce",
+      OPTIONAL_UNSUPPORTED_MESSAGES.createChatMessageOnce,
+      (method) => method(chatId, message, options),
+      { chatId, mentionCount: message.mentions?.length ?? 0 },
+    );
+  }
+
+  /** The wrapped adapter's once capability: a facade never stands one its adapter lacks. */
+  public hasOnceCapability(): boolean {
+    return this.api.createChatMessageOnce !== undefined && (this.api.hasOnceCapability?.() ?? true);
+  }
+
   public async createChatEvent(
     chatId: string,
     event: {

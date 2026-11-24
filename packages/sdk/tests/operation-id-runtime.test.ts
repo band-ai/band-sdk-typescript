@@ -4,19 +4,22 @@ import { BandError } from "@band-ai/rest-client";
 
 import { describe, expect, it, onTestFinished } from "vitest";
 
+import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
+import { isSyntheticTurn } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { PlatformRuntime } from "../src/runtime";
 import { DeliveryUnknownError, DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { unknownOperationMessage } from "../src/runtime/journal/publication";
-import { OperationConflictError } from "../src/runtime/journal/operations";
+import { OperationConflictError, OperationIdError, OperationUnsupportedError } from "../src/runtime/journal/operations";
 import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
-import { IDENTITY, holdJournalAppend, recordTypes, roomFile } from "./turnJournalSupport";
+import { IDENTITY, holdJournalAppend, landedJournalRecords, recordTypes, roomFile } from "./turnJournalSupport";
 
 const OWNER = "owner";
 const ROOM = "room-1";
@@ -100,18 +103,6 @@ async function recordsOf(journalDir: string, roomId: string = ROOM): Promise<str
   }
 }
 
-async function until(predicate: () => boolean | Promise<boolean>, timeout = 15000): Promise<void> {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() > deadline) throw new Error("the awaited state never stood");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-const recordsContain = (journalDir: string, record: string, roomId: string = ROOM) =>
-  recordsOf(journalDir, roomId).then((records) => records.includes(record));
-
 const reported = (events: RecordLog<AgentEvent>) =>
   events.entries.filter((event) => event.type === "delivery.unrecorded");
 
@@ -121,15 +112,11 @@ const settledOutcomes = (platform: BandPlatform, messageId: string) =>
   platform.rest.settled.entries.filter((entry) => entry.messageId === messageId).map((entry) => entry.outcome);
 
 const settledAs = (platform: BandPlatform, messageId: string, outcome: string) =>
-  until(async () => settledOutcomes(platform, messageId).includes(outcome as never), 60000);
+  platform.rest.settled.until(() => settledOutcomes(platform, messageId).includes(outcome as never));
 
-/**
- * A stop that tears the process down can cut the settle mark's report short; the
- * platform still records it when the report lands, so a hard-killed test waits
- * longer than a live one for the same mark.
- */
-const settledAsAfterKill = (platform: BandPlatform, messageId: string, outcome: string) =>
-  until(async () => settledOutcomes(platform, messageId).includes(outcome as never), 150000);
+/** Resolves once `events` holds the restart's announcement of `operationId` for `messageId`. */
+const announced = (events: RecordLog<AgentEvent>, messageId: string, operationId: string) =>
+  events.until(() => reported(events).some((event) => event.messageId === messageId && event.operationId === operationId));
 
 const postedContents = (platform: BandPlatform, roomId?: string) =>
   platform.rest.posted.entries
@@ -142,6 +129,7 @@ describe("a keyed operation's process boundary", () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} keyed send please`);
     // The once post reaches Band; when the process is stopped, the transport's report
     // of the attempt is everything the process learns — committed or not, it cannot say.
@@ -174,7 +162,7 @@ describe("a keyed operation's process boundary", () => {
         await client.close();
       }
     });
-    await until(() => recordsContain(journalDir, "op.recipients"));
+    await landed.until(() => landed.entries.includes("op.recipients"));
     // The process stops while the post stands unanswered: the attempt's report is a
     // 5xx, so the outcome stands unknown, and the stop's drain completes on it.
     failOnResponse = true;
@@ -229,7 +217,7 @@ describe("a keyed operation's process boundary", () => {
     // The restart announced the operation exactly once, with its id, and the turn's
     // unknown delivery rides the same report. The announcement rides the room's
     // admission, which runs after start resolves: wait for it to land.
-    await until(() => reported(second.events).some(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID));
+    await announced(second.events, inbound, OP_ID);
     const unrecorded = reported(second.events);
     expect(unrecorded.filter(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toHaveLength(1);
     // A successor turn is unaffected by the old operation: it replies and settles.
@@ -244,6 +232,7 @@ describe("a keyed operation's process boundary", () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} keyed send please`);
     // The operation's recipients write stands held, then dropped: the process dies
     // with it unrecorded, so the file proves the post never ran. The drop settles
@@ -264,7 +253,7 @@ describe("a keyed operation's process boundary", () => {
         await client.close();
       }
     });
-    await until(() => recordsContain(journalDir, "op.reserved"));
+    await landed.until(() => landed.entries.includes("op.reserved"));
     await held.entered;
     held.release();
     await first.runtime.stop(KILL);
@@ -292,13 +281,13 @@ describe("a keyed operation's process boundary", () => {
         await client.close();
       }
     });
-    await until(() => recordsContain(journalDir, "op.settled"));
+    await landed.until(() => landed.entries.includes("op.settled"));
     await second.handlerOutcome;
     // The provably unposted operation was never announced on either admission.
     expect(reported(second.events)).toEqual([]);
     // The same id re-ran: it posted once and settled, and the call answered.
     expect(retryIsError).toBeFalsy();
-    expect(retryText).toBeTruthy();
+    expect(JSON.parse(retryText)).toMatchObject({ status: "ok" });
     expect(postedContents(platform)).toEqual(["pending never posted"]);
     await settledAs(platform, inbound, "processed");
     const records = await recordsOf(journalDir);
@@ -313,6 +302,7 @@ describe("a keyed operation's process boundary", () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} fyi only`);
     let first: unknown;
     let second: unknown;
@@ -320,7 +310,7 @@ describe("a keyed operation's process boundary", () => {
       first = await tools.executeToolCall("band_no_reply", { room_id: ROOM, reason: "fyi only", operation_id: OP_ID });
       second = await tools.executeToolCall("band_no_reply", { room_id: ROOM, reason: "fyi only", operation_id: OP_ID });
     });
-    await until(() => recordsContain(journalDir, "decline.settled"));
+    await landed.until(() => landed.entries.includes("decline.settled"));
     await settledAs(platform, inbound, "processed");
     expect(first).toEqual({ status: "ok" });
     expect(second).toEqual({ status: "ok" });
@@ -375,10 +365,10 @@ describe("a keyed operation's process boundary", () => {
     // The replay posted nothing: the original post stands for every same-id call.
     expect(postedContents(platform, ROOM)).toEqual(["direct keyed"]);
     // The replaying caller's own turn settles processed on the replayed result.
-    await settledAsAfterKill(platform, retryInbound, "processed");
+    await settledAs(platform, retryInbound, "processed");
     // The original caller's mark stands either from the killed process's in-flight
     // report or the successor's repair of the redelivered message.
-    await settledAsAfterKill(platform, inbound, "processed");
+    await settledAs(platform, inbound, "processed");
     await retry.runtime.stop(KILL);
 
     // A later caller that takes the id with a changed payload is the conflict:
@@ -393,7 +383,7 @@ describe("a keyed operation's process boundary", () => {
     await conflictProcess.handlerOutcome;
     expect(laterConflict).toBeInstanceOf(DeliveryFailedError);
     expect((laterConflict as DeliveryFailedError).cause).toBeInstanceOf(OperationConflictError);
-    await settledAsAfterKill(platform, conflictInbound, "failed");
+    await settledAs(platform, conflictInbound, "failed");
     expect(postedContents(platform, ROOM)).toEqual(["direct keyed"]);
     const finalRecords = await recordsOf(journalDir);
     // The conflict changed nothing durable: the original reservation stands once.
@@ -419,8 +409,7 @@ describe("a keyed operation's process boundary", () => {
     });
     await settledAs(platform, inbound, "failed");
     await first.handlerOutcome;
-    expect(refused).toMatchObject({ ok: false, errorType: "ToolExecutionError" });
-    expect(typeof (refused as { message?: unknown }).message === "string" ? (refused as { message: string }).message : "").toBeTruthy();
+    expect(refused).toMatchObject({ ok: false, errorType: "ToolExecutionError", message: new OperationUnsupportedError("no-once-transport").message });
     // The refusal stands before any durable operation: no record, and the keyed
     // content never stands; the turn's own failure notice is the runtime's, not the operation's.
     const records = await recordsOf(journalDir);
@@ -468,8 +457,7 @@ describe("a keyed operation's process boundary", () => {
       relayed = await relayReply(tools, "automatic unkeyed replacement", [OWNER]);
     });
     await settledAs(platform, inbound, "failed");
-    expect(result).toMatchObject({ ok: false, errorType: "ToolExecutionError" });
-    expect(typeof (result as { message?: unknown }).message === "string" ? (result as { message: string }).message : "").toBeTruthy();
+    expect(result).toMatchObject({ ok: false, errorType: "ToolExecutionError", message: new OperationIdError("not-a-string").message });
     expect(relayed).toBe(false);
     expect(postedContents(platform, ROOM)).toEqual([]);
     const records = await recordsOf(journalDir);
@@ -502,11 +490,43 @@ describe("a keyed operation's process boundary", () => {
   });
 });
 
+describe("a turn with no inbound to settle", () => {
+  it("offers a contact hub's synthetic turn no operation_id, and refuses a keyed call there for what it lacks", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir: tmpRoot(), journalPlatformIdentity: IDENTITY },
+      contactConfig: { strategy: "hub_room", hubTaskId: "contacts" },
+    });
+    onTestFinished(async () => {
+      if (runtime.state.status === "running") await runtime.stop(KILL);
+    });
+    const seen = createDeferred<{ advertised: boolean; keyed: unknown }>();
+    await runtime.start(new GenericAdapter(async ({ tools, message }) => {
+      if (!isSyntheticTurn(message)) return;
+      const schema = tools.getToolSchemas("anthropic").find((entry) => (entry as { name?: string }).name === "band_send_message") as { input_schema: { properties: object } };
+      const keyed = await tools.executeToolCall("band_send_message", { content: "hub note", mentions: [`@${OWNER}`], operation_id: "hub-1" });
+      seen.resolve({ advertised: Object.hasOwn(schema.input_schema.properties, "operation_id"), keyed });
+    }));
+    await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_added", {
+      id: "contact-9", handle: "@alice", name: "Alice", type: "Agent", inserted_at: new Date().toISOString(), is_remote: false,
+    });
+    const outcome = await seen.promise;
+    expect(outcome.advertised).toBe(false);
+    expect(outcome.keyed).toMatchObject({ ok: false, message: new OperationUnsupportedError("no-inbound").message });
+    expect(postedContents(platform)).not.toContain("hub note");
+  }, 30000);
+});
+
 describe("a late keyed outcome and the successor's relay", () => {
   it("keeps the successor's relay standing when an earlier turn's keyed post lands late with an unknown outcome", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const a = room.postBeforeConnect(OWNER, `${MENTION} keyed please`);
     // Band accepts the once post; its response — a 503 — is held until the
     // successor's turn is running.
@@ -549,7 +569,7 @@ describe("a late keyed outcome and the successor's relay", () => {
       relayed = await relayReply(tools, "next answered", [OWNER]);
     });
     await settledAs(platform, a, "processed");
-    await until(() => recordsContain(journalDir, "op.recipients"));
+    await landed.until(() => landed.entries.includes("op.recipients"));
     // The successor starts while the earlier attempt still stands unanswered.
     const b = await room.say(OWNER, `${MENTION} next`);
     // Force the order the boundary must survive: the successor's handler has
@@ -615,7 +635,7 @@ describe("the MCP bridge's keyed admission", () => {
     });
     await settledAs(platform, inbound, "failed");
     expect(invalid).toMatchObject({ thrown: false, isError: true });
-    expect(invalid?.text).toBeTruthy();
+    expect(invalid?.text).toContain("operation_id");
     expect(fenced).toBe(false);
     // Nothing unkeyed stands in the fenced room: only its failure notice.
     expect(postedContents(platform, ROOM)).toEqual([]);
@@ -633,6 +653,7 @@ describe("the MCP bridge's keyed admission", () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} keyed please`);
     const outcomes: Array<{ thrown: boolean; isError: boolean; text: string }> = [];
     let relayed: boolean | undefined;
@@ -669,14 +690,14 @@ describe("the MCP bridge's keyed admission", () => {
         await client.close();
       }
     });
-    await until(() => recordsContain(journalDir, "op.settled"));
+    await landed.until(() => landed.entries.includes("op.settled"));
     await settledAs(platform, inbound, "processed");
     expect(postedContents(platform, ROOM)).toEqual(["keyed through bridge"]);
     // The invalid call was refused with a nonempty schema error; the keyed call and
     // its replay both stood without a second post.
     const [invalid, keyed, replay] = outcomes;
     expect(invalid).toMatchObject({ thrown: false, isError: true });
-    expect(invalid.text).toBeTruthy();
+    expect(invalid.text).toContain("Invalid arguments for tool band_send_message");
     expect(keyed).toMatchObject({ thrown: false, isError: false });
     expect(replay).toMatchObject({ thrown: false, isError: false });
     // The keyed call fenced the turn: no unkeyed closing text stands after it.
@@ -729,7 +750,7 @@ describe("the MCP bridge's keyed admission", () => {
     // The next process's admission announces the unknown with its id.
     await first.runtime.stop(KILL);
     const second = await startProcess(platform, journalDir, async () => undefined);
-    await until(() => reported(second.events).some(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID));
+    await announced(second.events, inbound, OP_ID);
     expect(reported(second.events).some(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toBe(true);
   }, 120000);
 
@@ -738,6 +759,7 @@ describe("the MCP bridge's keyed admission", () => {
     const room = await platform.room(ROOM);
     await platform.room(OTHER_ROOM);
     const journalDir = tmpRoot();
+    const landed = await landedJournalRecords();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} keyed please`);
     let wrongRoom: { thrown: boolean; isError: boolean; text: string } | undefined;
     let rightRoom: { thrown: boolean; isError: boolean; text: string } | undefined;
@@ -770,10 +792,11 @@ describe("the MCP bridge's keyed admission", () => {
         await client.close();
       }
     });
-    await until(() => recordsContain(journalDir, "op.settled"));
+    await landed.until(() => landed.entries.includes("op.settled"));
     await settledAs(platform, inbound, "processed");
     expect(wrongRoom).toMatchObject({ isError: true });
-    expect(wrongRoom?.text).toBeTruthy();
+    // Room-2 has no live turn: the call's admission finds no origin for it.
+    expect(wrongRoom?.text).toBe(KEYED_ADMISSION_REFUSALS.noOrigin);
     expect(rightRoom).toMatchObject({ isError: false });
     expect(postedContents(platform, ROOM)).toEqual(["right room"]);
     expect(postedContents(platform, OTHER_ROOM)).toEqual([]);

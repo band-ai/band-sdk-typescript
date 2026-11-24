@@ -16,11 +16,10 @@ export function createSdkMcpBridge(
   const serverConfig = createSdkMcpServer({ name: MCP_SERVER_NAME, tools: nativeDefinitions });
   // The harness connects this instance to its own in-process transport; the
   // SDK-owned decorator stands between that transport and the framework's
-  // dispatch, so a keyed call is fenced and pinned before any validation,
-  // exactly as on the network bridges.
-  if (originResolver !== undefined) {
-    serverConfig.instance = withAdmission(serverConfig.instance, originResolver);
-  }
+  // dispatch, exactly as on the network bridges. Without a resolver the
+  // bridge serves no operation ids, and a keyed call is refused rather than
+  // posted without its key.
+  serverConfig.instance = withAdmission(serverConfig.instance, originResolver);
   for (const definition of portableDefinitions) {
     // Preserve all business arguments for the original custom-tool schema to validate.
     serverConfig.instance.registerTool(definition.name, {
@@ -43,7 +42,7 @@ export function createSdkMcpBridge(
  */
 function withAdmission<T extends { connect(transport: unknown): Promise<void> }>(
   instance: T,
-  originResolver: OriginResolver,
+  originResolver: OriginResolver | undefined,
 ): T {
   return new Proxy(instance, {
     get(target, property, receiver) {

@@ -8,7 +8,7 @@ import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityRoomFile, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/records";
 import { TurnJournal, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { tmpRoot } from "./testUtils";
+import { RecordLog, tmpRoot } from "./testUtils";
 
 /** The canonical platform identity the tests bind their journals to. */
 export const IDENTITY = canonicalPlatformIdentity("https://band.example");
@@ -21,16 +21,25 @@ export const ROOM = "room/with:odd chars";
 
 type AppendFile = (...args: unknown[]) => Promise<void>;
 
-/** Replaces Node's `FileHandle[method]` with `replacement`, which gets the original; restored when the test ends. */
+/**
+ * Replaces Node's `FileHandle[method]` with `replacement`, which gets what
+ * stood before it: the original, or an earlier interception in the same test,
+ * so interceptions compose. Restored when the test ends.
+ */
 async function interceptFileHandle(method: "appendFile" | "writeFile", replacement: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
   const probe = await open(path.join(tmpRoot(), "probe"), "w");
   const prototype = Object.getPrototypeOf(probe) as Record<typeof method, AppendFile>;
   await probe.close();
-  const original = prototype[method];
-  const spy = vi.spyOn(prototype, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
-    return replacement(original, this, args);
+  const current = prototype[method];
+  const spy = vi.isMockFunction(current) ? current : vi.spyOn(prototype, method);
+  const previous = (vi.isMockFunction(current) ? current.getMockImplementation() : current) as AppendFile;
+  spy.mockImplementation(function (this: unknown, ...args: unknown[]) {
+    return replacement(previous, this, args);
   });
-  onTestFinished(() => spy.mockRestore());
+  onTestFinished(() => {
+    if (vi.isMockFunction(current)) spy.mockImplementation(previous);
+    else spy.mockRestore();
+  });
 }
 
 /**
@@ -39,6 +48,19 @@ async function interceptFileHandle(method: "appendFile" | "writeFile", replaceme
  */
 export function interceptJournalAppends(append: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
   return interceptFileHandle("appendFile", append);
+}
+
+/** The type of every journal record as its append lands, in order, across rooms. */
+export async function landedJournalRecords(): Promise<RecordLog<string>> {
+  const landed = new RecordLog<string>();
+  await interceptJournalAppends(async (original, self, args) => {
+    await original.apply(self, args);
+    if (typeof args[0] !== "string") return;
+    for (const line of args[0].split("\n")) {
+      if (line !== "") landed.record((JSON.parse(line) as { t: string }).t);
+    }
+  });
+  return landed;
 }
 
 /** Holds the first whole-file journal write (a new file's header, a rewrite's copy) until `release()`. */

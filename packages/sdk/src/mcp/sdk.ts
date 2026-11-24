@@ -2,14 +2,8 @@ import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anth
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  resolveSingleRoomTools,
-  type McpToolRegistration,
-} from "./registrations";
+import { buildBridgeRegistrations, type McpToolRegistration } from "./registrations";
 import { createSdkMcpBridge } from "./sdkTools";
-import { buildOriginResolver } from "./admission";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
@@ -24,11 +18,7 @@ export interface CreateBandSdkMcpServerOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
-  /**
-   * A keyed call's admission consults this before resolving any tools: once it
-   * reports false, no origin stands for any call, so nothing is pinned and no
-   * turn is fenced.
-   */
+  /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean;
 }
 
@@ -72,23 +62,16 @@ export interface BandSdkMcpServer {
 export function createBandSdkMcpServer(
   options: CreateBandSdkMcpServerOptions,
 ): BandSdkMcpServer {
-  const registrationOptions = {
+  const { registrations, originResolver } = buildBridgeRegistrations(options.getToolsForRoom, options.multiRoom !== false, {
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
     enableOperationIds: options.enableOperationIds,
     enableContactTools: true,
     additionalTools: options.additionalTools,
-  };
+    admissionGuard: options.admissionGuard,
+  });
 
-  const registrations = options.multiRoom === false
-    ? buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions)
-    : buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions);
-
-  const bridge = createSdkMcpBridge(
-    registrations,
-    undefined,
-    buildOriginResolver(options.getToolsForRoom, options.multiRoom !== false, options.admissionGuard),
-  );
+  const bridge = createSdkMcpBridge(registrations, undefined, originResolver);
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 

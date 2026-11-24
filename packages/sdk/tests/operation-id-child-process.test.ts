@@ -107,14 +107,8 @@ function startChild(journalDir: string, mode: ChildMode, stateFile: string): Chi
       if (failed !== undefined) return reject(failed);
       if (settled !== undefined) return reject(new Error("the child exited without reporting " + name));
       waiters.push({ name, resolve: () => resolve() });
+      // A child that exits or fails before reporting rejects the wait; the test's own timeout bounds a hung one.
       failers.push(reject);
-      setTimeout(() => {
-        const due = waiters.findIndex((waiter) => waiter.name === name);
-        if (due !== -1) waiters.splice(due, 1);
-        const at = failers.indexOf(reject);
-        if (at !== -1) failers.splice(at, -1);
-        reject(new Error(`timed out waiting for the child to report ${name}`));
-      }, 90_000).unref();
     });
   return { child, boundary, exited };
 }

@@ -17,10 +17,12 @@ import {
   TOOL_MODELS,
   toolInputProperties,
   getToolDescription,
+  ROOM_ID_ARG,
 } from "../contracts/toolSchemas";
 import { buildZodShape } from "./zod";
-import { currentAdmission } from "./admission";
-import { unknownOperationMessage } from "../runtime/journal/publication";
+import { buildOriginResolver, currentAdmission, roomIdOf, type OriginResolver } from "./admission";
+
+export { ROOM_ID_ARG };
 
 export interface McpToolRegistration {
   name: string;
@@ -80,8 +82,6 @@ export interface BuildRegistrationsOptions {
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
 
-/** The argument a room-scoped tool takes to name the room it runs in. */
-export const ROOM_ID_ARG = "room_id";
 const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
 
 type McpToolSchema = Omit<McpToolRegistration, "execute">;
@@ -149,17 +149,9 @@ function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
 }
 
 /**
- * The refusal a keyed call earns when no admitted origin or fenced turn can
- * run it. It names only what the call's own admission proved.
- */
-function originlessKeyedResult(): string {
-  return "The call's operation was admitted with no origin that can run it, or on a turn whose fence did not stand: the call is refused. Nothing was re-resolved, posted, settled, or fenced.";
-}
-
-/**
  * How a keyed call dispatches: on its admitted origin's tools, or refused
- * when that origin, its fence, or its room does not stand. A lookup that
- * throws refuses too, rather than run unfenced. An unkeyed call is `none`.
+ * with what its admission recorded, or when it names another room. An
+ * unkeyed call is `none`.
  */
 type KeyedDispatch =
   | { status: "none" }
@@ -167,22 +159,18 @@ type KeyedDispatch =
   | { status: "admitted"; tools: AdapterToolsProtocol };
 
 function keyedDispatch(roomIdArg: unknown): KeyedDispatch {
-  try {
-    const admission = currentAdmission();
-    if (!admission?.keyed) {
-      return { status: "none" };
-    }
-    const origin = admission.origin;
-    if (origin === undefined || !admission.fenced) {
-      return { status: "refused", text: originlessKeyedResult() };
-    }
-    if (origin.roomId !== undefined && roomIdArg !== origin.roomId) {
-      return { status: "refused", text: wrongRoomResult(roomIdArg, origin.roomId) };
-    }
-    return { status: "admitted", tools: origin.tools };
-  } catch {
-    return { status: "refused", text: originlessKeyedResult() };
+  const admission = currentAdmission();
+  if (admission === undefined) {
+    return { status: "none" };
   }
+  if (admission.refusal !== undefined) {
+    return { status: "refused", text: admission.refusal };
+  }
+  const { origin } = admission;
+  if (origin.roomId !== undefined && roomIdOf(roomIdArg) !== origin.roomId) {
+    return { status: "refused", text: wrongRoomResult(roomIdArg, origin.roomId) };
+  }
+  return { status: "admitted", tools: origin.tools };
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -205,7 +193,7 @@ async function inRoom<T extends AdapterToolsProtocol>(
   resolver: (roomId: string) => T | undefined,
   run: (tools: T, roomId: string) => Promise<McpToolResult>,
 ): Promise<McpToolResult> {
-  const roomId = asNonEmptyString(roomIdArg);
+  const roomId = roomIdOf(roomIdArg);
   if (!roomId) {
     return errorResult(`Missing required ${ROOM_ID_ARG}`);
   }
@@ -332,6 +320,36 @@ export function buildSingleContextRegistrations(
   return wrapExecution(registrations, options.execute);
 }
 
+/** What a bridge needs to stand: its registrations, and the origin its keyed calls admit through. */
+export interface BridgeRegistrations {
+  registrations: McpToolRegistration[];
+  /** Absent unless the bridge serves operation ids: its keyed calls are then refused at admission. */
+  originResolver: OriginResolver | undefined;
+}
+
+/**
+ * The registrations and origin resolver of a bridge over `tools`: room-scoped
+ * for a resolver with `multiRoom`, else single-context. Admission and dispatch
+ * agree on what is served: only a bridge built with `enableOperationIds`
+ * resolves origins, consulting `admissionGuard` first.
+ */
+export function buildBridgeRegistrations(
+  tools: AdapterToolsProtocol | ToolResolver,
+  multiRoom: boolean,
+  options: BuildRegistrationsOptions & { admissionGuard?: () => boolean },
+): BridgeRegistrations {
+  const { admissionGuard, ...registrationOptions } = options;
+  const roomScoped = typeof tools === "function" && multiRoom;
+  const registrations = typeof tools === "function" && multiRoom
+    ? buildRoomScopedRegistrations(tools, registrationOptions)
+    : buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, registrationOptions);
+  const resolver: ToolResolver = typeof tools === "function" ? tools : () => tools;
+  return {
+    registrations,
+    originResolver: options.enableOperationIds ? buildOriginResolver(resolver, roomScoped, admissionGuard) : undefined,
+  };
+}
+
 function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegistrationsOptions["execute"]): McpToolRegistration[] {
   return execute ? registrations.map((registration) => ({
     ...registration, execute: (args, tools, signal) => execute(() => registration.execute(args, tools, signal)),
@@ -399,14 +417,14 @@ async function executeToolCall(
       // adapter text or recovery advice is carried with it. A keyed
       // operation's unknown stands under the operation's own text.
       if (isDeliveryUnknownOutput(result)) {
-        return unknownDeliveryResult(unknownOperationDetail(result.message));
+        return unknownDeliveryResult(result.details.keyed === true ? result.message : undefined);
       }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
     if (error instanceof DeliveryUnknownError) {
-      return unknownDeliveryResult(unknownOperationDetail(error.message));
+      return unknownDeliveryResult(error.keyed ? error.message : undefined);
     }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
@@ -432,19 +450,6 @@ function unknownDeliveryResult(operationDetail?: string): McpToolResult {
     }],
     isError: true,
   };
-}
-
-/** A keyed operation's unknown stands under the operation's own text; a reply's keeps the generic one. */
-function unknownOperationDetail(message: unknown): string | undefined {
-  return typeof message === "string" && message === unknownOperationMessage() ? message : undefined;
-}
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function successResult(value: unknown): McpToolResult {

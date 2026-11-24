@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { buildCustomMcpRegistrations } from "../src/mcp/customTools";
 import { trackTurn } from "../src/core/turn";
-import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   buildRoomScopedRegistrations,
@@ -11,9 +12,10 @@ import {
   successResult,
   errorResult,
   ROOM_ID_ARG,
+  registerTools,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
-import { AdmissionTransport, buildOriginResolver } from "../src/mcp/admission";
+import { AdmissionTransport, KEYED_ADMISSION_REFUSALS, buildOriginResolver } from "../src/mcp/admission";
 import { NO_REPLY_TOOL_NAME, ROOM_TOOL_NAMES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools } from "./testUtils";
 
@@ -258,62 +260,36 @@ describe("shared portable MCP registrations", () => {
 });
 
 describe("the keyed admission guard at dispatch", () => {
-  /** One room's tools behind the admission decorator, as a bridge wires it: the framework dispatches inside the admission's scope. */
-  function keyedBridge(tools: FakeTools, guard: () => boolean) {
+  /** A real client of one room's tools behind the admission decorator, over an in-memory transport pair. */
+  async function keyedClient(tools: FakeTools, guard: () => boolean): Promise<Client> {
     const resolver = (roomId: string) => (roomId === "room-1" ? tools : undefined);
-    const registrations = buildRoomScopedRegistrations(resolver);
-    const inner: { onmessage?: (message: JSONRPCMessage) => void; start: () => Promise<void> } = { start: async () => {} };
-    const admission = new AdmissionTransport(inner as unknown as Transport, buildOriginResolver(resolver, true, guard));
-    const outcomes: Array<{ name: string; result: Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> = [];
-    admission.onmessage = (message) => {
-      const params = ((message as { params?: unknown }).params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
-      const registration = registrations.find((r) => r.name === params.name);
-      if (registration !== undefined) {
-        outcomes.push({ name: params.name ?? "", result: registration.execute(params.arguments as Record<string, unknown>) as Promise<{ isError?: boolean; content: Array<{ text: string }> }> });
-      }
-    };
-    void admission.start();
-    return {
-      registrations,
-      deliver: (name: string, args: Record<string, unknown>) => inner.onmessage?.({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } as JSONRPCMessage),
-      outcomes,
-    };
+    const server = new McpServer({ name: "keyed", version: "1.0.0" });
+    registerTools(server, z, buildRoomScopedRegistrations(resolver, { enableOperationIds: true }));
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(new AdmissionTransport(serverTransport, buildOriginResolver(resolver, true, guard)));
+    const client = new Client({ name: "keyed-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    onTestFinished(() => client.close());
+    return client;
   }
 
-  it("refuses a keyed call whose fence could not stand, cleanly, before any dispatch", async () => {
-    const real = new FakeTools();
-    real.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
-    // The turn's tools refuse to stand the fence's mark: its lookup cannot
-    // run, so the fence did not stand.
-    const tools = new Proxy(real, {
-      get(target, key) {
-        if (typeof key === "symbol") {
-          throw new Error("the fence's stand cannot be read");
-        }
-        return Reflect.get(target, key);
-      },
-    }) as FakeTools;
-    const bridge = keyedBridge(tools, () => true);
-    bridge.deliver(SEND_MESSAGE_TOOL_NAME, { room_id: "room-1", content: "fenced", operation_id: "op-guard" });
-    // A clean no-dispatch refusal: classified text, no raw error, and the
-    // business never ran against a turn it did not fence.
-    const outcome = await bridge.outcomes[0].result;
-    expect(outcome.isError).toBe(true);
-    expect(outcome.content[0].text).toContain("refused");
-    expect(real.executeToolCall).not.toHaveBeenCalled();
+  const keyedSend = (client: Client, operationId: string) =>
+    client.callTool({ name: SEND_MESSAGE_TOOL_NAME, arguments: { room_id: "room-1", content: "keyed", mentions: ["owner"], operation_id: operationId } });
+
+  it("refuses a keyed call on tools that do not journal replies, before any dispatch", async () => {
+    // Tools outside a journaling runtime carry no turn fence to stand.
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const result = await keyedSend(await keyedClient(tools, () => true), "op-unfenced");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.notFenced }] });
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
   });
 
   it("refuses a keyed call whose origin no longer stands, without claiming what the bridge stands", async () => {
     const tools = new FakeTools();
     tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
-    const bridge = keyedBridge(tools, () => false);
-    bridge.deliver(SEND_MESSAGE_TOOL_NAME, { room_id: "room-1", content: "retired", operation_id: "op-retired" });
-    const outcome = await bridge.outcomes[0].result;
-    // The refusal names only what the call's own admission proved: no origin
-    // that can run it — not what the bridge itself stands.
-    expect(outcome.isError).toBe(true);
-    expect(outcome.content[0].text).toContain("refused");
-    expect(outcome.content[0].text).not.toMatch(/retired|no longer stands/i);
+    const result = await keyedSend(await keyedClient(tools, () => false), "op-retired");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.noOrigin }] });
     expect(tools.executeToolCall).not.toHaveBeenCalled();
   });
 });

@@ -3,15 +3,10 @@ import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
 } from "./registrations";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  registerTools,
-  resolveSingleRoomTools,
-} from "./registrations";
+import { buildBridgeRegistrations, registerTools } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
-import { AdmissionTransport, buildOriginResolver, type OriginResolver } from "./admission";
+import { AdmissionTransport, type OriginResolver } from "./admission";
 
 export interface BandMcpServerOptions {
   /** @internal */
@@ -39,18 +34,14 @@ export interface BandMcpServerOptions {
    */
   authToken?: string;
   /**
-   * A keyed call's admission consults this before resolving any tools: once it
-   * reports false, no origin stands for any call, so nothing is pinned and no
-   * turn is fenced. A bridge whose connection or generation retired uses it to
-   * stop admitting origins for calls its process already retired.
+   * With `enableOperationIds`, consulted before a keyed call's origin resolves:
+   * once it reports false, no call pins an origin or fences a turn.
    */
   admissionGuard?: () => boolean;
   /**
    * With a `tools` resolver, whether the server scopes its tools to the call's
    * `room_id` (the default): `false` stands a single-context server on the
-   * resolver's `""` result, and a keyed call's origin resolves the raw
-   * resolver at the raw call — the actual tools of the turn it stood on, never
-   * a re-resolution after validation yields.
+   * resolver's `""` result.
    */
   multiRoom?: boolean;
 }
@@ -93,22 +84,16 @@ export class BandMcpServer {
       additionalTools: options.additionalTools,
     };
 
-    const tools = options.tools;
-    const multiRoom = options.multiRoom ?? (typeof tools === "function");
-    if (typeof tools === "function" && multiRoom) {
-      this.registrations = buildRoomScopedRegistrations(tools, regOptions);
-    } else {
-      this.registrations = buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, regOptions);
-    }
-    // The origin resolver stands on the raw resolver: a keyed call resolves
-    // the actual tools at the raw call, before any await the framework runs.
-    this.originResolver = typeof tools === "function"
-      ? buildOriginResolver(tools, multiRoom, options.admissionGuard)
-      : buildOriginResolver(() => tools, false, options.admissionGuard);
+    const { tools } = options;
+    const bridge = buildBridgeRegistrations(tools, options.multiRoom ?? (typeof tools === "function"), {
+      ...regOptions,
+      admissionGuard: options.admissionGuard,
+    });
+    this.registrations = bridge.registrations;
+    this.originResolver = bridge.originResolver;
   }
 
-  /** The origin a keyed call resolves to, as the bridge stands; `undefined` when no origin stands. */
-  private readonly originResolver: OriginResolver;
+  private readonly originResolver: OriginResolver | undefined;
 
   /** Port the server is listening on. Null if not started. */
   public get port(): number | null {
@@ -269,8 +254,8 @@ export class BandMcpServer {
     };
 
     // The admission decorator stands between the client and the framework on
-      // every session: a keyed call is fenced and pinned before any validation.
-      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver));
+    // every session: a keyed call is fenced and pinned before any validation.
+    await mcpServer.connect(new AdmissionTransport(transport, this.originResolver));
     record = {
       mcpServer,
       transport,

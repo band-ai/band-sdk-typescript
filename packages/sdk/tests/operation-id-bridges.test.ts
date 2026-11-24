@@ -1,14 +1,22 @@
+import { PassThrough } from "node:stream";
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
+import type { AdapterToolsProtocol } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
 import { relayReply, type TurnTools } from "../src/core/turn";
+import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { createBandMcpBackend, type BandMcpBackend } from "../src/mcp/backends";
+import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { BandMcpStdioServer } from "../src/mcp/stdio";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { PlatformRuntime } from "../src/runtime";
 import type { SessionConfig } from "../src/runtime/types";
@@ -76,14 +84,42 @@ const postedContents = (platform: BandPlatform, roomId?: string) =>
     .filter((entry) => roomId === undefined || entry.roomId === roomId)
     .map(({ content }) => content);
 
-async function until(predicate: () => boolean | Promise<boolean>, timeout = 30000): Promise<void> {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() > deadline) throw new Error("the awaited state never stood");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+type BridgeKind = NetworkKind | "stdio" | "sdk";
+
+const BRIDGE_KINDS: readonly BridgeKind[] = ["http", "sse", "stdio", "sdk"];
+
+interface BridgeOptions {
+  getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
+  multiRoom?: boolean;
+  enableOperationIds?: boolean;
+  admissionGuard?: () => boolean;
 }
+
+/** A connected client of a real bridge of `kind`, each over its own transport; stopped when the test ends. */
+async function openBridge(kind: BridgeKind, options: BridgeOptions): Promise<Client> {
+  const client = new Client({ name: `bridge-${kind}`, version: "1.0.0" });
+  if (kind === "stdio") {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const server = new BandMcpStdioServer({ ...options, tools: options.getToolsForRoom, multiRoom: options.multiRoom ?? true, stdin, stdout });
+    await server.start();
+    onTestFinished(() => server.stop());
+    await client.connect(new StdioServerTransport(stdout, stdin));
+    return client;
+  }
+  if (kind === "sdk") {
+    const server = createBandSdkMcpServer({ ...options, enableMemoryTools: false });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.serverConfig.instance.connect(serverTransport);
+    await client.connect(clientTransport);
+    return client;
+  }
+  const backend = await createBandMcpBackend({ ...options, kind, enableMemoryTools: false });
+  onTestFinished(() => backend.stop());
+  return connectClient(backend, `bridge-${kind}`);
+}
+
+const textOf = (result: object) => ((result as { content?: unknown }).content as Array<{ text: string }> | undefined)?.[0]?.text ?? "";
 
 for (const kind of ["http", "sse"] as const) {
   describe(`the ${kind} backend's keyed admission`, () => {
@@ -157,7 +193,7 @@ for (const kind of ["http", "sse"] as const) {
       expect(observation, "the keyed call never failed").toBeUndefined();
       // The post stands in the origin room on the tools the turn stood on: the
       // resolver's later successor value never received it.
-      await until(() => postedContents(platform).includes("must stay with original tools"));
+      await platform.rest.posted.until(() => postedContents(platform).includes("must stay with original tools"));
       expect(postedContents(platform, "origin-room")).toEqual(["must stay with original tools"]);
       expect(postedContents(platform, "successor-room")).toEqual([]);
     }, 90000);
@@ -166,7 +202,7 @@ for (const kind of ["http", "sse"] as const) {
       let retiredError: boolean | undefined;
       let retiredText = "";
       let relayed: boolean | undefined;
-      let done = false;
+      const done = createDeferred<void>();
       const { platform } = await runtimeWithNetworkBackend(kind, async ({ tools }) => {
         let live = true;
         const backend = await createBandMcpBackend({
@@ -192,14 +228,14 @@ for (const kind of ["http", "sse"] as const) {
           relayed = await relayReply(tools, "closing reply stands", [OWNER]);
         } finally {
           await client.close();
-          done = true;
+          done.resolve();
         }
       });
-      await until(() => done);
+      await done.promise;
       // The refused call stands with a clean text: no post, no re-resolution. A
       // generation that retired before the call admits no origin and fences no turn.
       expect(retiredError).toBe(true);
-      expect(retiredText).toBeTruthy();
+      expect(retiredText).toBe(KEYED_ADMISSION_REFUSALS.noOrigin);
       expect(relayed).toBe(true);
       expect(postedContents(platform)).toEqual(["closing reply stands"]);
     }, 90000);
@@ -307,6 +343,92 @@ describe("room-scoped no-reply over the wire", () => {
   }, 90000);
 });
 
+describe("every bridge's keyed admission", () => {
+  for (const kind of BRIDGE_KINDS) {
+    for (const multiRoom of [true, false]) {
+      const scope = multiRoom ? "room-scoped" : "single-context";
+      it(`${kind} (${scope}) posts a keyed send once, replays its retry, and fences the turn's closing relay`, async () => {
+        const outcome = createDeferred<{ first: string; retry: string; relayed: boolean } | { error: unknown }>();
+        const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+          try {
+            const client = await openBridge(kind, { enableOperationIds: true, multiRoom, getToolsForRoom: () => tools });
+            try {
+              const arguments_ = { ...(multiRoom ? { room_id: "room-1" } : {}), content: "keyed once", mentions: [OWNER], operation_id: `${kind}-${scope}` };
+              const first = await client.callTool({ name: "band_send_message", arguments: arguments_ });
+              const retry = await client.callTool({ name: "band_send_message", arguments: arguments_ });
+              const relayed = await relayReply(tools, "closing text", [OWNER]);
+              outcome.resolve({ first: textOf(first), retry: textOf(retry), relayed });
+            } finally {
+              await client.close();
+            }
+          } catch (error) {
+            outcome.resolve({ error });
+          }
+        });
+        const result = await outcome.promise;
+        if ("error" in result) throw result.error;
+        expect(JSON.parse(result.first)).toMatchObject({ status: "ok" });
+        expect(result.retry).toBe(result.first);
+        expect(result.relayed).toBe(false);
+        expect(postedContents(platform)).toEqual(["keyed once"]);
+        expect(await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, "room-1"))).toContain("op.settled");
+      }, 90000);
+    }
+
+    it(`${kind} without enableOperationIds refuses a keyed send rather than post it unkeyed, and leaves the turn unfenced`, async () => {
+      const outcome = createDeferred<{ isError: boolean; text: string; relayed: boolean } | { error: unknown }>();
+      const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+        try {
+          const client = await openBridge(kind, { getToolsForRoom: () => tools });
+          try {
+            const result = await client.callTool({
+              name: "band_send_message",
+              arguments: { room_id: "room-1", content: "status update", mentions: [OWNER], operation_id: "same-key" },
+            });
+            const relayed = await relayReply(tools, "closing text", [OWNER]);
+            outcome.resolve({ isError: Boolean(result.isError), text: textOf(result), relayed });
+          } finally {
+            await client.close();
+          }
+        } catch (error) {
+          outcome.resolve({ error });
+        }
+      });
+      const result = await outcome.promise;
+      if ("error" in result) throw result.error;
+      expect(result.isError).toBe(true);
+      expect(result.text).toBe(KEYED_ADMISSION_REFUSALS.notServed);
+      // Nothing keyed ran: the turn's own closing text stands, and no operation is recorded.
+      expect(result.relayed).toBe(true);
+      expect(postedContents(platform)).toEqual(["closing text"]);
+      const records = await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, "room-1"));
+      expect(records.filter((record) => record.startsWith("op."))).toEqual([]);
+    }, 90000);
+  }
+
+  it("admits a keyed call whose room_id carries the padding an unkeyed call tolerates", async () => {
+    const outcome = createDeferred<{ keyed: boolean; unkeyed: boolean } | { error: unknown }>();
+    const { platform } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+      try {
+        const client = await openBridge("http", { enableOperationIds: true, getToolsForRoom: (id) => (id === "room-1" ? tools : undefined) });
+        try {
+          const keyed = await client.callTool({ name: "band_send_message", arguments: { room_id: " room-1 ", content: "keyed", mentions: [OWNER], operation_id: "padded" } });
+          const unkeyed = await client.callTool({ name: "band_send_message", arguments: { room_id: " room-1 ", content: "unkeyed", mentions: [OWNER] } });
+          outcome.resolve({ keyed: Boolean(keyed.isError), unkeyed: Boolean(unkeyed.isError) });
+        } finally {
+          await client.close();
+        }
+      } catch (error) {
+        outcome.resolve({ error });
+      }
+    });
+    const result = await outcome.promise;
+    if ("error" in result) throw result.error;
+    expect(result).toEqual({ keyed: false, unkeyed: false });
+    expect(postedContents(platform, "room-1")).toEqual(["keyed", "unkeyed"]);
+  }, 90000);
+});
+
 describe("the contact callback consumer", () => {
   it("refuses a keyed send without any post or durable credit", async () => {
     let posts = 0;
@@ -321,8 +443,7 @@ describe("the contact callback consumer", () => {
       .sendMessage("must refuse without durable context", [{ id: OWNER }], { operationId: "contact-key" })
       .catch((error) => error);
     expect(posts).toBe(0);
-    expect(refused).toBeInstanceOf(Error);
-    expect((refused as Error).message).toBeTruthy();
+    expect(refused).toMatchObject({ name: "UnsupportedFeatureError", message: expect.stringContaining("keyed operations are unsupported for contact callbacks") });
   });
 
   it("refuses a keyed no-request without any post", async () => {
@@ -338,7 +459,6 @@ describe("the contact callback consumer", () => {
       .executeToolCall("band_no_reply", { reason: "fyi only", operation_id: "contact-decline" })
       .catch((error) => error);
     expect(posts).toBe(0);
-    const result = refused as { ok?: boolean; message?: string } | undefined;
-    expect(result && (result.ok === false || typeof result.message === "string")).toBe(true);
+    expect(refused).toMatchObject({ name: "UnsupportedFeatureError", message: expect.stringContaining("keyed operations are unsupported for contact callbacks") });
   });
 });

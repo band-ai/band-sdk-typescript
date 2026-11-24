@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { MentionReference } from "../../contracts/dtos";
+import { isToolExecutorError } from "../../contracts/protocols";
 import type { OperationKind } from "./records";
 
 /**
@@ -39,12 +40,14 @@ export class OperationConflictError extends Error {
   }
 }
 
-/** A keyed send the journal cannot durably stand: no journal, no once transport, or inputs the record needs. */
+/** A keyed send the journal cannot durably stand: no journal, no inbound to settle, no once transport, or inputs the record needs. */
 export class OperationUnsupportedError extends Error {
-  public constructor(public readonly issue: "no-journal" | "no-once-transport" | "invalid-input") {
+  public constructor(public readonly issue: "no-journal" | "no-inbound" | "no-once-transport" | "invalid-input") {
     const message =
       issue === "no-journal"
         ? "The operation id is accepted, but this room has no turn journal standing behind it, so the operation cannot be recorded durably and is refused before any post. Configure the room's journal to use operation ids."
+        : issue === "no-inbound"
+          ? "The operation id is accepted, but this turn answers no inbound message the operation could settle (a synthetic turn, such as a contact hub event), so it is refused before any post."
         : issue === "no-once-transport"
           ? "The operation id is accepted, but this room's transport cannot make a single-attempt, redirect-forbidden post, so the operation is refused before any post rather than delivered over the retrying legacy path."
           : "The call is missing a field the operation's record needs (a send's content or a mention), so it is refused before any record or post: the operation id was not the problem, the call is not one the journal can stand.";
@@ -105,4 +108,29 @@ export function operationFingerprint(input: {
       ? { v: 1, kind: "send", content: input.content ?? "", mentions: canonicalMentions(input.mentions ?? []) }
       : { v: 1, kind: "decline", reason: input.reason ?? "", mentions: canonicalMentions(input.mentions ?? []) };
   return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+}
+
+/** A resolved outcome that stands as a failure: an executor error, or an explicit failed or not-ok result. */
+export function isFailedOperationResult(result: unknown): boolean {
+  if (isToolExecutorError(result)) return true;
+  if (typeof result !== "object" || result === null) return false;
+  const { status, ok } = result as { status?: unknown; ok?: unknown };
+  return status === "failed" || ok === false;
+}
+
+/**
+ * A settled send's stored result, as the file proves it: JSON that parses to
+ * a plain object that does not stand as a failure. `undefined` when it has no
+ * such authority; the journal's load and every replay read it the same way.
+ */
+export function storedSendResult(resultJson: string | undefined): Record<string, unknown> | undefined {
+  if (resultJson === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(resultJson);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || isFailedOperationResult(parsed)) return undefined;
+  return parsed as Record<string, unknown>;
 }

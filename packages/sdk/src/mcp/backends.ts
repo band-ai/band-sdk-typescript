@@ -39,12 +39,7 @@ export interface CreateBandMcpBackendOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
-  /**
-   * Consulted by a keyed call's admission before it resolves any tools: once it
-   * reports false, the bridge admits no origin for any call — nothing is pinned
-   * and no turn is fenced. A bridge whose connection or generation retired
-   * passes one that reports false once it retires.
-   */
+  /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean;
 }
 
@@ -81,9 +76,8 @@ export async function createBandMcpBackend(
   }
 
   // The bridges stand the raw room resolver, not a pre-resolved proxy: a keyed
-// call's origin resolves the resolver at the raw call, so it pins the actual
-// tools of the turn the call stood on, not whatever a forwarding proxy would
-// re-resolve to after the framework's validation yields.
+  // call's origin resolves at the raw call, pinning the tools of the turn the
+  // call stood on.
   const multiRoom = options.multiRoom !== false;
 
   const registrations = multiRoom

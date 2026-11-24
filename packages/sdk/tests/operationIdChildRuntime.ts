@@ -56,16 +56,6 @@ type ChildMode = "reserve-only" | "post-unknown" | "settled-ack";
 
 const never = (): Promise<never> => new Promise(() => undefined);
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function until(predicate: () => boolean, timeoutMs = 30_000): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > timeoutMs) throw new Error("the child timed out waiting for its directed cut");
-    await sleep(5);
-  }
-}
-
 /**
  * Holds the first journal append whose line matches `match` until this process
  * dies. The same FileHandle.prototype patch the in-test fakes use, without
@@ -177,7 +167,7 @@ async function main(): Promise<void> {
         }
         case "post-unknown": {
           // The post is accepted by the platform, and the response never returns.
-          await until(() => rest.posted.entries.length > 0);
+          await rest.posted.until(() => rest.posted.entries.length > 0);
           report("post-unknown");
           await keyed;
           break;

@@ -116,13 +116,7 @@ export interface ChatMessagingRestApi {
     },
     options?: MessagePostOptions,
   ): Promise<ToolOperationResult>;
-  /**
-   * The single-attempt once port a keyed operation needs: at most one SDK-
-   * issued HTTP POST, transport retries disabled, redirects refused, and no
-   * read-back or fingerprint inference of success. Absent when the backend
-   * cannot honor that contract: keyed operations are refused rather than
-   * delivered over the retrying `createChatMessage` path.
-   */
+  /** The single-attempt post a keyed operation needs; see `FernRestAdapter.createChatMessageOnce`. Absent, keyed operations are refused. */
   createChatMessageOnce?(
     chatId: string,
     message: {
@@ -133,15 +127,7 @@ export interface ChatMessagingRestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult>;
-  /**
-   * Whether this adapter can stand the once port on transport the SDK
-   * controls. An adapter whose client is merely an injected generated
-   * client — one that inherits the `createChatMessageOnce` method without
-   * the SDK's controlled once client — reports `false`, and a keyed
-   * operation is refused before any record rather than recorded and then
-   * refused over it. Adapters that do not report stand on the presence of
-   * `createChatMessageOnce`.
-   */
+  /** Whether `createChatMessageOnce` stands on SDK-controlled transport; an adapter that does not report stands on the method's presence. */
   hasOnceCapability?(): boolean;
   createChatEvent(
     chatId: string,

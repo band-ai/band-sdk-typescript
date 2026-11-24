@@ -6,6 +6,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { Serializer } from "../../core/singleFlight";
 
 import { JournalFileError, JournalPublicationError, closedJournalError, poisonedJournalError } from "./errors";
+import { storedSendResult } from "./operations";
 import {
   JOURNAL_FORMAT_VERSION,
   compactingCopyName,
@@ -104,7 +105,7 @@ export interface UnresolvedPublication {
   at: number;
 }
 
-type RefusedRecord = Extract<JournalRecord, { t: "reply.refused" }>;
+type RefusedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused" }>;
 
 type OperationRecord = Extract<JournalRecord, { t: `op.${string}` }>;
 
@@ -430,10 +431,18 @@ export class RoomJournal {
    * again only once it reopens.
    */
   public async markRefused(messageId: string, publicationId: string): Promise<void> {
+    await this.landRefusal({ t: "reply.refused", messageId, publicationId, at: this.now() });
+  }
+
+  /**
+   * Lands a refusal: when the writer does not admit, or the append fails, it
+   * lands through a synced rewrite. A refusal that did not stand would be
+   * announced on reopen as a publication Band may hold.
+   */
+  private async landRefusal(record: RefusedRecord): Promise<void> {
     if (this.closed) {
       throw closedJournalError();
     }
-    const record: RefusedRecord = { t: "reply.refused", messageId, publicationId, at: this.now() };
     this.transition(record);
     if (this.accepting) {
       try {
@@ -556,11 +565,10 @@ export class RoomJournal {
     });
   }
 
-  /** Records that the keyed operation definitely did not stand. */
+  /** Records that the keyed operation definitely did not stand; it lands as a reply's refusal does. */
   public async refuseOperation(operationId: string, reasonText?: string): Promise<void> {
-    this.assertAdmitting();
     const operation = this.requireOperation(operationId);
-    await this.write({ t: "op.refused", operationId, messageId: operation.messageId, ...(reasonText !== undefined ? { reasonText } : {}), at: this.now() });
+    await this.landRefusal({ t: "op.refused", operationId, messageId: operation.messageId, ...(reasonText !== undefined ? { reasonText } : {}), at: this.now() });
   }
 
   /**
@@ -895,28 +903,10 @@ function applyOperation(operation: OperationIndex | undefined, record: Operation
       // A settled send's stored result is the authority every later same-id
       // caller replays: a file whose result does not stand is refused at load,
       // so no inbound is answered on authority the file cannot prove.
-      if (operation.kind === "send" && !settledSendAuthorityStands(record.resultJson)) throw conflict("settles with authority that does not stand");
+      if (operation.kind === "send" && storedSendResult(record.resultJson) === undefined) throw conflict("settles with authority that does not stand");
       return { ...operation, outcome: "settled", at: record.at, receiptId: record.receiptId, resultJson: record.resultJson };
     }
     case "op.reported":
       return { ...operation, reported: true };
   }
-}
-
-/**
- * A settled send's stored authority, as the file proves it: JSON that parses
- * to a plain object and not to a result that stands as a failure — no
- * settlement this engine makes could store that.
- */
-function settledSendAuthorityStands(resultJson: string | undefined): boolean {
-  if (resultJson === undefined) return false;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(resultJson);
-  } catch {
-    return false;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
-  const result = parsed as Record<string, unknown>;
-  return result.ok !== false && result.status !== "failed";
 }

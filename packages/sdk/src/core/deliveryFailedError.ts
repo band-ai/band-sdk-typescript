@@ -31,6 +31,8 @@ export class DeliveryUnknownError extends DeliveryFailedError {
   public static readonly KIND = "delivery_unknown" as const;
 
   public readonly kind: typeof DeliveryUnknownError.KIND = DeliveryUnknownError.KIND;
+  /** The delivery is a keyed operation's, standing under its own text rather than a reply's. */
+  public readonly keyed: boolean;
 
   constructor(
     cause: unknown,
@@ -40,6 +42,7 @@ export class DeliveryUnknownError extends DeliveryFailedError {
   ) {
     super(cause);
     this.name = "DeliveryUnknownError";
+    this.keyed = message !== undefined;
     this.message =
       message ??
       "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
@@ -52,7 +55,11 @@ export class DeliveryUnknownError extends DeliveryFailedError {
  * Band may already hold the message.
  */
 export function deliveryUnknownToolError(toolName: string, error: DeliveryUnknownError): ToolExecutorError {
-  return toolExecutionError(toolName, error.message, { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId });
+  return toolExecutionError(toolName, error.message, {
+    kind: DeliveryUnknownError.KIND,
+    publicationId: error.publicationId,
+    ...(error.keyed ? { keyed: true } : {}),
+  });
 }
 
 /** A tool result whose `details` classify the delivery as unknown. */

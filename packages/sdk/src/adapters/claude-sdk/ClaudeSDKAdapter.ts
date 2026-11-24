@@ -263,11 +263,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools, isCurrent: () => boolean) {
     const resolve = (id: string): TurnTools | undefined => id === roomId && isCurrent() ? tools : undefined;
     const { registrations, custom, localNames } = this.buildRegistrations(resolve);
-    // The bridge's single origin, fixed for this query: its actual tools while
-    // the query stands current, and no origin once it retires — so a keyed
-    // call admitted on a retired query pins nothing and fences no turn.
-    const originResolver = () => (isCurrent() ? { tools, isCurrent: true } : undefined);
-    const bridge = createBridge(registrations, custom, originResolver);
+    const bridge = createBridge(registrations, custom);
     return {
       bridge,
       localToolNames: new Set([...localNames].map(claudeHookToolName)),

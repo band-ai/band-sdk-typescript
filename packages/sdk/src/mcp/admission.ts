@@ -3,8 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
+import { asNonEmptyString } from "../adapters/shared/coercion";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME, carriesOperationIdArg } from "../contracts/toolSchemas";
+import { KEYED_OPERATION_TOOL_NAMES, ROOM_ID_ARG, carriesOperationIdArg } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
 
 /** The actual tools of the turn a keyed call was admitted on, and the room it names. */
@@ -13,33 +14,30 @@ export interface AdmissionOrigin {
   tools: AdapterToolsProtocol;
   /** The room the call was admitted in, on a room-scoped bridge; absent on a single-context bridge, where the call names no room. */
   roomId?: string;
-  /** The bridge confirmed the origin still stood current when it admitted the call. */
-  isCurrent?: boolean;
 }
 
 /**
  * Resolves a keyed call's origin synchronously from the room it names, as the
- * bridge sees it: the room's actual tools, or nothing. A resolver that throws
- * or finds no room leaves the call without an origin: it is forwarded, but no
- * turn is fenced or selected for it.
+ * bridge sees it: the room's actual tools, or nothing.
  */
 export type OriginResolver = (roomId: string) => AdmissionOrigin | undefined;
 
-/** What the transport recorded for the message running in this async scope. */
-export interface Admission {
-  /** The call carried an `operation_id`, valid or not: it was admitted at the raw call. */
-  keyed: boolean;
-  /** The origin the bridge pinned for it, when one stood. */
-  origin: AdmissionOrigin | undefined;
-  /** The call's turn fence stood: the turn it was admitted on is fenced against an unkeyed replacement. When it did not stand, the dispatch is refused rather than run unfenced. */
-  fenced: boolean;
-}
+/**
+ * What the transport recorded for a keyed call running in this async scope:
+ * the origin it was pinned and fenced on, or the refusal its dispatch earns.
+ */
+export type Admission = { origin: AdmissionOrigin; refusal?: undefined } | { refusal: string };
 
 const admissionStorage = new AsyncLocalStorage<Admission>();
 
 /** The admission standing in this async scope: a keyed call's, or nothing elsewhere. */
 export function currentAdmission(): Admission | undefined {
   return admissionStorage.getStore();
+}
+
+/** The room a call's `room_id` names, trimmed; admission and dispatch read it the same way. */
+export function roomIdOf(value: unknown): string | null {
+  return asNonEmptyString(value);
 }
 
 /** The `tools/call`'s arguments, when the params carry an object of them. */
@@ -55,6 +53,16 @@ function keyedArguments(params: unknown): Record<string, unknown> | undefined {
 }
 
 const TOOLS_CALL = "tools/call" as const;
+
+/** The refusal a keyed call earns at admission, by the step that did not stand. */
+export const KEYED_ADMISSION_REFUSALS = {
+  notServed:
+    "This server does not serve operation_id: the call is refused rather than posted without its key. Nothing was posted, settled, or fenced.",
+  noOrigin:
+    "The call's operation was admitted with no origin that can run it: the call is refused. Nothing was re-resolved, posted, settled, or fenced.",
+  notFenced:
+    "The call's operation was admitted on a turn whose fence did not stand (its tools do not journal replies): the call is refused. Nothing was posted or settled.",
+} as const;
 
 /**
  * The one decorator every Band MCP bridge installs between its client-facing
@@ -112,22 +120,15 @@ export class AdmissionTransport implements Transport {
   }
 
   /** The inner transport's session, so a framework that tracks it keeps tracking the real one. */
-public get sessionId(): string | undefined {
-  return this.inner.sessionId;
-}
+  public get sessionId(): string | undefined {
+    return this.inner.sessionId;
+  }
 
-/** Extra surface some transports (notably the HTTP client's) expose for their session or protocol state. */
-public get capabilities(): unknown {
-  return (this.inner as { capabilities?: unknown }).capabilities;
-}
-
-/**
- * The framework's protocol version, set on the inner transport it actually
- * speaks on — the wrapper stands in for it only when the inner stands in
- * for it, so a framework checking `typeof transport.setProtocolVersion`
- * sees exactly what the inner supports.
- */
-public setProtocolVersion?: (version: string) => void;
+  /**
+   * The framework's protocol version, set on the inner transport it actually
+   * speaks on; present only when the inner supports it.
+   */
+  public setProtocolVersion?: (version: string) => void;
 
   public async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     await this.inner.send(message, options);
@@ -137,64 +138,45 @@ public setProtocolVersion?: (version: string) => void;
     return this.inner.close();
   }
 
-/**
+  /**
    * The admission for one inbound message: nothing for a message that is not
-   * a keyed tool call; otherwise, in one synchronous step, the origin is
-   * resolved and pinned and the turn it stands on is fenced. A resolver that
-   * cannot prove an origin leaves the call admitted but originless; a fence
-   * that cannot be stood leaves the call admitted but unfenced — either way
-   * the dispatch is refused rather than run against a turn it did not fence.
+   * a keyed publication call; otherwise, in one synchronous step, the origin
+   * is resolved and pinned and the turn it stands on is fenced, or the
+   * refusal its dispatch earns is recorded. A keyed call never falls through
+   * to an unkeyed post, even on a bridge that does not serve operation ids.
    */
   private admit(message: JSONRPCMessage): Admission | undefined {
     if (!("method" in message) || message.method !== TOOLS_CALL) {
       return undefined;
     }
     const params = message.params;
-    if (!carriesOperationIdArg(keyedArguments(params))) {
+    const name = (params as { name?: unknown } | undefined)?.name;
+    // An unrelated tool that carries its own operation_id passes through untouched.
+    if (typeof name !== "string" || !KEYED_OPERATION_TOOL_NAMES.has(name)) {
       return undefined;
     }
-    // Only the canonical publication tools admit: an unrelated tool or event
-    // that carries its own operation_id passes through untouched, and its
-    // turn's reply is never fenced or suppressed by it.
-    const name = typeof (params as { name?: unknown } | null)?.name === "string" ? (params as { name: string }).name : "";
-    if (name !== SEND_MESSAGE_TOOL_NAME && name !== NO_REPLY_TOOL_NAME) {
+    const arguments_ = keyedArguments(params);
+    if (!carriesOperationIdArg(arguments_)) {
       return undefined;
+    }
+    if (this.originResolver === undefined) {
+      return { refusal: KEYED_ADMISSION_REFUSALS.notServed };
     }
     let origin: AdmissionOrigin | undefined;
-    if (this.originResolver !== undefined) {
-      const roomId = rawRoomId(params);
-      try {
-        origin = this.originResolver(roomId);
-      } catch {
-        origin = undefined;
-      }
+    try {
+      origin = this.originResolver(roomIdOf(arguments_?.[ROOM_ID_ARG]) ?? "");
+    } catch {
+      origin = undefined;
     }
-    let fenced = false;
-    if (origin !== undefined) {
-      try {
-        fenced = fenceTurnForKeyedAdmission(origin.tools);
-      } catch {
-        // The fence's stand could not be read: it did not stand, and the
-        // dispatch is refused rather than run against a turn it did not fence.
-        fenced = false;
-      }
+    if (origin === undefined) {
+      return { refusal: KEYED_ADMISSION_REFUSALS.noOrigin };
     }
-    return { keyed: true, origin, fenced };
+    return fenceTurnForKeyedAdmission(origin.tools) ? { origin } : { refusal: KEYED_ADMISSION_REFUSALS.notFenced };
   }
 
   public get innerTransport(): Transport {
     return this.inner;
   }
-}
-
-/** The room the raw call names, as given: its `room_id` argument when it is a string, else none. */
-function rawRoomId(params: unknown): string {
-  const arguments_ = keyedArguments(params);
-  if (arguments_ === undefined) {
-    return "";
-  }
-  const roomId = arguments_.room_id;
-  return typeof roomId === "string" ? roomId : "";
 }
 
 /**
@@ -221,6 +203,6 @@ export function buildOriginResolver(
     if (tools === undefined) {
       return undefined;
     }
-    return { tools, ...(multiRoom ? { roomId } : {}), isCurrent: true };
+    return { tools, ...(multiRoom ? { roomId } : {}) };
   };
 }

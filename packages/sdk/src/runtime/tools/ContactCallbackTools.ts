@@ -35,7 +35,7 @@ import {
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
-import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME, carriesOperationIdArg } from "../../contracts/toolSchemas";
+import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME, carriesOperationIdArg, carriesOperationIdOption } from "../../contracts/toolSchemas";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -100,8 +100,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     // cannot stand: it holds no turn journal, so nothing could reserve,
     // settle, or replay it. It is refused before any room, endpoint, or
     // transport is consulted — the post never goes out.
-    if (options?.operationId !== undefined) {
-      throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
+    if (carriesOperationIdOption(options)) {
+      throw keyedOperationsUnsupported();
     }
     const roomId = requireRoomId(this.roomId, "sendMessage");
     if (!this.rest.createChatMessage) {

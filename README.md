@@ -606,7 +606,10 @@ exactly-once delivery.
 `AgentTools` advertises it when the room journals replies (`journalDir`) and
 posts through the single-attempt client, and MCP servers advertise it only with
 `enableOperationIds` (default off), which you should set only when every room
-the server resolves meets both. Keyed delivery stands only where the SDK
+the server resolves meets both. A server without it refuses a call that carries
+`operation_id` rather than post it unkeyed, and fences nothing. A synthetic turn
+(a contact hub's) has no inbound to settle, so its tools neither advertise nor
+serve keyed operations. Keyed delivery stands only where the SDK
 controls the post's transport: `BandLink`'s default REST wiring installs a once client with
 the same endpoint and auth as the legacy client, transport retries disabled,
 and a Fetch that refuses redirects. An injected REST client that has no

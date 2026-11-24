@@ -225,15 +225,12 @@ export class AgentTools implements AgentToolsProtocol {
     if (typeof content !== "string" || content.length === 0 || mentions.length === 0) {
       throw new OperationUnsupportedError("invalid-input");
     }
-    const messageId = this.publicationInboundId();
-    if (this.publication === undefined || messageId === undefined) {
-      throw new OperationUnsupportedError("no-journal");
-    }
+    const { publication, messageId } = this.keyedPublication();
     const once = this.oncePort();
     if (once === undefined) {
       throw new OperationUnsupportedError("no-once-transport");
     }
-    const result = await this.publication.publishOperation({
+    const result = await publication.publishOperation({
       operationId,
       kind: "send",
       content,
@@ -244,9 +241,7 @@ export class AgentTools implements AgentToolsProtocol {
       messageId,
       prepare: async () => {
         const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
-        const recipients = resolvedMentions
-          .map((mention) => mention.id ?? mention.handle ?? mention.name ?? "")
-          .filter((id) => id.length > 0);
+        const recipients = mentionInputsAsStrings(resolvedMentions).filter((id) => id.length > 0);
         return {
           recipients,
           post: async () => once(this.roomId, { content, mentions: resolvedMentions }),
@@ -525,21 +520,24 @@ export class AgentTools implements AgentToolsProtocol {
     }
   }
 
-  /**
-   * The single-attempt post, when the adapter stands it on SDK-controlled
-   * transport: a client that merely inherits the method — an injected client
-   * without the SDK's controlled once client — cannot be verified to refuse
-   * redirects and retries, so a keyed operation is refused before any record.
-   */
+  /** The journal and the inbound a keyed operation settles; refused where either is missing. */
+  private keyedPublication(): { publication: PublicationEngine; messageId: string } {
+    if (this.publication === undefined) throw new OperationUnsupportedError("no-journal");
+    const messageId = this.publicationInboundId();
+    if (messageId === undefined) throw new OperationUnsupportedError("no-inbound");
+    return { publication: this.publication, messageId };
+  }
+
+  /** The single-attempt post, only where the adapter stands it on SDK-controlled transport. */
   private oncePort(): AgentToolsRestApi["createChatMessageOnce"] {
     const rest = this.rest;
     if (rest.createChatMessageOnce === undefined || (rest.hasOnceCapability !== undefined && !rest.hasOnceCapability())) return undefined;
     return rest.createChatMessageOnce.bind(rest);
   }
 
-  /** Whether keyed operations can run here: a journal to record them and a single-attempt post. */
+  /** Whether keyed operations can run here: a journal, an inbound they settle, and a single-attempt post. */
   private servesOperations(): boolean {
-    return this.publication !== undefined && this.oncePort() !== undefined;
+    return this.publication !== undefined && this.publicationInboundId() !== undefined && this.oncePort() !== undefined;
   }
 
   private isToolExposed(name: string, includeMemory: boolean): boolean {
@@ -919,15 +917,13 @@ export class AgentTools implements AgentToolsProtocol {
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
       band_send_message: async (arguments_) => {
+        const content = String(arguments_.content ?? "");
+        const mentions = this.normalizeMentionInput(arguments_.mentions);
         // An id of any value type rides the keyed path and is validated
         // there: a dropped non-string id would fall to the legacy post.
-        return this.sendMessage(
-          String(arguments_.content ?? ""),
-          this.normalizeMentionInput(arguments_.mentions),
-          carriesOperationIdArg(arguments_)
-            ? { operationId: arguments_[OPERATION_ID_ARG] as string | undefined }
-            : undefined,
-        );
+        return carriesOperationIdArg(arguments_)
+          ? this.postKeyedSend(content, mentions, arguments_[OPERATION_ID_ARG])
+          : this.sendMessage(content, mentions);
       },
       band_send_event: async (arguments_) =>
         this.sendEvent(
@@ -943,11 +939,8 @@ export class AgentTools implements AgentToolsProtocol {
         // A keyed no-reply runs the keyed send's journal rules; a decline
         // never posts.
         if (carriesOperationIdArg(arguments_)) {
-          const messageId = this.publicationInboundId();
-          if (this.publication === undefined || messageId === undefined) {
-            throw new OperationUnsupportedError("no-journal");
-          }
-          return this.publication.publishOperation({
+          const { publication, messageId } = this.keyedPublication();
+          return publication.publishOperation({
             operationId: arguments_[OPERATION_ID_ARG],
             kind: "decline",
             reason: typeof arguments_.reason === "string" ? arguments_.reason : undefined,

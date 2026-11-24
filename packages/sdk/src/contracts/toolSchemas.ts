@@ -8,6 +8,7 @@ import {
 
 import { TASK_LIST_STATES, TASK_LIFECYCLE_STATES, TASK_ASSIGNMENT_STATUSES, TASK_INCLUDE } from "./tasks";
 import { CHAT_EVENT_TYPES } from "./chatEvents";
+import type { SendMessageOptions } from "./protocols";
 import {
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
@@ -60,6 +61,12 @@ export const KEYED_OPERATION_TOOL_NAMES: ReadonlySet<string> = new Set([SEND_MES
 /** The tool argument that keys an operation. */
 export const OPERATION_ID_ARG = "operation_id";
 
+/** The `sendMessage` option that keys an operation. */
+const OPERATION_ID_OPTION = "operationId" satisfies keyof SendMessageOptions;
+
+/** The argument a room-scoped tool takes to name the room it runs in. */
+export const ROOM_ID_ARG = "room_id";
+
 /**
  * Whether a tool call's arguments carry an operation id, under any value:
  * presence keys the call, and the journal validates the value, so an explicit
@@ -71,7 +78,7 @@ export function carriesOperationIdArg(args: unknown): boolean {
 
 /** Whether `sendMessage` options carry an `operationId`, under any value, as for {@link carriesOperationIdArg}. */
 export function carriesOperationIdOption(options: unknown): boolean {
-  return typeof options === "object" && options !== null && Object.hasOwn(options, "operationId");
+  return typeof options === "object" && options !== null && Object.hasOwn(options, OPERATION_ID_OPTION);
 }
 
 /**
