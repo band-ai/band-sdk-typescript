@@ -10,7 +10,6 @@ import type {
   ListContactsArgs,
   ListMemoriesArgs,
   MemoryRecord,
-  MentionReference,
   MetadataMap,
   PeerRecord,
   RemoveContactArgs,
@@ -43,6 +42,7 @@ import type {
   FernBandClientLike,
   RestApi,
   AgentIdentity,
+  ChatMessageInput,
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
@@ -457,7 +457,7 @@ function chatMessageEndpoint(client: FernBandClientLike, missing: string) {
 }
 
 /** A chat message's wire body. */
-function chatMessageBody(message: { content: string; messageType?: string; metadata?: MetadataMap; mentions?: MentionReference[] }) {
+function chatMessageBody(message: ChatMessageInput) {
   return {
     message: {
       content: message.content,
@@ -506,12 +506,7 @@ export class FernRestAdapter implements RestApi {
 
   public async createChatMessage(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options: MessagePostOptions = {},
   ): Promise<ToolOperationResult> {
     const api = chatMessageEndpoint(this.client, "Fern client missing chat message creation endpoint");
@@ -577,12 +572,7 @@ export class FernRestAdapter implements RestApi {
    */
   public async createChatMessageOnce(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
     if (this.onceClientFactory === undefined) {

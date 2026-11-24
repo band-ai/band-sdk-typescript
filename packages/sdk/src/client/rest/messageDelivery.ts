@@ -122,11 +122,6 @@ export interface MessageDelivery {
   stopped?: AbortSignal;
 }
 
-/**
- * - `refused`: Band answered and saved nothing (an app 4xx, or the room is stopped).
- * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
- * - `uncertain`: a 5xx, no response, or a response that could not be read.
- */
 type OncePort = Pick<ChatMessagingRestApi, "createChatMessageOnce" | "hasOnceCapability">;
 
 /** Whether `api` serves the single-attempt post on SDK-controlled transport: the method stands, and the adapter does not report otherwise. */
@@ -134,6 +129,11 @@ export function servesOncePost<T extends OncePort>(api: T): api is T & Required<
   return api.createChatMessageOnce !== undefined && (api.hasOnceCapability?.() ?? true);
 }
 
+/**
+ * - `refused`: Band answered and saved nothing (an app 4xx, or the room is stopped).
+ * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
+ * - `uncertain`: a 5xx, no response, or a response that could not be read.
+ */
 export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
 export function classifyFailedAttempt(error: unknown): FailedAttempt {

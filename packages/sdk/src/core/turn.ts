@@ -241,7 +241,7 @@ export async function relayReply(
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  // An unknown delivery may already be in the room; a relay would post on top of it.
+  // An unknown delivery may already be in the room, and a keyed call commits the turn to keyed delivery: neither is relayed over.
   if (tools.turn.relayProhibited || tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }

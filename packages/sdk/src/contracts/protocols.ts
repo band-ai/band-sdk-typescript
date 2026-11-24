@@ -60,16 +60,8 @@ export interface HistoryLike {
 
 export interface SendMessageOptions {
   /**
-   * The operation's id, as supplied: the journal validates it before any
-   * record — a value that is not a valid id (a non-string, an empty string,
-   * or one over `OPERATION_ID_MAX_BYTES` UTF-8 bytes) is an invalid input the
-   * keyed call is refused for, before any reservation, post, or reply or
-   * decline credit. A valid id is otherwise an opaque, untrimmed string. A
-   * later call with the same id stands for the same operation — a settled
-   * send replays its stored result without a new post, an unknown send stays
-   * unknown (Band may already hold it), and changed content or kind is
-   * refused. A different id names a different operation. Without it, the
-   * call keeps the legacy at-least-once delivery.
+   * The keyed operation's id; README "Keyed operations (`operation_id`)" states
+   * its rules. Without it, the call keeps the legacy at-least-once delivery.
    */
   operationId?: string;
 }

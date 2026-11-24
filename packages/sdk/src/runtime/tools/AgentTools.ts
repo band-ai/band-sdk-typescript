@@ -261,10 +261,8 @@ export class AgentTools implements AgentToolsProtocol {
     kind: "reply" | "notice",
     options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
+    // Only a reply carries options: a notice posts unkeyed.
     if (options !== undefined && carriesOperationIdOption(options)) {
-      if (kind !== "reply") {
-        throw new OperationUnsupportedError("no-once-transport");
-      }
       return this.postKeyedSend(content, mentions, options.operationId);
     }
     const messageId = kind === "reply" && this.publication ? this.publicationInboundId() : undefined;

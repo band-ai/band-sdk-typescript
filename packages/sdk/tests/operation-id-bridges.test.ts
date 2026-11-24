@@ -33,10 +33,9 @@ type NetworkKind = "http" | "sse";
 /**
  * Starts a runtime whose rooms each hold an inbound turn message, so a turn runs
  * per room the moment the runtime connects. The handler receives each turn's live
- * tools and room, and hands them to a real registered backend of `kind`.
+ * tools and room.
  */
-async function runtimeWithNetworkBackend(
-  kind: NetworkKind,
+async function runtimeWithInbounds(
   handler: GenericAdapterHandler,
   options: { rooms?: string[] } = {},
 ) {
@@ -205,7 +204,7 @@ for (const kind of ["http", "sse"] as const) {
       let retiredText = "";
       let relayed: boolean | undefined;
       const done = createDeferred<void>();
-      const { platform } = await runtimeWithNetworkBackend(kind, async ({ tools }) => {
+      const { platform } = await runtimeWithInbounds(async ({ tools }) => {
         let live = true;
         const backend = await createBandMcpBackend({
           kind,
@@ -253,7 +252,7 @@ describe("room-scoped no-reply over the wire", () => {
     onTestFinished(async () => {
       releaseSuccessor.resolve();
     });
-    const { platform, journalDir, inbounds } = await runtimeWithNetworkBackend("http", async ({ tools, roomId }) => {
+    const { platform, journalDir, inbounds } = await runtimeWithInbounds(async ({ tools, roomId }) => {
       if (roomId === "room-2") {
         // The selected room's turn stands live, so its tools resolve, until the
         // caller's decline settled it; its own closing text then meets the fence.
@@ -317,7 +316,7 @@ describe("room-scoped no-reply over the wire", () => {
       settle = (error) => (error === undefined ? resolve() : reject(error));
     });
     outcome.catch(() => undefined);
-    await runtimeWithNetworkBackend("http", async ({ tools }) => {
+    await runtimeWithInbounds(async ({ tools }) => {
       try {
         const backend = await createBandMcpBackend({
           kind: "http",
@@ -352,7 +351,7 @@ describe("every bridge's keyed admission", () => {
       const scope = multiRoom ? "room-scoped" : "single-context";
       it(`${kind} (${scope}) posts a keyed send once, replays its retry, and fences the turn's closing relay`, async () => {
         const outcome = createDeferred<{ first: string; retry: string; relayed: boolean } | { error: unknown }>();
-        const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+        const { platform, journalDir } = await runtimeWithInbounds(async ({ tools }) => {
           try {
             const client = await openBridge(kind, { enableOperationIds: true, multiRoom, getToolsForRoom: () => tools });
             try {
@@ -381,7 +380,7 @@ describe("every bridge's keyed admission", () => {
     it(`${kind} without enableOperationIds refuses a keyed send or no-reply rather than run it unkeyed, and leaves the turn unfenced`, async () => {
       type Refusal = { isError: boolean; text: string };
       const outcome = createDeferred<{ send: Refusal; decline: Refusal; relayed: boolean } | { error: unknown }>();
-      const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+      const { platform, journalDir } = await runtimeWithInbounds(async ({ tools }) => {
         try {
           const client = await openBridge(kind, { getToolsForRoom: () => tools });
           const refusal = (result: object): Refusal => ({ isError: Boolean((result as { isError?: unknown }).isError), text: textOf(result) });
@@ -418,7 +417,7 @@ describe("every bridge's keyed admission", () => {
 
   it("admits a keyed call whose room_id carries the padding an unkeyed call tolerates", async () => {
     const outcome = createDeferred<{ keyed: boolean; unkeyed: boolean } | { error: unknown }>();
-    const { platform } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
+    const { platform } = await runtimeWithInbounds(async ({ tools }) => {
       try {
         const client = await openBridge("http", { enableOperationIds: true, getToolsForRoom: (id) => (id === "room-1" ? tools : undefined) });
         try {
@@ -453,10 +452,10 @@ describe("the contact callback consumer", () => {
       .sendMessage("must refuse without durable context", [{ id: OWNER }], { operationId: "contact-key" })
       .catch((error) => error);
     expect(posts).toBe(0);
-    expect(refused).toMatchObject({ name: "UnsupportedFeatureError", message: expect.stringContaining("keyed operations are unsupported for contact callbacks") });
+    expect(refused).toMatchObject({ name: "OperationUnsupportedError", issue: "no-journal" });
   });
 
-  it("refuses a keyed no-request without any post", async () => {
+  it("refuses a keyed no-reply without any post", async () => {
     let posts = 0;
     const rest = new FakeRestApi({
       createChatMessage: async () => {
@@ -469,6 +468,6 @@ describe("the contact callback consumer", () => {
       .executeToolCall("band_no_reply", { reason: "fyi only", operation_id: "contact-decline" })
       .catch((error) => error);
     expect(posts).toBe(0);
-    expect(refused).toMatchObject({ name: "UnsupportedFeatureError", message: expect.stringContaining("keyed operations are unsupported for contact callbacks") });
+    expect(refused).toMatchObject({ name: "OperationUnsupportedError", issue: "no-journal" });
   });
 });

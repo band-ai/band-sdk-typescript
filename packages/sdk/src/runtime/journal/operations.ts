@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
+import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import type { MentionReference } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
-import { DeliveryFailedError } from "../../core/deliveryFailedError";
+import { DeliveryFailedError, unknownDeliveryText } from "../../core/deliveryFailedError";
+import { RoomExecutionStoppedError, statusCodeOf } from "../../core/errors";
 import { OPERATION_ID_MAX_BYTES } from "../../contracts/toolSchemas";
 import { sha256Hex, type OperationKind } from "./records";
 
@@ -136,4 +139,74 @@ export function storedSendResult(resultJson: string | undefined): Record<string,
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || isFailedOperationResult(parsed)) return undefined;
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * The text a keyed operation of each kind stands unknown under, which the
+ * operator reads in the tool result: a send may already be in the room, a
+ * decline posts nothing, so nothing is held.
+ */
+export const UNKNOWN_OPERATION_MESSAGES: Readonly<Record<OperationKind, string>> = {
+  send: unknownDeliveryText("operation"),
+  decline:
+    "The no-reply's outcome is unknown: its decision did not stand as a stored result, so the journal proves nothing either. The turn journal records the operation as unknown; the reply is not credited as declined, and the operation is never re-run as a success.",
+};
+
+/**
+ * The classified public text a definite refusal stands under: it is what the
+ * journal stores as the refusal's reason and what every later caller, joiner,
+ * and replay reads. It names the refusal's class and, for an HTTP refusal,
+ * its status — and nothing else. A transport's raw message, body, headers,
+ * and credentials never stand in the record: a classifier that echoed them
+ * would persist what the operator must not keep.
+ */
+export function publicRefusalText(value: unknown): string {
+  // A resolved executor error may carry the failure it stands for: classify from it.
+  const carried: unknown = isToolExecutorError(value) && value.details?.error !== undefined ? value.details.error : value;
+  const code = statusCodeOf(carried);
+  if (code !== undefined) {
+    return `the platform refused the post (HTTP ${code})`;
+  }
+  if (carried instanceof Error) {
+    // The transport's failure class, not its message: a message can carry a body.
+    return `the post was refused by the transport: ${carried.name}`;
+  }
+  if (isToolExecutorError(value)) {
+    return `the post was refused by the transport (${value.errorType})`;
+  }
+  return "the post was refused before it reached Band";
+}
+
+/**
+ * A failed post that provably committed nothing and is no refusal of the post
+ * itself: a 408/429 from infrastructure in front of Band, or Band's answer for
+ * a room it stopped the agent in, which a play lifts.
+ */
+export function committedNothing(error: unknown): boolean {
+  return error instanceof RoomExecutionStoppedError || classifyFailedAttempt(error) === "notCommitted";
+}
+
+/**
+ * A resolved post result that stands as a settled operation's stored result:
+ * a plain object the journal's JSON store keeps unchanged on the round trip.
+ * Anything else — a non-object, a value the store coerces (a NaN, an
+ * undefined property, a value a string would not carry back) — would settle
+ * the operation on a copy different from the original result, and no such
+ * copy may stand for the replay.
+ */
+export function isStorableResult(result: unknown): boolean {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    return false;
+  }
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(result);
+  } catch {
+    return false;
+  }
+  try {
+    return isDeepStrictEqual(JSON.parse(encoded), result);
+  } catch {
+    return false;
+  }
 }

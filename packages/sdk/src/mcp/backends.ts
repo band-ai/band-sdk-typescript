@@ -63,7 +63,7 @@ export async function createBandMcpBackend(
       enableOperationIds: options.enableOperationIds,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
-    logger: options.logger,
+      logger: options.logger,
     });
 
     return {
@@ -93,7 +93,7 @@ export async function createBandMcpBackend(
       enableContactTools: true,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
-    logger: options.logger,
+      logger: options.logger,
     });
     await server.start();
 
@@ -122,7 +122,7 @@ export async function createBandMcpBackend(
       additionalTools: options.additionalTools,
       authToken,
       admissionGuard: options.admissionGuard,
-    logger: options.logger,
+      logger: options.logger,
     });
     await server.start();
 

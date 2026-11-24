@@ -1,8 +1,7 @@
-import { isDeepStrictEqual } from "node:util";
 import type { ToolOperationResult } from "../../contracts/dtos";
-import { isToolExecutorError } from "../../contracts/protocols";
-import { DeliveryUnknownError, isDeliveryUnknownOutput, unknownDeliveryText } from "../../core/deliveryFailedError";
-import { RoomExecutionStoppedError, statusCodeOf } from "../../core/errors";
+import { NO_REPLY_RESULT } from "../../contracts/toolSchemas";
+import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../../core/deliveryFailedError";
+import { assertNever, errorClassOf } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
 import { cutShort } from "../turnRevocation";
@@ -10,8 +9,12 @@ import { closedJournalError, JournalPublicationError, poisonedJournalError } fro
 import type { OperationCheck, RoomJournal } from "./RoomJournal";
 import { GenerationClosedError, type JournalGeneration } from "./TurnJournal";
 import {
+  committedNothing,
   isFailedOperationResult,
+  isStorableResult,
   operationFingerprint,
+  publicRefusalText,
+  UNKNOWN_OPERATION_MESSAGES,
   storedSendResult,
   validateOperationId,
   OperationConflictError,
@@ -289,7 +292,7 @@ export class PublicationEngine {
         case "reserved":
           return await this.runReservedOperation(journal, input, operationId, deferred);
         default:
-          return assertNever(status);
+          return assertNever(status, "operation check");
       }
     } catch (error) {
       deferred.reject(error);
@@ -408,7 +411,8 @@ export class PublicationEngine {
       recorded = false;
       this.logger.error("the operation stands unknown, and its record failed to land; the room's journal no longer admits records", {
         roomId: journal.roomId,
-        error,
+        operationId,
+        ...errorClassOf(error),
         recordError,
       });
     }
@@ -417,7 +421,8 @@ export class PublicationEngine {
     if (recorded) {
       this.logger.warn("operation delivery is unknown; the journal records it as unknown and reports it instead of reposting it", {
         roomId: journal.roomId,
-        error,
+        operationId,
+        ...errorClassOf(error),
       });
     }
     throw new DeliveryUnknownError(cause, operationId, UNKNOWN_OPERATION_MESSAGES[kind]);
@@ -513,7 +518,7 @@ export class PublicationEngine {
    */
   private storedOperationResult(journal: RoomJournal, operationId: string, check: Extract<OperationCheck, { status: "settled" }>): ToolOperationResult {
     if (journal.operation(operationId)?.kind === "decline") {
-      return { status: "ok" };
+      return NO_REPLY_RESULT;
     }
     const stored = storedSendResult(check.resultJson);
     if (stored === undefined) {
@@ -540,16 +545,6 @@ export class PublicationEngine {
   }
 }
 
-function assertNever(value: never): never {
-  throw new Error(`Unhandled operation check: ${JSON.stringify(value)}`);
-}
-
-/** A failure's class, never its message, which can carry a body. */
-function errorClassOf(failure: unknown): { errorClass?: string } {
-  if (failure === undefined) return {};
-  return { errorClass: failure instanceof Error ? failure.name : typeof failure };
-}
-
 /** Why a keyed send's post must not run: its turn was cut short, or its journal stopped admitting. */
 function blockedPost(journal: RoomJournal, stopped: AbortSignal | undefined): Error | undefined {
   const cut = stopped && cutShort(stopped);
@@ -557,83 +552,13 @@ function blockedPost(journal: RoomJournal, stopped: AbortSignal | undefined): Er
   return journal.accepting ? undefined : poisonedJournalError();
 }
 
-/**
- * A failed post that provably committed nothing and is no refusal of the post
- * itself: a 408/429 from infrastructure in front of Band, or Band's answer for
- * a room it stopped the agent in, which a play lifts.
- */
-function committedNothing(error: unknown): boolean {
-  return error instanceof RoomExecutionStoppedError || classifyFailedAttempt(error) === "notCommitted";
-}
-
 /** The stand-in cause of an attempt that ended without a verdict: the transport's raw error never travels. */
 function noVerdict(): Error {
   return new Error("the once port's attempt ended without a verdict");
-}
-
-/**
- * The text a keyed operation of each kind stands unknown under, which the
- * operator reads in the tool result: a send may already be in the room, a
- * decline posts nothing, so nothing is held.
- */
-export const UNKNOWN_OPERATION_MESSAGES: Readonly<Record<OperationKind, string>> = {
-  send: unknownDeliveryText("operation"),
-  decline:
-    "The no-reply's outcome is unknown: its decision did not stand as a stored result, so the journal proves nothing either. The turn journal records the operation as unknown; the reply is not credited as declined, and the operation is never re-run as a success.",
-};
-
-/**
- * The classified public text a definite refusal stands under: it is what the
- * journal stores as the refusal's reason and what every later caller, joiner,
- * and replay reads. It names the refusal's class and, for an HTTP refusal,
- * its status — and nothing else. A transport's raw message, body, headers,
- * and credentials never stand in the record: a classifier that echoed them
- * would persist what the operator must not keep.
- */
-function publicRefusalText(value: unknown): string {
-  // A resolved executor error may carry the failure it stands for: classify from it.
-  const carried: unknown = isToolExecutorError(value) && value.details?.error !== undefined ? value.details.error : value;
-  const code = statusCodeOf(carried);
-  if (code !== undefined) {
-    return `the platform refused the post (HTTP ${code})`;
-  }
-  if (carried instanceof Error) {
-    // The transport's failure class, not its message: a message can carry a body.
-    return `the post was refused by the transport: ${carried.name}`;
-  }
-  if (isToolExecutorError(value)) {
-    return `the post was refused by the transport (${value.errorType})`;
-  }
-  return "the post was refused before it reached Band";
 }
 
 /** The post id Band attributed: the top-level `id` FernRestAdapter's createChatMessage returns. */
 export function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
   return "id" in result && typeof result.id === "string" && result.id.length > 0 ? result.id : undefined;
-}
-
-/**
- * A resolved post result that stands as a settled operation's stored result:
- * a plain object the journal's JSON store keeps unchanged on the round trip.
- * Anything else — a non-object, a value the store coerces (a NaN, an
- * undefined property, a value a string would not carry back) — would settle
- * the operation on a copy different from the original result, and no such
- * copy may stand for the replay.
- */
-function isStorableResult(result: unknown): boolean {
-  if (typeof result !== "object" || result === null || Array.isArray(result)) {
-    return false;
-  }
-  let encoded: string;
-  try {
-    encoded = JSON.stringify(result);
-  } catch {
-    return false;
-  }
-  try {
-    return isDeepStrictEqual(JSON.parse(encoded), result);
-  } catch {
-    return false;
-  }
 }

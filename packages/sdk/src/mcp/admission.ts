@@ -5,6 +5,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { asNonEmptyString, asOptionalRecord } from "../adapters/shared/coercion";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { errorClassOf } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import { KEYED_OPERATION_TOOL_NAMES, ROOM_ID_ARG, carriesOperationIdArg } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
@@ -140,13 +141,13 @@ export class AdmissionTransport implements Transport {
     if (!("method" in message) || message.method !== TOOLS_CALL) {
       return undefined;
     }
-    const params = message.params;
-    const name = (params as { name?: unknown } | undefined)?.name;
+    const params = asOptionalRecord(message.params);
+    const name = params?.name;
     // An unrelated tool that carries its own operation_id passes through untouched.
     if (typeof name !== "string" || !KEYED_OPERATION_TOOL_NAMES.has(name)) {
       return undefined;
     }
-    const arguments_ = asOptionalRecord(asOptionalRecord(params)?.arguments);
+    const arguments_ = asOptionalRecord(params?.arguments);
     if (!carriesOperationIdArg(arguments_)) {
       return undefined;
     }
@@ -159,7 +160,7 @@ export class AdmissionTransport implements Transport {
     } catch (error) {
       this.logger.warn("a keyed call's origin resolver threw; the call is refused", {
         tool: name,
-        errorClass: error instanceof Error ? error.name : typeof error,
+        ...errorClassOf(error),
       });
     }
     if (origin === undefined) {

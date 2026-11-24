@@ -17,7 +17,6 @@ import type {
   ListMemoriesArgs,
   MemoryRecord,
   MetadataMap,
-  MentionReference,
   PeerRecord,
   RemoveContactArgs,
   RespondContactRequestArgs,
@@ -28,6 +27,7 @@ import { fetchPaginated, normalizePaginationMetadata, type PaginationOptions } f
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   AgentIdentity,
+  ChatMessageInput,
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
@@ -68,12 +68,7 @@ export class RestFacade implements RestApi {
 
   public async createChatMessage(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options?: MessagePostOptions,
   ): Promise<ToolOperationResult> {
     return this.forward("createChatMessage", () => this.api.createChatMessage(chatId, message, options), {
@@ -85,12 +80,7 @@ export class RestFacade implements RestApi {
 
   public async createChatMessageOnce(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
     return this.callOptional(

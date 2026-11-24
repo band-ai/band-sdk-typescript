@@ -36,6 +36,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
 import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME, carriesOperationIdArg, carriesOperationIdOption } from "../../contracts/toolSchemas";
+import { OperationUnsupportedError } from "../journal/operations";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -101,7 +102,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     // settle, or replay it. It is refused before any room, endpoint, or
     // transport is consulted — the post never goes out.
     if (carriesOperationIdOption(options)) {
-      throw keyedOperationsUnsupported();
+      throw new OperationUnsupportedError("no-journal");
     }
     const roomId = requireRoomId(this.roomId, "sendMessage");
     if (!this.rest.createChatMessage) {
@@ -298,7 +299,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     switch (toolName) {
       case "band_send_message":
         // No turn journal stands behind a contact callback: a keyed call earns no post.
-        if (carriesOperationIdArg(toolArgs)) throw keyedOperationsUnsupported();
+        if (carriesOperationIdArg(toolArgs)) throw new OperationUnsupportedError("no-journal");
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
@@ -310,7 +311,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           toolArgs.metadata as MetadataMap | undefined,
         );
       case NO_REPLY_TOOL_NAME:
-        if (carriesOperationIdArg(toolArgs)) throw keyedOperationsUnsupported();
+        if (carriesOperationIdArg(toolArgs)) throw new OperationUnsupportedError("no-journal");
         return NO_REPLY_RESULT;
       case "band_get_participants":
         return this.getParticipants();
@@ -369,8 +370,4 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);
     }
   }
-}
-
-function keyedOperationsUnsupported(): UnsupportedFeatureError {
-  return new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
 }

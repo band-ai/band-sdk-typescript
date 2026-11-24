@@ -1,6 +1,6 @@
 import type { MetadataMap } from "../../contracts/dtos";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
-import { RuntimeStateError, TransportError } from "../../core/errors";
+import { assertNever, RuntimeStateError, TransportError } from "../../core/errors";
 import type { BandLink } from "../../platform/BandLink";
 import {
   messageIdOf,
@@ -281,7 +281,7 @@ export class RoomPresence implements AsyncDisposable {
           await (event.roomId === null ? this.handleReconnected(event) : this.forwardToAdmittedRoom(event));
           break;
         default:
-          assertNever(event);
+          assertNever(event, "platform event");
       }
     }
   }
@@ -439,8 +439,4 @@ export class RoomPresence implements AsyncDisposable {
       },
     });
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
 }
