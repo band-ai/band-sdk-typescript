@@ -230,10 +230,7 @@ describe("a keyed operation across a real process boundary", () => {
 
     const platform = rebuildPlatform(state);
     const successor = await startSuccessor(platform, journalDir);
-    // The restart announces the operation with its id, exactly once.
     await platform.rest.settled.next((settled) => settled.messageId === state.inboundId);
-    const unrecorded = announced(successor.events).filter((event) => event.operationId === OP_ID);
-    expect(unrecorded).toHaveLength(1);
     // The retry joins the stored unknown: no post of its own, and the turn the
     // unknown stands in settles failed.
     expect(successor.handled).toEqual([state.inboundId]);
@@ -248,6 +245,8 @@ describe("a keyed operation across a real process boundary", () => {
     const next = await (await platform.room(state.room)).say(OWNER, `${MENTION} next`);
     await platform.rest.settled.next((settled) => settled.messageId === next && settled.outcome === "processed");
     expect(delivered(platform)).toEqual(["keyed child send", "next answered"]);
+    // Counted once the successor handled everything: the restart announced the operation with its id, exactly once.
+    expect(announced(successor.events).filter((event) => event.operationId === OP_ID)).toHaveLength(1);
   }, 180_000);
 
   it("preserves a killed process's durably settled operation and its answered inbound: the successor reposts nothing and runs no turn", async () => {

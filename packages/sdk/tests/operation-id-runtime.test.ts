@@ -19,6 +19,7 @@ import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
+import { hasErrorCode } from "../src/runtime/journal/records";
 import { IDENTITY, holdJournalAppend, landedJournalRecords, recordTypes, roomFile } from "./turnJournalSupport";
 
 const OWNER = "owner";
@@ -98,8 +99,9 @@ const journalRecords = (journalDir: string, roomId: string = ROOM) => recordType
 async function recordsOf(journalDir: string, roomId: string = ROOM): Promise<string[]> {
   try {
     return await journalRecords(journalDir, roomId);
-  } catch {
-    return [];
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return [];
+    throw error;
   }
 }
 
@@ -209,22 +211,22 @@ describe("a keyed operation's process boundary", () => {
     });
     await settledAs(platform, inbound, "failed");
     expect(await first.handlerOutcome).toEqual({ ok: true });
-    await second.handlerOutcome;
+    expect(await second.handlerOutcome).toEqual({ ok: true });
     expect(retryIsError).toBe(true);
     expect(relayed).toBe(false);
     expect(seen).toEqual([{ kind: DeliveryUnknownError.KIND, detail: UNKNOWN_OPERATION_MESSAGES.send }]);
     expect(postedContents(platform)).toEqual(["keyed lost"]);
-    // The restart announced the operation exactly once, with its id, and the turn's
-    // unknown delivery rides the same report. The announcement rides the room's
-    // admission, which runs after start resolves: wait for it to land.
+    // The announcement rides the room's admission, which runs after start resolves: wait for it to land.
     await announced(second.events, inbound, OP_ID);
-    const unrecorded = reported(second.events);
-    expect(unrecorded.filter(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toHaveLength(1);
     // A successor turn is unaffected by the old operation: it replies and settles.
     const next = await room.say(OWNER, `${MENTION} next`);
     await settledAs(platform, next, "processed");
     expect(settledOutcomes(platform, next)).toContain("processed");
     expect(postedContents(platform)).toEqual(["keyed lost", "next answered"]);
+    // Counted once the successor turn settled: the restart announced the operation
+    // exactly once, with its id, and no later turn announced it again.
+    const unrecorded = reported(second.events);
+    expect(unrecorded.filter(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toHaveLength(1);
     await first.runtime.stop(KILL).catch(() => undefined);
   }, 180000);
 
