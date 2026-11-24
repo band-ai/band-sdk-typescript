@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { asErrorMessage } from "../../core/coercion";
 import { BandSdkError } from "../../core/errors";
 
 type SqliteModule = Pick<typeof import("node:sqlite"), "DatabaseSync">;
@@ -50,7 +51,7 @@ export class JournalOwnership {
     } catch (error) {
       throw new JournalOwnershipError(
         `The journal lock needs node:sqlite (Node.js 22.13+, or 22.12 with --experimental-sqlite); it is unavailable here. ` +
-          `The journal stays closed. Original error: ${error instanceof Error ? error.message : String(error)}`,
+          `The journal stays closed. Original error: ${asErrorMessage(error)}`,
         "unsupported",
         file,
         error,
@@ -128,7 +129,7 @@ function classify(file: string, error: unknown): JournalOwnershipError {
       error,
     );
   }
-  const message = error instanceof Error ? error.message : String(error);
+  const message = asErrorMessage(error);
   return new JournalOwnershipError(
     `The journal lock file ${file} could not be opened: ${message}. Check the path and the file system it is on; ` +
       `the journal stays closed until the lock file is usable.`,

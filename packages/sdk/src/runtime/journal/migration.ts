@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import { asErrorMessage } from "../../core/coercion";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 
@@ -250,7 +251,7 @@ function normalizeIdentity(value: string, sourceFile: string, agentDir: string):
     // a refused identity may carry credentials, and an error the operator
     // greps must not print them.
     throw new JournalFileError(
-      `A migration binding for ${sourceFile} names a platform identity the runtime will not serve: ${error instanceof Error ? error.message : String(error)}. The journal binds its layout and every header to that identity, and the runtime serves only strict canonical HTTP(S) URLs; attest an identity of that form.`,
+      `A migration binding for ${sourceFile} names a platform identity the runtime will not serve: ${asErrorMessage(error)}. The journal binds its layout and every header to that identity, and the runtime serves only strict canonical HTTP(S) URLs; attest an identity of that form.`,
       "corrupt",
       agentDir,
     );

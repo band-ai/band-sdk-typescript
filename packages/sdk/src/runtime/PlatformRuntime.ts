@@ -1009,13 +1009,9 @@ export class PlatformRuntime implements AsyncDisposable {
         if (error instanceof GenerationClosedError) {
           return await this.settleUnstartedTurn(context, input, message, stopModeOf(stopped) ?? "stop", false, undefined);
         }
-        // A configured journal that will not open fails the turn before its
-        // adapter runs: nothing is delivered unjournaled. The turn never
-        // started, so its end is not recorded and what preparing it consumed
-        // is given back — the next turn is prepared as this one was, and a
-        // session's first turn still bootstraps. The message settles failed,
-        // and the runtime keeps serving the rooms whose journals stand.
-        // Band and the room see only the kind: the error names local paths and identities.
+        // Fail before the adapter runs, so nothing is delivered unjournaled; the
+        // turn never started, so its preparation is given back for the next one.
+        // Band sees only the kind: the error names local paths and identities.
         this.logger.error("The room's turn journal will not open; the turn fails", { roomId, messageId, error });
         const label = `The room's turn journal will not open (${journalFailureKind(error)}), so the turn failed rather than answer unjournaled`;
         this.events.emit({ type: "turn.failed", roomId, messageId, error: label });
