@@ -10,7 +10,7 @@ import {
   type AdapterToolsProtocol,
   type ToolExecutorError,
 } from "../contracts/protocols";
-import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
+import { SEND_MESSAGE_TOOL_NAME, carriesOperationIdArg, carriesOperationIdOption } from "../contracts/toolSchemas";
 import {
   DeliveryFailedError,
   DeliveryUnknownError,
@@ -19,12 +19,23 @@ import {
   isDeliveryUnknownOutput,
 } from "../core/deliveryFailedError";
 import { asErrorMessage } from "../core/coercion";
-import { ValidationError } from "../core/errors";
+import { ValidationError, errorClassOf } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
 import { normalizeMentionHandle } from "./formatters";
 import { JournalPublicationError } from "./journal/errors";
+import { AdmissionGuardError } from "./journal/journalTools";
+import { OperationConflictError, OperationIdError, OperationRefusedError, OperationUnsupportedError } from "./journal/operations";
+
+/** A keyed call's routine refusal: the journal already logged any it stored, so it is no unexpected break. */
+function isKeyedRefusal(error: unknown): error is Error {
+  return error instanceof OperationRefusedError
+    || error instanceof OperationConflictError
+    || error instanceof OperationUnsupportedError
+    || error instanceof OperationIdError
+    || error instanceof AdmissionGuardError;
+}
 
 /** The delivery of the turn whose tool call is running, in that call's async scope. */
 const deliveryScope = new AsyncLocalStorage<MessageDelivery>();
@@ -76,6 +87,10 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
     if (error.kind === "fenced") logger?.debug("the room's journal refused a tool call", context);
     else logger?.warn("the room's journal refused a tool call", context);
     return toolExecutionError(toolName, error.message, { kind: error.kind });
+  }
+  if (isKeyedRefusal(error)) {
+    logger?.debug("a keyed operation call was refused", { toolName, ...errorClassOf(error) });
+    return toolExecutionError(toolName, asErrorMessage(error));
   }
   logger?.error("unexpected tool execution error", { toolName, error });
   return toolExecutionError(toolName, asErrorMessage(error));
@@ -141,14 +156,14 @@ function coalesceSendMessage(
   };
   return {
     executeToolCall: (toolName, args) => {
-      if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
+      if (toolName !== SEND_MESSAGE_TOOL_NAME || carriesOperationIdArg(args)) return execute(toolName, args);
       // A joined send-door call rejects; model/MCP callers read a result.
       return admit(args.content, args.mentions, () => execute(toolName, args), "tool").catch(
         (error: unknown) => toolErrorResult(toolName, error),
       );
     },
-    sendMessage: (content, mentions) =>
-      admit(content, mentions, () => sendMessage(content, mentions), "send").then((result) => {
+    sendMessage: (content, mentions, options) =>
+      carriesOperationIdOption(options) ? sendMessage(content, mentions, options) : admit(content, mentions, () => sendMessage(content, mentions), "send").then((result) => {
         // A joined tool-door call resolves its failure; a reply must never take it for a post.
         if (isDeliveryUnknownOutput(result)) {
           throw new DeliveryUnknownError(result, deliveryUnknownPublicationId(result));

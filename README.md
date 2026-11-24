@@ -593,6 +593,70 @@ failed, as ToolNode reports it. Graphs passed as `graph` or `graphFactory`,
 and agents that run their own loop (Letta's server, Claude SDK, Codex, ACP,
 OpenCode), keep their own control flow.
 
+### Keyed operations (`operation_id`)
+
+A caller that passes `operation_id` (a string) to `band_send_message` or
+`band_no_reply` makes that post an *operation*: a durable, named unit whose
+delivery the SDK stands behind across turns and processes. The guarantee is
+**at most one SDK-issued attempt per operation** — never a second POST from
+the SDK — with honest uncertainty where the outcome cannot be known; it is not
+exactly-once delivery.
+
+**Opt-in requirements.** Models see `operation_id` only where it can be served:
+`AgentTools` advertises it when the room journals replies (`journalDir`) and
+posts through the single-attempt client, and MCP servers advertise it only with
+`enableOperationIds` (default off), which you should set only when every room
+the server resolves meets both. A server without it refuses a call that carries
+`operation_id` rather than post it unkeyed, and fences nothing. A synthetic turn
+(a contact hub's) has no inbound to settle, so its tools neither advertise nor
+serve keyed operations. Keyed delivery stands only where the SDK
+controls the post's transport: `BandLink`'s default REST wiring installs a once client with
+the same endpoint and auth as the legacy client, transport retries disabled,
+and a Fetch that refuses redirects. An injected REST client that has no
+SDK-controlled once client refuses keyed posts before any request; the SDK
+never infers the capability from an injected client, and the legacy post's
+redirect policy stands unchanged.
+
+**Outcomes.**
+- *Settled.* The post's answer stood committed: a same-`operation_id` call —
+  in any later process — replays the stored original result and posts nothing.
+- *Refused.* Band's definite refusal of the post itself (an application 4xx
+  such as a validation or permission error), or the harness's refusal of a
+  no-reply, stands stored and is **terminal by design**: the SDK never resets
+  or retries it, and a same-id call replays the refusal. A same-id call with a
+  *changed* payload conflicts with the standing operation and is refused
+  before any post.
+- *Released.* A send that provably committed nothing — its turn was cut short
+  before the post, infrastructure in front of Band answered 408 or 429, or
+  Band answered that it has stopped the agent in the room — fails for that
+  call but burns nothing: a later same-id call (for example, the answer to an
+  inbound Band serves again after a play) is admitted and posts.
+- *Unknown.* The attempt's report is ambiguous — a redirect away from the
+  post's origin, an unanswered 5xx, or a process killed between the post and
+  its answer. On restart the SDK announces the operation with its id (a
+  `delivery.unrecorded` report) and never reposts it; a same-id retry joins
+  the stored unknown, and the next turn proceeds. Recovery beyond that is the
+  operator's: the stored unknown is never guessed back into a success.
+
+**Admission.** The field's *presence* — not a parsed value — admits the call.
+A turn in which a keyed call stood is fenced against relaying its closing text
+as an unkeyed replacement, whether the call succeeded, was refused, or carried
+an invalid id; the fence grants no settlement. Invalid ids (non-strings) and
+unsupported contexts are refused without a reservation, a post, or a
+reply/decline credit. Unrelated tools carrying their own `operation_id` are
+not admitted and fence nothing; an omitted id preserves the ordinary,
+unkeyed delivery.
+
+**Room scoping.** A room-scoped tool server advertises `room_id` on both
+tools; a keyed call routes to the room it names, and a keyed `band_no_reply`
+settles the selected room's turn under the key. A roomless (single-context)
+server advertises no `room_id`: its tools serve the bound room.
+
+**Reader compatibility.** The operation's records are strict v2 journal
+additions. A reader that does not know them refuses the journal rather than
+guessing; no format-number bump accompanies these unpublished additions, and
+no reader silently skips an unsupported record.
+
 ### What counts
 
 The tools a turn receives (`TurnTools`, so `tools.turn` is its `Turn`) record

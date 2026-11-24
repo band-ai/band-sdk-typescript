@@ -3,12 +3,14 @@ import { currentDelivery, toolErrorResult } from "../messageDelivery";
 import { currentTurn } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
-import type { PublicationEngine } from "../journal/publication";
+import { receiptIdOf, type PublicationEngine } from "../journal/publication";
+import { OperationUnsupportedError, mentionInputsAsStrings } from "../journal/operations";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, normalizeMentionHandle, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { fetchContextPage, listAllPeers, readRoomHistoryPage } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
+import { servesOncePost } from "../../client/rest/messageDelivery";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
 import type {
@@ -49,6 +51,7 @@ import {
   sendFailureViaEvent,
   toolExecutionError,
   type ToolExecutorError,
+  type SendMessageOptions,
   type FetchRoomContextArgs,
   type RoomContextPage,
   type ReadRoomHistoryArgs,
@@ -61,7 +64,11 @@ import {
   NO_REPLY_RESULT,
   NO_REPLY_TOOL_NAME,
   getToolDescription,
-  TOOL_MODELS
+  TOOL_MODELS,
+  OPERATION_ID_ARG,
+  carriesOperationIdArg,
+  carriesOperationIdOption,
+  toolInputProperties,
 } from "../../contracts/toolSchemas";
 import {
   expectedList,
@@ -179,13 +186,6 @@ export class AgentTools implements AgentToolsProtocol {
     return this.adapterTools;
   }
 
-  public async sendMessage(
-    content: string,
-    mentions: MentionInput = [],
-  ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions, "reply");
-  }
-
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
   public async sendNotice(
     content: string,
@@ -199,11 +199,72 @@ export class AgentTools implements AgentToolsProtocol {
     return currentTurn()?.inbound ?? this.inboundMessageId?.();
   }
 
+  public async sendMessage(
+    content: string,
+    mentions: MentionInput = [],
+    options?: SendMessageOptions,
+  ): Promise<ToolOperationResult> {
+    return this.postMessage(content, mentions, "reply", options);
+  }
+
+  /**
+   * A keyed send: the journal decides the operation's identity (validate,
+   * reserve or join, conflict) before roster resolution runs, the single
+   * attempt posts through the once port against the room's bound endpoint,
+   * and the settled result is what this call — or its retry — returns. The
+   * call's receipt is attributed to the turn's delivery context before any
+   * legacy send or read-back can claim it.
+   */
+  private async postKeyedSend(
+    content: string,
+    mentions: MentionInput,
+    operationId: unknown,
+  ): Promise<ToolOperationResult> {
+    // A keyed operation's record stands on its inputs: a call missing a field
+    // the schema requires is refused before any record or post, like a
+    // schema-invalid call, never delivered over the retrying legacy path.
+    if (typeof content !== "string" || content.length === 0 || mentions.length === 0) {
+      throw new OperationUnsupportedError("invalid-input");
+    }
+    const { publication, messageId } = this.keyedPublication();
+    const once = this.oncePort();
+    if (once === undefined) {
+      throw new OperationUnsupportedError("no-once-transport");
+    }
+    const result = await publication.publishOperation({
+      operationId,
+      kind: "send",
+      content,
+      // The fingerprint binds the mention input as given, not the roster's
+      // resolution of it: a roster change may re-resolve names, it never
+      // retargets a keyed operation.
+      mentions: mentionInputsAsStrings(mentions),
+      messageId,
+      prepare: async () => {
+        const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
+        const recipients = mentionInputsAsStrings(resolvedMentions).filter((id) => id.length > 0);
+        return {
+          recipients,
+          post: async () => once(this.roomId, { content, mentions: resolvedMentions }),
+        };
+      },
+      stopped: currentTurn()?.stopped,
+    });
+    const receiptId = receiptIdOf(result);
+    if (receiptId !== undefined) currentDelivery()?.attributed.add(receiptId);
+    return result;
+  }
+
   private async postMessage(
     content: string,
     mentions: MentionInput,
     kind: "reply" | "notice",
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
+    // Only a reply carries options: a notice posts unkeyed.
+    if (options !== undefined && carriesOperationIdOption(options)) {
+      return this.postKeyedSend(content, mentions, options.operationId);
+    }
     const messageId = kind === "reply" && this.publication ? this.publicationInboundId() : undefined;
     // Resolved before the post: a failed participants lookup is no post attempt, so it never stands a reply unknown.
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
@@ -456,6 +517,25 @@ export class AgentTools implements AgentToolsProtocol {
     }
   }
 
+  /** The journal and the inbound a keyed operation settles; refused where either is missing. */
+  private keyedPublication(): { publication: PublicationEngine; messageId: string } {
+    if (this.publication === undefined) throw new OperationUnsupportedError("no-journal");
+    const messageId = this.publicationInboundId();
+    if (messageId === undefined) throw new OperationUnsupportedError("no-inbound");
+    return { publication: this.publication, messageId };
+  }
+
+  /** The single-attempt post, only where the adapter stands it on SDK-controlled transport. */
+  private oncePort(): AgentToolsRestApi["createChatMessageOnce"] {
+    const rest = this.rest;
+    return servesOncePost(rest) ? rest.createChatMessageOnce.bind(rest) : undefined;
+  }
+
+  /** Whether keyed operations can run here: a journal, an inbound they settle, and a single-attempt post. */
+  private servesOperations(): boolean {
+    return this.publication !== undefined && this.publicationInboundId() !== undefined && this.oncePort() !== undefined;
+  }
+
   private isToolExposed(name: string, includeMemory: boolean): boolean {
     if (TASK_TOOL_NAMES.has(name)) return this.capabilities.tasks;
     if (MEMORY_TOOL_NAMES.has(name)) return includeMemory && this.capabilities.memory;
@@ -466,17 +546,19 @@ export class AgentTools implements AgentToolsProtocol {
 
   public getToolSchemas(format: "openai" | "anthropic", options?: { includeMemory?: boolean }): ToolSchemaRecord[] {
     const includeMemory = options?.includeMemory ?? false;
+    const operationIds = this.servesOperations();
 
     const tools = Object.entries(TOOL_MODELS)
       .filter(([name]) => this.isToolExposed(name, includeMemory))
       .map(([name, model]) => {
+        const properties = toolInputProperties(name, model.properties, operationIds);
         if (format === "anthropic") {
           return {
             name,
             description: getToolDescription(name),
             input_schema: {
               type: "object",
-              properties: model.properties,
+              properties,
               required: model.required,
             },
           };
@@ -489,7 +571,7 @@ export class AgentTools implements AgentToolsProtocol {
             description: getToolDescription(name),
             parameters: {
               type: "object",
-              properties: model.properties,
+              properties,
               required: model.required,
             },
           },
@@ -830,11 +912,15 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      band_send_message: async (arguments_) =>
-        this.sendMessage(
-          String(arguments_.content ?? ""),
-          this.normalizeMentionInput(arguments_.mentions),
-        ),
+      band_send_message: async (arguments_) => {
+        const content = String(arguments_.content ?? "");
+        const mentions = this.normalizeMentionInput(arguments_.mentions);
+        // An id of any value type rides the keyed path and is validated
+        // there: a dropped non-string id would fall to the legacy post.
+        return carriesOperationIdArg(arguments_)
+          ? this.postKeyedSend(content, mentions, arguments_[OPERATION_ID_ARG])
+          : this.sendMessage(content, mentions);
+      },
       band_send_event: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
@@ -842,10 +928,22 @@ export class AgentTools implements AgentToolsProtocol {
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
       [NO_REPLY_TOOL_NAME]: async (arguments_) => {
-        const declined = async (): Promise<unknown> => {
+        const declined = async (): Promise<ToolOperationResult> => {
           this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
           return NO_REPLY_RESULT;
         };
+        // A keyed no-reply runs the keyed send's journal rules; a decline
+        // never posts.
+        if (carriesOperationIdArg(arguments_)) {
+          const { publication, messageId } = this.keyedPublication();
+          return publication.publishOperation({
+            operationId: arguments_[OPERATION_ID_ARG],
+            kind: "decline",
+            reason: typeof arguments_.reason === "string" ? arguments_.reason : undefined,
+            messageId,
+            runDecline: declined,
+          });
+        }
         // Only a standing decline is settled: the record is durable before the
         // call reports success, so the declined message can never be
         // redelivered. A decline the harness refuses records nothing.

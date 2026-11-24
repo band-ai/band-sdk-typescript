@@ -52,9 +52,7 @@
  *                        process is killed at the hold.
  */
 import { writeFileSync, renameSync } from "node:fs";
-import { open } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
@@ -62,6 +60,7 @@ import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { PlatformRuntime } from "../src/runtime";
 import type { PlatformChatMessage } from "../src/client/rest/types";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
+import { holdFirstJournalAppend, never } from "./support/childJournalHold";
 
 const [journalDir, mode, stateFile] = process.argv.slice(2);
 if (journalDir === undefined || mode === undefined || stateFile === undefined) {
@@ -78,32 +77,6 @@ const INBOUND_B_ID = "msg-child-b";
 const IDENTITY = canonicalPlatformIdentity("https://band.example");
 
 type ChildMode = "settled-before-mark" | "decline" | "multiple-replies" | "intent-only" | "remote-accept" | "before-tool-return" | "reset" | "ab-mixed" | "durable-ack" | "ab-unresolved";
-
-const never = (): Promise<never> => new Promise(() => undefined);
-
-/**
- * Holds the first journal append whose line matches `match` until this process
- * dies. The same FileHandle.prototype patch the in-test fakes use, without
- * them: this process is not a test, and the hold is meant to outlive every
- * release — the process is the release.
- */
-async function holdFirstJournalAppend(match: (line: string) => boolean): Promise<{ entered: Promise<void> }> {
-  const probe = await open(path.join(path.dirname(stateFile), `append-probe-${randomUUID()}`), "w");
-  const proto = Object.getPrototypeOf(probe) as { appendFile: (...args: unknown[]) => Promise<void> };
-  await probe.close();
-  const original = proto.appendFile;
-  const entered = new Promise<void>((resolve) => {
-    proto.appendFile = async function (this: unknown, ...args: unknown[]) {
-      if (typeof args[0] === "string" && match(args[0])) {
-        proto.appendFile = original;
-        resolve();
-        await never();
-      }
-      return original.call(this, ...args);
-    };
-  });
-  return { entered };
-}
 
 async function main(): Promise<void> {
   const platform = BandPlatform.host([person(OWNER)]);
@@ -159,7 +132,7 @@ async function main(): Promise<void> {
   // journal never learns of the acceptance.
   let remoteAcceptEntered: Promise<void> | undefined;
   if (mode === "remote-accept") {
-    remoteAcceptEntered = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
+    remoteAcceptEntered = (await holdFirstJournalAppend(path.dirname(stateFile), (line) => line.includes('"t":"reply.settled"'))).entered;
   }
 
   // Durable-ack's cut stands after the real settlement: the settle record is
@@ -230,7 +203,7 @@ async function main(): Promise<void> {
           // post is admitted by the platform, and its settle record's write is
           // held in flight at the journal, which the engine awaits before the
           // tool returns.
-          const hold = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
+          const hold = (await holdFirstJournalAppend(path.dirname(stateFile), (line) => line.includes('"t":"reply.settled"'))).entered;
           void args.tools.sendMessage("tool answer", ["@owner"]);
           await hold;
           report("paused");
@@ -245,7 +218,7 @@ async function main(): Promise<void> {
           await args.tools.sendMessage("reply A", ["@owner"]);
           // A stands settled; only now is B's settle record held, so B is the
           // reply admitted by the platform and unknown to the journal.
-          const enteredB = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
+          const enteredB = (await holdFirstJournalAppend(path.dirname(stateFile), (line) => line.includes('"t":"reply.settled"'))).entered;
           void args.tools.sendMessage("reply B", ["@owner"]);
           await enteredB;
           report("mixed");
@@ -267,7 +240,7 @@ async function main(): Promise<void> {
           }
           // B: its reply is admitted by the platform, then its settle record
           // is held: B stands unresolved, and the turn does not end.
-          const enteredB = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
+          const enteredB = (await holdFirstJournalAppend(path.dirname(stateFile), (line) => line.includes('"t":"reply.settled"'))).entered;
           void args.tools.sendMessage("reply B", ["@owner"]);
           await enteredB;
           report("ab-unresolved", { inboundId: INBOUND_B_ID, secondInboundId: INBOUND_A_ID });

@@ -58,10 +58,19 @@ export interface HistoryLike {
   readonly length: number;
 }
 
+export interface SendMessageOptions {
+  /**
+   * The keyed operation's id; README "Keyed operations (`operation_id`)" states
+   * its rules. Without it, the call keeps the legacy at-least-once delivery.
+   */
+  operationId?: string;
+}
+
 export interface MessagingTools {
   sendMessage(
     content: string,
     mentions?: MentionInput,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult>;
   /**
    * Posts text the adapter writes itself (a prompt, a busy or status note)
@@ -360,13 +369,23 @@ export interface AdapterToolsProtocol
    * A probe, not an acting call — stop/scope wrappers leave it readable.
    */
   readonly unknownDeliveryFenced?: () => boolean;
+  /**
+   * When the runtime journals replies: true once this turn admitted a keyed call (whatever its
+   * outcome) or had a delivery whose outcome stands unknown. A probe, like `unknownDeliveryFenced`.
+   */
+  readonly relayProhibitedFenced?: () => boolean;
+  /**
+   * When the runtime journals replies: commits this turn to keyed delivery, so the MCP admission
+   * decorator fences the turn before the framework validates a keyed call. Bookkeeping, not an acting call.
+   */
+  readonly keyedAdmissionFence?: () => void;
   readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
 /** Members read as values, never called as acting tools: stop and turn-scope wrappers pass them through. */
-const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
+const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced", "relayProhibitedFenced", "keyedAdmissionFence"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
 
 export type NonActingToolKey = (typeof NON_ACTING_TOOL_MEMBERS)[number];
 

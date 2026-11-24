@@ -162,6 +162,15 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         {
           activityCapability: new ActivityCapability({ origin: this.restUrl, logger: this.logger }),
           logger: this.logger,
+          // A redirect lands as a failure, never as a second POST to another origin.
+          onceClientFactory: () =>
+            new BandClient({
+              apiKey: this.apiKey,
+              baseUrl: this.restUrl,
+              maxRetries: 0,
+              fetch: (url: RequestInfo | URL, init?: RequestInit) =>
+                fetch(url, { ...init, redirect: "error" }),
+            }),
         },
       );
 

@@ -133,7 +133,7 @@ describe("migrateTurnJournals apply", () => {
     const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     expect(await room.recoverUnresolved()).toEqual([
-      { messageId: "a", publicationId: intent.publicationId, outcome: "unknown", at: expect.any(Number) },
+      { kind: "reply", messageId: "a", publicationId: intent.publicationId, outcome: "unknown", at: expect.any(Number) },
     ]);
     expect(await recordTypes(staged)).toEqual(["reply.intent", "reply.unknown", "turn.done", "publication.reported"]);
   });

@@ -29,11 +29,21 @@ export { DeliveryUnknownError } from "./core/deliveryFailedError";
 export { JournalFileError, JournalPublicationError } from "./runtime/journal/errors";
 export { JournalOwnershipError } from "./runtime/journal/ownership";
 export { migrateTurnJournals } from "./runtime/journal/migration";
+export { OPERATION_ID_MAX_BYTES } from "./contracts/toolSchemas";
+export {
+  OperationConflictError,
+  OperationIdError,
+  OperationUnsupportedError,
+  operationFingerprint,
+  validateOperationId,
+} from "./runtime/journal/operations";
 export type {
   MigrateTurnJournalsOptions,
   MigrationBinding,
   MigrationResult,
 } from "./runtime/journal/migration";
+export type { KeyedSendPreparation, OperationInput } from "./runtime/journal/publication";
+export type { SendMessageOptions } from "./contracts/protocols";
 export type {
   AgentConfig,
   AgentInput,

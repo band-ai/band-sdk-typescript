@@ -105,17 +105,28 @@ export interface MessagePostOptions extends Omit<RestRequestOptions, "maxRetries
   delivery?: MessageDelivery;
 }
 
+/** A chat message as `createChatMessage` and `createChatMessageOnce` post it. A type alias, so it stays assignable to an indexed record. */
+export type ChatMessageInput = {
+  content: string;
+  messageType?: string;
+  metadata?: MetadataMap;
+  mentions?: MentionReference[];
+};
+
 export interface ChatMessagingRestApi {
   createChatMessage(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options?: MessagePostOptions,
   ): Promise<ToolOperationResult>;
+  /** The single-attempt post a keyed operation needs; see `FernRestAdapter.createChatMessageOnce`. Absent, keyed operations are refused. */
+  createChatMessageOnce?(
+    chatId: string,
+    message: ChatMessageInput,
+    options?: RestRequestOptions,
+  ): Promise<ToolOperationResult>;
+  /** Whether `createChatMessageOnce` stands on SDK-controlled transport; an adapter that does not report stands on the method's presence. */
+  hasOnceCapability?(): boolean;
   createChatEvent(
     chatId: string,
     event: {

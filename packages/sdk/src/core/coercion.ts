@@ -5,14 +5,14 @@ const MAX_ERROR_DETAIL_LENGTH = 500;
 const LENGTH_TRUNCATED_MARKER = "... (truncated)";
 const DEPTH_TRUNCATED_MARKER = "... (cause chain truncated)";
 
-function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+export function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
   return value as Record<string, unknown>;
 }
 
-function asNonEmptyString(value: unknown): string | null {
+export function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }

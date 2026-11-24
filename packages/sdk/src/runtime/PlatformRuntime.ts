@@ -1260,7 +1260,12 @@ export class PlatformRuntime implements AsyncDisposable {
       return;
     }
     for (const publication of unresolved) {
-      this.events.emit({ type: "delivery.unrecorded", roomId, messageId: publication.messageId });
+      this.events.emit({
+        type: "delivery.unrecorded",
+        roomId,
+        messageId: publication.messageId,
+        ...(publication.kind === "operation" ? { operationId: publication.operationId } : {}),
+      });
     }
   }
 

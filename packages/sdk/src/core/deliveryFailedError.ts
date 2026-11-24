@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import { isToolExecutorError, toolExecutionError, type MessagingTools, type ToolExecutorError } from "../contracts/protocols";
+import { isToolExecutorError, toolExecutionError, type MessagingTools, type SendMessageOptions, type ToolExecutorError } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -31,16 +31,25 @@ export class DeliveryUnknownError extends DeliveryFailedError {
   public static readonly KIND = "delivery_unknown" as const;
 
   public readonly kind: typeof DeliveryUnknownError.KIND = DeliveryUnknownError.KIND;
+  /** The delivery is a keyed operation's, standing under its own text rather than a reply's. */
+  public readonly keyed: boolean;
 
   constructor(
     cause: unknown,
     public readonly publicationId?: string,
+    /** The delivery that stands unknown: a reply by default, a keyed operation when its text is supplied. */
+    message?: string,
   ) {
     super(cause);
     this.name = "DeliveryUnknownError";
-    this.message =
-      "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
+    this.keyed = message !== undefined;
+    this.message = message ?? unknownDeliveryText("reply");
   }
+}
+
+/** The text a delivery that stands unknown is reported under, naming what (`reply`, `operation`) stands unknown. */
+export function unknownDeliveryText(subject: string): string {
+  return `The ${subject}'s delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the ${subject} as unknown; a process that reopens the room reports it without reposting it.`;
 }
 
 /**
@@ -49,7 +58,11 @@ export class DeliveryUnknownError extends DeliveryFailedError {
  * Band may already hold the message.
  */
 export function deliveryUnknownToolError(toolName: string, error: DeliveryUnknownError): ToolExecutorError {
-  return toolExecutionError(toolName, error.message, { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId });
+  return toolExecutionError(toolName, error.message, {
+    kind: DeliveryUnknownError.KIND,
+    publicationId: error.publicationId,
+    ...(error.keyed ? { keyed: true } : {}),
+  });
 }
 
 /** A tool result whose `details` classify the delivery as unknown. */
@@ -81,13 +94,19 @@ async function delivered(post: () => Promise<ToolOperationResult>): Promise<Tool
   }
 }
 
-/** Posts the turn's reply; on a judged turn it counts as the reply. */
+/**
+ * Posts the turn's reply; on a judged turn it counts as the reply. With
+ * `options.operationId`, the reply rides the keyed path: the journal decides
+ * the operation's identity, a same-id call replays the settled result
+ * without a new post, and an invalid id is refused before any post.
+ */
 export async function deliverReply(
   tools: MessagingTools,
   content: string,
   mentions: MentionInput,
+  options?: SendMessageOptions,
 ): Promise<ToolOperationResult> {
-  return delivered(() => tools.sendMessage(content, mentions));
+  return delivered(() => tools.sendMessage(content, mentions, options));
 }
 
 /** Posts text the adapter writes itself; it never counts as the turn's reply. */

@@ -3,12 +3,13 @@ import path from "node:path";
 import { onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
-import type { Logger } from "../src/core/logger";
+import { NoopLogger, type Logger } from "../src/core/logger";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityRoomFile, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/records";
 import { TurnJournal, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { tmpRoot } from "./testUtils";
+import { PublicationEngine } from "../src/runtime/journal/publication";
+import { RecordLog, tmpRoot } from "./testUtils";
 
 /** The canonical platform identity the tests bind their journals to. */
 export const IDENTITY = canonicalPlatformIdentity("https://band.example");
@@ -21,16 +22,25 @@ export const ROOM = "room/with:odd chars";
 
 type AppendFile = (...args: unknown[]) => Promise<void>;
 
-/** Replaces Node's `FileHandle[method]` with `replacement`, which gets the original; restored when the test ends. */
+/**
+ * Replaces Node's `FileHandle[method]` with `replacement`, which gets what
+ * stood before it: the original, or an earlier interception in the same test,
+ * so interceptions compose. Restored when the test ends.
+ */
 async function interceptFileHandle(method: "appendFile" | "writeFile", replacement: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
   const probe = await open(path.join(tmpRoot(), "probe"), "w");
   const prototype = Object.getPrototypeOf(probe) as Record<typeof method, AppendFile>;
   await probe.close();
-  const original = prototype[method];
-  const spy = vi.spyOn(prototype, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
-    return replacement(original, this, args);
+  const current = prototype[method];
+  const spy = vi.isMockFunction(current) ? current : vi.spyOn(prototype, method);
+  const previous = (vi.isMockFunction(current) ? current.getMockImplementation() : current) as AppendFile;
+  spy.mockImplementation(function (this: unknown, ...args: unknown[]) {
+    return replacement(previous, this, args);
   });
-  onTestFinished(() => spy.mockRestore());
+  onTestFinished(() => {
+    if (vi.isMockFunction(current)) spy.mockImplementation(previous);
+    else spy.mockRestore();
+  });
 }
 
 /**
@@ -39,6 +49,19 @@ async function interceptFileHandle(method: "appendFile" | "writeFile", replaceme
  */
 export function interceptJournalAppends(append: (original: AppendFile, self: unknown, args: unknown[]) => Promise<void>): Promise<void> {
   return interceptFileHandle("appendFile", append);
+}
+
+/** The type of every journal record as its append lands, in order, across rooms. */
+export async function landedJournalRecords(): Promise<RecordLog<string>> {
+  const landed = new RecordLog<string>();
+  await interceptJournalAppends(async (original, self, args) => {
+    await original.apply(self, args);
+    if (typeof args[0] !== "string") return;
+    for (const line of args[0].split("\n")) {
+      if (line !== "") landed.record((JSON.parse(line) as { t: string }).t);
+    }
+  });
+  return landed;
 }
 
 /** Holds the first whole-file journal write (a new file's header, a rewrite's copy) until `release()`. */
@@ -79,17 +102,23 @@ export async function journalRewriteFaults(): Promise<{ failNext: (matches: (tex
   };
 }
 
-/** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. */
-export async function holdJournalAppend(matches: (line: string) => boolean): Promise<{ entered: Promise<void>; release: () => void }> {
+/** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. With `drop: true`, the held append never writes when released: it stands dropped, as a write in a process that dies before its durability lands. */
+export async function holdJournalAppend(
+  matches: (line: string) => boolean,
+  options: { drop?: boolean } = {},
+): Promise<{ entered: Promise<void>; release: () => void }> {
   const entered = createDeferred();
   const released = createDeferred();
   onTestFinished(() => released.resolve());
   let held = false;
-  await interceptJournalAppends(async (original, self, args) => {
+  await interceptJournalAppends(async (original, self, args: unknown[]) => {
     if (!held && typeof args[0] === "string" && matches(args[0])) {
       held = true;
       entered.resolve();
       await released.promise;
+      if (options.drop) {
+        throw new Error("the journal write stood dropped: the process died before it landed");
+      }
     }
     return original.apply(self, args);
   });
@@ -127,12 +156,13 @@ export async function recordTypes(file: string): Promise<string[]> {
 /** One agent's journal under `dir`, activated under `identity`; its generation closes when the test ends. */
 export async function generationIn(
   dir: string,
-  options: { identity?: string; agentId?: string; logger?: Logger } = {},
+  options: { identity?: string; agentId?: string; logger?: Logger; now?: () => number } = {},
 ): Promise<{ journals: TurnJournal; generation: JournalGeneration }> {
   const identity = options.identity ?? IDENTITY;
   const agentId = options.agentId ?? AGENT;
   const journals = new TurnJournal(dir, agentId, {
     ...(options.logger !== undefined ? { logger: options.logger } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
   });
   const generation = await journals.activate(identity);
   onTestFinished(() => generation.close());
@@ -193,4 +223,9 @@ export function diskFull(): Error {
  */
 export function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** One engine over `generation`'s room: every keyed operation a test admits runs through it. */
+export function engineFor(generation: JournalGeneration, roomId = ROOM, logger: Logger = new NoopLogger()): PublicationEngine {
+  return new PublicationEngine({ roomId, generation, logger });
 }

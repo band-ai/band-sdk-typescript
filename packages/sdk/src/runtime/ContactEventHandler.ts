@@ -1,3 +1,4 @@
+import { assertNever } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
 import {
@@ -289,7 +290,7 @@ export class ContactEventHandler {
         return `[Contact Removed] Contact ${event.payload.id} was removed.`;
     }
 
-    return assertNever(event);
+    return assertNever(event, "contact event");
   }
 
   private formatBroadcast(event: ContactEvent): string | null {
@@ -450,10 +451,6 @@ export class ContactEventHandler {
 
     return { message: String(error) };
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled contact event: ${JSON.stringify(value)}`);
 }
 
 function normalizeHandle(handle: string | null | undefined): string {

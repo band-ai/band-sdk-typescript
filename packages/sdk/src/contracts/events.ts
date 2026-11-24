@@ -125,7 +125,7 @@ export type AgentEvent =
    * so they may repeat. Each begun reply is reported once: a later repeat is
    * reported again only for replies begun since.
    */
-  | { type: "delivery.unrecorded"; roomId: string; messageId: string }
+  | { type: "delivery.unrecorded"; roomId: string; messageId: string; /** The keyed operation whose delivery stands unrecorded, when the authority is an operation, not a reply. */ operationId?: string }
   /**
    * `source` paused the room: no turn starts there, and Band keeps its
    * messages, until every source that paused it resumes it.

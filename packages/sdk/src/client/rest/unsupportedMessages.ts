@@ -25,4 +25,5 @@ export const OPTIONAL_UNSUPPORTED_MESSAGES = {
   createChatTask: "createChatTask is not available in current REST adapter",
   getChatTask: "getChatTask is not available in current REST adapter",
   updateChatTask: "updateChatTask is not available in current REST adapter",
+  createChatMessageOnce: "Single-attempt message posting is not available in current REST adapter",
 } as const;

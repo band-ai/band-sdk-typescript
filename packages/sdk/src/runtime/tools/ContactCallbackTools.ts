@@ -30,11 +30,13 @@ import {
   sendFailureViaEvent,
   type AdapterToolsProtocol,
   type AgentToolsCapabilities,
+  type SendMessageOptions,
 } from "../../contracts/protocols";
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
-import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME } from "../../contracts/toolSchemas";
+import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME, carriesOperationIdArg, carriesOperationIdOption } from "../../contracts/toolSchemas";
+import { OperationUnsupportedError } from "../journal/operations";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -93,7 +95,15 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   public async sendMessage(
     content: string,
     mentions?: MentionInput,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
+    // A keyed send names a durable operation the contact-callback context
+    // cannot stand: it holds no turn journal, so nothing could reserve,
+    // settle, or replay it. It is refused before any room, endpoint, or
+    // transport is consulted — the post never goes out.
+    if (carriesOperationIdOption(options)) {
+      throw new OperationUnsupportedError("no-journal");
+    }
     const roomId = requireRoomId(this.roomId, "sendMessage");
     if (!this.rest.createChatMessage) {
       throw new UnsupportedFeatureError("Message sending is not available in current REST adapter");
@@ -288,6 +298,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
       case "band_send_message":
+        // No turn journal stands behind a contact callback: a keyed call earns no post.
+        if (carriesOperationIdArg(toolArgs)) throw new OperationUnsupportedError("no-journal");
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
@@ -299,6 +311,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           toolArgs.metadata as MetadataMap | undefined,
         );
       case NO_REPLY_TOOL_NAME:
+        if (carriesOperationIdArg(toolArgs)) throw new OperationUnsupportedError("no-journal");
         return NO_REPLY_RESULT;
       case "band_get_participants":
         return this.getParticipants();

@@ -27,7 +27,21 @@ export const journalHeaderSchema = z.strictObject({
 
 export type JournalHeader = z.infer<typeof journalHeaderSchema>;
 
+/** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
+export function sha256Hex(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** What {@link sha256Hex} returns. */
+export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** The tool a keyed operation stood for. */
+const operationKindSchema = z.enum(["send", "decline"]);
+
 const recordBase = z.strictObject({ messageId: z.string(), at: z.number() });
+
+/** Every keyed operation's record names the operation it stands for. */
+const operationRecordBase = recordBase.extend({ operationId: z.string().min(1) });
 
 /**
  * One room's v2 records. Publication records carry the `publicationId` the
@@ -50,6 +64,48 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
   recordBase.extend({ t: z.literal("turn.done") }),
   /** The publication's uncertainty was announced to the operator once. */
   recordBase.extend({ t: z.literal("publication.reported"), publicationId: z.string().min(1) }),
+  /**
+   * An explicit keyed operation (a send or a no-reply with an operation id)
+   * was admitted: the fingerprint binds the payload it may stand for, and the
+   * first caller's inbound is the message whose turn the operation ran in.
+   */
+  operationRecordBase.extend({
+    t: z.literal("op.reserved"),
+    fingerprint: sha256HexSchema,
+    kind: operationKindSchema,
+  }),
+  /** The first send's resolved recipient identities, as the roster stood when the operation was admitted. */
+  operationRecordBase.extend({
+    t: z.literal("op.recipients"),
+    recipients: z.array(z.string()),
+  }),
+  /** Band acknowledged the keyed send; its stored public result, if any, stands for every later same-id call. */
+  operationRecordBase.extend({
+    t: z.literal("op.settled"),
+    receiptId: z.string().optional(),
+    resultJson: z.string().optional(),
+  }),
+  /** The keyed operation definitely did not stand: Band refused the send, or the harness refused the no-reply. */
+  operationRecordBase.extend({
+    t: z.literal("op.refused"),
+    reasonText: z.string().optional(),
+  }),
+  /**
+   * The keyed send provably committed nothing — cut short before its post, a
+   * 408/429, or Band's stopped-room answer — so it returns to pending with no
+   * recipients: re-admissible, like a reservation whose post never ran.
+   */
+  operationRecordBase.extend({
+    t: z.literal("op.released"),
+  }),
+  /** Whether Band has the keyed send is unknown: it may already be in the room. */
+  operationRecordBase.extend({
+    t: z.literal("op.unknown"),
+  }),
+  /** The operation's uncertainty was announced to the operator once. */
+  operationRecordBase.extend({
+    t: z.literal("op.reported"),
+  }),
 ]);
 
 export type JournalRecord = z.infer<typeof journalRecordSchema>;
@@ -58,14 +114,6 @@ export type JournalRecord = z.infer<typeof journalRecordSchema>;
 export function toLine(record: JournalHeader | JournalRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
-
-/** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
-export function sha256Hex(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-/** What {@link sha256Hex} returns. */
-export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** Whether `error` is a file system error with `code`. */
 export function hasErrorCode(error: unknown, code: string): boolean {
@@ -96,6 +144,9 @@ export function compactingCopyTarget(name: string): string | undefined {
 
 /** The agent's exclusive ownership lock file under its journal directory. */
 export const OWNERSHIP_FILE = ".ownership.sqlite";
+
+/** What a keyed operation stood for: a send or a no-reply. */
+export type OperationKind = z.infer<typeof operationKindSchema>;
 
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {

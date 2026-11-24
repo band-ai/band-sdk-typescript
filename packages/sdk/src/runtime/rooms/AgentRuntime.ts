@@ -1,6 +1,6 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
-import { RuntimeStateError } from "../../core/errors";
+import { assertNever, RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution, type ExecutionHandler } from "../Execution";
@@ -191,7 +191,7 @@ export class AgentRuntime {
           await this.enqueueUnlessStopping(roomId, event);
           return;
         default:
-          assertNever(event);
+          assertNever(event, "room event");
       }
     };
     this.presence.onContactEvent = this.onContactEvent ?? null;
@@ -691,10 +691,6 @@ export class AgentRuntime {
       });
     }
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled room event: ${JSON.stringify(value)}`);
 }
 
 function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {

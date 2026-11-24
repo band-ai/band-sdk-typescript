@@ -1,15 +1,13 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
 } from "./registrations";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  registerTools,
-} from "./registrations";
+import { buildBridgeRegistrations, registerTools } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
+import { AdmissionTransport, type OriginResolver } from "./admission";
 
 export interface BandMcpSseServerOptions {
   /** Single tools instance or a room resolver, as `McpToolRegistration.execute` describes. */
@@ -18,6 +16,8 @@ export interface BandMcpSseServerOptions {
   port?: number;
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
@@ -27,6 +27,12 @@ export interface BandMcpSseServerOptions {
    * don't opt in.
    */
   authToken?: string;
+  /** See `BandMcpServerOptions.admissionGuard`. */
+  admissionGuard?: () => boolean
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger
+  /** See `BandMcpServerOptions.multiRoom`. */
+  multiRoom?: boolean
 }
 
 interface SessionRecord {
@@ -43,6 +49,7 @@ const SESSION_SWEEP_INTERVAL_MS = 60 * 1000
 export class BandMcpSseServer {
   private readonly options: BandMcpSseServerOptions
   private readonly registrations: McpToolRegistration[]
+  private readonly originResolver: OriginResolver | undefined
   private httpServer: import("node:http").Server | null = null
   private actualPort: number | null = null
   private readonly sessions = new Map<string, SessionRecord>()
@@ -54,15 +61,18 @@ export class BandMcpSseServer {
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     }
 
-    if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions)
-    } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions)
-    }
+    const { tools } = options
+    const bridge = buildBridgeRegistrations(tools, options.multiRoom, {
+      ...regOptions,
+      admissionGuard: options.admissionGuard,
+    })
+    this.registrations = bridge.registrations
+    this.originResolver = bridge.originResolver
   }
 
   public get port(): number | null {
@@ -111,21 +121,25 @@ export class BandMcpSseServer {
         version: MCP_SERVER_VERSION,
       })
       registerTools(mcpServer, z, this.registrations)
-      await mcpServer.connect(transport)
 
       const sessionId = transport.sessionId
-      this.sessions.set(sessionId, {
-        mcpServer,
-        transport,
-        lastSeenAt: Date.now(),
-      })
-
+      // Set before connect: the admission decorator chains these handlers, so
+      // assigning them afterwards would cut the server's own close and error handling.
       transport.onclose = () => {
         this.sessions.delete(sessionId)
       }
       transport.onerror = () => {
         this.sessions.delete(sessionId)
       }
+      // The admission decorator stands between the client and the framework:
+      // a keyed call is fenced and pinned before any validation.
+      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger))
+
+      this.sessions.set(sessionId, {
+        mcpServer,
+        transport,
+        lastSeenAt: Date.now(),
+      })
 
       res.on("close", () => {
         this.sessions.delete(sessionId)
