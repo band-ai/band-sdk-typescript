@@ -151,13 +151,18 @@ export type OperationCheck =
   | { status: "unknown" }
   | { status: "conflict" };
 
+/** The in-flight mark of the call running a keyed operation: same-id calls join its promise. */
+export interface OperationInflight {
+  promise: Promise<unknown>;
+}
+
 /** The keyed-operation fields a check-and-reserve call carries. */
 interface OperationReservation {
   operationId: string;
   fingerprint: string;
   kind: OperationKind;
   messageId: string;
-  inflight?: { promise: Promise<unknown> };
+  inflight?: OperationInflight;
 }
 
 interface InboundIndex {
@@ -194,7 +199,7 @@ export class RoomJournal {
   /** The operations whose delivery stands unresolved: the post may have run, with no outcome recorded, or recorded unknown. */
   private unresolvedOps = new Map<string, { messageId: string; at: number }>();
   /** The operations this handle admitted: an in-flight call later calls join the same promise. */
-  private inflightOps = new Map<string, { promise: Promise<unknown> }>();
+  private inflightOps = new Map<string, OperationInflight>();
   /** Recoveries run one at a time: one in flight marks what it reports before the next looks. */
   private readonly recoveries = new Serializer();
   private readonly writes = new Serializer();
@@ -606,9 +611,12 @@ export class RoomJournal {
     this.operations.set(operationId, { ...this.requireOperation(operationId), reported: true });
   }
 
-  /** Releases the in-flight mark once the operation's call has run to its outcome. */
-  public clearOperationInflight(operationId: string): void {
-    this.inflightOps.delete(operationId);
+  /**
+   * Releases `inflight`'s mark once its call has run to its outcome. A mark
+   * that is no longer `inflight` is another call's: a release re-admitted it.
+   */
+  public clearOperationInflight(operationId: string, inflight: OperationInflight): void {
+    if (this.inflightOps.get(operationId) === inflight) this.inflightOps.delete(operationId);
   }
 
   private requireOperation(operationId: string): OperationIndex {

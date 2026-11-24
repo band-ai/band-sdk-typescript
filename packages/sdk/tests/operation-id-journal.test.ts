@@ -19,7 +19,7 @@ import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { NO_REPLY_TOOL_NAME, OPERATION_ID_MAX_BYTES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import { ROOM, diskFull, generationIn, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
+import { ROOM, diskFull, generationIn, holdJournalAppend, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
 import type { Logger } from "../src/core/logger";
 
 /** Band's answers, the way the generated client reports them. */
@@ -446,6 +446,31 @@ describe("a keyed send's outcomes", () => {
     expect(posted).toEqual(["hello"]);
     await generation.close();
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.released", "op.recipients", "op.settled", "turn.done", "turn.done"]);
+  });
+
+  it("keeps a call re-admitted behind a release in flight: a later same-id call joins it once the released call ends", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const engine = engineFor(generation);
+    const rateLimited = () => {
+      throw new BandError({ statusCode: 429, body: { error: { code: "rate_limited", message: "slow down", request_id: "req-429" } } });
+    };
+    const send = (messageId: string, post: () => Promise<unknown>) =>
+      engine.publishOperation({ operationId: ID, kind: "send", content: "hello", messageId, prepare: sendPreparation(post) });
+    const releaseHeld = await holdJournalAppend((line) => line.includes('"op.released"'));
+    const released = send("msg-1", async () => rateLimited()).catch((error: unknown) => error);
+    await releaseHeld.entered;
+    // Queued behind the release's write: the release re-admits it as the operation's new owner.
+    const readmittedPost = heldPost();
+    const readmitted = send("msg-2", readmittedPost.post);
+    releaseHeld.release();
+    expect(await released).toMatchObject({ message: "the platform refused the post (HTTP 429)" });
+    await readmittedPost.started;
+    const joiner = send("msg-3", async () => {
+      throw new Error("a joiner must never run its own post");
+    });
+    readmittedPost.resolve({ id: "posted-1" });
+    expect(await readmitted).toMatchObject({ id: "posted-1" });
+    expect(await joiner).toMatchObject({ id: "posted-1" });
   });
 
   it("releases a send whose turn is cut short after its recipients stand: a reopen announces nothing, and a same-id retry posts", async () => {

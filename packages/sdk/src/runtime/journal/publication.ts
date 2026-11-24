@@ -243,12 +243,13 @@ export class PublicationEngine {
     const deferred = Promise.withResolvers<ToolOperationResult>();
     // Only a joining call awaits it; this call hears its own outcome directly.
     deferred.promise.catch(() => undefined);
+    const inflight = { promise: deferred.promise };
     const check = await journal.checkAndReserveOperation({
       operationId,
       fingerprint,
       kind: input.kind,
       messageId: input.messageId,
-      inflight: { promise: deferred.promise },
+      inflight,
     });
 
     const status = check.status;
@@ -294,11 +295,10 @@ export class PublicationEngine {
       deferred.reject(error);
       throw error;
     } finally {
-      // Only the call that reserved the operation releases its in-flight mark:
-      // a joiner's entry is the owner's, and the owner's outcomes clear it
-      // through the records that settle them.
+      // Only the call that reserved the operation releases its in-flight mark,
+      // for an outcome no record cleared it for; a joiner's entry is the owner's.
       if (status === "reserved") {
-        journal.clearOperationInflight(operationId);
+        journal.clearOperationInflight(operationId, inflight);
       }
     }
   }
