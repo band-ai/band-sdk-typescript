@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE, fetchCursorFirst, fetchCursorTail, type CursorPageRequest } from "../src/client/rest/pagination";
 import type { PaginatedResponse } from "../src/client/rest/types";
+import { ValidationError } from "../src/core/errors";
 
 interface Item {
   id: number;
@@ -104,6 +105,15 @@ describe("fetchCursorFirst", () => {
 
     await expect(fetchCursorFirst(fetchPage, { where: (item) => item.id === 99 })).resolves.toBeNull();
     expect(requests).toHaveLength(2);
+  });
+
+  it.each([
+    { name: "the page cap", pages: ENDLESS },
+    { name: "a page with more to come but no cursor", pages: [page(range(1, 2), "c1"), { ids: [3, 4], hasMore: true }] },
+  ])("throws rather than report absence when $name stops the walk short", async ({ pages }) => {
+    const { fetchPage } = scriptedFetcher(pages);
+
+    await expect(fetchCursorFirst(fetchPage, { where: (item) => item.id === -1 })).rejects.toBeInstanceOf(ValidationError);
   });
 });
 

@@ -521,7 +521,7 @@ export class FernRestAdapter implements RestApi {
           this.logger.warn("Could not read the room back to settle a message post", { roomId: chatId, error });
           creditTwins = true;
           await this.creditMatchingPosts(chatId, fingerprint, delivery);
-          return null;
+          throw error;
         }
       }
       : undefined;

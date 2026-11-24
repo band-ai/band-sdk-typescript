@@ -453,7 +453,7 @@ describe("PlatformRuntime lifecycle", () => {
         throw new Error("adapter cleanup failed");
       }
     });
-    const runtimeStop = vi.spyOn(AgentRuntime.prototype, "stop");
+    const runtimeQuiesce = vi.spyOn(AgentRuntime.prototype, "quiesce");
 
     await runtime.start(adapter as never);
     await expect(runtime.stop()).rejects.toThrow("adapter cleanup failed");
@@ -462,13 +462,13 @@ describe("PlatformRuntime lifecycle", () => {
     await runtime.start(adapter as never);
     expect(runtime.state).toEqual({ status: "running" });
 
-    const stopsBefore = runtimeStop.mock.calls.length;
+    const stopsBefore = runtimeQuiesce.mock.calls.length;
     const cleanupsBefore = adapter.onRuntimeStop.mock.calls.length;
     const disconnectsBefore = transport.disconnectCount;
 
     await expect(runtime.stop()).resolves.toBe(true);
 
-    expect(runtimeStop.mock.calls.length - stopsBefore).toBe(1);
+    expect(runtimeQuiesce.mock.calls.length - stopsBefore).toBe(1);
     expect(adapter.onRuntimeStop.mock.calls.length - cleanupsBefore).toBe(1);
     expect(transport.disconnectCount - disconnectsBefore).toBe(1);
     expect(runtime.state).toEqual({ status: "stopped" });
@@ -699,6 +699,23 @@ describe("PlatformRuntime lifecycle", () => {
 describe("AgentRuntime lifecycle", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["after a quiesce", false],
+    ["while a quiesce is in flight", true],
+  ])("stop() %s still disconnects and reaches stopped", async (_when, concurrent) => {
+    const transport = new FakeTransport();
+    const runtime = makeAgentRuntime(transport);
+    await runtime.start();
+
+    const quiescing = runtime.quiesce();
+    if (!concurrent) await quiescing;
+    expect(await runtime.stop()).toBe(true);
+    await quiescing;
+
+    expect(transport.disconnectCount).toBe(1);
+    expect(runtime.state).toEqual({ status: "stopped" });
   });
 
   it("start() does not resolve a pending waitUntilStopped()", async () => {

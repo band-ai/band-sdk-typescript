@@ -39,8 +39,15 @@ export class Turn {
   private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
 
-  /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
-  public constructor(public readonly judged = true) {}
+  /**
+   * `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn.
+   * `fenceSource`: the runtime's side of the turn, when it runs on the runtime's tools; it fences
+   * the turn once a reply's delivery stands unknown.
+   */
+  public constructor(
+    public readonly judged = true,
+    private readonly fenceSource?: () => boolean,
+  ) {}
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
@@ -107,6 +114,11 @@ export class Turn {
 
   public get detached(): boolean {
     return this.isDetached;
+  }
+
+  /** This turn's reply delivery stands unknown: the reply may already be in the room. */
+  public get hasUnknownDelivery(): boolean {
+    return this.fenceSource?.() ?? false;
   }
 
   /** Settles when a turn detached with its end has really ended; never rejects. */
@@ -188,17 +200,19 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
-  const turn = new Turn(judged);
+  // A journaling runtime fences the turn once a reply's delivery stands unknown.
+  const turn = new Turn(judged, tools.unknownDeliveryFenced);
   return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }
 
-/** Relays the model's closing `text` as the reply, unless the turn already replied or declined. */
+/** Relays the model's closing `text` as the reply, unless the turn already replied or declined — or its closing text must not be relayed. */
 export async function relayReply(
   tools: TurnTools<MessagingTools>,
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  if (tools.turn.replied || !text || isBlankEventContent(text)) {
+  // An unknown delivery may already be in the room; a relay would post on top of it.
+  if (tools.turn.hasUnknownDelivery || tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }
   await deliverReply(tools, text, mentions);
@@ -207,6 +221,14 @@ export async function relayReply(
 
 export function missingReplyFailure(): AgentFailure {
   return agentFailure(TURN_FAILURE_PROVIDER, missingReplyMessage());
+}
+
+/** The verdict for a turn whose reply delivery is unknown: not a missing reply — Band may already hold it. */
+export function unknownDeliveryFailure(): AgentFailure {
+  return agentFailure(
+    TURN_FAILURE_PROVIDER,
+    "The reply's delivery is unknown: Band may already hold it. It was not re-posted, and no replacement reply was sent.",
+  );
 }
 
 /**
@@ -231,9 +253,12 @@ export async function finishTurn(
   logContext: Record<string, unknown> = {},
 ): Promise<void> {
   if (tools.turn.detached !== (mode === "detached") || !tools.turn.unanswered) return;
+  // A delivery-unknown turn reports that classification, not a missing reply:
+  // the reply may already be in the room, and nothing was re-posted for it.
+  const failure = tools.turn.hasUnknownDelivery ? unknownDeliveryFailure() : missingReplyFailure();
   if (mode === "attached") {
-    await reportTurnFailure(tools, missingReplyFailure(), logger, logContext);
+    await reportTurnFailure(tools, failure, logger, logContext);
   } else {
-    await safeSendFailure(tools, missingReplyFailure(), resolveLogger(logger), logContext);
+    await safeSendFailure(tools, failure, resolveLogger(logger), logContext);
   }
 }

@@ -480,11 +480,6 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome, error?: string) {
-    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
-    return {};
-  }
-
   private record(posted: Posted): void {
     this.posted.record(posted);
     this.remember(posted.roomId, {
@@ -492,6 +487,73 @@ export class RecordingRestApi extends FakeRestApi {
       message_type: posted.messageType, metadata: posted.metadata ?? {}, inserted_at: now(), updated_at: now(),
     });
   }
+
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
+    return {};
+  }
+
+  /** The platform's standing state: what a test rebuilds in another process, byte for byte, after this process dies. */
+  public snapshot(): PlatformSnapshot {
+    return {
+      rooms: [...this.rooms.entries()].map(([roomId, room]) => ({
+        roomId,
+        title: room.title,
+        owned: room.owned,
+        updatedAt: room.updatedAt,
+        participants: room.participants.filter(({ id }) => id !== AGENT_ID),
+      })),
+      history: this.history.map(({ roomId, item }) => ({ roomId, item: { ...item, metadata: { ...item.metadata } } })),
+      unsettled: this.unsettled.map(({ roomId, item }) => ({ roomId, item })),
+      settled: [...this.settled.entries],
+      processing: [...this.processing.entries],
+      posted: [...this.posted.entries],
+      deliveries: this.deliveries.map(({ content, delivery }) => ({ content, delivery })),
+      stoppedRooms: [...this.stoppedRooms],
+    };
+  }
+
+  /** Rebuilds this platform from a snapshot a process of its own took before it died. */
+  public restore(snapshot: PlatformSnapshot): void {
+    for (const room of snapshot.rooms) {
+      if (this.rooms.has(room.roomId)) continue;
+      this.rooms.set(room.roomId, {
+        participants: [AGENT_PARTICIPANT, ...room.participants],
+        title: room.title,
+        tasks: [],
+        board: {
+          chat_room_id: room.roomId,
+          goal_title: null,
+          goal_summary: null,
+          created_by: null,
+          updated_by: null,
+          inserted_at: null,
+          updated_at: null,
+        },
+        ...(room.owned ? { owned: true } : {}),
+        updatedAt: room.updatedAt,
+      });
+    }
+    for (const entry of snapshot.history) this.history.push({ roomId: entry.roomId, item: entry.item });
+    for (const entry of snapshot.unsettled) this.unsettled.push({ roomId: entry.roomId, item: entry.item });
+    for (const settled of snapshot.settled) this.settled.record(settled);
+    for (const messageId of snapshot.processing) this.processing.record(messageId);
+    for (const posted of snapshot.posted) this.posted.record(posted);
+    for (const delivery of snapshot.deliveries) this.deliveries.push(delivery);
+    for (const roomId of snapshot.stoppedRooms) this.stoppedRooms.add(roomId);
+  }
+}
+
+/** What a process of the platform's own reports before it dies, so a test rebuilds the platform in another process. */
+export interface PlatformSnapshot {
+  readonly rooms: Array<{ roomId: string; title?: string; owned?: boolean; updatedAt: string; participants: readonly PlatformParticipant[] }>;
+  readonly history: Array<{ roomId: string; item: PlatformChatMessage }>;
+  readonly unsettled: Array<{ roomId: string; item: PlatformChatMessage }>;
+  readonly settled: Array<Settled>;
+  readonly processing: readonly string[];
+  readonly posted: readonly Posted[];
+  readonly deliveries: Array<{ content: string; delivery?: MessageDelivery }>;
+  readonly stoppedRooms: readonly string[];
 }
 
 /** A room the agent was added to: people speak in it, and it shows what the agent posted back. */

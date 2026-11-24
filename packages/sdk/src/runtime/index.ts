@@ -35,6 +35,10 @@ export { ExecutionContext } from "./ExecutionContext";
 export { PlatformRuntime } from "./PlatformRuntime";
 export { RoomPresence } from "./rooms/RoomPresence";
 
+// The journal layer stays process-private: a second writer beside its owner
+// would defeat the journal's authority. Operators use `migrateTurnJournals`.
+export { canonicalPlatformIdentity } from "./journal/identity";
+
 export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
 

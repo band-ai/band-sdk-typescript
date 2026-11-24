@@ -1,8 +1,12 @@
+import { createRequire } from "node:module";
+
+import { BandError } from "@band-ai/rest-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AttributedPosts, contextCursorAfter, sortsAfterAnchor, type MessageDelivery } from "../src/client/rest/messageDelivery";
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
 import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
-import { RoomExecutionStoppedError, RuntimeStateError } from "../src/core/errors";
+import { RoomExecutionStoppedError } from "../src/core/errors";
 import { FakeBandRoom, SELF_ID, type PostStep } from "./support/fakeBandRoom";
 import { settleThroughRetries } from "./support/settleThroughRetries";
 
@@ -105,9 +109,52 @@ describe("message delivery", () => {
     expect(ownPosts()).toEqual([]);
   });
 
+  describe("a resend Band refuses after an earlier uncertain attempt", () => {
+    const stopped = { kind: "refused", status: 403, body: { error: { code: "forbidden", message: "Agent execution is stopped in this room" } } } as const;
+
+    it("stays uncertain when no read-back could show the first attempt absent", async () => {
+      room.failContext(2);
+
+      await expect(settleThroughRetries(send([{ kind: "committedThen", status: UNAVAILABLE }, stopped]))).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(ownPosts()).toEqual(["stored-1"]);
+    });
+
+    it("stays uncertain when the read-back's walk stopped at its page cap before reaching the newest message", async () => {
+      // A long-lived room whose anchored cursor Band refuses: the fallback walks from the room's
+      // start and runs out of pages before it reaches the trigger, let alone the first attempt.
+      room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+      for (let i = 0; i < DEFAULT_MAX_PAGES * DEFAULT_PAGE_SIZE; i += 1) {
+        room.seed({ id: `old-${String(i).padStart(6, "0")}`, content: `chat ${i}`, senderId: USER, mentionIds: [SELF_ID] });
+      }
+      const trigger = room.seed({ id: "trigger", content: "hi", senderId: USER, mentionIds: [SELF_ID] });
+      delivery = { selfId: SELF_ID, anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
+      room.refuseForeignCursors();
+
+      await expect(settleThroughRetries(send([{ kind: "committedThen", status: UNAVAILABLE }, { kind: "refused", status: 409 }]))).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(ownPosts()).toEqual(["stored-1"]);
+    }, 60_000);
+
+    it("surfaces the refusal once a read-back showed the first attempt absent", async () => {
+      await expect(settleThroughRetries(send([{ kind: "refused", status: UNAVAILABLE }, stopped]))).rejects.toBeInstanceOf(RoomExecutionStoppedError);
+      expect(ownPosts()).toEqual([]);
+    });
+  });
+
   it("does not read back or resend a post Band refused", async () => {
     await expect(settleThroughRetries(send([{ kind: "refused", status: 422 }]))).rejects.toMatchObject({ statusCode: 422 });
 
+    expect(room.posts).toHaveLength(1);
+    expect(room.contextCursors).toEqual([]);
+  });
+
+  it("does not read back or resend a refusal from another copy of the REST client", async () => {
+    // The CommonJS build of the generated client: its errors are not this module's BandError.
+    const other = createRequire(import.meta.url)("@band-ai/rest-client") as typeof import("@band-ai/rest-client");
+    expect(other.BandError).not.toBe(BandError);
+    room.script({ kind: "refused", status: 422 });
+    const sent = room.adapter(other.BandClient).createChatMessage(ROOM, { content: REPLY, mentions: [{ id: USER, handle: USER }] }, { delivery });
+
+    await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: 422 });
     expect(room.posts).toHaveLength(1);
     expect(room.contextCursors).toEqual([]);
   });
@@ -362,14 +409,37 @@ describe("message delivery", () => {
     expect(ownPosts()).toHaveLength(2);
   });
 
-  it("stops between attempts once the turn is cut short", async () => {
-    const turn = new AbortController();
-    const sent = send([{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }], { delivery: { ...delivery, stopped: turn.signal } });
-    await room.posted(1);
+  describe("a turn cut short while a post settles", () => {
+    function cutAfterPost(n: number, steps: PostStep[]) {
+      const turn = new AbortController();
+      void room.posted(n).then(() => turn.abort("stop"));
+      return send(steps, { delivery: { ...delivery, stopped: turn.signal } });
+    }
 
-    turn.abort("stop");
+    it("surfaces the transport's failure, never the cut, once the read-back finds nothing", async () => {
+      const sent = cutAfterPost(1, [{ kind: "refused", status: UNAVAILABLE }, { kind: "created" }]);
 
-    await expect(settleThroughRetries(sent)).rejects.toBeInstanceOf(RuntimeStateError);
-    expect(room.posts).toHaveLength(1);
+      // The 503 surfaces, so the publication stands unknown; the resend never runs.
+      await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(room.posts).toHaveLength(1);
+      expect(room.contextCursors[0]).toEqual(contextCursorAfter(delivery.anchor));
+      expect(ownPosts()).toEqual([]);
+    });
+
+    it("settles a commit that landed in the room, though the turn was cut", async () => {
+      const sent = cutAfterPost(1, [{ kind: "committedThen", status: UNAVAILABLE }, { kind: "created" }]);
+
+      await expect(settleThroughRetries(sent)).resolves.toEqual({ id: "stored-1", success: true });
+      expect(room.posts).toHaveLength(1);
+      expect(ownPosts()).toEqual(["stored-1"]);
+    });
+
+    it("surfaces the transport's failure when the cut lands in a later pause", async () => {
+      const sent = cutAfterPost(2, [{ kind: "refused", status: UNAVAILABLE }, { kind: "refused", status: UNAVAILABLE }, { kind: "created" }]);
+
+      await expect(settleThroughRetries(sent)).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(room.posts).toHaveLength(2);
+      expect(ownPosts()).toEqual([]);
+    });
   });
 });

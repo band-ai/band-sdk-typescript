@@ -14,6 +14,7 @@ import {
   TerminalSignal,
   isLegalRuntimeTransition,
   startWithGate,
+  toLifecycleError,
 } from "../lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { RoomPresence } from "./RoomPresence";
@@ -51,6 +52,9 @@ interface AgentRuntimeOptions {
   logger?: Logger;
 }
 
+/** How a stop or quiesce went: whether the rooms stopped in time, and what failed. */
+type StopOutcome = { graceful: boolean; error: Error | null };
+
 export class AgentRuntime {
   public readonly presence: RoomPresence;
   private readonly link: BandLink;
@@ -82,7 +86,9 @@ export class AgentRuntime {
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private readonly startGate = new SingleFlight<void>();
-  private readonly stopGate = new SingleFlight<boolean>();
+  private readonly stopGate = new SingleFlight<StopOutcome>();
+  /** Apart from stopGate: a stop after or during a quiesce still owes the disconnect. */
+  private readonly quiesceGate = new SingleFlight<StopOutcome>();
   /** Set while a stop waits on a start, so rooms joined meanwhile stop on its terms too. */
   private stopMidStart: { readonly timeoutMs?: number } | null = null;
   /** Cancels the in-flight start's link connect, which can retry for minutes during an outage. */
@@ -207,7 +213,12 @@ export class AgentRuntime {
     await startWithGate({
       lifecycle: this.lifecycle,
       startGate: this.startGate,
-      stopGate: this.stopGate,
+      stopGate: {
+        reset: () => {
+          this.stopGate.reset();
+          this.quiesceGate.reset();
+        },
+      },
       stoppedSignal: this.stoppedSignal,
       ownerName: "AgentRuntime",
       runStart: () => this.runStart(),
@@ -263,10 +274,66 @@ export class AgentRuntime {
    * reporting a shutdown it did not perform.
    */
   public async stop(timeoutMs?: number): Promise<boolean> {
-    return await this.stopGate.run(() => this.runStop(timeoutMs));
+    const outcome = await this.stopGate.run(() => this.runTeardown(timeoutMs));
+    if (outcome.error !== null) {
+      throw outcome.error;
+    }
+    return outcome.graceful;
   }
 
-  private async runStop(timeoutMs?: number): Promise<boolean> {
+  /**
+   * The first half of a stop: the rooms stop taking turns (and may time out
+   * doing so), the presence and sessions come down, and the runtime latches
+   * in "stopping" — but the platform connection stays up. A stop that timed
+   * out can still owe its publications their transport: their posts and
+   * receipts run to completion on the connection this half keeps alive, and
+   * {@link finishStop} brings it down once they are done. Callers that need
+   * nothing more from the connection can call {@link stop} instead, which is
+   * this half plus the other.
+   */
+  public async quiesce(timeoutMs?: number): Promise<StopOutcome> {
+    return await this.quiesceGate.run(() => this.runQuiesce(timeoutMs));
+  }
+
+  /**
+   * The second half of a stop: the platform connection goes down and the
+   * runtime reaches its terminal state. Only a quiesced runtime may finish:
+   * its rooms have stopped taking turns, so nothing still owes the
+   * connection a post or a receipt.
+   */
+  public async finishStop(): Promise<void> {
+    if (this.lifecycle.is("not_started") || this.lifecycle.is("stopped")) {
+      return;
+    }
+    const errors: unknown[] = [];
+    await isolateTeardown(errors, () => this.link.disconnect());
+
+    // Already-failed stays failed; only a quiesced "stopping" runtime reaches stopped here.
+    if (this.lifecycle.is("stopping")) {
+      this.lifecycle.transition({ status: "stopped" }, "stopped");
+    }
+
+    if (errors.length > 0) {
+      const failure = combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
+      this.markFailed(failure, "stop-failed");
+      throw failure;
+    }
+  }
+
+  private async runTeardown(timeoutMs?: number): Promise<StopOutcome> {
+    const outcome = await this.quiesce(timeoutMs);
+    try {
+      await this.finishStop();
+    } catch (error) {
+      // Never leave the runtime latched in "stopping": a teardown that blew up
+      // must still be re-attemptable and must not block a later start().
+      this.markFailed(error, "stop-failed");
+      return { graceful: outcome.graceful, error: toLifecycleError(error) };
+    }
+    return outcome;
+  }
+
+  private async runQuiesce(timeoutMs?: number): Promise<StopOutcome> {
     // A stop landing mid-start must not report a teardown of resources that
     // start() has not created yet, so wait for it to settle first — which is
     // also what `RoomPresence` does internally, since its own start/stop pair
@@ -294,7 +361,7 @@ export class AgentRuntime {
     }
 
     if (this.lifecycle.is("not_started") || this.lifecycle.is("stopped")) {
-      return true;
+      return { graceful: true, error: null };
     }
 
     const fatalError = this.lifecycle.is("failed") ? this.lifecycle.state.error : null;
@@ -302,20 +369,10 @@ export class AgentRuntime {
     this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
-    try {
-      return await this.performStop(timeoutMs, fatalError);
-    } catch (error) {
-      // Never leave the runtime latched in "stopping": a teardown that blew up
-      // must still be re-attemptable and must not block a later start().
-      this.markFailed(error, "stop-failed");
-      throw error;
-    }
-  }
-
-  private async performStop(timeoutMs: number | undefined, fatalError: Error | null): Promise<boolean> {
-    // Every step below is isolated: one room's failed teardown must not skip the
-    // remaining rooms, the presence teardown, the map clearing, or the link
-    // disconnect.
+    // Every step below is isolated: one room's failed teardown must not skip
+    // the remaining rooms, the presence teardown, or the map clearing. The
+    // link stays connected through all of it: a stop that times out may still
+    // owe its in-flight publications their transport.
     const errors: unknown[] = [];
 
     this.presence.abortEventLoop();
@@ -348,22 +405,13 @@ export class AgentRuntime {
     this.executions.clear();
     this.executionWatchers.clear();
 
-    await isolateTeardown(errors, () => this.link.disconnect());
-
-    const failure = this.lifecycle.is("failed") ? this.lifecycle.state.error : fatalError;
-    if (failure) {
-      if (!this.lifecycle.is("failed")) {
-        this.lifecycle.transition({ status: "failed", error: failure }, "stopped-after-failure");
-      }
-      errors.unshift(failure);
-    }
-
     if (errors.length > 0) {
-      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
+      const failure = combineTeardownErrors(errors, "AgentRuntime failed to quiesce cleanly");
+      this.markFailed(failure, "stop-failed");
+      return { graceful, error: toLifecycleError(failure) };
     }
 
-    this.lifecycle.transition({ status: "stopped" }, "stopped");
-    return graceful;
+    return { graceful, error: fatalError };
   }
 
   public getContext(roomId: string): ExecutionContext | undefined {

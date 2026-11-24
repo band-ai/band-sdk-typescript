@@ -270,6 +270,17 @@ export function createToolExecutorError(input: {
   };
 }
 
+/** A tool call that ran and failed, with the legacy `Error executing …` text. */
+export function toolExecutionError(toolName: string, message: string, details?: MetadataMap): ToolExecutorError {
+  return createToolExecutorError({
+    errorType: "ToolExecutionError",
+    toolName,
+    message,
+    legacyMessage: `Error executing ${toolName}: ${message}`,
+    details,
+  });
+}
+
 export function isToolExecutorError(value: unknown): value is ToolExecutorError {
   if (!value || typeof value !== "object") {
     return false;
@@ -343,11 +354,25 @@ export interface AdapterToolsProtocol
     Partial<RoomHistoryTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
+  /**
+   * When the runtime journals replies: true once this turn had a delivery whose
+   * outcome stands unknown, so closing text must not be relayed as a replacement.
+   * A probe, not an acting call — stop/scope wrappers leave it readable.
+   */
+  readonly unknownDeliveryFenced?: () => boolean;
+  readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
-export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
+/** Members read as values, never called as acting tools: stop and turn-scope wrappers pass them through. */
+const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
+
+export type NonActingToolKey = (typeof NON_ACTING_TOOL_MEMBERS)[number];
+
+export const NON_ACTING_TOOL_KEYS: ReadonlySet<PropertyKey> = new Set(NON_ACTING_TOOL_MEMBERS);
+
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, NonActingToolKey>;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

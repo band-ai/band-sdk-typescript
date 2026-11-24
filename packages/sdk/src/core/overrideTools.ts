@@ -12,7 +12,18 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
  * lets through runs as usual.
  */
 export function guardedTools<T extends object>(tools: T, refusal: (key: PropertyKey) => Error | null): T {
-  return forward(() => tools, {}, refusal);
+  return wrappedCalls(tools, (key, call) => {
+    const refused = refusal(key);
+    return refused ? Promise.reject(refused) : call();
+  });
+}
+
+/** Runs one method call of a wrapped tools object; `call` runs it as usual. */
+export type CallWrapper = (key: PropertyKey, call: () => unknown) => unknown;
+
+/** `tools`, with every method call run through `wrap`. */
+export function wrappedCalls<T extends object>(tools: T, wrap: CallWrapper): T {
+  return forward(() => tools, {}, wrap);
 }
 
 /**
@@ -24,7 +35,7 @@ export function forwardTools<T extends object>(resolve: () => T, overrides: Part
   return forward(resolve, overrides);
 }
 
-function forward<T extends object>(resolve: () => T, overrides: Partial<T>, refusal?: (key: PropertyKey) => Error | null): T {
+function forward<T extends object>(resolve: () => T, overrides: Partial<T>, wrap?: CallWrapper): T {
   return new Proxy({} as T, {
     has(_target, key) {
       return Object.hasOwn(overrides, key) || Reflect.has(resolve(), key);
@@ -39,12 +50,7 @@ function forward<T extends object>(resolve: () => T, overrides: Partial<T>, refu
         return value;
       }
       const bound = value.bind(tools) as (...args: unknown[]) => unknown;
-      return refusal
-        ? (...args: unknown[]): unknown => {
-          const refused = refusal(key);
-          return refused ? Promise.reject(refused) : bound(...args);
-        }
-        : bound;
+      return wrap ? (...args: unknown[]): unknown => wrap(key, () => bound(...args)) : bound;
     },
     // Without this, a write against the empty target would silently succeed
     // and vanish — invisible even to the handler that made it, since `get`

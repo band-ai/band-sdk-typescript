@@ -24,6 +24,16 @@ export {
   sessionConfigSchema,
 } from "./runtime/types";
 export type { CustomToolDef } from "./runtime/tools/customTools";
+
+export { DeliveryUnknownError } from "./core/deliveryFailedError";
+export { JournalFileError, JournalPublicationError } from "./runtime/journal/errors";
+export { JournalOwnershipError } from "./runtime/journal/ownership";
+export { migrateTurnJournals } from "./runtime/journal/migration";
+export type {
+  MigrateTurnJournalsOptions,
+  MigrationBinding,
+  MigrationResult,
+} from "./runtime/journal/migration";
 export type {
   AgentConfig,
   AgentInput,

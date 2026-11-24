@@ -1,10 +1,11 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
-import { replyPosting } from "../../core/replyGate";
-import { currentDelivery } from "../messageDelivery";
+import { currentDelivery, toolErrorResult } from "../messageDelivery";
+import { currentTurn } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
+import type { PublicationEngine } from "../journal/publication";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
-import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
+import { mentionLabel, normalizeMentionHandle, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { fetchContextPage, listAllPeers, readRoomHistoryPage } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
@@ -46,6 +47,7 @@ import {
   isStructuredToolFailure,
   isToolExecutorError,
   sendFailureViaEvent,
+  toolExecutionError,
   type ToolExecutorError,
   type FetchRoomContextArgs,
   type RoomContextPage,
@@ -86,6 +88,15 @@ interface AgentToolsOptions {
   roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
   logger?: Logger;
+  /**
+   * The start generation's publication engine for this room's replies: a
+   * reply post settles durably under the room's current inbound message
+   * before it is reported successful. Absent (journal disabled) or when the
+   * room has no inbound message to settle: the post runs unrecorded.
+   */
+  publication?: PublicationEngine;
+  /** The room's in-flight inbound message, if any: the publication a reply settles. */
+  inboundMessageId?: () => string | undefined;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -146,12 +157,16 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
   private readonly logger: Logger;
+  private readonly publication: PublicationEngine | undefined;
+  private readonly inboundMessageId: (() => string | undefined) | undefined;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
     this.roster = options.roster ?? new ParticipantRoster();
     this.logger = resolveLogger(options.logger);
+    this.publication = options.publication;
+    this.inboundMessageId = options.inboundMessageId;
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -168,7 +183,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions, replyPosting);
+    return this.postMessage(content, mentions, "reply");
   }
 
   /** Posts like `sendMessage`, but is not a reply: nothing waiting on a reply's post sees it. */
@@ -176,27 +191,40 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    return this.postMessage(content, mentions);
+    return this.postMessage(content, mentions, "notice");
+  }
+
+  /** The inbound a reply or decline settles under: the turn's scope, else the tools' bound id. */
+  private publicationInboundId(): string | undefined {
+    return currentTurn()?.inbound ?? this.inboundMessageId?.();
   }
 
   private async postMessage(
     content: string,
     mentions: MentionInput,
-    beforePost?: () => Promise<void>,
+    kind: "reply" | "notice",
   ): Promise<ToolOperationResult> {
+    const messageId = kind === "reply" && this.publication ? this.publicationInboundId() : undefined;
+    // Resolved before the post: a failed participants lookup is no post attempt, so it never stands a reply unknown.
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
-    await beforePost?.();
+    const post = async (): Promise<ToolOperationResult> => {
+      const delivery = currentDelivery();
+      return this.rest.createChatMessage(
+        this.roomId,
+        {
+          content,
+          mentions: resolvedMentions,
+        },
+        delivery ? { delivery } : undefined,
+      );
+    };
 
-    // The REST adapter owns the post's attempts; the turn's delivery lets it read the room back.
-    const delivery = currentDelivery();
-    return this.rest.createChatMessage(
-      this.roomId,
-      {
-        content,
-        mentions: resolvedMentions,
-      },
-      delivery ? { delivery } : undefined,
-    );
+    // A reply settles under the turn's inbound scope, refused once that turn
+    // is cut short; a notice (and a reply with nothing in flight) posts unrecorded.
+    if (messageId !== undefined && this.publication) {
+      return this.publication.publishReply(messageId, post, currentTurn()?.stopped);
+    }
+    return post();
   }
 
   public async sendEvent(
@@ -420,39 +448,11 @@ export class AgentTools implements AgentToolsProtocol {
       // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
       // handlers' `ok` fields are legitimate business-result data, not errors.
       if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
-        return createToolExecutorError({
-          errorType: "ToolExecutionError",
-          toolName,
-          message: result.message,
-          legacyMessage: `Error executing ${toolName}: ${result.message}`,
-        });
+        return toolExecutionError(toolName, result.message);
       }
       return result;
     } catch (error) {
-      if (isToolExecutorError(error)) {
-        return error;
-      }
-
-      if (error instanceof ValidationError) {
-        return createToolExecutorError({
-          errorType: "ToolArgumentsValidationError",
-          toolName,
-          message: error.message,
-          legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
-        });
-      }
-
-      // Unlike the two branches above (routine, expected failures), reaching
-      // here means something unclassified broke - log it so it's debuggable,
-      // since createToolExecutorError below only returns it as tool-call data.
-      this.logger.error("unexpected tool execution error", { toolName, error });
-      const message = error instanceof Error ? error.message : String(error);
-      return createToolExecutorError({
-        errorType: "ToolExecutionError",
-        toolName,
-        message,
-        legacyMessage: `Error executing ${toolName}: ${message}`,
-      });
+      return toolErrorResult(toolName, error, this.logger);
     }
   }
 
@@ -751,7 +751,7 @@ export class AgentTools implements AgentToolsProtocol {
       participantsById.set(ref.id, ref);
       const handle = participant.handle;
       if (typeof handle === "string") {
-        participantsByHandle.set(this.normalizeMentionHandle(handle), ref);
+        participantsByHandle.set(normalizeMentionHandle(handle), ref);
       }
       const name = participant.name;
       if (typeof name === "string" && name.trim().length > 0) {
@@ -768,7 +768,7 @@ export class AgentTools implements AgentToolsProtocol {
         return byId;
       }
 
-      const normalized = this.normalizeMentionHandle(mention);
+      const normalized = normalizeMentionHandle(mention);
       const found = participantsByHandle.get(normalized);
       if (found) {
         return found;
@@ -788,10 +788,6 @@ export class AgentTools implements AgentToolsProtocol {
     assertCapability(this.capabilities, "peers");
     const peers = await listAllPeers(this.rest, { notInChat: this.roomId }, DEFAULT_REQUEST_OPTIONS);
     return peers.find((peer) => String(peer.name ?? "").toLowerCase() === target) ?? null;
-  }
-
-  private normalizeMentionHandle(handle: string): string {
-    return handle.trim().replace(/^@+/, "").toLowerCase();
   }
 
   private buildAdapterTools(): AdapterToolsProtocol {
@@ -846,8 +842,20 @@ export class AgentTools implements AgentToolsProtocol {
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
       [NO_REPLY_TOOL_NAME]: async (arguments_) => {
-        this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
-        return NO_REPLY_RESULT;
+        const declined = async (): Promise<unknown> => {
+          this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
+          return NO_REPLY_RESULT;
+        };
+        // Only a standing decline is settled: the record is durable before the
+        // call reports success, so the declined message can never be
+        // redelivered. A decline the harness refuses records nothing.
+        if (this.publication) {
+          const messageId = this.publicationInboundId();
+          if (messageId !== undefined) {
+            return this.publication.publishDecline(messageId, declined);
+          }
+        }
+        return declined();
       },
       band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
