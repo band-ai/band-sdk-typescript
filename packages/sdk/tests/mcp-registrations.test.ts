@@ -17,7 +17,8 @@ import {
 } from "../src/mcp/registrations";
 import { AdmissionTransport, KEYED_ADMISSION_REFUSALS, buildOriginResolver } from "../src/mcp/admission";
 import { NO_REPLY_TOOL_NAME, ROOM_TOOL_NAMES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import { FakeTools } from "./testUtils";
+import { FakeTools, makeLoggerSpy } from "./testUtils";
+import type { Logger } from "../src/core/logger";
 
 describe("MCP registrations", () => {
   describe("buildSingleContextRegistrations", () => {
@@ -261,12 +262,15 @@ describe("shared portable MCP registrations", () => {
 
 describe("the keyed admission guard at dispatch", () => {
   /** A real client of one room's tools behind the admission decorator, over an in-memory transport pair. */
-  async function keyedClient(tools: FakeTools, guard: () => boolean): Promise<Client> {
-    const resolver = (roomId: string) => (roomId === "room-1" ? tools : undefined);
+  async function keyedClient(
+    tools: FakeTools,
+    guard: () => boolean,
+    { logger, resolver = (roomId: string) => (roomId === "room-1" ? tools : undefined) }: { logger?: Logger; resolver?: (roomId: string) => FakeTools | undefined } = {},
+  ): Promise<Client> {
     const server = new McpServer({ name: "keyed", version: "1.0.0" });
     registerTools(server, z, buildRoomScopedRegistrations(resolver, { enableOperationIds: true }));
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-    await server.connect(new AdmissionTransport(serverTransport, buildOriginResolver(resolver, true, guard)));
+    await server.connect(new AdmissionTransport(serverTransport, buildOriginResolver(resolver, true, guard), logger));
     const client = new Client({ name: "keyed-client", version: "1.0.0" });
     await client.connect(clientTransport);
     onTestFinished(() => client.close());
@@ -283,6 +287,20 @@ describe("the keyed admission guard at dispatch", () => {
     const result = await keyedSend(await keyedClient(tools, () => true), "op-unfenced");
     expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.notFenced }] });
     expect(tools.executeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyed call whose room resolver throws, and logs the failure by class only", async () => {
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const logger = makeLoggerSpy();
+    const resolver = () => {
+      throw new TypeError("resolver broke on secret-room-state");
+    };
+    const result = await keyedSend(await keyedClient(tools, () => true, { logger, resolver }), "op-throwing");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.noOrigin }] });
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("origin resolver threw"), { tool: SEND_MESSAGE_TOOL_NAME, errorClass: "TypeError" });
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining("refused at admission"), { tool: SEND_MESSAGE_TOOL_NAME, reason: "noOrigin" });
   });
 
   it("refuses a keyed call whose origin no longer stands, without claiming what the bridge stands", async () => {

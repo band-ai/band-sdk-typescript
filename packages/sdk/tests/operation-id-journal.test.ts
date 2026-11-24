@@ -9,17 +9,16 @@ import type { ToolOperationResult } from "../src/contracts/dtos";
 import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
-  OPERATION_ID_MAX_BYTES,
   OperationConflictError,
   OperationIdError,
   operationFingerprint,
   validateOperationId,
 } from "../src/runtime/journal/operations";
-import { PublicationEngine, unknownDeclineMessage, unknownOperationMessage } from "../src/runtime/journal/publication";
+import { PublicationEngine, UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/publication";
 import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
-import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { NO_REPLY_TOOL_NAME, OPERATION_ID_MAX_BYTES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { ROOM, diskFull, generationIn, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
 import type { Logger } from "../src/core/logger";
 
@@ -355,9 +354,8 @@ describe("a keyed send's outcomes", () => {
     await generation.close();
   });
 
-  it("holds its append lock only until the reservation is durable: another room's turn proceeds while the post is held", async () => {
-    const dir = tmpRoot();
-    const { generation } = await generationIn(dir);
+  it("holds the room's append lock only until the reservation is durable: another turn in the room writes while the post is held", async () => {
+    const { generation } = await generationIn(tmpRoot());
     const engine = engineFor(generation);
     const post = heldPost();
     const keyed = engine.publishOperation({
@@ -367,17 +365,17 @@ describe("a keyed send's outcomes", () => {
       messageId: "msg-1",
       prepare: sendPreparation(post.post),
     });
-    const other = await openRoom(generation, "room-two");
-    const publicationId = await other.beginReply("msg-9");
-    const otherPost = other.settleReply("msg-9", publicationId, "posted-9");
     await post.started;
-    expect(post.ran()).toBe(true);
-    // Room two's reply settles while room one's post still stands out.
-    await otherPost;
-    expect(other.answered("msg-9")).toBe(true);
+    // The same room's handle, and so the same write queue, as the held operation's.
+    const room = await openRoom(generation, ROOM);
+    const publicationId = await room.beginReply("msg-9");
+    await room.settleReply("msg-9", publicationId, "posted-9");
+    expect(room.answered("msg-9")).toBe(true);
+    // The other turn's reply settled while the keyed post still stands out.
+    expect(room.operation(ID)?.outcome).toBe("pending");
     post.resolve({ id: "posted-1" });
     await keyed;
-    await generation.close();
+    expect(room.operation(ID)?.outcome).toBe("settled");
   });
 
   it("re-admits a pending operation the file proves it never posted", async () => {
@@ -442,7 +440,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
     const error = await failure;
     const room = await openRoom(generation, ROOM);
     expect(error).toBeInstanceOf(DeliveryUnknownError);
-    expect((error as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+    expect((error as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.send);
     expect(room.accepting).toBe(false);
     await generation.close();
     // The writer that owed the settle stands poisoned, and the file it left holds
@@ -480,7 +478,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
       .catch((error: unknown) => error);
     const error = await first;
     expect(error).toBeInstanceOf(DeliveryUnknownError);
-    expect((error as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+    expect((error as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.send);
     const room = await openRoom(generation, ROOM);
     expect(room.operation(ID)?.outcome).toBe("unknown");
     // The retry joins the unknown: zero posts, the same text.
@@ -500,7 +498,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
     const retryError = await retry;
     expect(posts).toBe(0);
     expect(retryError).toBeInstanceOf(DeliveryUnknownError);
-    expect((retryError as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+    expect((retryError as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.send);
     await generation.close();
     expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.unknown"]);
   });
@@ -523,7 +521,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
         })
         .catch((thrown: unknown) => thrown);
       expect(error).toBeInstanceOf(DeliveryUnknownError);
-      expect((error as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+      expect((error as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.send);
       const room = await openRoom(generation, ROOM);
       expect(room.operation(ID)?.outcome).toBe("unknown");
       // The caller's inbound is credited nothing: the journal cannot prove the post.
@@ -543,7 +541,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
         .catch((thrown: unknown) => thrown);
       expect(posts).toBe(0);
       expect(retry).toBeInstanceOf(DeliveryUnknownError);
-      expect((retry as DeliveryUnknownError).message).toBe(unknownOperationMessage());
+      expect((retry as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.send);
       await generation.close();
       expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.unknown"]);
     }
@@ -588,7 +586,8 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
   it("records a refused send, and a same-id retry re-reads the refusal without a post", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = engineFor(generation);
+    const logger = makeLoggerSpy();
+    const engine = engineFor(generation, ROOM, logger);
     await expect(
       engine.publishOperation({
         operationId: ID,
@@ -614,6 +613,14 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
       }),
     ).rejects.toMatchObject({ name: "DeliveryFailedError", message: "the platform refused the post (HTTP 422)" });
     expect(posts).toBe(0);
+    // The operator learns the refusal's class and status once, never Band's raw message.
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("refused"), {
+      roomId: ROOM,
+      operationId: ID,
+      reason: "the platform refused the post (HTTP 422)",
+      errorClass: "BandError",
+    });
     // The refusal owes no settlement credit to either caller.
     const room = await openRoom(generation, ROOM);
     expect(room.operation(ID)?.outcome).toBe("refused");
@@ -670,7 +677,8 @@ describe("a keyed no-reply", () => {
   it("refuses a decline the harness refuses, records the refusal, and owes no settlement", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const engine = engineFor(generation);
+    const logger = makeLoggerSpy();
+    const engine = engineFor(generation, ROOM, logger);
     await expect(
       engine.publishOperation({
         operationId: ID,
@@ -682,6 +690,13 @@ describe("a keyed no-reply", () => {
         },
       }),
     ).rejects.toThrowError("the harness could not run this no-reply");
+    // The harness's failure is logged by its class, never its message.
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("refused"), {
+      roomId: ROOM,
+      operationId: ID,
+      reason: "the harness could not run this no-reply",
+      errorClass: "Error",
+    });
     const room = await openRoom(generation, ROOM);
     expect(room.operation(ID)?.outcome).toBe("refused");
     expect(room.answered("msg-1")).toBe(false);
@@ -708,7 +723,7 @@ describe("a keyed no-reply", () => {
         })
         .catch((thrown: unknown) => thrown);
       expect(error).toBeInstanceOf(DeliveryUnknownError);
-      expect((error as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+      expect((error as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.decline);
       const room = await openRoom(generation, ROOM);
       expect(room.operation(ID)?.outcome).toBe("unknown");
       expect(room.answered("msg-1")).toBe(false);
@@ -727,7 +742,7 @@ describe("a keyed no-reply", () => {
         .catch((thrown: unknown) => thrown);
       expect(ran).toBe(0);
       expect(retry).toBeInstanceOf(DeliveryUnknownError);
-      expect((retry as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+      expect((retry as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.decline);
       await generation.close();
       expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.unknown"]);
     }
@@ -963,6 +978,20 @@ describe("a keyed operation whose own records fail to land", () => {
     expect(announced).toEqual([]);
   });
 
+  it("announces an unknown operation once per generation, even when its announcement record fails to land", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    await engineFor(generation)
+      .publishOperation({ operationId: ID, kind: "send", content: "hello", messageId: "msg-1", prepare: sendPreparation(async () => { throw bandServerDown(); }) })
+      .catch(() => undefined);
+    generation.release(ROOM);
+    await failAppendsOf("op.reported");
+    const first = await (await openRoom(generation, ROOM)).recoverUnresolved();
+    expect(first.map(({ operationId }) => operationId)).toEqual([ID]);
+    // The room's next handle reopens a file that never recorded the announcement.
+    generation.release(ROOM);
+    expect(await (await openRoom(generation, ROOM)).recoverUnresolved()).toEqual([]);
+  });
+
   it("returns a posted send's stored result when only its caller's settlement fails to land", async () => {
     const { generation } = await generationIn(tmpRoot());
     const engine = engineFor(generation);
@@ -997,7 +1026,7 @@ describe("a keyed operation whose own records fail to land", () => {
       .catch((thrown: unknown) => thrown);
     await generation.close();
     expect(error).toBeInstanceOf(DeliveryUnknownError);
-    expect((error as DeliveryUnknownError).message).toBe(unknownDeclineMessage());
+    expect((error as DeliveryUnknownError).message).toBe(UNKNOWN_OPERATION_MESSAGES.decline);
   });
 
   it("reports a keyed decline's unknown to an MCP client under the decline's text, not a post's", async () => {
@@ -1010,7 +1039,7 @@ describe("a keyed operation whose own records fail to land", () => {
     const result = await noReply.execute({ reason: "fyi", operation_id: ID });
     await generation.close();
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text)).toEqual({ kind: DeliveryUnknownError.KIND, detail: unknownDeclineMessage() });
+    expect(JSON.parse(result.content[0].text)).toEqual({ kind: DeliveryUnknownError.KIND, detail: UNKNOWN_OPERATION_MESSAGES.decline });
   });
 
   it("warns that an operation stands recorded unknown only when its record landed", async () => {

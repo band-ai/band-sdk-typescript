@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ToolOperationResult } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
-import { DeliveryFailedError, DeliveryUnknownError } from "../../core/deliveryFailedError";
+import { DeliveryFailedError, DeliveryUnknownError, isDeliveryUnknownOutput, unknownDeliveryText } from "../../core/deliveryFailedError";
 import { statusCodeOf } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { classifyFailedAttempt } from "../../client/rest/messageDelivery";
@@ -257,7 +257,7 @@ export class PublicationEngine {
           throw new DeliveryUnknownError(
             new Error(`operation ${operationId} stands unknown in the journal`),
             operationId,
-            unknownMessageFor(input.kind),
+            UNKNOWN_OPERATION_MESSAGES[input.kind],
           );
         case "refused":
           throw new DeliveryFailedError(check.reasonText ?? `the journal records operation ${operationId} as refused: Band answered and saved nothing`);
@@ -283,11 +283,8 @@ export class PublicationEngine {
         }
         case "reserved":
           return await this.runReservedOperation(journal, input, operationId, deferred);
-        default: {
-          // Unreachable: every outcome the journal reports is one of the cases
-          // above. The guard keeps the switch honest if a new outcome lands.
-          throw new Error("the journal reported an operation outcome it does not record");
-        }
+        default:
+          return assertNever(status);
       }
     } catch (error) {
       deferred.reject(error);
@@ -318,7 +315,7 @@ export class PublicationEngine {
 
   private async runKeyedSend(journal: RoomJournal, input: OperationInput, operationId: string): Promise<ToolOperationResult> {
     if (input.prepare === undefined) {
-      return await this.refuse(journal, operationId, "the once transport the operation needs stands unavailable", new OperationUnsupportedError("no-once-transport"));
+      return await this.refuse(journal, operationId, "the once transport the operation needs stands unavailable", { error: new OperationUnsupportedError("no-once-transport") });
     }
     await this.refuseIfCutShort(journal, operationId, input.stopped);
     const preparation = await input.prepare();
@@ -333,11 +330,11 @@ export class PublicationEngine {
       if (classifyFailedAttempt(error) === "uncertain") {
         return await this.standUnknown(journal, input.kind, operationId, error, { cause: noVerdict() });
       }
-      return await this.refuse(journal, operationId, publicRefusalText(error));
+      return await this.refuse(journal, operationId, publicRefusalText(error), { failure: error });
     }
     // A resolved delivery-unknown stands unknown, like the thrown one; any
     // other resolved failure is a definite refusal, stored as classified text.
-    if (isToolExecutorError(result) && result.details?.kind === DeliveryUnknownError.KIND) {
+    if (isDeliveryUnknownOutput(result)) {
       return await this.standUnknown(journal, input.kind, operationId, result, { cause: noVerdict() });
     }
     if (isFailedOperationResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
@@ -353,14 +350,14 @@ export class PublicationEngine {
   private async runKeyedDecline(journal: RoomJournal, input: OperationInput, operationId: string): Promise<ToolOperationResult> {
     const harnessRefusal = "the harness could not run this no-reply";
     if (input.runDecline === undefined) {
-      return await this.refuse(journal, operationId, harnessRefusal, new OperationUnsupportedError("no-journal"));
+      return await this.refuse(journal, operationId, harnessRefusal, { error: new OperationUnsupportedError("no-journal") });
     }
     let result: ToolOperationResult;
     try {
       result = await input.runDecline();
-    } catch {
-      // The harness's raw error never reaches a caller or the journal.
-      return await this.refuse(journal, operationId, harnessRefusal);
+    } catch (error) {
+      // The harness's raw error never reaches a caller or the journal; only its class is logged.
+      return await this.refuse(journal, operationId, harnessRefusal, { failure: error });
     }
     if (isFailedOperationResult(result)) return await this.refuse(journal, operationId, publicRefusalText(result));
     if (!isStorableResult(result)) {
@@ -414,19 +411,21 @@ export class PublicationEngine {
         error,
       });
     }
-    throw new DeliveryUnknownError(cause, operationId, unknownMessageFor(kind));
+    throw new DeliveryUnknownError(cause, operationId, UNKNOWN_OPERATION_MESSAGES[kind]);
   }
 
   /**
    * Records a definite refusal and throws `error`, by default the classified
    * text's `DeliveryFailedError`. When the record fails, its error is what the
-   * caller sees, as for a reply's refusal.
+   * caller sees, as for a reply's refusal. The refusal is logged by its
+   * classified text and the class of the `failure` behind it, never the raw
+   * failure, which can carry a body.
    */
   private async refuse(
     journal: RoomJournal,
     operationId: string,
     reasonText: string,
-    error: Error = new DeliveryFailedError(reasonText),
+    { error = new DeliveryFailedError(reasonText), failure }: { error?: Error; failure?: unknown } = {},
   ): Promise<never> {
     try {
       await journal.refuseOperation(operationId, reasonText);
@@ -439,13 +438,19 @@ export class PublicationEngine {
       });
       throw recordError;
     }
+    this.logger.warn("a keyed operation was refused; the journal records the refusal, and a same-id call replays it", {
+      roomId: journal.roomId,
+      operationId,
+      reason: reasonText,
+      ...(failure !== undefined ? { errorClass: failure instanceof Error ? failure.name : typeof failure } : {}),
+    });
     throw error;
   }
 
   /** A turn cut short before the post: the operation is refused, never posted. */
   private async refuseIfCutShort(journal: RoomJournal, operationId: string, stopped: AbortSignal | undefined): Promise<void> {
     const cut = stopped && cutShort(stopped);
-    if (cut) await this.refuse(journal, operationId, "the turn was cut short before the post", cut);
+    if (cut) await this.refuse(journal, operationId, "the turn was cut short before the post", { error: cut });
   }
 
   /**
@@ -507,25 +512,25 @@ export class PublicationEngine {
   }
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled operation check: ${JSON.stringify(value)}`);
+}
+
 /** The stand-in cause of an attempt that ended without a verdict: the transport's raw error never travels. */
 function noVerdict(): Error {
   return new Error("the once port's attempt ended without a verdict");
 }
 
-/** The text a keyed operation of `kind` stands unknown under: a send may already be in the room, a decline posts nothing. */
-export function unknownMessageFor(kind: OperationKind): string {
-  return kind === "decline" ? unknownDeclineMessage() : unknownOperationMessage();
-}
-
-/** The text a keyed operation's unknown delivery stands under: the operator reads it in the tool result. */
-export function unknownOperationMessage(): string {
-  return "The operation's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the operation as unknown; a process that reopens the room reports it without reposting it.";
-}
-
-/** The text a keyed decline's unknown outcome stands under: it posts nothing, so nothing is held. */
-export function unknownDeclineMessage(): string {
-  return "The no-reply's outcome is unknown: its decision did not stand as a stored result, so the journal proves nothing either. The turn journal records the operation as unknown; the reply is not credited as declined, and the operation is never re-run as a success.";
-}
+/**
+ * The text a keyed operation of each kind stands unknown under, which the
+ * operator reads in the tool result: a send may already be in the room, a
+ * decline posts nothing, so nothing is held.
+ */
+export const UNKNOWN_OPERATION_MESSAGES: Readonly<Record<OperationKind, string>> = {
+  send: unknownDeliveryText("operation"),
+  decline:
+    "The no-reply's outcome is unknown: its decision did not stand as a stored result, so the journal proves nothing either. The turn journal records the operation as unknown; the reply is not credited as declined, and the operation is never re-run as a success.",
+};
 
 /**
  * The classified public text a definite refusal stands under: it is what the
@@ -553,7 +558,7 @@ function publicRefusalText(value: unknown): string {
 }
 
 /** The post id Band attributed: the top-level `id` FernRestAdapter's createChatMessage returns. */
-function receiptIdOf(result: ToolOperationResult): string | undefined {
+export function receiptIdOf(result: ToolOperationResult): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
   return "id" in result && typeof result.id === "string" && result.id.length > 0 ? result.id : undefined;
 }

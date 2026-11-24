@@ -29,8 +29,8 @@ export { DeliveryUnknownError } from "./core/deliveryFailedError";
 export { JournalFileError, JournalPublicationError } from "./runtime/journal/errors";
 export { JournalOwnershipError } from "./runtime/journal/ownership";
 export { migrateTurnJournals } from "./runtime/journal/migration";
+export { OPERATION_ID_MAX_BYTES } from "./contracts/toolSchemas";
 export {
-  OPERATION_ID_MAX_BYTES,
   OperationConflictError,
   OperationIdError,
   OperationUnsupportedError,

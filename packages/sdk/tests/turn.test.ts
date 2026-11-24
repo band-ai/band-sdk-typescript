@@ -59,7 +59,7 @@ describe("band_no_reply and the tool table", () => {
 
     expect(spec.name).toBe(NO_REPLY_TOOL_NAME);
     expect(model.description).toBe(spec.description);
-    expect(model.properties[reason!.name]).toEqual({ type: "string", description: reason!.description });
+    expect(model.properties).toEqual({ [reason!.name]: { type: "string", description: reason!.description } });
     expect(reason!.required).toBe(false);
     expect(model.required).toEqual([]);
   });

@@ -1,4 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
@@ -28,6 +29,8 @@ export interface BandMcpSseServerOptions {
   authToken?: string;
   /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger
   /** See `BandMcpServerOptions.multiRoom`. */
   multiRoom?: boolean
 }
@@ -120,7 +123,7 @@ export class BandMcpSseServer {
       registerTools(mcpServer, z, this.registrations)
       // The admission decorator stands between the client and the framework:
       // a keyed call is fenced and pinned before any validation.
-      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver))
+      await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger))
 
       const sessionId = transport.sessionId
       this.sessions.set(sessionId, {

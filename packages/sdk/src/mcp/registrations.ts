@@ -128,18 +128,12 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
   return {
     ...tool,
     inputSchema: withRoomId(tool.inputSchema),
-    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
-      const keyed = keyedDispatch(roomIdArg);
-      // A keyed call runs on the tools its admission pinned, never on
-      // whatever the room resolves to now.
-      if (keyed.status === "refused") {
-        return Promise.resolve(errorResult(keyed.text));
-      }
-      if (keyed.status === "admitted") {
-        return Promise.resolve(execute(keyed.tools as T, args));
-      }
-      return inRoom(roomIdArg, resolver, (roomTools) => execute(roomTools, args));
-    },
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) =>
+      dispatchKeyed(
+        roomIdArg,
+        (admitted) => execute(admitted as T, args),
+        () => inRoom(roomIdArg, resolver, (roomTools) => execute(roomTools, args)),
+      ),
   };
 }
 
@@ -149,28 +143,27 @@ function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
 }
 
 /**
- * How a keyed call dispatches: on its admitted origin's tools, or refused
- * with what its admission recorded, or when it names another room. An
- * unkeyed call is `none`.
+ * Runs a call: a keyed one on the tools its admission pinned, never on
+ * whatever the room resolves to now, and refused with what its admission
+ * recorded or when it names another room; an unkeyed one through `unkeyed`.
  */
-type KeyedDispatch =
-  | { status: "none" }
-  | { status: "refused"; text: string }
-  | { status: "admitted"; tools: AdapterToolsProtocol };
-
-function keyedDispatch(roomIdArg: unknown): KeyedDispatch {
+function dispatchKeyed(
+  roomIdArg: unknown,
+  admitted: (tools: AdapterToolsProtocol) => Promise<McpToolResult>,
+  unkeyed: () => Promise<McpToolResult>,
+): Promise<McpToolResult> {
   const admission = currentAdmission();
   if (admission === undefined) {
-    return { status: "none" };
+    return unkeyed();
   }
   if (admission.refusal !== undefined) {
-    return { status: "refused", text: admission.refusal };
+    return Promise.resolve(errorResult(admission.refusal));
   }
   const { origin } = admission;
   if (origin.roomId !== undefined && roomIdOf(roomIdArg) !== origin.roomId) {
-    return { status: "refused", text: wrongRoomResult(roomIdArg, origin.roomId) };
+    return Promise.resolve(errorResult(wrongRoomResult(roomIdArg, origin.roomId)));
   }
-  return { status: "admitted", tools: origin.tools };
+  return admitted(origin.tools);
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -245,16 +238,12 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
     return {
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
-      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) => {
-        const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-        if (keyed.status === "refused") {
-          return Promise.resolve(errorResult(keyed.text));
-        }
-        if (keyed.status === "admitted") {
-          return Promise.resolve(tool.execute(args, keyed.tools, signal));
-        }
-        return inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal));
-      },
+      execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) =>
+        dispatchKeyed(
+          args[ROOM_ID_ARG],
+          (admitted) => tool.execute(args, admitted, signal),
+          () => inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
+        ),
     };
   });
 }
@@ -268,11 +257,8 @@ function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): M
   return {
     ...tool,
     execute: (args, _tools, signal) => {
-      const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-      if (keyed.status === "refused") {
-        return Promise.resolve(errorResult(keyed.text));
-      }
-      return tool.execute(args, keyed.status === "admitted" ? keyed.tools : tools, signal);
+      const run = (runTools: AdapterToolsProtocol) => tool.execute(args, runTools, signal);
+      return dispatchKeyed(args[ROOM_ID_ARG], run, () => run(tools));
     },
   };
 }
@@ -340,7 +326,7 @@ export function buildBridgeRegistrations(
 ): BridgeRegistrations {
   const { admissionGuard, ...registrationOptions } = options;
   const roomScoped = typeof tools === "function" && multiRoom;
-  const registrations = typeof tools === "function" && multiRoom
+  const registrations = roomScoped
     ? buildRoomScopedRegistrations(tools, registrationOptions)
     : buildSingleContextRegistrations(typeof tools === "function" ? resolveSingleRoomTools(tools) : tools, registrationOptions);
   const resolver: ToolResolver = typeof tools === "function" ? tools : () => tools;
@@ -360,11 +346,8 @@ function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegi
   return {
     ...tool,
     execute: (args) => {
-      const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-      if (keyed.status === "refused") {
-        return Promise.resolve(errorResult(keyed.text));
-      }
-      return executeToolCall(keyed.status === "admitted" ? keyed.tools : tools, tool.name, args);
+      const run = (runTools: AdapterToolsProtocol) => executeToolCall(runTools, tool.name, args);
+      return dispatchKeyed(args[ROOM_ID_ARG], run, () => run(tools));
     },
   };
 }

@@ -13,7 +13,7 @@ import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { PlatformRuntime } from "../src/runtime";
 import { DeliveryUnknownError, DeliveryFailedError } from "../src/core/deliveryFailedError";
-import { unknownOperationMessage } from "../src/runtime/journal/publication";
+import { UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/publication";
 import { OperationConflictError, OperationIdError, OperationUnsupportedError } from "../src/runtime/journal/operations";
 import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
@@ -208,11 +208,11 @@ describe("a keyed operation's process boundary", () => {
       }
     });
     await settledAs(platform, inbound, "failed");
-    await first.handlerOutcome;
+    expect(await first.handlerOutcome).toEqual({ ok: true });
     await second.handlerOutcome;
     expect(retryIsError).toBe(true);
     expect(relayed).toBe(false);
-    expect(seen).toEqual([{ kind: DeliveryUnknownError.KIND, detail: unknownOperationMessage() }]);
+    expect(seen).toEqual([{ kind: DeliveryUnknownError.KIND, detail: UNKNOWN_OPERATION_MESSAGES.send }]);
     expect(postedContents(platform)).toEqual(["keyed lost"]);
     // The restart announced the operation exactly once, with its id, and the turn's
     // unknown delivery rides the same report. The announcement rides the room's
@@ -282,7 +282,7 @@ describe("a keyed operation's process boundary", () => {
       }
     });
     await landed.until(() => landed.entries.includes("op.settled"));
-    await second.handlerOutcome;
+    expect(await second.handlerOutcome).toEqual({ ok: true });
     // The provably unposted operation was never announced on either admission.
     expect(reported(second.events)).toEqual([]);
     // The same id re-ran: it posted once and settled, and the call answered.
@@ -337,8 +337,7 @@ describe("a keyed operation's process boundary", () => {
       conflict = await tools.sendMessage("direct changed", [OWNER], { operationId: OP_ID }).catch((error) => error);
     });
     // Both calls ran: the first settled, the second was refused.
-    const firstOutcome = await firstHandle.handlerOutcome;
-    expect(firstOutcome.ok).toBe(true);
+    expect(await firstHandle.handlerOutcome).toEqual({ ok: true });
     // The first send answered: it stands settled, with its stored result.
     expect(typeof first).toBe("object");
     expect((first as { id?: string }).id).toBeTruthy();
@@ -359,7 +358,7 @@ describe("a keyed operation's process boundary", () => {
     // A same-id retry on a later process replays the original stored result:
     // the original operation stands settled-success, unchanged by the conflict.
     const retryInbound = await room.say(OWNER, `${MENTION} retry please`);
-    await retry.handlerOutcome;
+    expect(await retry.handlerOutcome).toEqual({ ok: true });
     expect(typeof replay).toBe("object");
     expect((replay as { id?: string }).id).toBe((first as { id: string }).id);
     // The replay posted nothing: the original post stands for every same-id call.
@@ -380,7 +379,7 @@ describe("a keyed operation's process boundary", () => {
         .catch((error) => error);
     });
     const conflictInbound = await room.say(OWNER, `${MENTION} changed payload please`);
-    await conflictProcess.handlerOutcome;
+    expect(await conflictProcess.handlerOutcome).toEqual({ ok: true });
     expect(laterConflict).toBeInstanceOf(DeliveryFailedError);
     expect((laterConflict as DeliveryFailedError).cause).toBeInstanceOf(OperationConflictError);
     await settledAs(platform, conflictInbound, "failed");
@@ -408,7 +407,7 @@ describe("a keyed operation's process boundary", () => {
       });
     });
     await settledAs(platform, inbound, "failed");
-    await first.handlerOutcome;
+    expect(await first.handlerOutcome).toEqual({ ok: true });
     expect(refused).toMatchObject({ ok: false, errorType: "ToolExecutionError", message: new OperationUnsupportedError("no-once-transport").message });
     // The refusal stands before any durable operation: no record, and the keyed
     // content never stands; the turn's own failure notice is the runtime's, not the operation's.
@@ -428,7 +427,7 @@ describe("a keyed operation's process boundary", () => {
     });
     const again = await room.say(OWNER, `${MENTION} keyed again`);
     await settledAs(platform, again, "failed");
-    await second.handlerOutcome;
+    expect(await second.handlerOutcome).toEqual({ ok: true });
     expect(refusedAgain).toMatchObject({ ok: false, errorType: "ToolExecutionError" });
     expect(postedContents(platform)).toEqual([]);
     const recordsAgain = await recordsOf(journalDir);
@@ -742,7 +741,7 @@ describe("the MCP bridge's keyed admission", () => {
     });
     await settledAs(platform, inbound, "failed");
     expect(relayed).toBe(false);
-    expect(seen).toEqual({ kind: DeliveryUnknownError.KIND, detail: unknownOperationMessage() });
+    expect(seen).toEqual({ kind: DeliveryUnknownError.KIND, detail: UNKNOWN_OPERATION_MESSAGES.send });
     expect(postedContents(platform)).toEqual(["keyed unknown"]);
     const records = await recordsOf(journalDir);
     expect(records).toContain("op.unknown");
@@ -754,7 +753,7 @@ describe("the MCP bridge's keyed admission", () => {
     expect(reported(second.events).some(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toBe(true);
   }, 120000);
 
-  it("routes a room-scoped tool to the call's room only: a keyed call from the wrong room stands refused", async () => {
+  it("admits a keyed call in the room its room_id names only while that room has live tools: one naming a room without them is refused", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     await platform.room(OTHER_ROOM);
@@ -774,8 +773,8 @@ describe("the MCP bridge's keyed admission", () => {
       const client = new Client({ name: "op-mcp-4", version: "1.0.0" });
       await client.connect(clientTransport);
       try {
-        // The turn stands in room-1; the call names room-2. A room-scoped tool
-        // resolves its room from the turn, never from the call's argument.
+        // The turn stands in room-1; the call names room-2. Admission resolves the
+        // origin from the call's room_id, and room-2 has no tools to resolve.
         wrongRoom = await keyedCall(client, {
           room_id: OTHER_ROOM,
           content: "wrong room",

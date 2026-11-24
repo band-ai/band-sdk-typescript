@@ -1,4 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
@@ -38,6 +39,8 @@ export interface BandMcpServerOptions {
    * once it reports false, no call pins an origin or fences a turn.
    */
   admissionGuard?: () => boolean;
+  /** Where keyed-call admission logs its refusals, by class only; silent by default. */
+  logger?: Logger;
   /**
    * With a `tools` resolver, whether the server scopes its tools to the call's
    * `room_id` (the default): `false` stands a single-context server on the
@@ -255,7 +258,7 @@ export class BandMcpServer {
 
     // The admission decorator stands between the client and the framework on
     // every session: a keyed call is fenced and pinned before any validation.
-    await mcpServer.connect(new AdmissionTransport(transport, this.originResolver));
+    await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger));
     record = {
       mcpServer,
       transport,

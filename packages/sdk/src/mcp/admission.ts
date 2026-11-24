@@ -3,8 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { asNonEmptyString } from "../adapters/shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../adapters/shared/coercion";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { resolveLogger, type Logger } from "../core/logger";
 import { KEYED_OPERATION_TOOL_NAMES, ROOM_ID_ARG, carriesOperationIdArg } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
 
@@ -40,18 +41,6 @@ export function roomIdOf(value: unknown): string | null {
   return asNonEmptyString(value);
 }
 
-/** The `tools/call`'s arguments, when the params carry an object of them. */
-function keyedArguments(params: unknown): Record<string, unknown> | undefined {
-  if (typeof params !== "object" || params === null) {
-    return undefined;
-  }
-  const arguments_ = (params as { arguments?: unknown }).arguments;
-  if (typeof arguments_ !== "object" || arguments_ === null) {
-    return undefined;
-  }
-  return arguments_ as Record<string, unknown>;
-}
-
 const TOOLS_CALL = "tools/call" as const;
 
 /** The refusal a keyed call earns at admission, by the step that did not stand. */
@@ -81,10 +70,12 @@ export class AdmissionTransport implements Transport {
   public onmessage?: Transport["onmessage"];
   private readonly inner: Transport;
   private readonly originResolver: OriginResolver | undefined;
+  private readonly logger: Logger;
 
-  public constructor(inner: Transport, originResolver?: OriginResolver) {
+  public constructor(inner: Transport, originResolver?: OriginResolver, logger?: Logger) {
     this.inner = inner;
     this.originResolver = originResolver;
+    this.logger = resolveLogger(logger);
     if (typeof inner.setProtocolVersion === "function") {
       const innerSet = inner.setProtocolVersion;
       this.setProtocolVersion = (version) => innerSet.call(inner, version);
@@ -155,23 +146,31 @@ export class AdmissionTransport implements Transport {
     if (typeof name !== "string" || !KEYED_OPERATION_TOOL_NAMES.has(name)) {
       return undefined;
     }
-    const arguments_ = keyedArguments(params);
+    const arguments_ = asOptionalRecord(asOptionalRecord(params)?.arguments);
     if (!carriesOperationIdArg(arguments_)) {
       return undefined;
     }
     if (this.originResolver === undefined) {
-      return { refusal: KEYED_ADMISSION_REFUSALS.notServed };
+      return this.refuse(name, "notServed");
     }
     let origin: AdmissionOrigin | undefined;
     try {
       origin = this.originResolver(roomIdOf(arguments_?.[ROOM_ID_ARG]) ?? "");
-    } catch {
-      origin = undefined;
+    } catch (error) {
+      this.logger.warn("a keyed call's origin resolver threw; the call is refused", {
+        tool: name,
+        errorClass: error instanceof Error ? error.name : typeof error,
+      });
     }
     if (origin === undefined) {
-      return { refusal: KEYED_ADMISSION_REFUSALS.noOrigin };
+      return this.refuse(name, "noOrigin");
     }
-    return fenceTurnForKeyedAdmission(origin.tools) ? { origin } : { refusal: KEYED_ADMISSION_REFUSALS.notFenced };
+    return fenceTurnForKeyedAdmission(origin.tools) ? { origin } : this.refuse(name, "notFenced");
+  }
+
+  private refuse(tool: string, reason: keyof typeof KEYED_ADMISSION_REFUSALS): Admission {
+    this.logger.debug("a keyed call was refused at admission", { tool, reason });
+    return { refusal: KEYED_ADMISSION_REFUSALS[reason] };
   }
 
   public get innerTransport(): Transport {
@@ -194,12 +193,8 @@ export function buildOriginResolver(
     if (guard !== undefined && !guard()) {
       return undefined;
     }
-    let tools: AdapterToolsProtocol | undefined;
-    try {
-      tools = multiRoom ? getToolsForRoom(roomId) : getToolsForRoom("");
-    } catch {
-      return undefined;
-    }
+    // A throwing resolver is the admission's to log and refuse.
+    const tools = multiRoom ? getToolsForRoom(roomId) : getToolsForRoom("");
     if (tools === undefined) {
       return undefined;
     }

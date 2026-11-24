@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import { BandClient } from "@band-ai/rest-client";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { NoopLogger } from "../src/core/logger";
 import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
@@ -29,7 +29,7 @@ interface Origin {
 }
 
 /**
- * The two-origin fixture: origin `a` answers every POST with `status` and a
+ * The two-origin fixture, closed when the test ends: origin `a` answers every POST with `status` and a
  * `location` into origin `b`; origin `b` accepts. Each origin counts the POSTs
  * it itself receives, so a redirect that a client follows shows up on `b`
  * regardless of how the client's Fetch is built.
@@ -66,7 +66,9 @@ async function fixture(status: 307 | 308): Promise<{ a: Origin; b: Origin }> {
     });
 
   const b = await make(() => ({ status: 201 }));
+  onTestFinished(() => b.close());
   const a = await make(() => ({ status, headers: { location: `${b.origin}/v1/chats/${ROOM}/messages` } }));
+  onTestFinished(() => a.close());
   return { a, b };
 }
 
@@ -113,9 +115,6 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
       .catch(() => undefined);
     expect(a.posts).toBe(2);
     expect(b.posts).toBe(1);
-
-    await a.close();
-    await b.close();
   });
 
   it("stands the redirected once post unknown in the journal, and a same-id retry reposts nothing", async () => {
@@ -161,10 +160,6 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
     await expect(run()).rejects.toBeInstanceOf(DeliveryUnknownError);
     expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);
-
-    await generation.close();
-    await a.close();
-    await b.close();
   });
 });
 
@@ -203,9 +198,6 @@ describe("the production BandLink's once port, through the operation engine", ()
       await expect(run()).rejects.toBeInstanceOf(DeliveryUnknownError);
       expect(a.posts).toBe(1);
       expect(b.posts).toBe(0);
-      await generation.close();
-      await a.close();
-      await b.close();
     }, 60000);
   }
 
@@ -223,8 +215,6 @@ describe("the production BandLink's once port, through the operation engine", ()
     ).rejects.toThrow(/no SDK-controlled client/);
     expect(a.posts).toBe(0);
     expect(b.posts).toBe(0);
-    await a.close();
-    await b.close();
   });
 });
 
@@ -242,7 +232,5 @@ describe("a once port behind a RestFacade", () => {
     expect(classifyFailedAttempt(failure)).toBe("uncertain");
     expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);
-    await a.close();
-    await b.close();
   });
 });

@@ -13,6 +13,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
@@ -59,6 +60,8 @@ export interface BandMcpStdioServerOptions {
   stdout?: Writable;
   /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean;
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger;
   /** With a `tools` resolver, see `BandMcpServerOptions.multiRoom`. */
   multiRoom?: boolean;
 }
@@ -244,7 +247,7 @@ function openSession(
   const listed = new ToolsListedTransport(new modules.StdioServerTransport(stdin, stdout));
   // The admission decorator stands outside the listed wrapper, so a keyed
   // call is fenced and pinned before anything the framework does with it.
-  const transport = new AdmissionTransport(listed, originResolver);
+  const transport = new AdmissionTransport(listed, originResolver, options.logger);
 
   const initialized = new Promise<void>((resolve) => {
     mcpServer.server.oninitialized = resolve;

@@ -1,15 +1,10 @@
-import { createHash } from "node:crypto";
-
 import type { MentionReference } from "../../contracts/dtos";
 import { isToolExecutorError } from "../../contracts/protocols";
-import type { OperationKind } from "./records";
+import { OPERATION_ID_MAX_BYTES } from "../../contracts/toolSchemas";
+import { sha256Hex, type OperationKind } from "./records";
 
-/**
- * The longest an operation id may be, in encoded UTF-8 bytes. Ids are opaque
- * to the SDK: they are never trimmed into aliases, interpreted, or used as
- * file system paths — the bound is a storage guarantee, not a shape rule.
- */
-export const OPERATION_ID_MAX_BYTES = 256;
+/** The fingerprint layout's version: a layout change must not collide with this one. */
+const FINGERPRINT_VERSION = 1;
 
 /** A supplied operation id is not one the journal can stand behind. */
 export class OperationIdError extends Error {
@@ -103,11 +98,11 @@ export function operationFingerprint(input: {
   reason?: string;
   mentions?: readonly string[];
 }): string {
-  const payload =
-    input.kind === "send"
-      ? { v: 1, kind: "send", content: input.content ?? "", mentions: canonicalMentions(input.mentions ?? []) }
-      : { v: 1, kind: "decline", reason: input.reason ?? "", mentions: canonicalMentions(input.mentions ?? []) };
-  return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+  const payload = input.kind === "send" ? { content: input.content ?? "" } : { reason: input.reason ?? "" };
+  // Key order is part of the hash: version, kind, payload, mentions.
+  return sha256Hex(
+    JSON.stringify({ v: FINGERPRINT_VERSION, kind: input.kind, ...payload, mentions: canonicalMentions(input.mentions ?? []) }),
+  );
 }
 
 /** A resolved outcome that stands as a failure: an executor error, or an explicit failed or not-ok result. */

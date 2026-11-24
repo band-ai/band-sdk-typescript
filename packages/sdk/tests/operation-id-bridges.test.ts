@@ -22,7 +22,7 @@ import { PlatformRuntime } from "../src/runtime";
 import type { SessionConfig } from "../src/runtime/types";
 import { FakeRestApi, tmpRoot } from "./testUtils";
 import { IDENTITY, recordTypes, roomFile } from "./turnJournalSupport";
-import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
+import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
 
 const OWNER = "owner";
 const MENTION = `@[[${AGENT_ID}]]`;
@@ -42,9 +42,11 @@ async function runtimeWithNetworkBackend(
 ) {
   const rooms = options.rooms ?? ["room-1"];
   const platform = BandPlatform.host([person(OWNER)]);
+  /** Each room's inbound turn message, by room. */
+  const inbounds = new Map<string, { room: BandRoom; messageId: string }>();
   for (const roomId of rooms) {
     const room = await platform.room(roomId);
-    room.postBeforeConnect(OWNER, `${MENTION} review ${roomId}`);
+    inbounds.set(roomId, { room, messageId: room.postBeforeConnect(OWNER, `${MENTION} review ${roomId}`) });
   }
   const journalDir = tmpRoot();
   const runtime = new PlatformRuntime({
@@ -58,7 +60,7 @@ async function runtimeWithNetworkBackend(
     if (runtime.state.status === "running") await runtime.stop(KILL);
   });
   await runtime.start(new GenericAdapter(handler));
-  return { platform, runtime, journalDir };
+  return { platform, runtime, journalDir, inbounds };
 }
 
 async function connectClient(backend: BandMcpBackend, name: string): Promise<Client> {
@@ -246,16 +248,18 @@ describe("room-scoped no-reply over the wire", () => {
   it("advertises room_id on band_no_reply, and a keyed decline for the selected room settles that room's turn under the key", async () => {
     const successorReady = createDeferred<TurnTools>();
     const releaseSuccessor = createDeferred<void>();
+    const successorRelayed = createDeferred<boolean>();
     const observed = createDeferred<{ declineError?: boolean; relayed: boolean }>();
     onTestFinished(async () => {
       releaseSuccessor.resolve();
     });
-    const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools, roomId }) => {
+    const { platform, journalDir, inbounds } = await runtimeWithNetworkBackend("http", async ({ tools, roomId }) => {
       if (roomId === "room-2") {
-        // The selected room's turn must stand live for its tools to resolve: it
-        // holds until the caller's decline settles it or the test ends.
+        // The selected room's turn stands live, so its tools resolve, until the
+        // caller's decline settled it; its own closing text then meets the fence.
         successorReady.resolve(tools);
         await releaseSuccessor.promise;
+        successorRelayed.resolve(await relayReply(tools, "room-2 closing text", [OWNER]));
         return;
       }
       const otherTools = await successorReady.promise;
@@ -286,23 +290,22 @@ describe("room-scoped no-reply over the wire", () => {
         observed.resolve({ declineError: Boolean(result.isError), relayed });
       } finally {
         await client.close();
+        releaseSuccessor.resolve();
       }
     }, { rooms: ["room-1", "room-2"] });
     const outcome = await observed.promise;
     expect(outcome.declineError).toBe(false);
-    // The decline stood in the selected room, which is where a keyed call's
-    // closing-text fence lands: room-2's turn is fenced, and nothing posts in it.
+    // The decline stood in the selected room: its turn's closing text is fenced
+    // and nothing posts there, and its inbound settles processed under the key.
+    expect(await successorRelayed.promise).toBe(false);
+    const selected = inbounds.get("room-2")!;
+    expect(await selected.room.outcome(selected.messageId)).toBe("processed");
     expect(postedContents(platform, "room-2")).toEqual([]);
     // The caller's room is unaffected: its closing text stands.
     expect(outcome.relayed).toBe(true);
     expect(postedContents(platform, "room-1")).toEqual(["own closing text"]);
-    // The selected room's durable record stands: its operation settled as a
-    // decline. Its turn.done record lands when that turn's blocked handler is
-    // released at test end, so the three decline records are the assertion.
     const records = await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, "room-2"));
-    expect(records).toContain("op.reserved");
-    expect(records).toContain("op.settled");
-    expect(records).toContain("decline.settled");
+    expect(records).toEqual(expect.arrayContaining(["op.reserved", "op.settled", "decline.settled", "turn.done"]));
   }, 90000);
 
   it("does not advertise room_id on band_no_reply for a single-context server", async () => {
@@ -375,18 +378,24 @@ describe("every bridge's keyed admission", () => {
       }, 90000);
     }
 
-    it(`${kind} without enableOperationIds refuses a keyed send rather than post it unkeyed, and leaves the turn unfenced`, async () => {
-      const outcome = createDeferred<{ isError: boolean; text: string; relayed: boolean } | { error: unknown }>();
+    it(`${kind} without enableOperationIds refuses a keyed send or no-reply rather than run it unkeyed, and leaves the turn unfenced`, async () => {
+      type Refusal = { isError: boolean; text: string };
+      const outcome = createDeferred<{ send: Refusal; decline: Refusal; relayed: boolean } | { error: unknown }>();
       const { platform, journalDir } = await runtimeWithNetworkBackend("http", async ({ tools }) => {
         try {
           const client = await openBridge(kind, { getToolsForRoom: () => tools });
+          const refusal = (result: object): Refusal => ({ isError: Boolean((result as { isError?: unknown }).isError), text: textOf(result) });
           try {
-            const result = await client.callTool({
+            const send = await client.callTool({
               name: "band_send_message",
               arguments: { room_id: "room-1", content: "status update", mentions: [OWNER], operation_id: "same-key" },
             });
+            const decline = await client.callTool({
+              name: "band_no_reply",
+              arguments: { room_id: "room-1", reason: "fyi only", operation_id: "decline-key" },
+            });
             const relayed = await relayReply(tools, "closing text", [OWNER]);
-            outcome.resolve({ isError: Boolean(result.isError), text: textOf(result), relayed });
+            outcome.resolve({ send: refusal(send), decline: refusal(decline), relayed });
           } finally {
             await client.close();
           }
@@ -396,8 +405,9 @@ describe("every bridge's keyed admission", () => {
       });
       const result = await outcome.promise;
       if ("error" in result) throw result.error;
-      expect(result.isError).toBe(true);
-      expect(result.text).toBe(KEYED_ADMISSION_REFUSALS.notServed);
+      const notServed = { isError: true, text: KEYED_ADMISSION_REFUSALS.notServed };
+      expect(result.send).toEqual(notServed);
+      expect(result.decline).toEqual(notServed);
       // Nothing keyed ran: the turn's own closing text stands, and no operation is recorded.
       expect(result.relayed).toBe(true);
       expect(postedContents(platform)).toEqual(["closing text"]);

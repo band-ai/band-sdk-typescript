@@ -3,13 +3,14 @@ import { currentDelivery, toolErrorResult } from "../messageDelivery";
 import { currentTurn } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
-import type { PublicationEngine } from "../journal/publication";
+import { receiptIdOf, type PublicationEngine } from "../journal/publication";
 import { OperationUnsupportedError, mentionInputsAsStrings } from "../journal/operations";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, normalizeMentionHandle, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { fetchContextPage, listAllPeers, readRoomHistoryPage } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
+import { servesOncePost } from "../../client/rest/messageDelivery";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
 import type {
@@ -249,10 +250,8 @@ export class AgentTools implements AgentToolsProtocol {
       },
       stopped: currentTurn()?.stopped,
     });
-    const delivery = currentDelivery();
-    if (delivery?.attributed !== undefined && typeof result.id === "string" && result.id.length > 0) {
-      delivery.attributed.add(result.id);
-    }
+    const receiptId = receiptIdOf(result);
+    if (receiptId !== undefined) currentDelivery()?.attributed.add(receiptId);
     return result;
   }
 
@@ -531,8 +530,7 @@ export class AgentTools implements AgentToolsProtocol {
   /** The single-attempt post, only where the adapter stands it on SDK-controlled transport. */
   private oncePort(): AgentToolsRestApi["createChatMessageOnce"] {
     const rest = this.rest;
-    if (rest.createChatMessageOnce === undefined || (rest.hasOnceCapability !== undefined && !rest.hasOnceCapability())) return undefined;
-    return rest.createChatMessageOnce.bind(rest);
+    return servesOncePost(rest) ? rest.createChatMessageOnce.bind(rest) : undefined;
   }
 
   /** Whether keyed operations can run here: a journal, an inbound they settle, and a single-attempt post. */

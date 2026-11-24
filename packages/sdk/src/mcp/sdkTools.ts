@@ -5,11 +5,13 @@ import { mcpToolNames, MCP_SERVER_NAME } from "../contracts/toolSchemas";
 import type { McpToolRegistration } from "./registrations";
 import { buildZodShape } from "./zod";
 import { AdmissionTransport, type OriginResolver } from "./admission";
+import type { Logger } from "../core/logger";
 
 export function createSdkMcpBridge(
   registrations: McpToolRegistration[],
   portableRegistrations: McpToolRegistration[] = [],
   originResolver?: OriginResolver,
+  logger?: Logger,
 ) {
   const nativeDefinitions = registrations.map(toSdkToolDefinition);
   const portableDefinitions = portableRegistrations.map(toSdkToolDefinition);
@@ -19,7 +21,7 @@ export function createSdkMcpBridge(
   // dispatch, exactly as on the network bridges. Without a resolver the
   // bridge serves no operation ids, and a keyed call is refused rather than
   // posted without its key.
-  serverConfig.instance = withAdmission(serverConfig.instance, originResolver);
+  serverConfig.instance = withAdmission(serverConfig.instance, originResolver, logger);
   for (const definition of portableDefinitions) {
     // Preserve all business arguments for the original custom-tool schema to validate.
     serverConfig.instance.registerTool(definition.name, {
@@ -43,12 +45,13 @@ export function createSdkMcpBridge(
 function withAdmission<T extends { connect(transport: unknown): Promise<void> }>(
   instance: T,
   originResolver: OriginResolver | undefined,
+  logger: Logger | undefined,
 ): T {
   return new Proxy(instance, {
     get(target, property, receiver) {
       if (property === "connect") {
         return (transport: unknown) =>
-          Reflect.get(target, "connect", target).call(target, new AdmissionTransport(transport as ConstructorParameters<typeof AdmissionTransport>[0], originResolver));
+          Reflect.get(target, "connect", target).call(target, new AdmissionTransport(transport as ConstructorParameters<typeof AdmissionTransport>[0], originResolver, logger));
       }
       return Reflect.get(target, property, receiver);
     },

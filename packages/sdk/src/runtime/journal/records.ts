@@ -27,10 +27,21 @@ export const journalHeaderSchema = z.strictObject({
 
 export type JournalHeader = z.infer<typeof journalHeaderSchema>;
 
+/** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
+export function sha256Hex(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** What {@link sha256Hex} returns. */
+export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 /** The tool a keyed operation stood for. */
 const operationKindSchema = z.enum(["send", "decline"]);
 
 const recordBase = z.strictObject({ messageId: z.string(), at: z.number() });
+
+/** Every keyed operation's record names the operation it stands for. */
+const operationRecordBase = recordBase.extend({ operationId: z.string().min(1) });
 
 /**
  * One room's v2 records. Publication records carry the `publicationId` the
@@ -58,40 +69,34 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
    * was admitted: the fingerprint binds the payload it may stand for, and the
    * first caller's inbound is the message whose turn the operation ran in.
    */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.reserved"),
-    operationId: z.string().min(1),
-    fingerprint: z.string().min(1),
+    fingerprint: sha256HexSchema,
     kind: operationKindSchema,
   }),
   /** The first send's resolved recipient identities, as the roster stood when the operation was admitted. */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.recipients"),
-    operationId: z.string().min(1),
     recipients: z.array(z.string()),
   }),
   /** Band acknowledged the keyed send; its stored public result, if any, stands for every later same-id call. */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.settled"),
-    operationId: z.string().min(1),
     receiptId: z.string().optional(),
     resultJson: z.string().optional(),
   }),
   /** The keyed operation definitely did not stand: Band refused the send, or the harness refused the no-reply. */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.refused"),
-    operationId: z.string().min(1),
     reasonText: z.string().optional(),
   }),
   /** Whether Band has the keyed send is unknown: it may already be in the room. */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.unknown"),
-    operationId: z.string().min(1),
   }),
   /** The operation's uncertainty was announced to the operator once. */
-  recordBase.extend({
+  operationRecordBase.extend({
     t: z.literal("op.reported"),
-    operationId: z.string().min(1),
   }),
 ]);
 
@@ -101,14 +106,6 @@ export type JournalRecord = z.infer<typeof journalRecordSchema>;
 export function toLine(record: JournalHeader | JournalRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
-
-/** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
-export function sha256Hex(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-/** What {@link sha256Hex} returns. */
-export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** Whether `error` is a file system error with `code`. */
 export function hasErrorCode(error: unknown, code: string): boolean {

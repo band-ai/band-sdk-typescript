@@ -89,10 +89,10 @@ export interface RoomJournalOptions {
   /** The clock records are stamped by; `Date.now` by default. */
   now?: () => number;
   logger?: Logger;
-  /** Whether the generation already announced the publication, on any of the room's handles. */
-  hasAnnounced?: (publicationId: string) => boolean;
-  /** Registers the publication as announced by the generation, so no later handle announces it again. */
-  markAnnounced?: (publicationId: string) => void;
+  /** Whether the generation already announced what `key` names, on any of the room's handles. */
+  hasAnnounced?: (key: string) => boolean;
+  /** Registers what `key` names as announced by the generation, so no later handle announces it again. */
+  markAnnounced?: (key: string) => void;
 }
 
 export interface UnresolvedPublication {
@@ -103,6 +103,16 @@ export interface UnresolvedPublication {
   /** `pending`: nothing says whether Band has it; `unknown`: whether it has it is uncertain. */
   outcome: "pending" | "unknown";
   at: number;
+}
+
+/** An operation's key in the generation's announced set: namespaced, so an operation id never stands for a publication id. */
+function operationAnnouncementKey(operationId: string): string {
+  return `op:${operationId}`;
+}
+
+/** The key the generation records an unresolved publication's announcement under. */
+function announcementKey(unresolved: UnresolvedPublication): string {
+  return unresolved.operationId === undefined ? unresolved.publicationId : operationAnnouncementKey(unresolved.operationId);
 }
 
 type RefusedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused" }>;
@@ -377,13 +387,12 @@ export class RoomJournal {
       // A publication this generation already announced on another handle of the
       // room stands announced: this handle reopens the same file after one of its
       // earlier handles closed, and the operator hears each recovery once.
-      if (publication === undefined || publication.reported || (this.options.hasAnnounced?.(publicationId) ?? false)) continue;
+      if (publication === undefined || publication.reported || this.announcedByGeneration(publicationId)) continue;
       found.push({ messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
     }
-    // A keyed operation the file left unresolved stands unknown the same way;
-    // its announcement stands in the file, so a reopen does not repeat it.
+    // A keyed operation the file left unresolved stands unknown the same way, announced once per generation alike.
     for (const [operationId, info] of this.unresolvedOps) {
-      if (this.operations.get(operationId)?.reported !== false) continue;
+      if (this.operations.get(operationId)?.reported !== false || this.announcedByGeneration(operationAnnouncementKey(operationId))) continue;
       found.push({ messageId: info.messageId, publicationId: "", operationId, outcome: "unknown", at: info.at });
     }
     if (found.length === 0) return found;
@@ -392,16 +401,20 @@ export class RoomJournal {
       { roomId: this.options.roomId, publications: found.length },
     );
     for (const publication of found) {
-      if (publication.operationId !== undefined) {
-        await this.recordBestEffort({ t: "op.reported", messageId: publication.messageId, operationId: publication.operationId, at: this.now() });
-        continue;
-      }
       // Stands announced across the room's handles before the record is owed, so a
       // handle that reopens the file later does not announce it again.
-      this.options.markAnnounced?.(publication.publicationId);
-      await this.recordBestEffort({ t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() });
+      this.options.markAnnounced?.(announcementKey(publication));
+      await this.recordBestEffort(
+        publication.operationId !== undefined
+          ? { t: "op.reported", messageId: publication.messageId, operationId: publication.operationId, at: this.now() }
+          : { t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() },
+      );
     }
     return found;
+  }
+
+  private announcedByGeneration(key: string): boolean {
+    return this.options.hasAnnounced?.(key) ?? false;
   }
 
   /**

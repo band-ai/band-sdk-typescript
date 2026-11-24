@@ -147,7 +147,7 @@ class Generation implements JournalGeneration {
   private readonly slots = new Map<string, Slot>();
   /** Rooms whose handling stopped: their handle closes once its last hold ends. */
   private readonly released = new Set<string>();
-  /** What this generation announced, per room: one announcement per publication, across the room's handles. */
+  /** What this generation announced, per room: one announcement per publication or operation, across the room's handles. */
   private readonly announced = new Map<string, Set<string>>();
   private closed = false;
   private ownershipReleased = false;
@@ -269,14 +269,14 @@ class Generation implements JournalGeneration {
       roomId,
       now: this.journal.now,
       logger: this.journal.logger,
-      hasAnnounced: (publicationId: string): boolean => (this.announced.get(roomId)?.has(publicationId) ?? false),
-      markAnnounced: (publicationId: string): void => {
+      hasAnnounced: (key: string): boolean => (this.announced.get(roomId)?.has(key) ?? false),
+      markAnnounced: (key: string): void => {
         let ids = this.announced.get(roomId);
         if (!ids) {
           ids = new Set<string>();
           this.announced.set(roomId, ids);
         }
-        ids.add(publicationId);
+        ids.add(key);
       },
     };
   }

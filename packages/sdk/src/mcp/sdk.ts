@@ -2,6 +2,7 @@ import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anth
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import { buildBridgeRegistrations, type McpToolRegistration } from "./registrations";
 import { createSdkMcpBridge } from "./sdkTools";
 
@@ -20,6 +21,8 @@ export interface CreateBandSdkMcpServerOptions {
   multiRoom?: boolean;
   /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean;
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger;
 }
 
 export interface GetSystemPromptContextResult {
@@ -71,7 +74,7 @@ export function createBandSdkMcpServer(
     admissionGuard: options.admissionGuard,
   });
 
-  const bridge = createSdkMcpBridge(registrations, undefined, originResolver);
+  const bridge = createSdkMcpBridge(registrations, undefined, originResolver, options.logger);
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 

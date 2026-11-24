@@ -40,6 +40,13 @@ function toolModelFromSpec(spec: ToolSpec) {
 }
 
 /**
+ * The longest an operation id may be, in encoded UTF-8 bytes. Ids are opaque
+ * to the SDK: they are never trimmed into aliases, interpreted, or used as
+ * file system paths — the bound is a storage guarantee, not a shape rule.
+ */
+export const OPERATION_ID_MAX_BYTES = 256;
+
+/**
  * The optional operation id a send or a no-reply may carry, as the tool's
  * published input carries it: a string, advertised strictly; a supplied id of
  * any other type is refused by validation, and the call's admission fencing
@@ -48,7 +55,7 @@ function toolModelFromSpec(spec: ToolSpec) {
 const OPERATION_ID_PROPERTY = {
   type: "string",
   description:
-    "Optional operation id: an opaque, untrimmed id of at most 256 bytes; it is not a path, a handle, or an alias. " +
+    `Optional operation id: an opaque, untrimmed id of at most ${OPERATION_ID_MAX_BYTES} bytes; it is not a path, a handle, or an alias. ` +
     "A later call with the same id and the same content (or no-reply reason) stands for the same operation: a settled " +
     "operation replays its stored result without a new post, a refused one replays its refusal, and an unknown one stays " +
     "unknown — Band may already hold it, so do not resend it. Changed content or a different tool under the same id is " +

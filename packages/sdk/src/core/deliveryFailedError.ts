@@ -43,10 +43,13 @@ export class DeliveryUnknownError extends DeliveryFailedError {
     super(cause);
     this.name = "DeliveryUnknownError";
     this.keyed = message !== undefined;
-    this.message =
-      message ??
-      "The reply's delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the reply as unknown; a process that reopens the room reports it without reposting it.";
+    this.message = message ?? unknownDeliveryText("reply");
   }
+}
+
+/** The text a delivery that stands unknown is reported under, naming what (`reply`, `operation`) stands unknown. */
+export function unknownDeliveryText(subject: string): string {
+  return `The ${subject}'s delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the ${subject} as unknown; a process that reopens the room reports it without reposting it.`;
 }
 
 /**

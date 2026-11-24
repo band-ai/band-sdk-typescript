@@ -20,7 +20,7 @@ import {
 import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { MESSAGE_SEND_MAX_RETRIES } from "./requestOptions";
-import type { PlatformChatMessage } from "./types";
+import type { ChatMessagingRestApi, PlatformChatMessage } from "./types";
 
 /** The first pause before a resend; each later one doubles. Latency only, never a decision. */
 const MESSAGE_RESEND_BASE_DELAY_MS = MS_PER_SECOND;
@@ -127,6 +127,13 @@ export interface MessageDelivery {
  * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
  * - `uncertain`: a 5xx, no response, or a response that could not be read.
  */
+type OncePort = Pick<ChatMessagingRestApi, "createChatMessageOnce" | "hasOnceCapability">;
+
+/** Whether `api` serves the single-attempt post on SDK-controlled transport: the method stands, and the adapter does not report otherwise. */
+export function servesOncePost<T extends OncePort>(api: T): api is T & Required<Pick<OncePort, "createChatMessageOnce">> {
+  return api.createChatMessageOnce !== undefined && (api.hasOnceCapability?.() ?? true);
+}
+
 export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
 export function classifyFailedAttempt(error: unknown): FailedAttempt {

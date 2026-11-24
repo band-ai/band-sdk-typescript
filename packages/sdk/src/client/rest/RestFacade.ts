@@ -37,6 +37,7 @@ import type {
   RestApi,
 } from "./types";
 import type { ReportActivityOptions, RestRequestOptions } from "./requestOptions";
+import { servesOncePost } from "./messageDelivery";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 
 export { FernRestAdapter } from "./FernRestAdapter";
@@ -102,7 +103,7 @@ export class RestFacade implements RestApi {
 
   /** The wrapped adapter's once capability: a facade never stands one its adapter lacks. */
   public hasOnceCapability(): boolean {
-    return this.api.createChatMessageOnce !== undefined && (this.api.hasOnceCapability?.() ?? true);
+    return servesOncePost(this.api);
   }
 
   public async createChatEvent(

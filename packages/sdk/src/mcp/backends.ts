@@ -1,11 +1,7 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import { mcpToolNames } from "../contracts/toolSchemas";
-import type { BuildRegistrationsOptions, McpToolRegistration } from "./registrations";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  resolveSingleRoomTools,
-} from "./registrations";
+import { buildBridgeRegistrations, type BuildRegistrationsOptions, type McpToolRegistration } from "./registrations";
 import { generateAuthToken } from "./auth";
 import { BandMcpStdioServer } from "./stdio";
 import { BandMcpServer } from "./server";
@@ -41,6 +37,8 @@ export interface CreateBandMcpBackendOptions {
   multiRoom?: boolean;
   /** See `BandMcpServerOptions.admissionGuard`. */
   admissionGuard?: () => boolean;
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger;
 }
 
 export async function createBandMcpBackend(
@@ -65,6 +63,7 @@ export async function createBandMcpBackend(
       enableOperationIds: options.enableOperationIds,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
+    logger: options.logger,
     });
 
     return {
@@ -80,9 +79,7 @@ export async function createBandMcpBackend(
   // call stood on.
   const multiRoom = options.multiRoom !== false;
 
-  const registrations = multiRoom
-    ? buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions)
-    : buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions);
+  const { registrations } = buildBridgeRegistrations(options.getToolsForRoom, multiRoom, registrationOptions);
 
   const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
 
@@ -96,6 +93,7 @@ export async function createBandMcpBackend(
       enableContactTools: true,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
+    logger: options.logger,
     });
     await server.start();
 
@@ -124,6 +122,7 @@ export async function createBandMcpBackend(
       additionalTools: options.additionalTools,
       authToken,
       admissionGuard: options.admissionGuard,
+    logger: options.logger,
     });
     await server.start();
 
@@ -149,6 +148,7 @@ export async function createBandMcpBackend(
     additionalTools: options.additionalTools,
     authToken,
     admissionGuard: options.admissionGuard,
+    logger: options.logger,
   });
   await server.start();
 
