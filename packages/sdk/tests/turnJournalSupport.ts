@@ -155,12 +155,13 @@ export async function recordTypes(file: string): Promise<string[]> {
 /** One agent's journal under `dir`, activated under `identity`; its generation closes when the test ends. */
 export async function generationIn(
   dir: string,
-  options: { identity?: string; agentId?: string; logger?: Logger } = {},
+  options: { identity?: string; agentId?: string; logger?: Logger; now?: () => number } = {},
 ): Promise<{ journals: TurnJournal; generation: JournalGeneration }> {
   const identity = options.identity ?? IDENTITY;
   const agentId = options.agentId ?? AGENT;
   const journals = new TurnJournal(dir, agentId, {
     ...(options.logger !== undefined ? { logger: options.logger } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
   });
   const generation = await journals.activate(identity);
   onTestFinished(() => generation.close());

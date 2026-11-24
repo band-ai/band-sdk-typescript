@@ -712,8 +712,10 @@ export class RoomJournal {
   /**
    * Rewrites the file's whole lines plus `record`, synced, then reopens the
    * append handle. The handle is closed first: a file cannot be renamed over
-   * while it is open on Windows. A line equal to `record` is the refusal's own
-   * failed append, unsynced; the rewrite carries it once.
+   * while it is open on Windows. A last line equal to `record` is the
+   * refusal's own failed append, unsynced (a failed append stops every later
+   * one); the rewrite carries it once. An earlier equal line is a record of
+   * its own, such as a re-admitted operation's earlier release.
    */
   private rewriteRefused(record: UnpostedRecord): Promise<void> {
     return this.writes.run(async () => {
@@ -726,7 +728,8 @@ export class RoomJournal {
         const lines = text.split("\n");
         // Only whole lines stand: a torn tail has no newline after it.
         lines.pop();
-        const kept = lines.filter((whole) => whole !== "" && whole !== line);
+        const kept = lines.filter((whole) => whole !== "");
+        if (kept.at(-1) === line) kept.pop();
         await this.closeHandle();
         try {
           await rewriteFile(this.file, [...kept, line].map((whole) => `${whole}\n`).join(""));

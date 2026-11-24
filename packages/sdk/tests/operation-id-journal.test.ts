@@ -1098,6 +1098,42 @@ describe("a keyed operation whose own records fail to land", () => {
     expect(announced).toEqual([]);
   });
 
+  it.each([
+    ["writes nothing", false],
+    ["writes its line but not its sync", true],
+  ])("lands a re-admitted send's second release through a rewrite that %s, in file order", async (_case, lineLands) => {
+    const dir = tmpRoot();
+    // One instant stamps every record: the two releases are byte-identical lines.
+    const { generation } = await generationIn(dir, { now: () => 1000 });
+    const engine = engineFor(generation);
+    let releases = 0;
+    await interceptJournalAppends(async (original, self, args) => {
+      if (typeof args[0] === "string" && args[0].includes('"t":"op.released"') && ++releases === 2) {
+        if (lineLands) await original.apply(self, args);
+        throw diskFull();
+      }
+      await original.apply(self, args);
+    });
+    const send = (messageId: string) =>
+      engine.publishOperation({
+        operationId: ID,
+        kind: "send",
+        content: "hello",
+        messageId,
+        prepare: sendPreparation(async () => {
+          throw new BandError({ statusCode: 429, body: { error: { code: "rate_limited", message: "slow down", request_id: "req-429" } } });
+        }),
+      });
+    await expect(send("msg-1")).rejects.toMatchObject({ message: "the platform refused the post (HTTP 429)" });
+    await expect(send("msg-1")).rejects.toMatchObject({ message: "the platform refused the post (HTTP 429)" });
+    await generation.close();
+    expect(await recordTypes(roomFile(dir))).toEqual(["op.reserved", "op.recipients", "op.released", "op.recipients", "op.released"]);
+
+    const reopened = await roomJournalIn(dir);
+    expect(reopened.operation(ID)).toMatchObject({ outcome: "pending", recipients: undefined });
+    await reopened.close();
+  });
+
   it("announces an unknown operation once per generation, even when its announcement record fails to land", async () => {
     const { generation } = await generationIn(tmpRoot());
     await engineFor(generation)
