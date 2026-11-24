@@ -10,16 +10,16 @@ import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { PlatformRuntime } from "../src/runtime";
-import { DeliveryUnknownError, DeliveryFailedError } from "../src/core/deliveryFailedError";
+import { DeliveryUnknownError, DeliveryFailedError, isDeliveryUnknownOutput } from "../src/core/deliveryFailedError";
 import { UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/operations";
 import { OperationConflictError, OperationIdError, OperationUnsupportedError } from "../src/runtime/journal/operations";
 import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
-import { RecordLog, tmpRoot } from "./testUtils";
+import { MISSING_REPLY, RecordLog, tmpRoot } from "./testUtils";
 import { openBridge } from "./support/mcpBridges";
 import { hasErrorCode } from "../src/runtime/journal/records";
-import { IDENTITY, holdJournalAppend, landedJournalRecords, recordTypes, roomFile } from "./turnJournalSupport";
+import { IDENTITY, diskFull, holdJournalAppend, interceptJournalAppends, landedJournalRecords, recordTypes, roomFile } from "./turnJournalSupport";
 
 const OWNER = "owner";
 const ROOM = "room-1";
@@ -307,6 +307,25 @@ describe("a keyed operation's process boundary", () => {
     expect(records.filter((record) => record === "op.settled")).toHaveLength(1);
     expect(records.filter((record) => record === "decline.settled")).toHaveLength(2);
     expect(records).toContain("turn.done");
+  });
+
+  it("reports a keyed no-reply whose settlement fails to land as a missing reply: a decline posts nothing Band could hold", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    const journalDir = tmpRoot();
+    await interceptJournalAppends(async (original, self, args) => {
+      if (typeof args[0] === "string" && args[0].includes('"t":"op.settled"')) throw diskFull();
+      await original.apply(self, args);
+    });
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} fyi only`);
+    let declined: unknown;
+    await startProcess(platform, journalDir, async ({ tools }) => {
+      declined = await tools.executeToolCall("band_no_reply", { room_id: ROOM, reason: "fyi only", operation_id: OP_ID });
+    });
+    await settledAs(platform, inbound, "failed");
+    expect(isDeliveryUnknownOutput(declined)).toBe(true);
+    expect(platform.rest.posted.entries.filter((posted) => posted.messageType === "text")).toEqual([]);
+    expect(room.failures).toEqual([MISSING_REPLY]);
   });
 
   it("keeps the original operation settled when a changed payload conflicts: the conflict caller's turn fails, and a same-id retry replays the original result without a post", async () => {

@@ -122,9 +122,8 @@ export function journalingTools<T extends AdapterToolsProtocol>(
       return Promise.reject(new AdmissionGuardError());
     }
     if (admitted) fenceKeyed({ toolName });
-    const effect = BAND_TOOL_EFFECTS[toolName];
-    if (effect === "reply") return reply(call);
-    return effect === "decline" ? observe(call) : call();
+    // Only a reply's unknown may stand in the room; a decline posts nothing, and its keyed fence already bars the relay.
+    return BAND_TOOL_EFFECTS[toolName] === "reply" ? reply(call) : call();
   });
 
   return overrideTools(tools, {
