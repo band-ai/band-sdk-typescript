@@ -4,6 +4,9 @@ import path from "node:path";
 
 import { expect, onTestFinished } from "vitest";
 
+/** How much of a child's stderr a failure carries: enough for its last stack. */
+const STDERR_TAIL_CHARS = 4000;
+
 /** What a child runtime reports over its IPC pipe. */
 interface ChildMessage {
   type: "boundary" | "failure";
@@ -30,6 +33,12 @@ export function startChild(script: string, args: readonly string[]): ChildRun {
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     env: process.env,
   });
+  // Drained so a chatty child never blocks on a full pipe; its tail explains an early exit.
+  let stderrTail = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_CHARS);
+  });
   const seen: string[] = [];
   const waiters: Array<{ name: string; resolve: () => void }> = [];
   const failers: Array<(error: Error) => void> = [];
@@ -54,8 +63,9 @@ export function startChild(script: string, args: readonly string[]): ChildRun {
   });
   child.on("error", fail);
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("exit", (code, signal) => {
-      fail(new Error(`the child exited (${signal ?? code}) before its boundary`));
+    // "close" follows the stdio streams' end, so the stderr tail is complete.
+    child.once("close", (code, signal) => {
+      fail(new Error(`the child exited (${signal ?? code}) before its boundary${stderrTail === "" ? "" : `; stderr:\n${stderrTail}`}`));
       resolve({ code, signal });
     });
   });

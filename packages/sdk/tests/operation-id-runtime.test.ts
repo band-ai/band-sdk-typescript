@@ -544,12 +544,18 @@ describe("a turn with no inbound to settle", () => {
     onTestFinished(async () => {
       if (runtime.state.status === "running") await runtime.stop(KILL);
     });
-    const seen = createDeferred<{ advertised: boolean; keyed: unknown }>();
+    const seen = Promise.withResolvers<{ advertised: boolean; keyed: unknown }>();
+    seen.promise.catch(() => undefined);
     await runtime.start(new GenericAdapter(async ({ tools, message }) => {
       if (!isSyntheticTurn(message)) return;
-      const schema = tools.getToolSchemas("anthropic").find((entry) => (entry as { name?: string }).name === "band_send_message") as { input_schema: { properties: object } };
-      const keyed = await tools.executeToolCall("band_send_message", { content: "hub note", mentions: [`@${OWNER}`], operation_id: "hub-1" });
-      seen.resolve({ advertised: Object.hasOwn(schema.input_schema.properties, "operation_id"), keyed });
+      try {
+        const schema = tools.getToolSchemas("anthropic").find((entry) => (entry as { name?: string }).name === "band_send_message") as { input_schema: { properties: object } };
+        const keyed = await tools.executeToolCall("band_send_message", { content: "hub note", mentions: [`@${OWNER}`], operation_id: "hub-1" });
+        seen.resolve({ advertised: Object.hasOwn(schema.input_schema.properties, "operation_id"), keyed });
+      } catch (error) {
+        // A handler failure fails the test rather than leave it waiting.
+        seen.reject(error);
+      }
     }));
     await platform.transport.emit(agentContactsTopic(AGENT_ID), "contact_added", {
       id: "contact-9", handle: "@alice", name: "Alice", type: "Agent", inserted_at: new Date().toISOString(), is_remote: false,

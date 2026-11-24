@@ -72,7 +72,11 @@ async function fixture(status: 307 | 308): Promise<{ a: Origin; b: Origin }> {
   return { a, b };
 }
 
-/** A Fetch that counts its own origin's traffic and refuses redirects, as the SDK's once client installs. */
+/**
+ * A Fetch that refuses redirects, as the SDK's once client installs. Tests that
+ * use it prove routing and classification only; the production `BandLink`
+ * cases below prove the SDK's own once client refuses the redirect.
+ */
 function redirectErrorFetch(origin: Origin): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -84,9 +88,9 @@ function redirectErrorFetch(origin: Origin): typeof fetch {
 }
 
 /**
- * The two-origin fixture, run through the real generated client: the once client's Fetch
- * refuses the redirect, so the initial POST to origin A lands exactly once and no second
- * POST ever reaches origin B; the legacy client's Fetch follows it, the double post the
+ * The two-origin fixture, run through the real generated client with the test's
+ * redirect-refusing Fetch on the once port: the redirect is classified, never
+ * followed, while the legacy client's Fetch follows it, the double post the
  * keyed contract exists to prevent.
  */
 describe.each([307, 308] as const)("a %i redirect from the post's origin", (status) => {
@@ -173,7 +177,7 @@ describe("the production BandLink's once port, through the operation engine", ()
       const { a, b } = await fixture(status);
       const { generation } = await generationIn(tmpRoot());
       const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, logger: new NoopLogger() });
-      expect(link.rest.hasOnceCapability?.() ?? link.rest.createChatMessageOnce !== undefined, "the production link advertises the once port").toBe(true);
+      expect(link.rest.hasOnceCapability?.(), "the production link advertises the once port").toBe(true);
       const engine = engineFor(generation);
       const roster = new ParticipantRoster();
       roster.add({ id: USER_ID, handle: USER_ID });
@@ -224,7 +228,7 @@ describe("a once port behind a RestFacade", () => {
     expect(serving.hasOnceCapability()).toBe(true);
     expect(unserving.hasOnceCapability()).toBe(false);
     const failure = await serving.createChatMessageOnce(ROOM, { content: "through the facade", mentions: [{ id: USER_ID }] }).catch((error: unknown) => error);
-    // The facade forwards to the once client: one POST, its redirect classified, never followed.
+    // The facade routes to the once client: one POST, its redirect classified, never followed.
     expect(classifyFailedAttempt(failure)).toBe("uncertain");
     expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);

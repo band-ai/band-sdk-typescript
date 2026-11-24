@@ -5,14 +5,13 @@ import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/Gene
 import { createDeferred } from "../src/core/deferred";
 import { relayReply, type TurnTools } from "../src/core/turn";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
-import { createBandMcpBackend } from "../src/mcp/backends";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { PlatformRuntime } from "../src/runtime";
 import type { SessionConfig } from "../src/runtime/types";
 import { FakeRestApi, tmpRoot } from "./testUtils";
 import { IDENTITY, recordTypes, roomFile } from "./turnJournalSupport";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
-import { BRIDGE_KINDS, connectClient, openBridge } from "./support/mcpBridges";
+import { BRIDGE_KINDS, openBridge } from "./support/mcpBridges";
 
 const OWNER = "owner";
 const MENTION = `@[[${AGENT_ID}]]`;
@@ -92,9 +91,8 @@ for (const kind of ["http", "sse"] as const) {
             const successor = await successorReady.promise;
             let active: TurnTools = tools;
             let switchAfterAdmission = false;
-            const backend = await createBandMcpBackend({
-              kind,
-              enableMemoryTools: false, enableOperationIds: true,
+            const client = await openBridge(kind, {
+              enableOperationIds: true,
               multiRoom: false,
               getToolsForRoom: () => {
                 const snapshot = active;
@@ -109,10 +107,6 @@ for (const kind of ["http", "sse"] as const) {
                 return snapshot;
               },
             });
-            onTestFinished(async () => {
-              await backend.stop();
-            });
-            const client = await connectClient(backend, `origin-${kind}`);
             switchAfterAdmission = true;
             const result = await client.callTool({
               name: "band_send_message",
@@ -143,19 +137,14 @@ for (const kind of ["http", "sse"] as const) {
       const done = createDeferred<void>();
       const { platform } = await runtimeWithInbounds(async ({ tools }) => {
         let live = true;
-        const backend = await createBandMcpBackend({
-          kind,
-          enableMemoryTools: false, enableOperationIds: true,
+        const client = await openBridge(kind, {
+          enableOperationIds: true,
           getToolsForRoom: () => {
             resolutions += 1;
             return tools;
           },
           admissionGuard: () => live,
         });
-        onTestFinished(async () => {
-          await backend.stop();
-        });
-        const client = await connectClient(backend, `guard-${kind}`);
         try {
           // The generation retires before any keyed call is admitted.
           live = false;
@@ -189,7 +178,9 @@ describe("room-scoped no-reply over the wire", () => {
     const successorReady = createDeferred<TurnTools>();
     const releaseSuccessor = createDeferred<void>();
     const successorRelayed = createDeferred<boolean>();
-    const observed = createDeferred<{ declineError?: boolean; relayed: boolean }>();
+    const observed = Promise.withResolvers<{ declineError?: boolean; relayed: boolean }>();
+    // Awaited below; a rejection before then must not count as unhandled.
+    observed.promise.catch(() => undefined);
     onTestFinished(async () => {
       releaseSuccessor.resolve();
     });
@@ -203,16 +194,11 @@ describe("room-scoped no-reply over the wire", () => {
         return;
       }
       const otherTools = await successorReady.promise;
-      const backend = await createBandMcpBackend({
-        kind: "http",
-        enableMemoryTools: false, enableOperationIds: true,
+      const client = await openBridge("http", {
+        enableOperationIds: true,
         getToolsForRoom: (otherRoomId: string) =>
           otherRoomId === "room-1" ? tools : otherRoomId === "room-2" ? otherTools : undefined,
       });
-      onTestFinished(async () => {
-        await backend.stop();
-      });
-      const client = await connectClient(backend, "no-reply-room");
       try {
         const listed = await client.listTools();
         const noReply = listed.tools.find((tool) => tool.name === "band_no_reply");
@@ -228,6 +214,9 @@ describe("room-scoped no-reply over the wire", () => {
         });
         const relayed = await relayReply(tools, "own closing text", [OWNER]);
         observed.resolve({ declineError: Boolean(result.isError), relayed });
+      } catch (error) {
+        // A failed assertion in the handler fails the test rather than leave it waiting.
+        observed.reject(error);
       } finally {
         await client.close();
         releaseSuccessor.resolve();
@@ -259,16 +248,7 @@ describe("room-scoped no-reply over the wire", () => {
     outcome.catch(() => undefined);
     await runtimeWithInbounds(async ({ tools }) => {
       try {
-        const backend = await createBandMcpBackend({
-          kind: "http",
-          enableMemoryTools: false, enableOperationIds: true,
-          multiRoom: false,
-          getToolsForRoom: () => tools,
-        });
-        onTestFinished(async () => {
-          await backend.stop();
-        });
-        const client = await connectClient(backend, "no-reply-single");
+        const client = await openBridge("http", { enableOperationIds: true, multiRoom: false, getToolsForRoom: () => tools });
         try {
           const listed = await client.listTools();
           const noReply = listed.tools.find((tool) => tool.name === "band_no_reply");
