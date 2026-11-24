@@ -593,6 +593,55 @@ failed, as ToolNode reports it. Graphs passed as `graph` or `graphFactory`,
 and agents that run their own loop (Letta's server, Claude SDK, Codex, ACP,
 OpenCode), keep their own control flow.
 
+### Keyed operations (`operation_id`)
+
+A caller that passes `operation_id` (a string) to `band_send_message` or
+`band_no_reply` makes that post an *operation*: a durable, named unit whose
+delivery the SDK stands behind across turns and processes. The guarantee is
+**at most one SDK-issued attempt per operation** — never a second POST from
+the SDK — with honest uncertainty where the outcome cannot be known; it is not
+exactly-once delivery.
+
+**Opt-in requirements.** Keyed delivery stands only where the SDK controls the
+post's transport: `BandLink`'s default REST wiring installs a once client with
+the same endpoint and auth as the legacy client, transport retries disabled,
+and a Fetch that refuses redirects. An injected REST client that has no
+SDK-controlled once client refuses keyed posts before any request; the SDK
+never infers the capability from an injected client, and the legacy post's
+redirect policy stands unchanged.
+
+**Outcomes.**
+- *Settled.* The post's answer stood committed: a same-`operation_id` call —
+  in any later process — replays the stored original result and posts nothing.
+- *Refused.* A definite refusal stands stored and is **terminal by design**:
+  the SDK never resets or retries it. A same-id call with a *changed* payload
+  conflicts with the standing operation and is refused before any post.
+- *Unknown.* The attempt's report is ambiguous — a redirect away from the
+  post's origin, an unanswered 5xx, or a process killed between the post and
+  its answer. On restart the SDK announces the operation with its id (a
+  `delivery.unrecorded` report) and never reposts it; a same-id retry joins
+  the stored unknown, and the next turn proceeds. Recovery beyond that is the
+  operator's: the stored unknown is never guessed back into a success.
+
+**Admission.** The field's *presence* — not a parsed value — admits the call.
+A turn in which a keyed call stood is fenced against relaying its closing text
+as an unkeyed replacement, whether the call succeeded, was refused, or carried
+an invalid id; the fence grants no settlement. Invalid ids (non-strings) and
+unsupported contexts are refused without a reservation, a post, or a
+reply/decline credit. Unrelated tools carrying their own `operation_id` are
+not admitted and fence nothing; an omitted id preserves the ordinary,
+unkeyed delivery.
+
+**Room scoping.** A room-scoped tool server advertises `room_id` on both
+tools; a keyed call routes to the room it names, and a keyed `band_no_reply`
+settles the selected room's turn under the key. A roomless (single-context)
+server advertises no `room_id`: its tools serve the bound room.
+
+**Reader compatibility.** The operation's records are strict v2 journal
+additions. A reader that does not know them refuses the journal rather than
+guessing; no format-number bump accompanies these unpublished additions, and
+no reader silently skips an unsupported record.
+
 ### What counts
 
 The tools a turn receives (`TurnTools`, so `tools.turn` is its `Turn`) record

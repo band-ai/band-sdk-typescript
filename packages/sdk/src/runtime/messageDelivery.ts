@@ -8,6 +8,7 @@ import {
   isToolExecutorError,
   toolExecutionError,
   type AdapterToolsProtocol,
+  type SendMessageOptions,
   type ToolExecutorError,
 } from "../contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
@@ -141,14 +142,14 @@ function coalesceSendMessage(
   };
   return {
     executeToolCall: (toolName, args) => {
-      if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
+      if (toolName !== SEND_MESSAGE_TOOL_NAME || isKeyedToolCall(args)) return execute(toolName, args);
       // A joined send-door call rejects; model/MCP callers read a result.
       return admit(args.content, args.mentions, () => execute(toolName, args), "tool").catch(
         (error: unknown) => toolErrorResult(toolName, error),
       );
     },
-    sendMessage: (content, mentions) =>
-      admit(content, mentions, () => sendMessage(content, mentions), "send").then((result) => {
+    sendMessage: (content, mentions, options) =>
+      isKeyedSend(options) ? sendMessage(content, mentions, options) : admit(content, mentions, () => sendMessage(content, mentions), "send").then((result) => {
         // A joined tool-door call resolves its failure; a reply must never take it for a post.
         if (isDeliveryUnknownOutput(result)) {
           throw new DeliveryUnknownError(result, deliveryUnknownPublicationId(result));
@@ -157,6 +158,19 @@ function coalesceSendMessage(
         return result;
       }),
   };
+}
+
+/**
+ * A keyed send stands under its own operation id, not under content: it never
+ * joins a send it does not own, and no unkeyed send joins it. Presence, not
+ * value, decides, as the journal admits it.
+ */
+function isKeyedToolCall(args: Record<string, unknown>): boolean {
+  return Object.hasOwn(args, "operation_id");
+}
+
+function isKeyedSend(options: SendMessageOptions | undefined): boolean {
+  return options !== undefined && Object.hasOwn(options, "operationId");
 }
 
 /**

@@ -1,10 +1,10 @@
 name: CI
 
-# GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
-# during the transition so old or mistakenly targeted work is not left untested.
+# GitHub Flow: `main` is the canonical trunk. Pull requests are validated
+# against any base, including stacked branches under promotion, so a stacked
+# PR is never left unverified while its base is not yet merged.
 on:
   pull_request:
-    branches: [main, dev]
     types: [opened, synchronize, reopened, ready_for_review]
   # The merge queue runs the required `ci-status` on each merge group, and `main`
   # fast-forwards to the exact commit it validated, so a push to `main` has

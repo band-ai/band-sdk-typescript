@@ -25,6 +25,7 @@ import type {
   PaginatedList,
   ParticipantRecord,
   PeerRecord,
+  ToolOperationResult,
 } from "../src/contracts/dtos";
 import type {
   ControlObserver,
@@ -658,6 +659,13 @@ export class FakeRestApi implements RestApi {
   ) {
     return this.overrides.createChatMessage?.(chatId, message, options) ?? {};
   }
+
+  /** Stood by a subclass that fakes the single-attempt post; absent on the base fake. */
+  public createChatMessageOnce?: (
+    chatId: string,
+    message: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[1],
+    options?: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[2],
+  ) => Promise<ToolOperationResult>;
 
   public async createChatEvent(
     chatId: string,

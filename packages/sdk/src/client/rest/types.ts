@@ -116,6 +116,33 @@ export interface ChatMessagingRestApi {
     },
     options?: MessagePostOptions,
   ): Promise<ToolOperationResult>;
+  /**
+   * The single-attempt once port a keyed operation needs: at most one SDK-
+   * issued HTTP POST, transport retries disabled, redirects refused, and no
+   * read-back or fingerprint inference of success. Absent when the backend
+   * cannot honor that contract: keyed operations are refused rather than
+   * delivered over the retrying `createChatMessage` path.
+   */
+  createChatMessageOnce?(
+    chatId: string,
+    message: {
+      content: string;
+      messageType?: string;
+      metadata?: MetadataMap;
+      mentions?: MentionReference[];
+    },
+    options?: RestRequestOptions,
+  ): Promise<ToolOperationResult>;
+  /**
+   * Whether this adapter can stand the once port on transport the SDK
+   * controls. An adapter whose client is merely an injected generated
+   * client — one that inherits the `createChatMessageOnce` method without
+   * the SDK's controlled once client — reports `false`, and a keyed
+   * operation is refused before any record rather than recorded and then
+   * refused over it. Adapters that do not report stand on the presence of
+   * `createChatMessageOnce`.
+   */
+  hasOnceCapability?(): boolean;
   createChatEvent(
     chatId: string,
     event: {

@@ -30,6 +30,7 @@ import {
   sendFailureViaEvent,
   type AdapterToolsProtocol,
   type AgentToolsCapabilities,
+  type SendMessageOptions,
 } from "../../contracts/protocols";
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
@@ -93,7 +94,15 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   public async sendMessage(
     content: string,
     mentions?: MentionInput,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
+    // A keyed send names a durable operation the contact-callback context
+    // cannot stand: it holds no turn journal, so nothing could reserve,
+    // settle, or replay it. It is refused before any room, endpoint, or
+    // transport is consulted — the post never goes out.
+    if (options?.operationId !== undefined) {
+      throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
+    }
     const roomId = requireRoomId(this.roomId, "sendMessage");
     if (!this.rest.createChatMessage) {
       throw new UnsupportedFeatureError("Message sending is not available in current REST adapter");
@@ -288,6 +297,11 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
       case "band_send_message":
+        // The refusal stands on the field's presence, before any endpoint or
+        // room is resolved: a keyed call earns no post and no credit here.
+        if (Object.hasOwn(toolArgs, "operation_id")) {
+          throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
+        }
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
@@ -299,6 +313,12 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           toolArgs.metadata as MetadataMap | undefined,
         );
       case NO_REPLY_TOOL_NAME:
+        // The decline's result is itself the turn's credit: a keyed decline
+        // could not be recorded in this context, so it is refused before the
+        // credit stands.
+        if (Object.hasOwn(toolArgs, "operation_id")) {
+          throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
+        }
         return NO_REPLY_RESULT;
       case "band_get_participants":
         return this.getParticipants();

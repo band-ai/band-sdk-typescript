@@ -79,17 +79,23 @@ export async function journalRewriteFaults(): Promise<{ failNext: (matches: (tex
   };
 }
 
-/** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. */
-export async function holdJournalAppend(matches: (line: string) => boolean): Promise<{ entered: Promise<void>; release: () => void }> {
+/** Holds the first journal append whose line matches `matches` until `release()`; the others write as usual. With `drop: true`, the held append never writes when released: it stands dropped, as a write in a process that dies before its durability lands. */
+export async function holdJournalAppend(
+  matches: (line: string) => boolean,
+  options: { drop?: boolean } = {},
+): Promise<{ entered: Promise<void>; release: () => void }> {
   const entered = createDeferred();
   const released = createDeferred();
   onTestFinished(() => released.resolve());
   let held = false;
-  await interceptJournalAppends(async (original, self, args) => {
+  await interceptJournalAppends(async (original, self, args: unknown[]) => {
     if (!held && typeof args[0] === "string" && matches(args[0])) {
       held = true;
       entered.resolve();
       await released.promise;
+      if (options.drop) {
+        throw new Error("the journal write stood dropped: the process died before it landed");
+      }
     }
     return original.apply(self, args);
   });

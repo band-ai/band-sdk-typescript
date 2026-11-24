@@ -50,6 +50,46 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
   recordBase.extend({ t: z.literal("turn.done") }),
   /** The publication's uncertainty was announced to the operator once. */
   recordBase.extend({ t: z.literal("publication.reported"), publicationId: z.string().min(1) }),
+  /**
+   * An explicit keyed operation (a send or a no-reply with an operation id)
+   * was admitted: the fingerprint binds the payload it may stand for, and the
+   * first caller's inbound is the message whose turn the operation ran in.
+   */
+  recordBase.extend({
+    t: z.literal("op.reserved"),
+    operationId: z.string().min(1),
+    fingerprint: z.string().min(1),
+    kind: z.enum(["send", "decline"]),
+  }),
+  /** The first send's resolved recipient identities, as the roster stood when the operation was admitted. */
+  recordBase.extend({
+    t: z.literal("op.recipients"),
+    operationId: z.string().min(1),
+    recipients: z.array(z.string()),
+  }),
+  /** Band acknowledged the keyed send; its stored public result, if any, stands for every later same-id call. */
+  recordBase.extend({
+    t: z.literal("op.settled"),
+    operationId: z.string().min(1),
+    receiptId: z.string().optional(),
+    resultJson: z.string().optional(),
+  }),
+  /** The keyed operation definitely did not stand: Band refused the send, or the harness refused the no-reply. */
+  recordBase.extend({
+    t: z.literal("op.refused"),
+    operationId: z.string().min(1),
+    reasonText: z.string().optional(),
+  }),
+  /** Whether Band has the keyed send is unknown: it may already be in the room. */
+  recordBase.extend({
+    t: z.literal("op.unknown"),
+    operationId: z.string().min(1),
+  }),
+  /** The operation's uncertainty was announced to the operator once. */
+  recordBase.extend({
+    t: z.literal("op.reported"),
+    operationId: z.string().min(1),
+  }),
 ]);
 
 export type JournalRecord = z.infer<typeof journalRecordSchema>;
@@ -96,6 +136,9 @@ export function compactingCopyTarget(name: string): string | undefined {
 
 /** The agent's exclusive ownership lock file under its journal directory. */
 export const OWNERSHIP_FILE = ".ownership.sqlite";
+
+/** What a keyed operation stood for: the tool that sent it, and its content or the no-reply's reason. */
+export type OperationKind = "send" | "decline";
 
 /** The directory component of an identity in the journal's file layout. */
 export function identityDirectoryComponent(identity: string): string {

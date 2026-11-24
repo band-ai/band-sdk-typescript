@@ -4,14 +4,23 @@ import { z } from "zod";
 import { mcpToolNames, MCP_SERVER_NAME } from "../contracts/toolSchemas";
 import type { McpToolRegistration } from "./registrations";
 import { buildZodShape } from "./zod";
+import { AdmissionTransport, type OriginResolver } from "./admission";
 
 export function createSdkMcpBridge(
   registrations: McpToolRegistration[],
   portableRegistrations: McpToolRegistration[] = [],
+  originResolver?: OriginResolver,
 ) {
   const nativeDefinitions = registrations.map(toSdkToolDefinition);
   const portableDefinitions = portableRegistrations.map(toSdkToolDefinition);
   const serverConfig = createSdkMcpServer({ name: MCP_SERVER_NAME, tools: nativeDefinitions });
+  // The harness connects this instance to its own in-process transport; the
+  // SDK-owned decorator stands between that transport and the framework's
+  // dispatch, so a keyed call is fenced and pinned before any validation,
+  // exactly as on the network bridges.
+  if (originResolver !== undefined) {
+    serverConfig.instance = withAdmission(serverConfig.instance, originResolver);
+  }
   for (const definition of portableDefinitions) {
     // Preserve all business arguments for the original custom-tool schema to validate.
     serverConfig.instance.registerTool(definition.name, {
@@ -25,6 +34,26 @@ export function createSdkMcpBridge(
     allowedTools: mcpToolNames(new Set(toolDefinitions.map((definition) => definition.name))),
     toolDefinitions,
   };
+}
+
+/**
+ * `instance` with its `connect` standing behind the admission decorator: the
+ * harness's transport is wrapped before it reaches the framework, and every
+ * other member of the real instance behaves exactly as it does unwrapped.
+ */
+function withAdmission<T extends { connect(transport: unknown): Promise<void> }>(
+  instance: T,
+  originResolver: OriginResolver,
+): T {
+  return new Proxy(instance, {
+    get(target, property, receiver) {
+      if (property === "connect") {
+        return (transport: unknown) =>
+          Reflect.get(target, "connect", target).call(target, new AdmissionTransport(transport as ConstructorParameters<typeof AdmissionTransport>[0], originResolver));
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
 }
 
 function toSdkToolDefinition(registration: McpToolRegistration) {
