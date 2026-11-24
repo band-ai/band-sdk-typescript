@@ -20,6 +20,8 @@ export interface BandMcpSseServerOptions {
   port?: number;
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
@@ -71,6 +73,7 @@ export class BandMcpSseServer {
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     }

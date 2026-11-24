@@ -160,7 +160,7 @@ describe("a keyed operation's process boundary", () => {
     };
 
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-restart-1", version: "1.0.0" });
@@ -200,7 +200,7 @@ describe("a keyed operation's process boundary", () => {
         await relayReply(tools, "next answered", [OWNER]);
         return;
       }
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-restart-2", version: "1.0.0" });
@@ -250,7 +250,7 @@ describe("a keyed operation's process boundary", () => {
     // the in-flight operation, so the kill's drain completes.
     const held = await holdJournalAppend((line) => line.includes('"op.recipients"'), { drop: true });
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-pending-1", version: "1.0.0" });
@@ -276,7 +276,7 @@ describe("a keyed operation's process boundary", () => {
     let retryIsError: boolean | undefined;
     let retryText = "";
     const second = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-pending-2", version: "1.0.0" });
@@ -599,7 +599,7 @@ describe("the MCP bridge's keyed admission", () => {
         otherRelayed = await relayReply(tools, "other room answered", [OWNER]);
         return;
       }
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-mcp-1", version: "1.0.0" });
@@ -637,7 +637,7 @@ describe("the MCP bridge's keyed admission", () => {
     const outcomes: Array<{ thrown: boolean; isError: boolean; text: string }> = [];
     let relayed: boolean | undefined;
     await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-mcp-2", version: "1.0.0" });
@@ -702,7 +702,7 @@ describe("the MCP bridge's keyed admission", () => {
     let seen: Record<string, unknown> | undefined;
     let relayed = true;
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => tools });
+      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       await bridge.serverConfig.instance.connect(serverTransport);
       const client = new Client({ name: "op-mcp-3", version: "1.0.0" });
@@ -744,7 +744,7 @@ describe("the MCP bridge's keyed admission", () => {
     await startProcess(platform, journalDir, async ({ tools }) => {
       // The bridge resolves each room to its own tools: room-2 has no live turn here.
       const bridge = createBandSdkMcpServer({
-        enableMemoryTools: false,
+        enableMemoryTools: false, enableOperationIds: true,
         getToolsForRoom: (roomId: string) => (roomId === ROOM ? tools : undefined),
       });
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -792,7 +792,7 @@ describe("the MCP bridge's keyed admission", () => {
       // A host tool that is not the canonical send or no-reply carries the
       // field on its own: it is not admitted, and the turn's reply stands.
       const bridge = createBandSdkMcpServer({
-        enableMemoryTools: false,
+        enableMemoryTools: false, enableOperationIds: true,
         getToolsForRoom: () => tools,
         additionalTools: [
           {

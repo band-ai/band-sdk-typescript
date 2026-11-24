@@ -26,6 +26,8 @@ export interface BandMcpServerOptions {
   enableMemoryTools?: boolean;
   /** Enable board and task tools. */
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   /** Enable contact tools. */
   enableContactTools?: boolean;
   /** Additional MCP tool registrations to expose alongside the built-in tools. */
@@ -86,6 +88,7 @@ export class BandMcpServer {
       execute: options.execute,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     };

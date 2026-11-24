@@ -47,6 +47,8 @@ export interface BandMcpStdioServerOptions {
   name?: string;
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /** With a `tools` resolver, what the tools outside `ROOM_TOOL_NAMES` run on, registered without `room_id`. */
@@ -84,6 +86,7 @@ export class BandMcpStdioServer {
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
       roomlessTools: options.roomlessTools,

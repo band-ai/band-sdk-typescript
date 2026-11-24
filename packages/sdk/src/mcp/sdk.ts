@@ -14,6 +14,8 @@ import { buildOriginResolver } from "./admission";
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
@@ -73,6 +75,7 @@ export function createBandSdkMcpServer(
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
+    enableOperationIds: options.enableOperationIds,
     enableContactTools: true,
     additionalTools: options.additionalTools,
   };

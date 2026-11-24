@@ -15,6 +15,7 @@ import {
   TASK_TOOL_NAMES,
   ROOM_TOOL_NAMES,
   TOOL_MODELS,
+  toolInputProperties,
   getToolDescription,
 } from "../contracts/toolSchemas";
 import { buildZodShape } from "./zod";
@@ -62,6 +63,13 @@ export interface BuildRegistrationsOptions {
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
   enableContactTools?: boolean;
+  /**
+   * Advertise the optional `operation_id` on `band_send_message` and
+   * `band_no_reply`. Enable it only when every room the tools resolve to
+   * journals its replies and posts through the single-attempt transport;
+   * elsewhere a keyed call is refused.
+   */
+  enableOperationIds?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
    * What room-scoped registrations run the tools outside `ROOM_TOOL_NAMES` on;
@@ -237,7 +245,7 @@ export function buildRoomScopedRegistrations(
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
   const { roomlessTools } = options;
-  const registrations = toolSchemas(resolveToolNames(options)).map((tool) =>
+  const registrations = toolSchemas(resolveToolNames(options), options.enableOperationIds ?? false).map((tool) =>
     roomlessTools && !ROOM_TOOL_NAMES.has(tool.name)
       ? bindTool(tool, roomlessTools)
       : scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
@@ -331,7 +339,7 @@ export function buildSingleContextRegistrations(
   tools: AdapterToolsProtocol,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
-  const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
+  const registrations = toolSchemas(resolveToolNames(options), options.enableOperationIds ?? false).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
     registrations.push(...bindHostTools(options.additionalTools, tools));
@@ -378,7 +386,7 @@ function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
   return names;
 }
 
-function toolSchemas(toolNames: Set<string>): McpToolSchema[] {
+function toolSchemas(toolNames: Set<string>, operationIds: boolean): McpToolSchema[] {
   const schemas: McpToolSchema[] = [];
   for (const toolName of toolNames) {
     const model = TOOL_MODELS[toolName as keyof typeof TOOL_MODELS];
@@ -386,7 +394,7 @@ function toolSchemas(toolNames: Set<string>): McpToolSchema[] {
       schemas.push({
         name: toolName,
         description: getToolDescription(toolName),
-        inputSchema: { type: "object", properties: { ...model.properties }, required: [...model.required] },
+        inputSchema: { type: "object", properties: { ...toolInputProperties(toolName, model.properties, operationIds) }, required: [...model.required] },
       });
     }
   }

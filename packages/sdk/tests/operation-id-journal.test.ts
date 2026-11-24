@@ -17,6 +17,9 @@ import {
 } from "../src/runtime/journal/operations";
 import { PublicationEngine, unknownDeclineMessage, unknownOperationMessage } from "../src/runtime/journal/publication";
 import { tmpRoot } from "./testUtils";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { buildSingleContextRegistrations } from "../src/mcp/registrations";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { ROOM, diskFull, generationIn, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
 
 /** Band's answers, the way the generated client reports them. */
@@ -897,5 +900,40 @@ describe("the operation index a restarted file rebuilds", () => {
     const recheck = await reopened.checkAndReserveOperation({ operationId: "op-never-posted", fingerprint, kind: "send", messageId: "msg-1" });
     expect(recheck.status).toBe("reserved");
     await reopened.close();
+  });
+});
+describe("where operation_id is advertised", () => {
+  const advertised = (schemas: Array<{ name?: string; input_schema?: { properties: Record<string, unknown> } }>) =>
+    schemas.filter((schema) => schema.input_schema !== undefined && "operation_id" in schema.input_schema.properties).map((schema) => schema.name).sort();
+  const rest = (once: boolean) =>
+    ({
+      createChatMessage: async () => ({ id: "m1" }),
+      ...(once ? { createChatMessageOnce: async () => ({ id: "m1" }), hasOnceCapability: () => true } : {}),
+    }) as never;
+
+  it("offers a model no operation_id unless its room journals replies and posts single-attempt", async () => {
+    const { generation } = await generationIn(tmpRoot());
+    const publication = engineFor(generation);
+    try {
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true) }).getAnthropicToolSchemas())).toEqual([]);
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(false), publication }).getAnthropicToolSchemas())).toEqual([]);
+      expect(advertised(new AgentTools({ roomId: ROOM, rest: rest(true), publication }).getAnthropicToolSchemas())).toEqual([
+        NO_REPLY_TOOL_NAME,
+        SEND_MESSAGE_TOOL_NAME,
+      ]);
+    } finally {
+      await generation.close();
+    }
+  });
+
+  it("offers an MCP client operation_id only when the server enables it", () => {
+    const tools = new AgentTools({ roomId: ROOM, rest: rest(true) }).getAdapterTools();
+    const keyed = (enableOperationIds?: boolean) =>
+      buildSingleContextRegistrations(tools, { enableOperationIds })
+        .filter((registration) => "operation_id" in registration.inputSchema.properties)
+        .map((registration) => registration.name)
+        .sort();
+    expect(keyed()).toEqual([]);
+    expect(keyed(true)).toEqual([NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME]);
   });
 });

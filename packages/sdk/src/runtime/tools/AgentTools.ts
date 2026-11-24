@@ -63,7 +63,8 @@ import {
   NO_REPLY_RESULT,
   NO_REPLY_TOOL_NAME,
   getToolDescription,
-  TOOL_MODELS
+  TOOL_MODELS,
+  toolInputProperties,
 } from "../../contracts/toolSchemas";
 import {
   expectedList,
@@ -225,19 +226,10 @@ export class AgentTools implements AgentToolsProtocol {
     if (this.publication === undefined || messageId === undefined) {
       throw new OperationUnsupportedError("no-journal");
     }
-    // The once port is advertised only where the adapter stands it on
-    // SDK-controlled transport: a client that merely inherits the method — an
-    // injected generated client without the SDK's controlled once client —
-    // cannot be verified to refuse redirects and retries, and a keyed
-    // operation is refused before any record rather than recorded and then
-    // refused over it.
-    if (
-      this.rest.createChatMessageOnce === undefined ||
-      (this.rest.hasOnceCapability !== undefined && !this.rest.hasOnceCapability())
-    ) {
+    const once = this.oncePort();
+    if (once === undefined) {
       throw new OperationUnsupportedError("no-once-transport");
     }
-    const once = this.rest.createChatMessageOnce.bind(this.rest);
     const result = await this.publication.publishOperation({
       operationId,
       kind: "send",
@@ -533,6 +525,23 @@ export class AgentTools implements AgentToolsProtocol {
     }
   }
 
+  /**
+   * The single-attempt post, when the adapter stands it on SDK-controlled
+   * transport: a client that merely inherits the method — an injected client
+   * without the SDK's controlled once client — cannot be verified to refuse
+   * redirects and retries, so a keyed operation is refused before any record.
+   */
+  private oncePort(): AgentToolsRestApi["createChatMessageOnce"] {
+    const rest = this.rest;
+    if (rest.createChatMessageOnce === undefined || (rest.hasOnceCapability !== undefined && !rest.hasOnceCapability())) return undefined;
+    return rest.createChatMessageOnce.bind(rest);
+  }
+
+  /** Whether keyed operations can run here: a journal to record them and a single-attempt post. */
+  private servesOperations(): boolean {
+    return this.publication !== undefined && this.oncePort() !== undefined;
+  }
+
   private isToolExposed(name: string, includeMemory: boolean): boolean {
     if (TASK_TOOL_NAMES.has(name)) return this.capabilities.tasks;
     if (MEMORY_TOOL_NAMES.has(name)) return includeMemory && this.capabilities.memory;
@@ -543,17 +552,19 @@ export class AgentTools implements AgentToolsProtocol {
 
   public getToolSchemas(format: "openai" | "anthropic", options?: { includeMemory?: boolean }): ToolSchemaRecord[] {
     const includeMemory = options?.includeMemory ?? false;
+    const operationIds = this.servesOperations();
 
     const tools = Object.entries(TOOL_MODELS)
       .filter(([name]) => this.isToolExposed(name, includeMemory))
       .map(([name, model]) => {
+        const properties = toolInputProperties(name, model.properties, operationIds);
         if (format === "anthropic") {
           return {
             name,
             description: getToolDescription(name),
             input_schema: {
               type: "object",
-              properties: model.properties,
+              properties,
               required: model.required,
             },
           };
@@ -566,7 +577,7 @@ export class AgentTools implements AgentToolsProtocol {
             description: getToolDescription(name),
             parameters: {
               type: "object",
-              properties: model.properties,
+              properties,
               required: model.required,
             },
           },

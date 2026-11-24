@@ -602,8 +602,12 @@ delivery the SDK stands behind across turns and processes. The guarantee is
 the SDK — with honest uncertainty where the outcome cannot be known; it is not
 exactly-once delivery.
 
-**Opt-in requirements.** Keyed delivery stands only where the SDK controls the
-post's transport: `BandLink`'s default REST wiring installs a once client with
+**Opt-in requirements.** Models see `operation_id` only where it can be served:
+`AgentTools` advertises it when the room journals replies (`journalDir`) and
+posts through the single-attempt client, and MCP servers advertise it only with
+`enableOperationIds` (default off), which you should set only when every room
+the server resolves meets both. Keyed delivery stands only where the SDK
+controls the post's transport: `BandLink`'s default REST wiring installs a once client with
 the same endpoint and auth as the legacy client, transport retries disabled,
 and a Fetch that refuses redirects. An injected REST client that has no
 SDK-controlled once client refuses keyed posts before any request; the SDK

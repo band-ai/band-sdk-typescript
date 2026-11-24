@@ -29,6 +29,8 @@ export interface CreateBandMcpBackendOptions {
   kind: BandMcpBackendKind;
   enableMemoryTools: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
@@ -52,6 +54,7 @@ export async function createBandMcpBackend(
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
+    enableOperationIds: options.enableOperationIds,
     enableContactTools: true,
     additionalTools: options.additionalTools,
   };
@@ -64,6 +67,7 @@ export async function createBandMcpBackend(
       multiRoom: options.multiRoom,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
     });
@@ -94,6 +98,7 @@ export async function createBandMcpBackend(
       multiRoom,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: true,
       additionalTools: options.additionalTools,
       admissionGuard: options.admissionGuard,
@@ -120,6 +125,7 @@ export async function createBandMcpBackend(
       multiRoom,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: true,
       additionalTools: options.additionalTools,
       authToken,
@@ -144,6 +150,7 @@ export async function createBandMcpBackend(
     multiRoom,
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
+    enableOperationIds: options.enableOperationIds,
     enableContactTools: true,
     additionalTools: options.additionalTools,
     authToken,

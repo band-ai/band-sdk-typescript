@@ -121,7 +121,7 @@ for (const kind of ["http", "sse"] as const) {
             let switchAfterAdmission = false;
             const backend = await createBandMcpBackend({
               kind,
-              enableMemoryTools: false,
+              enableMemoryTools: false, enableOperationIds: true,
               multiRoom: false,
               getToolsForRoom: () => {
                 const snapshot = active;
@@ -171,7 +171,7 @@ for (const kind of ["http", "sse"] as const) {
         let live = true;
         const backend = await createBandMcpBackend({
           kind,
-          enableMemoryTools: false,
+          enableMemoryTools: false, enableOperationIds: true,
           getToolsForRoom: () => tools,
           admissionGuard: () => live,
         });
@@ -225,7 +225,7 @@ describe("room-scoped no-reply over the wire", () => {
       const otherTools = await successorReady.promise;
       const backend = await createBandMcpBackend({
         kind: "http",
-        enableMemoryTools: false,
+        enableMemoryTools: false, enableOperationIds: true,
         getToolsForRoom: (otherRoomId: string) =>
           otherRoomId === "room-1" ? tools : otherRoomId === "room-2" ? otherTools : undefined,
       });
@@ -282,7 +282,7 @@ describe("room-scoped no-reply over the wire", () => {
       try {
         const backend = await createBandMcpBackend({
           kind: "http",
-          enableMemoryTools: false,
+          enableMemoryTools: false, enableOperationIds: true,
           multiRoom: false,
           getToolsForRoom: () => tools,
         });

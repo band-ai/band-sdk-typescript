@@ -54,13 +54,25 @@ const OPERATION_ID_PROPERTY = {
     "refused. A different id names a different operation.",
 } as const;
 
-/** `model` with the optional `operation_id` input a keyed send or no-reply may carry. */
-function withOperationId<T extends { properties: Record<string, unknown> }>(model: T): T {
-  return { ...model, properties: { ...model.properties, operation_id: OPERATION_ID_PROPERTY } };
+/** The tools that take an optional `operation_id`, advertised only where keyed operations are served. */
+export const KEYED_OPERATION_TOOL_NAMES: ReadonlySet<string> = new Set([SEND_MESSAGE_TOOL_NAME, NO_REPLY_TOOL_NAME]);
+
+/**
+ * `name`'s published input properties: a keyed-operation tool gains the
+ * optional `operation_id` only when `operationIds` says the runtime serves it
+ * (a journal and the single-attempt transport); otherwise a model would be
+ * offered an input whose every use is refused.
+ */
+export function toolInputProperties(
+  name: string,
+  properties: Record<string, unknown>,
+  operationIds: boolean,
+): Record<string, unknown> {
+  return operationIds && KEYED_OPERATION_TOOL_NAMES.has(name) ? { ...properties, operation_id: OPERATION_ID_PROPERTY } : properties;
 }
 
 export const TOOL_MODELS = {
-  band_send_message: withOperationId({
+  band_send_message: {
     description:
       "Send a message to the chat room. " +
       "Use this to respond to users or other agents. Messages require at least one @mention " +
@@ -83,7 +95,7 @@ export const TOOL_MODELS = {
       },
     },
     required: ["content", "mentions"],
-  }),
+  },
   band_send_event: {
     description:
       "Send an event to the chat room. No mentions required. " +
@@ -108,7 +120,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "message_type"],
   },
-  [NO_REPLY_TOOL_NAME]: withOperationId(toolModelFromSpec(noReplyTool())),
+  [NO_REPLY_TOOL_NAME]: toolModelFromSpec(noReplyTool()),
   band_add_participant: {
     description:
       "Add a participant (agent or user) to the chat room by name. " +
