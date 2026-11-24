@@ -1,6 +1,7 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { BAND_TOOL_EFFECTS } from "../../contracts/toolSchemas";
 import { overrideTools } from "../../core/overrideTools";
+import { Serializer } from "../../core/singleFlight";
 import { bandToolOverrides } from "../../core/turn";
 import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
@@ -15,10 +16,11 @@ import { JournalPublicationError } from "./errors";
  *   any post, so a reply a turn lost cannot still go out;
  * - a classified delivery-unknown (thrown, or surfaced as a tool-executor
  *   error) fences this turn: its later replies and closing text are refused
- *   rather than posted beside a reply Band may hold. The fence stands on the
- *   wrapper itself — the adapter's turn object reads it through
- *   `unknownDeliveryFenced` — so a late result fences the turn it ran on and
- *   cannot reach a successor, which wraps its own tools.
+ *   rather than posted beside a reply Band may hold. Replies run one at a
+ *   time, so one made while another is in flight waits for its outcome. The
+ *   fence stands on the wrapper itself — the adapter's turn object reads it
+ *   through `unknownDeliveryFenced` — so a late result fences the turn it ran
+ *   on and cannot reach a successor, which wraps its own tools.
  *
  * The durable intent and settlement themselves live in the runtime's
  * publication engine, which the context's tools already carry; this wrapper
@@ -32,32 +34,41 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   // Set once this turn had a reply whose delivery stands unknown; the adapter's
   // turn reads it through the wrapper it runs on.
   let fenced = false;
+  // A turn's replies post one at a time, so each sees the fence the one before
+  // it may have raised rather than post beside a reply still in doubt.
+  const replies = new Serializer();
 
-  const wrapCall = (call: () => Promise<unknown>, effect: "reply" | "decline"): Promise<unknown> => {
-    const refused = cutShort(stopped);
-    if (refused) throw refused;
-    if (fenced && effect === "reply") {
+  const observe = (call: () => Promise<unknown>): Promise<unknown> => call().then(
+    (result) => {
+      if (isDeliveryUnknownOutput(result)) {
+        fenced = true;
+      }
+      return result;
+    },
+    (error: unknown) => {
+      if (error instanceof DeliveryUnknownError) {
+        fenced = true;
+      } else {
+        logger?.debug("a turn's reply delivery failed", { error });
+      }
+      throw error;
+    },
+  );
+
+  const reply = (call: () => Promise<unknown>): Promise<unknown> => replies.run(() => {
+    if (fenced) {
       throw new JournalPublicationError(
         "This turn already has a reply whose delivery is unknown; a replacement is refused rather than posted beside it",
         "fenced",
       );
     }
-    return call().then(
-      (result) => {
-        if (isDeliveryUnknownOutput(result)) {
-          fenced = true;
-        }
-        return result;
-      },
-      (error: unknown) => {
-        if (error instanceof DeliveryUnknownError) {
-          fenced = true;
-        } else {
-          logger?.debug("a turn's reply delivery failed", { error });
-        }
-        throw error;
-      },
-    );
+    return observe(call);
+  });
+
+  const wrapCall = (call: () => Promise<unknown>, effect: "reply" | "decline"): Promise<unknown> => {
+    const refused = cutShort(stopped);
+    if (refused) throw refused;
+    return effect === "reply" ? reply(call) : observe(call);
   };
 
   const overrides = bandToolOverrides(tools, (toolName, call) => {

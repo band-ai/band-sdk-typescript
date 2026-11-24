@@ -187,6 +187,33 @@ describe("migrateTurnJournals apply", () => {
     ).rejects.toMatchObject({ kind: "unsupported" });
   });
 
+  it("migrates a v1 journal whose last append a crash tore: the torn tail holds no authority", async () => {
+    const dir = tmpRoot();
+    const whole = `${JSON.stringify({ t: "turn.done", messageId: "done", at: 1 })}\n`;
+    const torn = JSON.stringify({ t: "reply.intent", messageId: "cut", at: 2 }).slice(0, 10);
+    const legacyDir = legacyAgentDir(dir, AGENT);
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(path.join(legacyDir, V1_ROOM_FILE), whole + torn);
+    const binding: MigrationBinding = { sourceFile: V1_ROOM_FILE, roomId: ROOM, sourceSha256: sha256(whole + torn), platformIdentity: IDENTITY, provenance: "operator-attested" };
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] });
+
+    expect(result.mode).toBe("committed");
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    await generation.close();
+  });
+
+  it("writes nothing for an apply with nothing to migrate, and the agent still starts", async () => {
+    const dir = tmpRoot();
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [] });
+
+    expect(result).toEqual({ mode: "committed", sources: [] });
+    const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    await generation.close();
+  });
+
   it("is a no-op with the same bindings once committed, and refuses different ones", async () => {
     const dir = tmpRoot();
     const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "turn.done", messageId: "m", at: 1 })] });
@@ -639,9 +666,29 @@ describe("migration identity and imported authority", () => {
 
     await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings }))
       .rejects.toMatchObject({ kind: "corrupt" });
-    // It refused: the migration is not committed over a destination that lost its imported authority.
+    // It refused before naming the destination: no prepared manifest stands for a start to resume over it.
     const manifest = await readFile(path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json"), "utf8").catch(() => null);
-    expect(manifest === null ? null : JSON.parse(manifest).state).toBe("prepared");
+    expect(manifest).toBeNull();
+  });
+
+  it("never names a v2 journal it did not stage, so a later start cannot restage its settlements away", async () => {
+    const dir = tmpRoot();
+    // A v2 process served the room: its reply settled and its turn ended.
+    const first = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    const room = await first.room(ROOM);
+    const publicationId = await room.beginReply("live");
+    await room.settleReply("live", publicationId, "post-live");
+    await room.turnDone("live");
+    await first.close();
+    const served = await recordTypes(roomFile(dir));
+    // A rolled-back v1 process then wrote its own journal for the room, and the operator binds it.
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: [JSON.stringify({ t: "reply.intent", messageId: "v1", at: 5 })] });
+
+    await expect(migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings })).rejects.toMatchObject({ kind: "corrupt" });
+    // The next start finds the legacy file unbound and refuses; it never restages the room.
+    await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "unbound-legacy" });
+
+    expect(await recordTypes(roomFile(dir))).toEqual(served);
   });
 
   it("refuses a header-only destination whether or not the preserved source still stands", async () => {

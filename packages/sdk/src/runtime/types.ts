@@ -70,10 +70,6 @@ export const sessionConfigSchema = z.object({
    */
   journalDir: z.string().min(1).optional(),
   /**
-   * How long the journal remembers a message after its last record. An older
-   * message is answered again if Band still serves it. Expired messages leave
-   * a room's file when it opens.
-   *
    * @deprecated Accepted for compatibility with v1 journal configuration; the
    * v2 journal keeps its records for the life of the deployment and does not
    * expire them.
@@ -89,7 +85,7 @@ export const sessionConfigSchema = z.object({
   journalPlatformIdentity: z
     .string()
     .min(1)
-    .refine((value) => canonicalPlatformIdentity(value) === value, "must be a canonical platform endpoint")
+    .refine(isCanonicalPlatformIdentity, "must be a canonical platform endpoint")
     .optional(),
 }).superRefine((config, ctx) => {
   if (!config.enableWorkingState) return;
@@ -104,6 +100,15 @@ export const sessionConfigSchema = z.object({
     if (!valid) ctx.addIssue({ code: "custom", path: [field], message: "Invalid enabled working-state timing" });
   }
 });
+
+/** Total, as a schema check must be: an identity that is no URL at all is simply not canonical. */
+function isCanonicalPlatformIdentity(value: string): boolean {
+  try {
+    return canonicalPlatformIdentity(value) === value;
+  } catch {
+    return false;
+  }
+}
 
 export type SessionConfig = z.input<typeof sessionConfigSchema>;
 export type ResolvedSessionConfig = z.output<typeof sessionConfigSchema>;

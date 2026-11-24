@@ -3,10 +3,7 @@ name: Journal process matrix
 # The turn journal's crash-boundary and process cases (real child processes,
 # the recovery resource budget, the long-lived-transport origin cases) are
 # validated on every platform the SDK ships to: GitHub-hosted Linux, macOS and
-# Windows runners, one current Node 22 line each. The proof a platform cannot
-# run records its gap in the run rather than skipping silently: on Windows the
-# descriptor budget's positive control has no enumeration, so the child reports
-# `supported: false` and the test logs the gap instead of asserting a bound.
+# Windows runners, one current Node 22 line each; every case runs on all three.
 #
 # It runs on draft pull requests too — unlike `ci`, which waits for a draft to
 # come out of draft — so a draft PR's journal work is still judged on all three
@@ -48,12 +45,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The journal's suites, plus the real-process crash-boundary and
-      # recovery-budget cases that spawn child runtimes, and the live-contender
-      # ownership and identity-capability suites. On platforms whose
-      # file-descriptor enumeration the budget's positive control cannot use,
-      # the child reports the gap and the test records it instead of asserting
-      # a bound it cannot measure.
+      # The journal's suites, the real-process crash-boundary cases that spawn
+      # child runtimes, the recovery-budget case, and the live-contender
+      # ownership and identity-capability suites.
       - name: Run journal and process suites
         run: pnpm --filter @band-ai/sdk exec vitest run tests/turn-journal.test.ts tests/turn-journal-migration.test.ts tests/turn-journal-runtime.test.ts tests/turn-journal-transport-origin.test.ts tests/turn-journal-child-process-runtime.test.ts tests/journal-ownership.test.ts tests/journal-identity.test.ts
         env:

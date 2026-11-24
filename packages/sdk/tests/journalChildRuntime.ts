@@ -83,16 +83,6 @@ type ChildMode = "settled-before-mark" | "decline" | "multiple-replies" | "inten
 
 const never = (): Promise<never> => new Promise(() => undefined);
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function until(predicate: () => boolean, timeoutMs = 30_000): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > timeoutMs) throw new Error("the child timed out waiting for its directed cut");
-    await sleep(5);
-  }
-}
-
 /**
  * Holds the first journal append whose line matches `match` until this process
  * dies. The same FileHandle.prototype patch the in-test fakes use, without
@@ -153,13 +143,13 @@ async function main(): Promise<void> {
 
   const rest = platform.rest;
 
-  let postInFlight = false;
+  const postInFlight = Promise.withResolvers<void>();
   if (mode === "intent-only") {
     // Its reply never reaches the platform: the post sits at the platform's door.
     const post = rest.createChatMessage;
     rest.createChatMessage = async (roomId, message, options) => {
       if (message.content === "answer") {
-        postInFlight = true;
+        postInFlight.resolve();
         await never();
       }
       return post.call(rest, roomId, message, options);
@@ -229,7 +219,7 @@ async function main(): Promise<void> {
         }
         case "intent-only": {
           void args.tools.sendMessage("answer", ["@owner"]);
-          await until(() => postInFlight);
+          await postInFlight.promise;
           report("post-held");
           break;
         }

@@ -5,13 +5,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
-import { BandSdkError } from "../src/core/errors";
+import { DeliveryUnknownError } from "../src/core/deliveryFailedError";
+import { BandSdkError, ValidationError } from "../src/core/errors";
 import { NoopLogger } from "../src/core/logger";
 import { JournalFileError, JournalPublicationError } from "../src/runtime/journal/errors";
 import { identityDirectoryComponent, roomFileComponent } from "../src/runtime/journal/records";
 import { migrateTurnJournals } from "../src/runtime/journal/migration";
-import { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { TurnJournal, GenerationClosedError, agentJournalDir, roomFileName, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { RoomJournal, roomFileName } from "../src/runtime/journal/RoomJournal";
+import { TurnJournal, GenerationClosedError, agentJournalDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
 import { tmpRoot } from "./testUtils";
@@ -21,6 +22,7 @@ import {
   OTHER_IDENTITY,
   ROOM,
   diskFull,
+  flushMicrotasks,
   generationIn,
   holdJournalAppend,
   interceptJournalAppends,
@@ -404,8 +406,87 @@ describe("publications", () => {
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => second.close());
     const reopened = await second.room(ROOM);
-    // Emergency land (or durable refuse) leaves nothing recoverable as pending.
-    expect(await reopened.recoverUnresolved()).toEqual([]);
+    // The refusal never landed: the reopened journal reports the intent rather than hide it.
+    expect(await reopened.recoverUnresolved()).toEqual([expect.objectContaining({ messageId: "msg-cut", outcome: "pending" })]);
+  });
+
+  it("keeps another reply's owed settlement poison when a refusal queued behind it lands", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const engine = PublicationEngine.create({ room: () => generation.room(ROOM), roomId: ROOM, generation, logger: new NoopLogger() });
+    const settleEntered = createDeferred();
+    const failSettle = createDeferred();
+    await interceptJournalAppends(async (original, self, args) => {
+      if (typeof args[0] === "string" && args[0].includes("reply.settled")) {
+        settleEntered.resolve();
+        await failSettle.promise;
+        throw diskFull();
+      }
+      return original.apply(self, args);
+    });
+
+    // Two parallel replies: A is accepted and its settlement's write held; B is refused meanwhile.
+    const bRefused = createDeferred();
+    const refusedB = new ValidationError("mention cannot be resolved");
+    const replyA = engine.publishReply("msg-A", async () => ({ success: true, id: "post-A" }));
+    const replyB = engine.publishReply("msg-B", async () => {
+      await bRefused.promise;
+      throw refusedB;
+    });
+    await settleEntered.promise;
+    bRefused.resolve();
+    // B's refusal queues behind A's settlement, which the disk then fails.
+    await flushMicrotasks();
+    failSettle.resolve();
+
+    await expect(replyA).rejects.toBeInstanceOf(DeliveryUnknownError);
+    await expect(replyB).rejects.toBe(refusedB);
+    const room = await generation.room(ROOM);
+    // A's acknowledged reply could not be settled: the writer admits nothing until it reopens.
+    expect(room.accepting).toBe(false);
+    expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.intent", "reply.refused"]);
+    await expect(room.beginReply("msg-C")).rejects.toMatchObject({ kind: "poisoned" });
+  });
+
+  it("syncs a refusal whose append reached the file but whose sync failed, recording it once", async () => {
+    const dir = tmpRoot();
+    const { generation } = await generationIn(dir);
+    const room = await generation.room(ROOM);
+    const publicationId = await room.beginReply("msg-1");
+
+    // The refusal's line reaches the file, and its sync fails, as a failing disk does.
+    let refuseAppended = false;
+    await interceptJournalAppends(async (original, self, args) => {
+      if (typeof args[0] === "string" && args[0].includes("reply.refused")) refuseAppended = true;
+      return original.apply(self, args);
+    });
+    const probe = await open(path.join(dir, "probe-sync"), "w");
+    const prototype = Object.getPrototypeOf(probe) as { datasync: () => Promise<void> };
+    await probe.close();
+    const datasync = prototype.datasync;
+    let failedRefuseSync = false;
+    let syncedAfterFailure = false;
+    const spy = vi.spyOn(prototype, "datasync").mockImplementation(function (this: unknown) {
+      if (refuseAppended && !failedRefuseSync) {
+        failedRefuseSync = true;
+        return Promise.reject(Object.assign(new Error("EIO: i/o error, fsync"), { code: "EIO" }));
+      }
+      if (failedRefuseSync) syncedAfterFailure = true;
+      return datasync.call(this);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    await room.markRefused("msg-1", publicationId);
+
+    expect(failedRefuseSync).toBe(true);
+    // The refusal it reports durable was synced after the failed one.
+    expect(syncedAfterFailure).toBe(true);
+    // The writer lost a write: it stays poisoned until it reopens.
+    expect(room.accepting).toBe(false);
+    await generation.close();
+    const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
+    onTestFinished(() => second.close());
+    expect(await (await second.room(ROOM)).recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
   });
 
@@ -857,48 +938,67 @@ describe("ownership and generations", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 
-  it("does not hand a closed handle when force release races an in-flight open (S2)", async () => {
+  it("closes what an open in flight opens when a force release overtakes it, and opens the room afresh after", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const openEntered = createDeferred();
     const releaseOpen = createDeferred();
+    const opened: RoomJournal[] = [];
     const originalOpen = RoomJournal.open.bind(RoomJournal);
     const spy = vi.spyOn(RoomJournal, "open").mockImplementation(async (file, options) => {
       openEntered.resolve();
       await releaseOpen.promise;
-      return originalOpen(file, options);
+      const journal = await originalOpen(file, options);
+      opened.push(journal);
+      return journal;
     });
     onTestFinished(() => spy.mockRestore());
 
+    // A turn holds the room and opens its journal; the room is left meanwhile.
+    generation.holdRoom(ROOM);
     const opening = generation.room(ROOM);
     await openEntered.promise;
-    // Force while open is still pending: rooms must not hold the pending promise,
-    // or closeRoomNow would close the handle the waiter is about to receive.
-    await generation.release(ROOM, true);
+    const releasing = generation.release(ROOM, true);
+    // The room comes back while the stale open is still in flight.
+    const reopening = generation.room(ROOM);
     releaseOpen.resolve();
-    const room = await opening;
-    expect(room.isClosed).toBe(false);
+    await releasing;
+
+    // The turn gets no handle, and the one its open produced is closed.
+    await expect(opening).rejects.toBeInstanceOf(GenerationClosedError);
+    expect(opened[0]?.isClosed).toBe(true);
+    await generation.endHoldRoom(ROOM);
+    // The room's next open is a fresh, live handle.
+    const room = await reopening;
+    expect(room).toBe(opened[1]);
     expect(room.accepting).toBe(true);
     await room.turnDone("after-open-race");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 
-  it("waits for tracked work on force release and closes the handle that work opened meanwhile", async () => {
+  it("finishes a force release, its publication's drain, and an announce that waits out the release", async () => {
     const { generation } = await generationIn(tmpRoot());
-    const gate = createDeferred();
-    // Tracked work that opens the room only once force release is already draining:
-    // an admit-time announce or a room's first publication.
-    let opened: RoomJournal | undefined;
-    const tracked = (async () => {
-      await gate.promise;
-      opened = await generation.room(ROOM);
-    })();
-    generation.trackInflight(tracked, ROOM);
+    await generation.room(ROOM);
+    const engine = PublicationEngine.create({ room: () => generation.room(ROOM), roomId: ROOM, generation, logger: new NoopLogger() });
+    const posting = createDeferred();
+    const postEntered = createDeferred();
+    const reply = engine.publishReply("msg-1", async () => {
+      postEntered.resolve();
+      await posting.promise;
+      return { success: true, id: "post-1" };
+    });
+    await postEntered.promise;
 
+    // The room is left while its reply posts, and admitted again before the post lands.
     const releasing = generation.release(ROOM, true);
-    gate.resolve();
+    const announced = generation.trackOnceReleased(ROOM, async () => (await generation.room(ROOM)).answered("msg-1"));
+    posting.resolve();
+
+    await expect(reply).resolves.toMatchObject({ id: "post-1" });
     await releasing;
-    expect(opened?.isClosed).toBe(true);
+    // The announce opened the room only after the release's close: it reads the settled reply.
+    await expect(announced).resolves.toBe(true);
+    await generation.drain();
   });
 });
 
@@ -921,6 +1021,7 @@ describe("a publication against a closed generation", () => {
     endHoldRoom: async () => undefined,
     release: async () => undefined,
     trackInflight: () => undefined,
+    trackOnceReleased: (_roomId, work) => work(),
     drain: async () => undefined,
     roomPath: () => roomFile(tmpRoot()),
     close: async () => undefined,

@@ -35,15 +35,8 @@ export { ExecutionContext } from "./ExecutionContext";
 export { PlatformRuntime } from "./PlatformRuntime";
 export { RoomPresence } from "./rooms/RoomPresence";
 
-// The runtime's turn journal layer is process-private: the room journals a
-// start generation opens, the one-owner-at-a-time ownership they take, and
-// the publication engine that settles a reply before its caller sees it are
-// not exposed for a host to open and drive, since a second process writing a
-// journal alongside its owner defeats the authority the journal holds. The
-// public surface is the operator-facing migration (package root:
-// `migrateTurnJournals`) and the pure helpers below; a stopped process's
-// journals are inspected by starting over them or previewing their
-// migration, not from a side door.
+// The journal layer stays process-private: a second writer beside its owner
+// would defeat the journal's authority. Operators use `migrateTurnJournals`.
 export { canonicalPlatformIdentity } from "./journal/identity";
 
 export { AgentTools } from "./tools/AgentTools";

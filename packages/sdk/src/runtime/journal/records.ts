@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
@@ -49,8 +50,36 @@ export const journalRecordSchema = z.discriminatedUnion("t", [
 
 export type JournalRecord = z.infer<typeof journalRecordSchema>;
 
-function sha256Hex(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+/** The SHA-256 of `value` (a string hashes as UTF-8), in hex. */
+export function sha256Hex(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Whether `error` is a file system error with `code`. */
+export function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+/** `file`'s text, or `null` when it does not exist. */
+export async function readTextIfExists(file: string): Promise<string | null> {
+  return await readFile(file, "utf8").catch((error: unknown) => {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  });
+}
+
+/** The suffix a rewrite gives the copy it renames over its file: `<file>.<uuid>.compacting`. */
+const COMPACTING_COPY_SUFFIX = /\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.compacting$/;
+
+/** A fresh name for the copy a rewrite of `file` writes before renaming it over `file`. */
+export function compactingCopyName(file: string): string {
+  return `${file}.${randomUUID()}.compacting`;
+}
+
+/** The file a compaction copy was written to replace; `undefined` for a name that is no such copy. */
+export function compactingCopyTarget(name: string): string | undefined {
+  const suffix = COMPACTING_COPY_SUFFIX.exec(name);
+  return suffix === null || suffix.index === 0 ? undefined : name.slice(0, suffix.index);
 }
 
 /** The directory component of an identity in the journal's file layout. */

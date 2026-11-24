@@ -7,6 +7,11 @@ function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** A mention handle as AgentTools resolves it: trimmed, without leading `@`s, lowercased. */
+export function normalizeMentionHandle(handle: string): string {
+  return handle.trim().replace(/^@+/, "").toLowerCase();
+}
+
 /** A display name as one `@` token: whitespace becomes `-`, so command parsing reads it whole. */
 export function mentionLabel(name: string): string {
   return name.trim().replace(/\s+/g, "-");

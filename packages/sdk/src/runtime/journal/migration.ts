@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -6,15 +5,19 @@ import { z } from "zod";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 
-import { OWNERSHIP_FILE, agentJournalDir, legacyAgentDir } from "./TurnJournal";
+import { OWNERSHIP_FILE, agentJournalDir, legacyAgentDir, roomJournalFile } from "./TurnJournal";
 import { JournalFileError } from "./errors";
 import { JournalOwnership } from "./ownership";
-import { RoomJournal, hasErrorCode, headerLine, rewriteFile } from "./RoomJournal";
-import { identityDirectoryComponent, roomFileComponent } from "./records";
+import { RoomJournal, headerLine, rewriteFile } from "./RoomJournal";
+import { compactingCopyTarget, hasErrorCode, identityDirectoryComponent, readTextIfExists, sha256Hex } from "./records";
 import { canonicalPlatformIdentity } from "./identity";
 
 const MIGRATION_DIR = "migration";
 const MANIFEST_FILE = "manifest.json";
+/** The manifest format this version writes and reads. */
+const MANIFEST_VERSION = 2;
+/** How much of an unknown record a refusal quotes. */
+const UNKNOWN_RECORD_PREVIEW = 120;
 
 export interface MigrationBinding {
   /** The legacy file under the agent's journal directory, by its file name. */
@@ -108,7 +111,7 @@ const manifestBindingSchema = bindingSchema.extend({
 });
 
 const manifestSchema = z.strictObject({
-  v: z.literal(2),
+  v: z.literal(MANIFEST_VERSION),
   state: z.enum(["prepared", "committed"]),
   createdAt: z.number(),
   committedAt: z.number().optional(),
@@ -132,10 +135,7 @@ function manifestPath(agentDir: string): string {
 
 /** The agent's migration state: no manifest, one awaiting its commit, or one committed. */
 export async function migrationState(agentDir: string): Promise<"none" | "prepared" | "committed"> {
-  const text = await readFile(manifestPath(agentDir), "utf8").catch((error: unknown) => {
-    if (hasErrorCode(error, "ENOENT")) return null;
-    throw error;
-  });
+  const text = await readTextIfExists(manifestPath(agentDir));
   if (text === null) return "none";
   const manifest = parseManifest(text);
   if (manifest.state === "prepared" && manifest.bindings.length === 0) {
@@ -159,32 +159,23 @@ function parseManifest(text: string): Manifest {
 }
 
 async function readManifest(agentDir: string): Promise<Manifest | null> {
-  const text = await readFile(manifestPath(agentDir), "utf8").catch((error: unknown) => {
-    if (hasErrorCode(error, "ENOENT")) return null;
-    throw error;
-  });
+  const text = await readTextIfExists(manifestPath(agentDir));
   return text === null ? null : parseManifest(text);
 }
 
-function sha256Text(text: string | Buffer): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
 async function sha256File(file: string): Promise<string> {
-  return sha256Text(await readFile(file));
+  return sha256Hex(await readFile(file));
 }
 
 /**
- * The name a pre-v2 process gave a crashed compaction's output: the room's
- * journal name with the writer's `<uuid>.compacting` suffix, as v1's rewrite
- * wrote it. A journal without that suffix is its own authority; one with it
- * is the copy the writer never renamed over its journal.
+ * The journal a compaction copy is the unrenamed output of; `undefined` for a
+ * plain journal file. v1's rewrite named its copy as the journal does, so a
+ * journal without the copy suffix is its own authority, and one with it is
+ * the copy the writer never renamed over its journal.
  */
-const V1_REMNANT = /^(.+\.jsonl)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.compacting$/;
-
-/** The journal a compaction copy is the unrenamed output of; `undefined` for a plain journal file. */
 function remnantPrimaryOf(file: string): string | undefined {
-  return V1_REMNANT.exec(file)?.[1];
+  const target = compactingCopyTarget(file);
+  return target?.endsWith(".jsonl") === true ? target : undefined;
 }
 
 async function legacyFiles(legacyDir: string): Promise<string[]> {
@@ -259,59 +250,96 @@ function normalizeIdentity(value: string, sourceFile: string, agentDir: string):
 }
 
 /** Where a binding's v2 journal lives: under the attested identity's directory, named by the room's id hash. */
-function destinationOf(agentDir: string, binding: MigrationBinding): string {
-  const identityDir = path.join(agentDir, identityDirectoryComponent(binding.platformIdentity));
-  return path.join(identityDir, `${roomFileComponent(binding.roomId)}.jsonl`);
+function destinationOf(agentDir: string, binding: Pick<MigrationBinding, "platformIdentity" | "roomId">): string {
+  return roomJournalFile(path.join(agentDir, identityDirectoryComponent(binding.platformIdentity)), binding.roomId);
+}
+
+interface LegacyLine {
+  line: string;
+  record: LegacyRecord;
+}
+
+type LegacyLineProblem = "not-a-record" | "unknown-record";
+
+function parseJsonLine(line: string): { json: unknown } | undefined {
+  try {
+    return { json: JSON.parse(line) };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * The records a v1 compaction copy left behind, the way the runtime reads a
+ * A v1 file's records, read the way the v1 reader and the runtime read a
  * journal's tail: every whole line must parse to a record the importer knows.
  * A final line a crash cut short of its newline is a torn fragment only while
  * it is not a whole record — a complete record at the end of the file stands
  * whether or not its newline is there, and is held to the same rule as any
- * other line. A copy that holds anything else — a line that is not a record,
- * a record the importer does not know — stands verified by no one, and is
- * refused, not covered by the name of the journal beside it.
+ * other line. `refusal` names a line that breaks the rule.
  */
-function parseRemnantRecords(file: string, text: string): Array<{ line: string; record: LegacyRecord }> {
-  const entries: Array<{ line: string; record: LegacyRecord }> = [];
-  const check = (line: string, lineNumber: number, record: unknown): void => {
-    const parsed = legacyRecordSchema.safeParse(record);
-    if (!parsed.success) {
-      throw new JournalFileError(
-        `The compaction copy ${file} beside its journal holds a record at line ${lineNumber} the importer does not know (${line.slice(0, 120)}); it cannot be verified against the journal, so the journal's binding cannot carry it. Reconcile the copy against the v1 writer that produced it before migrating.`,
-        "unsupported",
-        file,
-      );
-    }
+function parseLegacyLines(
+  text: string,
+  refusal: (problem: LegacyLineProblem, lineNumber: number, line: string) => JournalFileError,
+): LegacyLine[] {
+  const lines = text.split("\n");
+  const tornTail = text.endsWith("\n") ? undefined : lines.pop();
+  const entries: LegacyLine[] = [];
+  const admit = (line: string, lineNumber: number, json: unknown): void => {
+    const parsed = legacyRecordSchema.safeParse(json);
+    if (!parsed.success) throw refusal("unknown-record", lineNumber, line);
     entries.push({ line, record: parsed.data });
   };
-  const lines = text.split("\n");
-  const tornTail = text.endsWith("\n") ? null : (lines.pop() ?? null);
-  lines.forEach((line, n) => {
+  lines.forEach((line, i) => {
     if (line.trim() === "") return;
-    try {
-      check(line, n + 1, JSON.parse(line));
-    } catch (error) {
-      if (error instanceof JournalFileError) throw error;
-      throw new JournalFileError(
-        `The compaction copy ${file} beside its journal holds a line that is not a record at line ${n + 1}; it cannot be verified against the journal, so the journal's binding cannot carry it. Reconcile the copy against the v1 writer that produced it before migrating.`,
-        "corrupt",
-        file,
-      );
-    }
+    const parsed = parseJsonLine(line);
+    if (parsed === undefined) throw refusal("not-a-record", i + 1, line);
+    admit(line, i + 1, parsed.json);
   });
-  if (tornTail !== null && tornTail.trim() !== "") {
-    try {
-      // A whole record at EOF is held to the record's rule (unknown → refuse);
-      // a torn tail that is not a whole record leaves the records above.
-      check(tornTail, lines.length + 1, JSON.parse(tornTail));
-    } catch (error) {
-      if (error instanceof JournalFileError) throw error;
-    }
-  }
+  const tail = tornTail === undefined ? undefined : parseJsonLine(tornTail);
+  if (tornTail !== undefined && tail !== undefined) admit(tornTail, lines.length + 1, tail.json);
   return entries;
+}
+
+/**
+ * The records a v1 compaction copy left behind. A copy that holds anything
+ * but records the importer knows stands verified by no one, and is refused,
+ * not covered by the name of the journal beside it.
+ */
+function parseRemnantRecords(file: string, text: string): LegacyLine[] {
+  return parseLegacyLines(text, (problem, lineNumber, line) =>
+    problem === "not-a-record"
+      ? new JournalFileError(
+          `The compaction copy ${file} beside its journal holds a line that is not a record at line ${lineNumber}; it cannot be verified against the journal, so the journal's binding cannot carry it. Reconcile the copy against the v1 writer that produced it before migrating.`,
+          "corrupt",
+          file,
+        )
+      : new JournalFileError(
+          `The compaction copy ${file} beside its journal holds a record at line ${lineNumber} the importer does not know (${line.slice(0, UNKNOWN_RECORD_PREVIEW)}); it cannot be verified against the journal, so the journal's binding cannot carry it. Reconcile the copy against the v1 writer that produced it before migrating.`,
+          "unsupported",
+          file,
+        ),
+  );
+}
+
+/** A v1 journal's records; a journal that holds anything else is refused, never guessed at. */
+function parseLegacyJournal(file: string, text: string): LegacyLine[] {
+  return parseLegacyLines(text, (problem, lineNumber, line) =>
+    problem === "not-a-record"
+      ? new JournalFileError(
+          `The legacy journal ${file} holds a line that is not a record at line ${lineNumber}; it is corrupt, and importing it would guess at authority it does not hold. Restore it from a backup before migrating.`,
+          "corrupt",
+          file,
+        )
+      : new JournalFileError(
+          `The legacy journal ${file} holds a record at line ${lineNumber} the importer does not know (${line.slice(0, UNKNOWN_RECORD_PREVIEW)}). Reconcile it against the SDK version that wrote it before migrating.`,
+          "unsupported",
+          file,
+        ),
+  );
+}
+
+function parseLegacyRecords(file: string, text: string): LegacyRecord[] {
+  return parseLegacyJournal(file, text).map((entry) => entry.record);
 }
 
 /**
@@ -335,17 +363,15 @@ async function coalescedStaging(
 ): Promise<{ text: string; records: LegacyRecord[] }> {
   const primary = binding.stagesFrom;
   const primaryPath = path.join(legacyDir, primary);
-  const primaryText = await readFile(primaryPath, "utf8").catch((error: unknown) => {
-    if (hasErrorCode(error, "ENOENT")) {
-      throw new JournalFileError(
-        `The journal ${primary} the migration stages ${binding.sourceFile} through is gone from the journal; its import can no longer be checked against it. Restore it from backup before re-running the migration.`,
-        "io",
-        primaryPath,
-      );
-    }
-    throw error;
-  });
-  const primaryRecords = parseLegacyRecords(primary, primaryText);
+  const primaryText = await readTextIfExists(primaryPath);
+  if (primaryText === null) {
+    throw new JournalFileError(
+      `The journal ${primary} the migration stages ${binding.sourceFile} through is gone from the journal; its import can no longer be checked against it. Restore it from backup before re-running the migration.`,
+      "io",
+      primaryPath,
+    );
+  }
+  const primaryLines = parseLegacyJournal(primary, primaryText);
   const coalesced: LegacyRecord[] = [];
   const surplusLines: string[] = [];
   const intentCounts = new Map<string, number>();
@@ -356,16 +382,13 @@ async function coalescedStaging(
     coalesced.push(record);
     if (line !== undefined) surplusLines.push(line);
   };
-  for (const record of primaryRecords) admit(record, undefined);
+  for (const { record } of primaryLines) admit(record, undefined);
   // Remnant copies sorted by name: directory listing order is not stable
   // across runs, and surplus line order must not flip stagingSha256.
   const remnants = legacy.filter((candidate) => remnantPrimaryOf(candidate) === primary).sort();
   for (const file of remnants) {
     const copyPath = path.join(legacyDir, file);
-    const copyText = await readFile(copyPath, "utf8").catch((error: unknown) => {
-      if (hasErrorCode(error, "ENOENT")) return null;
-      throw error;
-    });
+    const copyText = await readTextIfExists(copyPath);
     if (copyText === null) {
       // A copy gone since the directory read: it held no record this staging
       // can claim, and the hash check against what stood refuses it below.
@@ -388,11 +411,11 @@ async function coalescedStaging(
       if (admitSurplus.has(record)) admit(record, line);
     }
   }
-  // The journal's text and the surplus are whole lines: where the journal
-  // ends without its final newline, the boundary stands between the records,
-  // never inside one. The originals are never rewritten.
-  const base = primaryText.length === 0 || primaryText.endsWith("\n") ? primaryText : `${primaryText}\n`;
-  return { text: base + surplusLines.map((line) => `${line}\n`).join(""), records: coalesced };
+  // The staging is whole record lines: the journal's records, then the
+  // surplus. A torn tail the reader dropped never reaches it, and the
+  // originals are never rewritten.
+  const lines = [...primaryLines.map((entry) => entry.line), ...surplusLines];
+  return { text: lines.map((line) => `${line}\n`).join(""), records: coalesced };
 }
 
 /**
@@ -535,7 +558,7 @@ async function validateDestination(
       // stand now, so a journal or a copy that moved since the import is
       // refused, not imported past.
       const staging = await coalescedStaging(legacyDir, binding, legacy, explicitSources);
-      const stagingSha256 = sha256Text(staging.text);
+      const stagingSha256 = sha256Hex(staging.text);
       if (stagingSha256 !== binding.stagingSha256) {
         throw new JournalFileError(
           `The journal ${binding.stagesFrom} and the compaction copies beside it no longer match the import the migration recorded (observed ${stagingSha256}); they changed after the migration ran, so its import no longer describes them. Re-run the migration against the current files.`,
@@ -561,11 +584,7 @@ export async function validateCommittedDestinations(agentDir: string, agentId: s
   const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
   for (const binding of manifest.bindings) {
     const destination = destinationOf(agentDir, binding);
-    const text = await readFile(destination, "utf8").catch((error: unknown) => {
-      if (hasErrorCode(error, "ENOENT")) return null;
-      throw error;
-    });
-    if (text === null) {
+    if ((await readTextIfExists(destination)) === null) {
       throw new JournalFileError(
         `The migration committed ${binding.sourceFile} to a journal that is no longer on disk; its authority must not open as an empty file and settle no one. Restore the journal from backup, or re-run the migration from its preserved source.`,
         "corrupt",
@@ -576,42 +595,13 @@ export async function validateCommittedDestinations(agentDir: string, agentId: s
   }
 }
 
-function parseLegacyRecords(file: string, text: string): LegacyRecord[] {
-  const records: LegacyRecord[] = [];
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line.trim() === "") continue;
-    let json: unknown;
-    try {
-      json = JSON.parse(line);
-    } catch {
-      throw new JournalFileError(
-        `The legacy journal ${file} holds a line that is not a record at line ${i + 1}; it is corrupt, and importing it would guess at authority it does not hold. Restore it from a backup before migrating.`,
-        "corrupt",
-        file,
-      );
-    }
-    const check = legacyRecordSchema.safeParse(json);
-    if (!check.success) {
-      throw new JournalFileError(
-        `The legacy journal ${file} holds a record at line ${i + 1} the importer does not know (${line.slice(0, 120)}). Reconcile it against the SDK version that wrote it before migrating.`,
-        "unsupported",
-        file,
-      );
-    }
-    records.push(check.data);
-  }
-  return records;
-}
-
 /**
  * The stable publication id a legacy intent becomes under migration: derived
  * from the staging file, the inbound, and which intent it is for that inbound,
  * so convert and imported-facts checks name the same publication.
  */
 function stablePublicationId(sourceFile: string, messageId: string, n: number): string {
-  return createHash("sha256").update(`${sourceFile}:${messageId}:${n}`).digest("hex");
+  return sha256Hex(`${sourceFile}:${messageId}:${n}`);
 }
 
 /** The v2 destination of one legacy file under one binding: a header binding it to the attested identity, then the file's records converted. Legacy intents keep their uncertainty — none of them was ever proven posted — and a valid turn.done settles its inbound without claiming any post. */
@@ -683,17 +673,13 @@ async function stageDestination(
   agentId: string,
   binding: PreparedBinding,
   headerAt: number,
-  state: "prepared" | "committed",
+  state: Manifest["state"],
   logger: Logger,
   explicitSources: Set<string>,
   restageIfInvalid = false,
 ): Promise<void> {
   const destination = destinationOf(agentDir, binding);
-  const existing = await readFile(destination, "utf8").catch((error: unknown) => {
-    if (hasErrorCode(error, "ENOENT")) return null;
-    throw error;
-  });
-  if (existing !== null) {
+  if ((await readTextIfExists(destination)) !== null) {
     try {
       await validateDestination(destination, binding, agentId, legacyDir, { checkSources: state === "committed" }, explicitSources);
       return;
@@ -715,6 +701,40 @@ async function stageDestination(
   await mkdir(path.dirname(destination), { recursive: true });
   await rewriteFile(destination, expected);
   logger.info("Migrated a legacy journal file", { source: binding.sourceFile, identity: binding.platformIdentity, provenance: binding.provenance });
+}
+
+/**
+ * Refuses, before a prepared manifest first names them, destinations that
+ * already stand and are not this import: a resumed prepare restages a
+ * destination that fails validation, so a journal a v2 process wrote there
+ * must never be named, or the next start would overwrite its settlements.
+ * Destinations `named` by the manifest already were staged by this migration.
+ */
+async function refuseForeignDestinations(
+  agentDir: string,
+  legacyDir: string,
+  agentId: string,
+  bindings: PreparedBinding[],
+  named: PreparedBinding[],
+  explicitSources: Set<string>,
+): Promise<void> {
+  const staged = new Set(named.map((binding) => destinationOf(agentDir, binding)));
+  for (const binding of bindings) {
+    if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
+    const destination = destinationOf(agentDir, binding);
+    if (staged.has(destination) || (await readTextIfExists(destination)) === null) continue;
+    try {
+      await validateDestination(destination, binding, agentId, legacyDir, { checkSources: false }, explicitSources);
+    } catch (error) {
+      if (!(error instanceof JournalFileError)) throw error;
+      throw new JournalFileError(
+        `The destination for ${binding.sourceFile} already holds a journal this migration did not stage (${error.message}); a v2 process may have recorded settlements there, and the migration never overwrites them. Reconcile the legacy file against that journal before migrating.`,
+        "corrupt",
+        destination,
+        error,
+      );
+    }
+  }
 }
 
 /**
@@ -892,11 +912,15 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       const staging = await coalescedStaging(legacyDir, binding, legacy, explicit);
       prepared.push({
         ...binding,
-        stagingSha256: sha256Text(staging.text),
+        stagingSha256: sha256Hex(staging.text),
         importedFacts: importedFactsOf(binding.stagesFrom, staging.records),
       });
     }
     const existing = await readManifest(agentDir);
+    if (existing === null && prepared.length === 0) {
+      // Nothing to bind: a manifest attesting no identity would refuse every start.
+      return { mode: "committed", sources: [] };
+    }
     if (existing !== null && existing.state === "committed") {
       if (!sameBindings(existing.bindings, prepared)) {
         throw new JournalFileError(
@@ -932,7 +956,8 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
       if (sameBindings(existing.bindings, prepared)) {
         manifest = existing;
       } else if (bindingsExtendPrepared(existing.bindings, prepared)) {
-        manifest = { v: 2, state: "prepared", createdAt: existing.createdAt, bindings: prepared };
+        await refuseForeignDestinations(agentDir, legacyDir, options.agentId, prepared, existing.bindings, explicit);
+        manifest = { v: MANIFEST_VERSION, state: "prepared", createdAt: existing.createdAt, bindings: prepared };
         await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
         await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
       } else {
@@ -946,7 +971,8 @@ export async function migrateTurnJournals(options: MigrateTurnJournalsOptions): 
     } else {
       // The prepared manifest is durable before any destination is staged: a
       // crash afterwards is a resume, never an empty initialization.
-      manifest = { v: 2, state: "prepared", createdAt: now(), bindings: prepared };
+      await refuseForeignDestinations(agentDir, legacyDir, options.agentId, prepared, [], explicit);
+      manifest = { v: MANIFEST_VERSION, state: "prepared", createdAt: now(), bindings: prepared };
       await mkdir(path.join(agentDir, MIGRATION_DIR), { recursive: true });
       await rewriteFile(manifestPath(agentDir), `${JSON.stringify(manifest, null, 2)}\n`);
     }
@@ -1047,7 +1073,7 @@ async function validateBindings(
     }
     claimed.set(binding.sourceFile, binding);
     // Two sources may not convert into one destination: it is one room's journal.
-    const destination = `${identityDirectoryComponent(binding.platformIdentity)}/${roomFileComponent(binding.roomId)}`;
+    const destination = destinationOf(agentDir, binding);
     const claimingRoom = destinations.get(destination);
     if (claimingRoom !== undefined) {
       // The fold is the journal-and-its-copy case: a compaction copy beside
@@ -1122,10 +1148,7 @@ async function validateBindings(
   for (const file of legacy) {
     const primary = remnantPrimaryOf(file);
     if (primary === undefined || !stagedPrimaries.has(primary)) continue;
-    const text = await readFile(path.join(legacyDir, file), "utf8").catch((error: unknown) => {
-      if (hasErrorCode(error, "ENOENT")) return null;
-      throw error;
-    });
+    const text = await readTextIfExists(path.join(legacyDir, file));
     if (text === null) continue;
     const copyRecords = parseRemnantRecords(file, text).map((entry) => entry.record);
     if (explicit.has(file)) continue;

@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { BandSdkError } from "../../core/errors";
 
@@ -114,39 +113,22 @@ export class JournalOwnership {
   }
 }
 
-/**
- * Whether `error` is SQLite lock contention on `file`.
- *
- * Only SQLITE_BUSY / SQLITE_LOCKED (and SQLite's own lock wording) count.
- * Filesystem EBUSY / "resource busy" and path fragments like a `locked/`
- * parent directory must stay I/O faults — bare "busy"/"locked" substrings
- * after path strip are not enough.
- */
-function isSqliteLockContention(file: string, error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  // Strip the path (and its basename) before substring kind checks so a file
-  // named e.g. `locked.sqlite` inside an EACCES message is not treated as
-  // SQLite lock contention.
-  const lowered = message.toLowerCase();
-  const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
-  const code =
-    error !== null && typeof error === "object" && "code" in error ? String(error.code).toUpperCase() : "";
-  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
-  return (
-    haystack.includes("database is locked") ||
-    haystack.includes("database table is locked") ||
-    haystack.includes("sqlite_busy") ||
-    haystack.includes("sqlite_locked")
-  );
+/** SQLite primary result codes the lock classifies; node:sqlite reports the result in `errcode`. */
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+const SQLITE_NOTADB = 26;
+
+/** The SQLite primary result code of `error`, or `undefined` for a failure SQLite did not report. */
+function sqliteResultCode(error: unknown): number | undefined {
+  if (error === null || typeof error !== "object" || !("errcode" in error) || typeof error.errcode !== "number") return undefined;
+  // An extended result code keeps its primary code in the low byte.
+  return error.errcode & 0xff;
 }
 
 /** The lock failure of `file`: contention, a corrupt file, or an I/O fault. */
 function classify(file: string, error: unknown): JournalOwnershipError {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowered = message.toLowerCase();
-  // Same path strip as contention checks; corrupt wording must not match a path.
-  const haystack = lowered.split(file.toLowerCase()).join("").split(path.basename(file).toLowerCase()).join("");
-  if (isSqliteLockContention(file, error)) {
+  const code = sqliteResultCode(error);
+  if (code === SQLITE_BUSY || code === SQLITE_LOCKED) {
     return new JournalOwnershipError(
       `Another process owns the journal at ${file}. Stop that process (or the runtime that started it) and try again; ` +
         `the lock is never stolen, and the journal stays closed meanwhile.`,
@@ -155,7 +137,7 @@ function classify(file: string, error: unknown): JournalOwnershipError {
       error,
     );
   }
-  if (haystack.includes("not a database")) {
+  if (code === SQLITE_NOTADB) {
     return new JournalOwnershipError(
       `The journal lock file ${file} is corrupt (it is not a database). Restore it from backup or point the runtime at ` +
         `the journal directory this agent's earlier processes used; deleting it discards the journal's authority, so do not do that casually.`,
@@ -164,6 +146,7 @@ function classify(file: string, error: unknown): JournalOwnershipError {
       error,
     );
   }
+  const message = error instanceof Error ? error.message : String(error);
   return new JournalOwnershipError(
     `The journal lock file ${file} could not be opened: ${message}. Check the path and the file system it is on; ` +
       `the journal stays closed until the lock file is usable.`,

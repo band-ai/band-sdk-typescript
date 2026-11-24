@@ -1,4 +1,4 @@
-import type { ToolSchemaProvider } from "../contracts/protocols";
+import { NON_ACTING_TOOL_KEYS, type ToolSchemaProvider } from "../contracts/protocols";
 import { RuntimeStateError } from "../core/errors";
 import { guardedTools } from "../core/overrideTools";
 
@@ -22,8 +22,7 @@ const DESCRIBING_TOOLS: ReadonlySet<PropertyKey> = new Set(Object.keys({
  */
 export function revokedOnStop<T extends object>(tools: T, stopped: AbortSignal): T {
   return guardedTools(tools, (key) => {
-    // Schema probes and the delivery-unknown fence are consulted, not acting calls.
-    if (DESCRIBING_TOOLS.has(key) || key === "capabilities" || key === "unknownDeliveryFenced") return null;
+    if (DESCRIBING_TOOLS.has(key) || NON_ACTING_TOOL_KEYS.has(key)) return null;
     return cutShort(stopped);
   });
 }

@@ -354,7 +354,14 @@ export interface AdapterToolsProtocol
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
-export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities" | "unknownDeliveryFenced">;
+/** Members read as values, never called as acting tools: stop and turn-scope wrappers pass them through. */
+const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
+
+export type NonActingToolKey = (typeof NON_ACTING_TOOL_MEMBERS)[number];
+
+export const NON_ACTING_TOOL_KEYS: ReadonlySet<PropertyKey> = new Set(NON_ACTING_TOOL_MEMBERS);
+
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, NonActingToolKey>;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

@@ -120,14 +120,6 @@ export class Turn {
     return this.fenceSource?.() ?? false;
   }
 
-  /**
-   * The turn's closing text must not be relayed: an unknown delivery may
-   * already be in the room, and an unkeyed relay would post on top of it.
-   */
-  public get relayProhibited(): boolean {
-    return this.hasUnknownDelivery;
-  }
-
   /** Settles when a turn detached with its end has really ended; never rejects. */
   public get ended(): Promise<void> | undefined {
     return this.endedSignal;
@@ -223,7 +215,8 @@ export async function relayReply(
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  if (tools.turn.relayProhibited || tools.turn.replied || !text || isBlankEventContent(text)) {
+  // An unknown delivery may already be in the room; a relay would post on top of it.
+  if (tools.turn.hasUnknownDelivery || tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }
   await deliverReply(tools, text, mentions);

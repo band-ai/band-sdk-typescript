@@ -3,18 +3,49 @@
  * each is anchored at the turn's trigger so its post can be read back, and a
  * `band_send_message` call the model repeats does not post twice.
  */
+import { BandError } from "@band-ai/rest-client";
 import { describe, expect, it } from "vitest";
 
 import { GenericAdapter } from "../../src/adapters/GenericAdapter";
-import { isToolExecutorError, type AdapterToolsProtocol } from "../../src/contracts/protocols";
+import { isToolExecutorError, type AdapterToolsProtocol, type FrameworkAdapter } from "../../src/contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
+import { DeliveryFailedError, DeliveryUnknownError, deliverReply } from "../../src/core/deliveryFailedError";
+import { tmpRoot } from "../testUtils";
+import { IDENTITY } from "../turnJournalSupport";
 import { AGENT_ID, BandPlatform, person, RecordingRestApi } from "./support/bandPlatform";
 
 const ADA = person("ada");
+const BEN = person("ben");
 const ASK = `@[[${AGENT_ID}]] hi`;
 
-function sendTool(tools: AdapterToolsProtocol, content: string): Promise<unknown> {
-  return tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content, mentions: [ADA.id] });
+function sendTool(tools: AdapterToolsProtocol, content: string, mentions: unknown[] = [ADA.id]): Promise<unknown> {
+  return tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content, mentions });
+}
+
+/** A 503: Band may hold the post, and cannot say. */
+function serverError(): BandError {
+  return new BandError({ statusCode: 503, body: { error: { code: "server_error", message: "Service unavailable", request_id: "req-1" } } });
+}
+
+/** A 403: Band answered and saved nothing. */
+function forbidden(): BandError {
+  return new BandError({ statusCode: 403, body: { error: { code: "forbidden", message: "Forbidden", request_id: "req-2" } } });
+}
+
+/** The agent in a room with Ada and Ben, journaling its replies so an unknown delivery stands classified. */
+async function journaled(adapter: FrameworkAdapter) {
+  const platform = await BandPlatform.start(adapter, [ADA, BEN], undefined, { journalDir: tmpRoot(), journalPlatformIdentity: IDENTITY });
+  const room = await platform.room("room-1");
+  return { platform, room, [Symbol.asyncDispose]: () => platform[Symbol.asyncDispose]() };
+}
+
+/** Every message post the agent attempted, whether or not Band kept it. */
+function attempts(platform: BandPlatform): string[] {
+  return platform.rest.deliveries.map(({ content }) => content);
+}
+
+function publicationOf(result: unknown): unknown {
+  return isToolExecutorError(result) ? result.details?.publicationId : undefined;
 }
 
 describe("Message delivery in a Band room", () => {
@@ -99,5 +130,168 @@ describe("Message delivery in a Band room", () => {
 
     expect(earlierReply).toBeDefined();
     expect(rest.deliveries.at(-1)?.delivery?.attributed.has(earlierReply!)).toBe(true);
+  });
+});
+
+describe("A reply whose delivery is unknown is never posted twice", () => {
+  it("answers the model's repeated send with the first result, however its mentions are spelled", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      outcomes.push(await sendTool(tools, "held", ["@ada", "@ben"]));
+      outcomes.push(await sendTool(tools, "held", [{ id: BEN.id, handle: "BEN" }, "ada", "@ada"]));
+    });
+    await using session = await journaled(adapter);
+    session.room.holdMessage((content) => content === "held", { error: serverError() }).release();
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [first, repeat] = outcomes;
+    expect(first).toMatchObject({ details: { kind: DeliveryUnknownError.KIND } });
+    expect(repeat).toBe(first);
+    expect(attempts(session.platform)).toEqual(["held"]);
+  });
+
+  it("rejects a direct reply after the model's unknown send as unknown, naming the same publication", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      outcomes.push(await sendTool(tools, "held"));
+      outcomes.push(await deliverReply(tools, "held", [ADA.id]).catch((error: unknown) => error));
+    });
+    await using session = await journaled(adapter);
+    session.room.holdMessage((content) => content === "held", { error: serverError() }).release();
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [viaTool, viaReply] = outcomes;
+    expect(viaReply).toBeInstanceOf(DeliveryUnknownError);
+    expect((viaReply as DeliveryUnknownError).publicationId).toBe(publicationOf(viaTool));
+    expect(attempts(session.platform)).toEqual(["held"]);
+  });
+
+  it("answers the model's send after a direct reply's unknown delivery with that delivery, not a throw", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      outcomes.push(await deliverReply(tools, "held", [ADA.id]).catch((error: unknown) => error));
+      outcomes.push(await sendTool(tools, "held"));
+    });
+    await using session = await journaled(adapter);
+    session.room.holdMessage((content) => content === "held", { error: serverError() }).release();
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [viaReply, viaTool] = outcomes;
+    expect(viaReply).toBeInstanceOf(DeliveryUnknownError);
+    expect(viaTool).toMatchObject({ details: { kind: DeliveryUnknownError.KIND } });
+    expect(publicationOf(viaTool)).toBe((viaReply as DeliveryUnknownError).publicationId);
+    expect(attempts(session.platform)).toEqual(["held"]);
+  });
+
+  it("joins a direct reply to the model's send in flight, and both learn the delivery is unknown", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      const viaTool = sendTool(tools, "race");
+      await held.sending;
+      const viaReply = deliverReply(tools, "race", [ADA.id]).catch((error: unknown) => error);
+      held.release();
+      outcomes.push(await viaTool, await viaReply);
+    });
+    await using session = await journaled(adapter);
+    const held = session.room.holdMessage((content) => content === "race", { error: serverError() });
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [viaTool, viaReply] = outcomes;
+    expect(viaTool).toMatchObject({ details: { kind: DeliveryUnknownError.KIND } });
+    expect(viaReply).toBeInstanceOf(DeliveryUnknownError);
+    expect(attempts(session.platform)).toEqual(["race"]);
+  });
+
+  it("still refuses a resend the coalescer cannot recognize: the turn's fence holds it", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      outcomes.push(await sendTool(tools, "held", ["@ada"]));
+      // An id-only mention names Ada too, but without the roster it is another key.
+      outcomes.push(await sendTool(tools, "held", [{ id: ADA.id }]));
+    });
+    await using session = await journaled(adapter);
+    session.room.holdMessage((content) => content === "held", { error: serverError() }).release();
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    expect(outcomes[1]).toMatchObject({ details: { kind: "fenced" } });
+    expect(attempts(session.platform)).toEqual(["held"]);
+  });
+});
+
+describe("A reply and a model send of the same content in one turn", () => {
+  it("post once when the reply joins the model's send in flight", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      const viaTool = sendTool(tools, "race");
+      await held.sending;
+      const viaReply = deliverReply(tools, "race", [ADA.id]);
+      held.release();
+      outcomes.push(await viaTool, await viaReply);
+    });
+    await using session = await BandPlatform.join(adapter, [ADA]);
+    const held = session.room.holdMessage((content) => content === "race");
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    expect(outcomes[1]).toBe(outcomes[0]);
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["race"]);
+  });
+
+  it("post twice when the reply follows the model's send that already posted", async () => {
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      await sendTool(tools, "same");
+      await deliverReply(tools, "same", [ADA.id]);
+    });
+    await using session = await BandPlatform.join(adapter, [ADA]);
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    expect(session.room.messages.map(({ content }) => content)).toEqual(["same", "same"]);
+  });
+
+  it("never reports a reply as posted when the model's send it joined was refused", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      const viaTool = sendTool(tools, "refused");
+      await held.sending;
+      const viaReply = deliverReply(tools, "refused", [ADA.id]).catch((error: unknown) => error);
+      held.release();
+      outcomes.push(await viaTool, await viaReply);
+    });
+    await using session = await BandPlatform.join(adapter, [ADA]);
+    const held = session.room.holdMessage((content) => content === "refused", { error: forbidden() });
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [viaTool, viaReply] = outcomes;
+    expect(isToolExecutorError(viaTool)).toBe(true);
+    expect(viaReply).toBeInstanceOf(DeliveryFailedError);
+    expect(viaReply).not.toBeInstanceOf(DeliveryUnknownError);
+    expect(session.room.messages).toEqual([]);
+  });
+
+  it("answers the model's send that joined a refused reply with a tool result, never a throw", async () => {
+    const outcomes: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      const viaReply = deliverReply(tools, "refused", [ADA.id]).catch((error: unknown) => error);
+      await held.sending;
+      const viaTool = sendTool(tools, "refused").catch((error: unknown) => ({ threw: error }));
+      held.release();
+      outcomes.push(await viaReply, await viaTool);
+    });
+    await using session = await BandPlatform.join(adapter, [ADA]);
+    const held = session.room.holdMessage((content) => content === "refused", { error: forbidden() });
+
+    await session.room.outcome(await session.room.say(ADA.id, ASK));
+
+    const [viaReply, viaTool] = outcomes;
+    expect(viaReply).toBeInstanceOf(DeliveryFailedError);
+    expect(viaTool).toMatchObject({ ok: false, toolName: SEND_MESSAGE_TOOL_NAME, errorType: "ToolExecutionError" });
+    expect(attempts(session.platform)).toEqual(["refused"]);
   });
 });

@@ -38,7 +38,8 @@ import { journalingTools } from "./journal/journalTools";
 import { deliveringMessages } from "./messageDelivery";
 import type { MessageDelivery } from "../client/rest/messageDelivery";
 import { bestEffort, GenerationClosedError, TurnJournal, type JournalGeneration } from "./journal/TurnJournal";
-import { hasErrorCode, type RoomJournal, type UnresolvedPublication } from "./journal/RoomJournal";
+import type { RoomJournal, UnresolvedPublication } from "./journal/RoomJournal";
+import { hasErrorCode } from "./journal/records";
 import { PublicationEngine } from "./journal/publication";
 import { canonicalPlatformIdentity } from "./journal/identity";
 
@@ -76,7 +77,7 @@ export interface PlatformRuntimeOptions {
 const TURN_MARK = { bestEffort: true } as const;
 
 /** How many room journals a start's recovery opens at once; the rest queue. */
-const RECOVERY_SLOTS = 8;
+export const RECOVERY_SLOTS = 8;
 
 /**
  * A turn's message as settling sees it: Band holds and settles it (`settles`),
@@ -99,6 +100,8 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly journals?: TurnJournal;
   /** The start in flight's journal generation: its rooms, the ownership it holds, and the publications it admitted. */
   private generation?: JournalGeneration;
+  /** A start's journal activation in flight; it installs `generation`, which a stop superseding the start closes. */
+  private activation?: Promise<void>;
   /**
    * The room admissions recovering a start open their journals at a bounded
    * pace: a platform admitting hundreds of rooms at once would otherwise open
@@ -107,7 +110,6 @@ export class PlatformRuntime implements AsyncDisposable {
    */
   private recoverySlots = RECOVERY_SLOTS;
   private readonly recoveryQueue: Array<() => void> = [];
-  /** Each room's in-flight inbound message, if any: the publication the room's replies settle under. */
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -636,23 +638,14 @@ export class PlatformRuntime implements AsyncDisposable {
     // while I was awaiting?" — a status comparison cannot, because a stop
     // followed by a replacement start is back in `"starting"`, just not this one.
     const startState = this.lifecycle.state;
-    // The generation this start activates, if any: its cleanup must release that
-    // generation alone, never whatever a successor has since installed in the slot.
-    const own: { generation?: JournalGeneration } = {};
 
     try {
-      await this.doStart(adapter, startState, own);
+      await this.doStart(adapter, startState);
     } catch (error) {
       // A superseded start owns nothing, and a cleanup that already reached a
       // terminal state keeps its own outcome.
       if (this.lifecycle.isCurrent(startState)) {
         this.lifecycle.fail(error, START_CLEANUP_TRIGGER);
-      } else if (own.generation !== undefined && this.generation === own.generation) {
-        // The superseding stop's generation close may have run before this
-        // start activated its generation; if the slot still holds this start's
-        // own generation, it gives back its rooms and ownership here rather
-        // than leaking them past a successor.
-        await this.closeGeneration();
       }
       throw error;
     }
@@ -662,7 +655,7 @@ export class PlatformRuntime implements AsyncDisposable {
     }
   }
 
-  private async doStart(adapter: FrameworkAdapter, startState: RuntimeLifecycleState, own: { generation?: JournalGeneration }): Promise<void> {
+  private async doStart(adapter: FrameworkAdapter, startState: RuntimeLifecycleState): Promise<void> {
     const assertNotSuperseded = (): void => {
       if (!this.lifecycle.isCurrent(startState)) {
         throw new RuntimeStateError("PlatformRuntime start was superseded by stop()");
@@ -675,8 +668,15 @@ export class PlatformRuntime implements AsyncDisposable {
     // serves writes under it, and a start that takes it and then fails gives it back on
     // its cleanup, so a successor start never finds a stale owner.
     if (this.journals) {
-      this.generation = await this.journals.activate(this.journalIdentity());
-      own.generation = this.generation;
+      const activation = this.journals.activate(this.journalIdentity()).then((generation) => {
+        this.generation = generation;
+      });
+      this.activation = activation;
+      try {
+        await activation;
+      } finally {
+        if (this.activation === activation) this.activation = undefined;
+      }
     }
     assertNotSuperseded();
     // Relays link changes until `stop()` unsubscribes, since a borrowed link can outlive this runtime.
@@ -1117,14 +1117,7 @@ export class PlatformRuntime implements AsyncDisposable {
         const delivering = message.settles
           ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
           : journaled;
-        // The turn's origin stands on the tools themselves: a call that
-        // reaches them through a long-lived transport — an MCP bridge a turn
-        // opened, a server that outlives its turns — or from outside the
-        // turn's async context at all — a channel callback, direct work, a
-        // handoff that outlives the turn — runs in the scope of the turn
-        // that composed the tools it reached, and settles under that turn's
-        // inbound. Never under the context the call was created in, and
-        // never under whatever the room is turning to next.
+        // A call settles under this turn's inbound however it reaches the tools.
         const tools = scopeTurnTools(
           revokedOnStop(delivering, stopped),
           message.settles ? messageId : undefined,
@@ -1354,30 +1347,21 @@ export class PlatformRuntime implements AsyncDisposable {
       if (hasErrorCode(error, "ENOENT")) return;
       throw error;
     }
-    // Track before opening so a concurrent force release drains this announce
-    // instead of closing the handle mid-recover (which would return [] and skip
-    // admit-time delivery.unrecorded). Release stays outside the tracked promise
-    // so closeRoomNow waiting on us cannot deadlock with our finally awaiting it.
-    let finish!: () => void;
-    let fail!: (reason?: unknown) => void;
-    const tracked = new Promise<void>((resolve, reject) => {
-      finish = resolve;
-      fail = reject;
-    });
-    generation.trackInflight(tracked, roomId);
     try {
-      await this.withRecoverySlot(async () => {
+      // Tracked, so a release of the room waits for the announce rather than
+      // close the handle mid-recovery; tracked only once no release stands, or
+      // that release would wait on an open that waits on it.
+      await generation.trackOnceReleased(roomId, () => this.withRecoverySlot(async () => {
         const journal = await generation.room(roomId);
         await this.announceUnresolvedPublications(journal, roomId);
-      });
-      finish();
+      }));
     } catch (error) {
-      fail(error);
-      throw error;
+      // The room's handling stopped first: there is no one to announce to.
+      if (!(error instanceof GenerationClosedError)) throw error;
     } finally {
       // An idle room holds no file open: the handle is released once its
       // publications stand reported, and a turn running in the room reopens it.
-      await generation.release(roomId).catch(() => undefined);
+      await bestEffort(() => generation.release(roomId), this.logger, "Failed to close a room's turn journal after announcing it", { roomId });
     }
   }
 
@@ -1408,6 +1392,9 @@ export class PlatformRuntime implements AsyncDisposable {
    * journal failure: it is logged, never the stop's failure.
    */
   private async closeGeneration(): Promise<void> {
+    // A start this stop superseded may still be activating: the ownership it is
+    // taking is given back here, before the stop reports the journal free.
+    await this.activation?.catch(() => undefined);
     const generation = this.generation;
     if (!generation) return;
     this.generation = undefined;

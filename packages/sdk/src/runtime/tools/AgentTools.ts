@@ -1,13 +1,11 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
-import { DeliveryUnknownError } from "../../core/deliveryFailedError";
-import { currentDelivery } from "../messageDelivery";
+import { currentDelivery, toolErrorResult } from "../messageDelivery";
 import { currentTurnInbound } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
-import { JournalPublicationError } from "../journal/errors";
 import type { PublicationEngine } from "../journal/publication";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
-import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
+import { mentionLabel, normalizeMentionHandle, toParticipantRecord, toParticipantRecordFromRest, toPlatformMessage } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { fetchContextPage, listAllPeers, readRoomHistoryPage } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
@@ -464,55 +462,7 @@ export class AgentTools implements AgentToolsProtocol {
       }
       return result;
     } catch (error) {
-      if (isToolExecutorError(error)) {
-        return error;
-      }
-
-      // A delivery that is unknown stays unknown across the tool boundary:
-      // the classification rides in `details`, so an MCP result or a direct
-      // ToolExecutorError tells callers Band may already hold the message.
-      if (error instanceof DeliveryUnknownError) {
-        return createToolExecutorError({
-          errorType: "ToolExecutionError",
-          toolName,
-          message: error.message,
-          legacyMessage: `Error executing ${toolName}: ${error.message}`,
-          details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
-        });
-      }
-
-      // A journal that will not admit the reply is a routine refusal, not an
-      // unexpected break: convert it without the unexpected-error log.
-      if (error instanceof JournalPublicationError) {
-        return createToolExecutorError({
-          errorType: "ToolExecutionError",
-          toolName,
-          message: error.message,
-          legacyMessage: `Error executing ${toolName}: ${error.message}`,
-          details: { kind: error.kind },
-        });
-      }
-
-      if (error instanceof ValidationError) {
-        return createToolExecutorError({
-          errorType: "ToolArgumentsValidationError",
-          toolName,
-          message: error.message,
-          legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
-        });
-      }
-
-      // Unlike the branches above (routine, expected failures), reaching
-      // here means something unclassified broke - log it so it's debuggable,
-      // since createToolExecutorError below only returns it as tool-call data.
-      this.logger.error("unexpected tool execution error", { toolName, error });
-      const message = error instanceof Error ? error.message : String(error);
-      return createToolExecutorError({
-        errorType: "ToolExecutionError",
-        toolName,
-        message,
-        legacyMessage: `Error executing ${toolName}: ${message}`,
-      });
+      return toolErrorResult(toolName, error, this.logger);
     }
   }
 
@@ -811,7 +761,7 @@ export class AgentTools implements AgentToolsProtocol {
       participantsById.set(ref.id, ref);
       const handle = participant.handle;
       if (typeof handle === "string") {
-        participantsByHandle.set(this.normalizeMentionHandle(handle), ref);
+        participantsByHandle.set(normalizeMentionHandle(handle), ref);
       }
       const name = participant.name;
       if (typeof name === "string" && name.trim().length > 0) {
@@ -828,7 +778,7 @@ export class AgentTools implements AgentToolsProtocol {
         return byId;
       }
 
-      const normalized = this.normalizeMentionHandle(mention);
+      const normalized = normalizeMentionHandle(mention);
       const found = participantsByHandle.get(normalized);
       if (found) {
         return found;
@@ -848,10 +798,6 @@ export class AgentTools implements AgentToolsProtocol {
     assertCapability(this.capabilities, "peers");
     const peers = await listAllPeers(this.rest, { notInChat: this.roomId }, DEFAULT_REQUEST_OPTIONS);
     return peers.find((peer) => String(peer.name ?? "").toLowerCase() === target) ?? null;
-  }
-
-  private normalizeMentionHandle(handle: string): string {
-    return handle.trim().replace(/^@+/, "").toLowerCase();
   }
 
   private buildAdapterTools(): AdapterToolsProtocol {

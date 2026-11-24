@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveLogger, type Logger } from "../../core/logger";
@@ -8,9 +8,12 @@ import { Serializer } from "../../core/singleFlight";
 import { JournalFileError, JournalPublicationError } from "./errors";
 import {
   JOURNAL_FORMAT_VERSION,
+  compactingCopyName,
+  compactingCopyTarget,
   identityDirectoryComponent,
   journalHeaderSchema,
   journalRecordSchema,
+  readTextIfExists,
   roomFileComponent,
   type JournalHeader,
   type JournalRecord,
@@ -20,15 +23,15 @@ import {
 
 export type { PublicationOutcome };
 
+/** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
+export function roomFileName(roomId: string): string {
+  return `${roomFileComponent(roomId)}.jsonl`;
+}
+
 /** A journal read or write failure; `file` is the path that failed. */
 export function journalFileFailure(error: unknown, file: string): JournalFileError {
   if (error instanceof JournalFileError) return error;
   return new JournalFileError("Turn journal I/O failed", "io", file, error);
-}
-
-/** Whether `error` is a file system error with `code`. */
-export function hasErrorCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 /**
@@ -45,14 +48,12 @@ export async function syncDirectory(dir: string): Promise<void> {
   }
 }
 
-const COMPACTING_COPY = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.compacting$/;
-
 /** Removes the copies of `file` a crash left mid-rewrite; they never replaced it. */
 export async function removeOrphanedCopies(file: string): Promise<void> {
   const dir = path.dirname(file);
   const base = path.basename(file);
   for (const name of await readdir(dir)) {
-    if (name.startsWith(base) && COMPACTING_COPY.test(name.slice(base.length))) {
+    if (compactingCopyTarget(name) === base) {
       await rm(path.join(dir, name), { force: true });
     }
   }
@@ -60,40 +61,11 @@ export async function removeOrphanedCopies(file: string): Promise<void> {
 
 /** Replaces `file` with `text`, through a renamed copy so a crash leaves the old file or the new one. */
 export async function rewriteFile(file: string, text: string): Promise<void> {
-  const copy = `${file}.${randomUUID()}.compacting`;
+  const copy = compactingCopyName(file);
   try {
     const handle = await open(copy, "w");
     try {
       await handle.writeFile(text, "utf8");
-      await handle.datasync();
-    } finally {
-      await handle.close();
-    }
-    await rename(copy, file);
-  } catch (error) {
-    await rm(copy, { force: true });
-    throw error;
-  }
-  await syncDirectory(path.dirname(file));
-}
-
-/**
- * Lands `reply.refused` after the FileHandle compacting rewrite failed: path-based
- * `writeFile` plus datasync, so a never-posted refusal is not left as recoverable
- * pending when only the handle write path is broken. The caller still surfaces the
- * primary failure and keeps the writer poisoned.
- */
-async function landRefuseDurable(
-  file: string,
-  whole: string[],
-  record: { t: "reply.refused"; messageId: string; publicationId: string; at: number },
-): Promise<void> {
-  const text = `${whole.join("\n")}\n${toLine(record)}`;
-  const copy = `${file}.${randomUUID()}.compacting`;
-  try {
-    await writeFile(copy, text, "utf8");
-    const handle = await open(copy, "r+");
-    try {
       await handle.datasync();
     } finally {
       await handle.close();
@@ -129,6 +101,8 @@ export interface UnresolvedPublication {
   outcome: "pending" | "unknown";
   at: number;
 }
+
+type RefusedRecord = { t: "reply.refused"; messageId: string; publicationId: string; at: number };
 
 interface InboundIndex {
   answered: boolean;
@@ -210,17 +184,14 @@ export class RoomJournal {
           file,
         );
       }
-      if (path.basename(file) !== `${roomFileComponent(options.roomId)}.jsonl`) {
+      if (path.basename(file) !== roomFileName(options.roomId)) {
         throw new JournalFileError(
           `The room's journal must live at the file its room id hashes to; this file is not that file, so its records are not this room's`,
           "corrupt",
           file,
         );
       }
-      const text = await readFile(file, "utf8").catch((error: unknown) => {
-        if (hasErrorCode(error, "ENOENT")) return null;
-        throw error;
-      });
+      const text = await readTextIfExists(file);
       if (text === null) {
         // A new file: its header is durable before its directory entry is not.
         await rewriteFile(file, headerLine(options.platformIdentity, options.agentId, options.roomId, now()));
@@ -403,42 +374,29 @@ export class RoomJournal {
 
   /**
    * Records that Band answered and saved nothing, or that a cut-short reply
-   * never posted: the reply is definitely not in the room. Refusal must stand
-   * durably — if append fails (or the writer is already poisoned from that
-   * failure), the valid prefix is rewritten with `reply.refused` so a reopen
-   * does not announce pending/unrecorded for a never-posted reply. A successful
-   * refuse rewrite clears poison only when *this* refuse append caused it;
-   * an owed settlement or unknown write another publication lost stays poisoned
-   * until the handle reopens.
+   * never posted: the reply is definitely not in the room. The refusal must
+   * stand, or a reopen announces a reply that never posted: when the writer
+   * does not admit, or the append fails, it lands through a synced rewrite.
+   * Neither path clears poison: a writer that lost a write it owed admits
+   * again only once it reopens.
    */
   public async markRefused(messageId: string, publicationId: string): Promise<void> {
     if (this.closed) {
       throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
     }
     const at = this.now();
-    const record = { t: "reply.refused" as const, messageId, publicationId, at };
-    // Only heal poison this refuse append itself caused; foreign owed debt stays.
-    let clearPoisonOnRewrite = false;
-    if (!this.poisoned) {
+    const record: RefusedRecord = { t: "reply.refused", messageId, publicationId, at };
+    // Whatever the disk says, Band does not hold the reply.
+    this.applyRefused(messageId, publicationId, at);
+    if (this.accepting) {
       try {
         await this.append(record);
-        this.applyRefused(messageId, publicationId, at);
         return;
-      } catch {
-        // Append may have torn the file and poisoned the writer; refuse must
-        // still land so recovery does not treat a never-posted intent as unknown.
-        clearPoisonOnRewrite = true;
+      } catch (error) {
+        this.logger.warn("Failed to append a refusal; rewriting the journal to land it", { roomId: this.roomId, file: this.file, error });
       }
     }
-    try {
-      await this.rewriteRefused(record, { clearPoisonOnRewrite });
-    } catch (error) {
-      // Emergency land may have written refuse before the throw; sync memory
-      // either way so this handle does not keep a rolled-forward pending slot.
-      this.applyRefused(messageId, publicationId, at);
-      throw error;
-    }
-    this.applyRefused(messageId, publicationId, at);
+    await this.rewriteRefused(record);
   }
 
   /** Records that whether Band has the reply is unknown: it may already be in the room. */
@@ -508,67 +466,57 @@ export class RoomJournal {
   }
 
   /**
-   * Rewrites the file's valid prefix plus a durable `reply.refused`, then
-   * rebinds the append handle. Used when an append failed (or left the writer
-   * poisoned) so a never-posted refusal cannot reopen as pending.
-   * `clearPoisonOnRewrite` is set only when this refuse's own append caused the
-   * poison; an unrelated owed write stays non-admitting until reopen.
+   * Rewrites the file's whole lines plus `record`, synced, then reopens the
+   * append handle. The handle is closed first: a file cannot be renamed over
+   * while it is open on Windows. A line equal to `record` is the refusal's own
+   * failed append, unsynced; the rewrite carries it once.
    */
-  private rewriteRefused(
-    record: { t: "reply.refused"; messageId: string; publicationId: string; at: number },
-    { clearPoisonOnRewrite }: { clearPoisonOnRewrite: boolean },
-  ): Promise<void> {
+  private rewriteRefused(record: RefusedRecord): Promise<void> {
     return this.writes.run(async () => {
       if (this.closed) {
         throw new JournalPublicationError("The room's journal is closed; its handling stopped", "closed");
       }
-      let whole: string[] | undefined;
+      const line = JSON.stringify(record);
       try {
         const text = await readFile(this.file, "utf8");
-        const complete = text.endsWith("\n");
         const lines = text.split("\n");
-        if (!complete) lines.pop();
-        whole = (complete ? lines.slice(0, -1) : lines).filter((line) => line !== "");
-        const last = whole[whole.length - 1];
-        if (last !== undefined) {
-          try {
-            const parsed = JSON.parse(last) as { t?: string; publicationId?: string };
-            if (parsed.t === "reply.refused" && parsed.publicationId === record.publicationId) {
-              // Append wrote the refuse line but failed its sync: the refusal
-              // already stands; rebind onto the rewritten inode path.
-              await this.handle.close().catch(() => undefined);
-              this.handle = await open(this.file, "a");
-              if (clearPoisonOnRewrite) this.poisoned = false;
-              this.lineCut = false;
-              return;
-            }
-          } catch {
-            // Last line is not a refuse record; continue with rewrite.
-          }
+        // Only whole lines stand: a torn tail has no newline after it.
+        lines.pop();
+        const kept = lines.filter((whole) => whole !== "" && whole !== line);
+        await this.closeHandle();
+        try {
+          await rewriteFile(this.file, [...kept, line].map((whole) => `${whole}\n`).join(""));
+        } finally {
+          await this.reopenHandle();
         }
-        await rewriteFile(this.file, `${whole.join("\n")}\n${toLine(record)}`);
-        await this.handle.close().catch(() => undefined);
-        this.handle = await open(this.file, "a");
-        if (clearPoisonOnRewrite) this.poisoned = false;
-        this.lineCut = false;
       } catch (error) {
-        // Primary compacting rewrite failed: stay poisoned and surface the
-        // failure. Still try to land refuse via path-based write so a
-        // never-posted intent is not left as recoverable pending on reopen.
         this.poisoned = true;
-        if (whole !== undefined) {
-          try {
-            await landRefuseDurable(this.file, whole, record);
-            await this.handle.close().catch(() => undefined);
-            this.handle = await open(this.file, "a");
-            this.lineCut = false;
-          } catch {
-            // Emergency land failed too; reopen may still see the intent.
-          }
-        }
         throw journalFileFailure(error, this.file);
       }
     });
+  }
+
+  /** Closes the append handle, logging a failure: the rewrite that follows owns the file's state. */
+  private async closeHandle(): Promise<void> {
+    try {
+      await this.handle.close();
+    } catch (error) {
+      this.logger.warn("Failed to close a room journal's handle before rewriting it", { roomId: this.roomId, file: this.file, error });
+    }
+  }
+
+  /**
+   * Opens the append handle again after a rewrite. One that will not open
+   * leaves the writer poisoned, its closed handle in place for `close()`.
+   */
+  private async reopenHandle(): Promise<void> {
+    try {
+      this.handle = await open(this.file, "a");
+      this.lineCut = false;
+    } catch (error) {
+      this.poisoned = true;
+      this.logger.warn("Failed to reopen a room journal after rewriting it; it admits no records until it reopens", { roomId: this.roomId, file: this.file, error });
+    }
   }
 
   private append(record: Record<string, unknown>): Promise<void> {

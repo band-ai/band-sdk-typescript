@@ -5,16 +5,24 @@ import type { MentionInput } from "../contracts/dtos";
 import {
   createToolExecutorError,
   isFailedToolOutput,
+  isToolExecutorError,
   type AdapterToolsProtocol,
+  type ToolExecutorError,
 } from "../contracts/protocols";
 import { SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
 import {
+  DeliveryFailedError,
   DeliveryUnknownError,
   deliveryUnknownPublicationId,
+  deliveryUnknownToolError,
   isDeliveryUnknownOutput,
 } from "../core/deliveryFailedError";
+import { ValidationError } from "../core/errors";
+import type { Logger } from "../core/logger";
 import { overrideTools } from "../core/overrideTools";
 import { bandToolOverrides } from "../core/turn";
+import { normalizeMentionHandle } from "./formatters";
+import { JournalPublicationError } from "./journal/errors";
 
 /** The delivery of the turn whose tool call is running, in that call's async scope. */
 const deliveryScope = new AsyncLocalStorage<MessageDelivery>();
@@ -49,6 +57,35 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
 }
 
 /**
+ * A tool call's thrown failure as the ToolExecutorError result model and MCP
+ * callers read. Routine refusals keep their classification; anything
+ * unclassified is reported to `logger` as unexpected.
+ */
+export function toolErrorResult(toolName: string, error: unknown, logger?: Logger): ToolExecutorError {
+  if (isToolExecutorError(error)) return error;
+  if (error instanceof DeliveryUnknownError) return deliveryUnknownToolError(toolName, error);
+  if (error instanceof ValidationError) {
+    return createToolExecutorError({
+      errorType: "ToolArgumentsValidationError",
+      toolName,
+      message: error.message,
+      legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
+    });
+  }
+  // A journal that will not admit the reply is a routine refusal, not an unexpected break.
+  const details = error instanceof JournalPublicationError ? { kind: error.kind } : undefined;
+  if (details === undefined) logger?.error("unexpected tool execution error", { toolName, error });
+  const message = error instanceof Error ? error.message : String(error);
+  return createToolExecutorError({
+    errorType: "ToolExecutionError",
+    toolName,
+    message,
+    legacyMessage: `Error executing ${toolName}: ${message}`,
+    ...(details !== undefined ? { details } : {}),
+  });
+}
+
+/**
  * One coalesce map for `executeToolCall(band_send_message)` and direct
  * `sendMessage`. In-flight and delivery_unknown (resolved tool error or
  * thrown DeliveryUnknownError) keep the key so a same-content retry cannot
@@ -58,9 +95,9 @@ export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, del
  * delivery_unknown standings — never a retained tool-door success.
  *
  * The map stores the raw first-call promise. Each door adapts at exit so the
- * other door's contract still holds: send never resolves a delivery_unknown
- * ToolExecutorError as success (rejects DeliveryUnknownError); tool never
- * throws a standing DeliveryUnknownError (resolves ToolExecutorError).
+ * other door's contract still holds: send never resolves a failed tool result
+ * as a post (it rejects, DeliveryUnknownError for an unknown delivery); tool
+ * never throws (it resolves the ToolExecutorError the call would have).
  */
 function coalesceSendMessage(
   execute: AdapterToolsProtocol["executeToolCall"],
@@ -116,30 +153,18 @@ function coalesceSendMessage(
   return {
     executeToolCall: (toolName, args) => {
       if (toolName !== SEND_MESSAGE_TOOL_NAME) return execute(toolName, args);
+      // A joined send-door call rejects; model/MCP callers read a result.
       return admit(args.content, args.mentions, () => execute(toolName, args), true, true).catch(
-        (error: unknown) => {
-          // Send-door delivery_unknown rejects; the tool door must resolve a
-          // ToolExecutorError so model/MCP callers see structured failure data.
-          if (error instanceof DeliveryUnknownError) {
-            return createToolExecutorError({
-              errorType: "ToolExecutionError",
-              toolName: SEND_MESSAGE_TOOL_NAME,
-              message: error.message,
-              legacyMessage: `Error executing ${SEND_MESSAGE_TOOL_NAME}: ${error.message}`,
-              details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
-            });
-          }
-          throw error;
-        },
+        (error: unknown) => toolErrorResult(toolName, error),
       );
     },
     sendMessage: (content, mentions) =>
       admit(content, mentions, () => sendMessage(content, mentions), false, false).then((result) => {
-        // Tool-door delivery_unknown resolves a ToolExecutorError; the send
-        // door must reject so deliverReply never treats it as a successful post.
+        // A joined tool-door call resolves its failure; a reply must never take it for a post.
         if (isDeliveryUnknownOutput(result)) {
           throw new DeliveryUnknownError(result, deliveryUnknownPublicationId(result));
         }
+        if (isFailedToolOutput(result)) throw new DeliveryFailedError(result);
         return result;
       }),
   };
@@ -180,8 +205,4 @@ function coalesceMentionToken(mention: unknown): string {
     if (typeof ref.id === "string") return `id:${ref.id.toLowerCase()}`;
   }
   return JSON.stringify(mention);
-}
-
-function normalizeMentionHandle(handle: string): string {
-  return handle.trim().replace(/^@+/, "").toLowerCase();
 }

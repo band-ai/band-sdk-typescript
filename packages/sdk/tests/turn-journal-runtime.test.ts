@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -20,6 +19,7 @@ import { NoopLogger } from "../src/core/logger";
 import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
+import { RECOVERY_SLOTS } from "../src/runtime/PlatformRuntime";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal, agentJournalDir } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
@@ -30,7 +30,7 @@ import type { ContactEventConfig, SessionConfig } from "../src/runtime/types";
 import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot, type HeldCall } from "./testUtils";
-import { IDENTITY, diskFull, holdJournalAppend, interceptJournalAppends, journalLines, recordTypes, roomFile } from "./turnJournalSupport";
+import { IDENTITY, diskFull, flushMicrotasks, holdJournalAppend, interceptJournalAppends, journalLines, recordTypes, roomFile } from "./turnJournalSupport";
 
 const OWNER = "owner";
 const ROOM = "room-1";
@@ -500,6 +500,50 @@ describe("the turn journal across a restart", () => {
   });
 });
 
+describe("a turn's parallel replies", () => {
+  type Reply = (tools: Parameters<Handler>[0]["tools"], content: string) => Promise<unknown>;
+  const doors: Array<[string, Reply, object]> = [
+    ["a direct reply", (tools, content) => tools.sendMessage(content, ["@owner"]).catch((error: unknown) => error), { cause: { kind: "fenced" } }],
+    ["the model's tool call", (tools, content) => tools.executeToolCall("band_send_message", { content, mentions: ["@owner"] }), { details: { kind: "fenced" } }],
+  ];
+
+  it.each(doors)("holds %s made while the turn's earlier reply is in flight, and refuses it once that delivery is unknown", async (_door, reply, fenced) => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    // The platform holds the first reply's post, then answers it with 503: it may hold the reply, and cannot say.
+    const posts: string[] = [];
+    const firstPosting = createDeferred();
+    const failFirst = createDeferred();
+    const original = platform.rest.createChatMessage.bind(platform.rest);
+    const spy = vi.spyOn(platform.rest, "createChatMessage").mockImplementation(async (roomId, message, options) => {
+      posts.push(message.content);
+      if (message.content === "first") {
+        firstPosting.resolve();
+        await failFirst.promise;
+        throw new BandError({ statusCode: 503, body: { error: { code: "server_error", message: "Service unavailable", request_id: "req-1" } } });
+      }
+      return original(roomId, message, options);
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    let second: unknown;
+    await startProcess(platform, tmpRoot(), async ({ tools }) => {
+      const first = reply(tools, "first");
+      await firstPosting.promise;
+      // A parallel reply, made while the first one's outcome is still open.
+      const parallel = reply(tools, "second");
+      failFirst.resolve();
+      await first;
+      second = await parallel;
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await platform.rest.settled.next((settled) => settled.messageId === inbound);
+
+    expect(second).toMatchObject(fenced);
+    expect(posts).toEqual(["first"]);
+  });
+});
+
 describe("an unresolved publication through a restart", () => {
   it("recovers a durably settled reply's message without calls, and reports the one whose delivery stands unknown", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
@@ -707,26 +751,32 @@ describe("an unresolved publication with no inbound to ride on", () => {
       await journal.markUnknown("m-race", publicationId);
     });
 
-    // Hold recover until force release has started: without roomInflight tracking,
-    // close would finish mid-hold and recover would return [] (no delivery.unrecorded).
+    // Hold the admit-time recovery while the room is left: the force release
+    // must wait for it rather than close the handle under it.
     const entered = createDeferred();
     const hold = createDeferred();
+    let recovered: Promise<unknown> | undefined;
     const recover = RoomJournal.prototype.recoverUnresolved;
-    const spy = vi.spyOn(RoomJournal.prototype, "recoverUnresolved").mockImplementation(async function (this: RoomJournal) {
-      entered.resolve();
-      await hold.promise;
-      return recover.call(this);
+    const spy = vi.spyOn(RoomJournal.prototype, "recoverUnresolved").mockImplementation(function (this: RoomJournal) {
+      recovered = (async () => {
+        entered.resolve();
+        await hold.promise;
+        return recover.call(this);
+      })();
+      return recovered as ReturnType<RoomJournal["recoverUnresolved"]>;
     });
     onTestFinished(() => spy.mockRestore());
 
-    const starting = startProcess(platform, journalDir, async () => undefined);
+    const { events } = await startProcess(platform, journalDir, async () => undefined);
     await entered.promise;
 
     const removed = room.remove();
-    // Give force release a turn to observe an empty inflight set if tracking were missing.
-    await Promise.resolve();
+    await events.next((event) => event.type === "room.stopped" && event.roomId === ROOM);
+    // The force release needs no I/O to reach the room's close: once the
+    // microtasks run out it has closed the handle, or it is waiting on the recovery.
+    await flushMicrotasks();
     hold.resolve();
-    const { events } = await starting;
+    expect(await recovered).toEqual([expect.objectContaining({ messageId: "m-race" })]);
     await removed;
     await events.next((event) => event.type === "delivery.unrecorded");
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: "m-race" }]);
@@ -1076,29 +1126,35 @@ describe("the turn journal against a failed start and a stale generation", () =>
     expect(await room.outcome(await room.say(OWNER, `${MENTION} one`))).toBe("processed");
     expect(await runtime.stop()).toBe(true);
 
-    // A new start activates the journal, held here until the stop below superseded it.
+    // A new start takes the journal's ownership, and its activation is held there.
     const originalActivate = TurnJournal.prototype.activate;
     const activateHeld = createDeferred();
-    const activateStarted = createDeferred();
-    const held = vi.spyOn(TurnJournal.prototype, "activate").mockImplementationOnce(function (this: TurnJournal, ...args: [identity: string]) {
-      activateStarted.resolve();
-      return (async () => {
-        await activateHeld.promise;
-        return originalActivate.apply(this, args);
-      })();
+    const ownershipTaken = createDeferred();
+    const held = vi.spyOn(TurnJournal.prototype, "activate").mockImplementationOnce(async function (this: TurnJournal, ...args: [identity: string]) {
+      const generation = await originalActivate.apply(this, args);
+      ownershipTaken.resolve();
+      await activateHeld.promise;
+      return generation;
     });
     onTestFinished(() => held.mockRestore());
 
-    const superseded = runtime.start(new GenericAdapter(answers));
-    await activateStarted.promise;
-    // The stop takes over while the start holds its activation.
-    expect(await runtime.stop()).toBe(true);
-    // The start activates its generation, finds itself superseded, and gives its ownership back.
+    const superseded = runtime.start(new GenericAdapter(answers)).catch((error: unknown) => error);
+    await ownershipTaken.promise;
+    // The stop takes over while the start's activation holds the ownership: it
+    // does not report the journal free while that activation still holds it.
+    let stopped = false;
+    const stopping = runtime.stop().then((graceful) => {
+      stopped = true;
+      return graceful;
+    });
+    await flushMicrotasks();
+    expect(stopped).toBe(false);
     activateHeld.resolve();
-    await expect(superseded).rejects.toThrow("superseded");
+    expect(await stopping).toBe(true);
 
     // The successor start takes the same journal root and agent without contending for it.
     await runtime.start(new GenericAdapter(answers));
+    expect(await superseded).toMatchObject({ message: expect.stringContaining("superseded") });
     expect(await room.outcome(await room.say(OWNER, `${MENTION} two`))).toBe("processed");
     expect(await journalRecords(journalDir)).toEqual([
       "reply.intent", "reply.settled", "turn.done",
@@ -1383,24 +1439,14 @@ describe("what the turn journal records and reports", () => {
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
     const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
-    // Two intents for one inbound must be seeded as raw records: beginReply
-    // fences a second pending publication for the same inbound.
-    const seeded = journalFile(journalDir, ROOM);
-    await mkdir(path.dirname(seeded), { recursive: true });
-    await writeFile(
-      seeded,
-      [
-        JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT_ID, roomId: ROOM, at: 1 }),
-        JSON.stringify({ t: "reply.intent", messageId: inbound, publicationId: "pub-a", at: 2 }),
-        JSON.stringify({ t: "reply.intent", messageId: inbound, publicationId: "pub-b", at: 3 }),
-      ].map((line) => `${line}\n`).join(""),
-    );
-
-    // Pending unresolved publications fence a replacement POST for this inbound;
-    // settle the re-run with a decline (same as delivery_unknown restart).
-    const { events } = await startProcess(platform, journalDir, async ({ tools }) => {
-      await tools.executeToolCall("band_no_reply", { reason: "already reported as unrecorded" });
+    // An earlier process began two replies to the inbound and recorded neither's outcome.
+    await seedRoomRecords(journalDir, ROOM, async (journal) => {
+      await journal.beginReply(inbound);
+      await journal.beginReply(inbound);
     });
+
+    // The fence is the turn's own: the restarted turn reruns and posts its reply.
+    const { events } = await startProcess(platform, journalDir, answers);
 
     expect(await room.outcome(inbound)).toBe("processed");
     // Each publication the journal still cannot confirm is reported, none hidden under an older marker.
@@ -1408,9 +1454,10 @@ describe("what the turn journal records and reports", () => {
       { type: "delivery.unrecorded", roomId: ROOM, messageId: inbound },
       { type: "delivery.unrecorded", roomId: ROOM, messageId: inbound },
     ]);
+    expect(room.messages.map((posted) => posted.content)).toEqual(["answered"]);
     expect(await journalRecords(journalDir)).toEqual([
       "reply.intent", "reply.intent", "publication.reported", "publication.reported",
-      "decline.settled", "turn.done",
+      "reply.intent", "reply.settled", "turn.done",
     ]);
   });
 
@@ -1679,60 +1726,46 @@ describe("a reply's origin across turns", () => {
 });
 
 describe("the recovery resource budget", () => {
-  it("bounds the descriptors a start opens while it recovers hundreds of standing rooms", async (ctx) => {
+  it("opens a bounded number of journals at once while it recovers hundreds of standing rooms, and closes each", async () => {
+    const ROOMS = 300;
+    const platform = BandPlatform.host([person(OWNER)]);
     const journalDir = tmpRoot();
-    onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    // Measured in a child process: the platform's file-descriptor enumeration
-    // lists only the child's own open files, and a start's recovery is what
-    // would open one journal per standing room.
-    const script = path.join(__dirname, "journalFdBudgetChild.ts");
-    const child = spawn(process.execPath, ["--import", "tsx", script, journalDir, "300"], {
-      cwd: path.join(__dirname, ".."),
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    let out = "";
-    let err = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      out += String(chunk);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      err += String(chunk);
-    });
-    const code = await new Promise<number | null>((resolve) => child.once("exit", (exit) => resolve(exit)));
-    if (code === 3) {
-      throw new Error(`the descriptor gauge could not prove itself sensitive on this platform: ${out}${err}`);
+    // Each room's journal stands with one reply that never settled: start's recovery opens and announces it.
+    const roomIds = Array.from({ length: ROOMS }, (_, i) => `room-${i}`);
+    for (const roomId of roomIds) {
+      await platform.room(roomId);
+      const file = journalFile(journalDir, roomId);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, [
+        JSON.stringify({ t: "header", v: 2, platformIdentity: IDENTITY, agentId: AGENT_ID, roomId, at: 1 }),
+        JSON.stringify({ t: "reply.intent", messageId: `m-${roomId}`, publicationId: `p-${roomId}`, at: 1 }),
+      ].map((line) => `${line}\n`).join(""));
     }
-    if (code !== 0) {
-      throw new Error(`the budget child failed (exit ${code}): ${err || out}`);
-    }
-    const report = JSON.parse(out.trim().split("\n").pop() ?? "{}") as {
-      rooms: number;
-      supported: boolean;
-      control?: { seen: number; leaked: number; before: number; withScratch: number; afterClose: number };
-      baseline?: number;
-      peak?: number;
-      after?: number;
-    };
-    expect(report.rooms).toBe(300);
-    if (!report.supported || report.control === undefined || report.baseline === undefined || report.peak === undefined || report.after === undefined) {
-      // No file-descriptor enumeration stands on this platform (Windows): the
-      // budget proof's measurement does not reach it. Skip as an explicit gap,
-      // never a soft pass.
-      ctx.skip(`the budget proof's descriptor gauge is unavailable on ${process.platform}; the recovery budget is unmeasured there`);
-      return;
-    }
-    // The enumeration showed the three scratch files the child opened, and
-    // showed them no more once closed: without that positive control its
-    // numbers are blind, and the bound below proves nothing.
-    expect(report.control.seen).toBe(3);
-    expect(report.control.leaked).toBe(0);
-    // Recovering 300 standing rooms must not open 300 journals at once: the
-    // descriptors a start adds stay bounded by its recovery slots, not by the
-    // number of rooms it recovers. The enumeration's own few entries and a
-    // handful of churn on either side do not touch a bound an unbounded
-    // recovery misses by hundreds.
-    expect(report.peak - report.baseline).toBeLessThan(64);
-    expect(Math.abs(report.after - report.baseline)).toBeLessThanOrEqual(8);
+    let opening = 0;
+    let peak = 0;
+    const opened: RoomJournal[] = [];
+    const open = RoomJournal.open.bind(RoomJournal);
+    const spy = vi.spyOn(RoomJournal, "open").mockImplementation(async (file, options) => {
+      opening += 1;
+      peak = Math.max(peak, opening);
+      try {
+        const journal = await open(file, options);
+        opened.push(journal);
+        return journal;
+      } finally {
+        opening -= 1;
+      }
+    });
+    onTestFinished(() => spy.mockRestore());
+
+    const { runtime, events } = await startProcess(platform, journalDir, async () => undefined);
+    await events.until(() => reported(events).length === ROOMS);
+    expect(await runtime.stop()).toBe(true);
+
+    // Every standing room was recovered, at most a handful of journals opening at once
+    // (the start's recovery slots), never one per room; and none was left open.
+    expect(opened).toHaveLength(ROOMS);
+    expect(peak).toBeLessThanOrEqual(RECOVERY_SLOTS);
+    expect(opened.filter((journal) => !journal.isClosed)).toEqual([]);
   }, 120_000);
 });

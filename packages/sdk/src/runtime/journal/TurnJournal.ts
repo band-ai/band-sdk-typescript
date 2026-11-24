@@ -4,15 +4,12 @@ import path from "node:path";
 
 import { BandSdkError, ValidationError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
+import { KeyedSingleFlight } from "../../core/singleFlight";
 import { isolateTeardown } from "../../core/teardown";
 
 import { JournalFileError } from "./errors";
-import {
-  agentDirectoryComponent,
-  identityDirectoryComponent,
-  roomFileComponent,
-} from "./records";
-import { RoomJournal, type RoomJournalOptions } from "./RoomJournal";
+import { agentDirectoryComponent, identityDirectoryComponent } from "./records";
+import { RoomJournal, roomFileName, type RoomJournalOptions } from "./RoomJournal";
 import { JournalOwnership } from "./ownership";
 import {
   assertMigrationStartIdentity,
@@ -50,11 +47,6 @@ export function legacyAgentDir(journalDir: string, agentId: string): string {
   return path.join(journalDir, encodeURIComponent(agentId));
 }
 
-/** The name of `roomId`'s journal file: its id hashed, so the id cannot steer the path. */
-export function roomFileName(roomId: string): string {
-  return `${roomFileComponent(roomId)}.jsonl`;
-}
-
 /** The path of `roomId`'s journal file under `dir`, whichever directory holds the room's journals. */
 export function roomJournalFile(dir: string, roomId: string): string {
   return path.join(dir, roomFileName(roomId));
@@ -89,6 +81,12 @@ export interface JournalGeneration {
   release(roomId: string, force?: boolean): Promise<void>;
   /** Tracks a publication the generation admitted, so its stop waits for the outcome. */
   trackInflight(promise: Promise<unknown>, roomId: string): void;
+  /**
+   * Runs `work` tracked against `roomId` once no release of the room is in
+   * progress: a release waits on the room's tracked work, so work that opens
+   * the room must not be tracked while a release it would wait on stands.
+   */
+  trackOnceReleased<T>(roomId: string, work: () => Promise<T>): Promise<T>;
   /** Waits for publications the generation admitted, their outcomes durable. */
   drain(): Promise<void>;
   /** The path of `roomId`'s journal file under this generation's identity. */
@@ -192,7 +190,7 @@ export class TurnJournal {
       await mkdir(identityDir, { recursive: true });
       return new Generation(this, identity, ownership);
     } catch (error) {
-      await ownership.release().catch(() => undefined);
+      await bestEffort(() => ownership.release(), this.logger, "Failed to release the journal's ownership after its activation failed", { agentId: this.agentId });
       throw error;
     }
   }
@@ -201,12 +199,14 @@ export class TurnJournal {
 class Generation implements JournalGeneration {
   public readonly identity: string;
   private readonly rooms = new Map<string, Promise<RoomJournal>>();
+  /** In-flight opens, one per room and release epoch; published into `rooms` only once open. */
+  private readonly opens = new KeyedSingleFlight<RoomJournal>();
   /**
-   * In-flight opens not yet published into `rooms`. A pending open must not
-   * stand in `rooms`: a concurrent force release would close it and the
-   * waiter would receive a closed handle.
+   * Bumped by each forced release of the room: an open that began under an
+   * older epoch closes the handle it opened instead of publishing it, so a
+   * room whose handling stopped keeps no file open, whoever was opening it.
    */
-  private readonly opening = new Map<string, Promise<RoomJournal>>();
+  private readonly epochs = new Map<string, number>();
   /** Rooms being released; reopening one waits, so it reads every record the closing handle wrote. */
   private readonly releasing = new Map<string, Promise<void>>();
   private readonly inflight: Set<Promise<unknown>> = new Set();
@@ -237,41 +237,38 @@ class Generation implements JournalGeneration {
     if (this.closed) return Promise.reject(new GenerationClosedError());
     const existing = this.rooms.get(roomId);
     if (existing) return existing;
-    let opening = this.opening.get(roomId);
-    if (!opening) {
-      opening = this.openRoom(roomId);
-      this.opening.set(roomId, opening);
-      const clear = (): void => {
-        if (this.opening.get(roomId) === opening) this.opening.delete(roomId);
-      };
-      void opening.then(clear, clear);
-    }
-    return opening;
+    const epoch = this.epochOf(roomId);
+    return this.opens.run(openKey(roomId, epoch), () => this.openRoom(roomId, epoch));
   }
 
-  /**
-   * Opens `roomId` after any in-flight release, and publishes into `rooms`
-   * only once open succeeds — never the pending promise.
-   */
-  private async openRoom(roomId: string): Promise<RoomJournal> {
-    const options = this.roomOptions(roomId);
+  /** Opens `roomId` after any in-flight release, and publishes it into `rooms` unless a forced release overtook the open. */
+  private async openRoom(roomId: string, epoch: number): Promise<RoomJournal> {
     await (this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
-    if (this.closed) throw new GenerationClosedError();
+    this.assertOpenable(roomId, epoch);
     const afterRelease = this.rooms.get(roomId);
     if (afterRelease) return afterRelease;
 
-    const journal = await RoomJournal.open(this.roomFile(roomId), options);
-    if (this.closed) {
-      await journal.close().catch(() => undefined);
-      throw new GenerationClosedError();
-    }
-    const raced = this.rooms.get(roomId);
-    if (raced) {
-      await journal.close().catch(() => undefined);
-      return raced;
+    const journal = await RoomJournal.open(this.roomFile(roomId), this.roomOptions(roomId));
+    try {
+      this.assertOpenable(roomId, epoch);
+    } catch (error) {
+      await bestEffort(() => journal.close(), this.journal.logger, "Failed to close a room journal opened after its room was released", { roomId });
+      throw error;
     }
     this.rooms.set(roomId, Promise.resolve(journal));
     return journal;
+  }
+
+  /** Throws when the generation closed, or a forced release of the room overtook an open begun under `epoch`. */
+  private assertOpenable(roomId: string, epoch: number): void {
+    if (this.closed) throw new GenerationClosedError();
+    if (this.epochOf(roomId) !== epoch) {
+      throw new GenerationClosedError("The room's journal was released while it opened; its handling stopped");
+    }
+  }
+
+  private epochOf(roomId: string): number {
+    return this.epochs.get(roomId) ?? 0;
   }
 
   public holdRoom(roomId: string): void {
@@ -296,20 +293,20 @@ class Generation implements JournalGeneration {
   }
 
   public async release(roomId: string, force = false): Promise<void> {
+    if (force) {
+      // The room's handling stopped for good: no close is owed to a later
+      // endHold, and an open in flight closes what it opens. A later open
+      // waits until it has.
+      this.deferredCloses.delete(roomId);
+      const opening = this.opens.current(openKey(roomId, this.epochOf(roomId)));
+      this.epochs.set(roomId, this.epochOf(roomId) + 1);
+      if (opening) {
+        await this.whileReleasing(roomId, opening.then(() => undefined, () => undefined));
+        return;
+      }
+    }
     const room = this.rooms.get(roomId);
     if (!room) {
-      // Force already closed (or never opened): no close is owed to a later endHold.
-      if (force) {
-        this.deferredCloses.delete(roomId);
-        // Tracked work (an admit-time announce, a first publication) may open
-        // the room while it drains; force must not return with that handle open.
-        await this.drainRoomInflight(roomId);
-        const opened = this.rooms.get(roomId);
-        if (opened) {
-          this.rooms.delete(roomId);
-          await this.closeRoomNow(roomId, opened);
-        }
-      }
       // A held room's close is owed, but a turn still uses its handle; it runs
       // when the last hold ends. An already closed room stands behind its close.
       return (this.deferredCloses.has(roomId) ? Promise.resolve() : this.releasing.get(roomId) ?? Promise.resolve()).catch(() => undefined);
@@ -326,26 +323,29 @@ class Generation implements JournalGeneration {
     await this.closeRoomNow(roomId, room);
   }
 
-  /** Closes `roomId`'s handle, once its publications stand on disk. */
-  private async closeRoomNow(roomId: string, room: Promise<RoomJournal>): Promise<void> {
-    // A publication still in flight must stand on disk before the file closes, so its
-    // outcome is never lost to the close racing the post. The room's set lives for
-    // the generation: drain it in place rather than snapshot-and-delete, so a
-    // concurrent track still lands in the set this close waits on.
-    const closing = (async () => {
+  /**
+   * Closes `roomId`'s handle once its publications stand on disk: one in
+   * flight must never lose its outcome to the close racing its post. The
+   * room's set lives for the generation and is drained in place, so a
+   * concurrent track still lands in the set this close waits on.
+   */
+  private closeRoomNow(roomId: string, room: Promise<RoomJournal>): Promise<void> {
+    return this.whileReleasing(roomId, (async () => {
       await this.drainRoomInflight(roomId);
       await closeRoom(room);
-    })().finally(() => {
-      if (this.releasing.get(roomId) === closing) this.releasing.delete(roomId);
-    });
-    this.releasing.set(roomId, closing);
-    await closing;
+    })());
   }
 
-  /**
-   * Waits for every promise tracked against `roomId` until the set is empty.
-   * Used by close and by force-release before `rooms.set` (admit-time announce).
-   */
+  /** Stands `closing` as the room's release in progress: opens of the room wait for it. */
+  private whileReleasing(roomId: string, closing: Promise<void>): Promise<void> {
+    const releasing = closing.finally(() => {
+      if (this.releasing.get(roomId) === releasing) this.releasing.delete(roomId);
+    });
+    this.releasing.set(roomId, releasing);
+    return releasing;
+  }
+
+  /** Waits for every promise tracked against `roomId` until the set is empty. */
   private async drainRoomInflight(roomId: string): Promise<void> {
     const held = this.roomInflight.get(roomId);
     if (!held) return;
@@ -375,6 +375,16 @@ class Generation implements JournalGeneration {
     };
     // `promise.finally` would derive a rejecting promise no one handles; settle both ways.
     void promise.then(forget, forget);
+  }
+
+  public async trackOnceReleased<T>(roomId: string, work: () => Promise<T>): Promise<T> {
+    for (let releasing = this.releasing.get(roomId); releasing; releasing = this.releasing.get(roomId)) {
+      await releasing.catch(() => undefined);
+    }
+    // No release stands, and none can start before the work is tracked: both happen in this tick.
+    const running = work();
+    this.trackInflight(running, roomId);
+    return await running;
   }
 
   public roomPath(roomId: string): string {
@@ -446,11 +456,17 @@ class Generation implements JournalGeneration {
   }
 }
 
+/** The room's handling stopped before its journal opened: the generation closed, or a forced release let the room go. */
 export class GenerationClosedError extends BandSdkError {
-  constructor() {
-    super("The journal generation is closed; its start ended");
+  constructor(message = "The journal generation is closed; its start ended") {
+    super(message);
     this.name = "GenerationClosedError";
   }
+}
+
+/** The single-flight key of `roomId`'s open under `epoch`: an open begun before a forced release is never joined after it. */
+function openKey(roomId: string, epoch: number): string {
+  return `${epoch}:${roomId}`;
 }
 
 async function closeRoom(room: Promise<RoomJournal>): Promise<void> {

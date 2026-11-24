@@ -6,9 +6,9 @@ import { createDeferred } from "../src/core/deferred";
 import type { Logger } from "../src/core/logger";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityDirectoryComponent } from "../src/runtime/journal/records";
-import { TurnJournal, agentJournalDir, legacyAgentDir, roomFileName, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
+import { TurnJournal, agentJournalDir, legacyAgentDir, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import type { RoomJournal } from "../src/runtime/journal/RoomJournal";
-import { RoomJournal as RoomJournalCtor } from "../src/runtime/journal/RoomJournal";
+import { RoomJournal as RoomJournalCtor, roomFileName } from "../src/runtime/journal/RoomJournal";
 import { tmpRoot } from "./testUtils";
 
 /** The canonical platform identity the tests bind their journals to. */
@@ -133,4 +133,12 @@ export async function seedLegacyFile(dir: string, agentId: string, fileName: str
 /** The error a full disk fails a write with. */
 export function diskFull(): Error {
   return Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+}
+/**
+ * Settles once every queued microtask, and every one those queue, has run: a
+ * macrotask runs only on an empty microtask queue. Proves an operation that
+ * needs no I/O to finish is parked, never that I/O completed.
+ */
+export function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import { isToolExecutorError, type MessagingTools } from "../contracts/protocols";
+import { createToolExecutorError, isToolExecutorError, type MessagingTools, type ToolExecutorError } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -44,6 +44,21 @@ export class DeliveryUnknownError extends DeliveryFailedError {
 }
 
 /**
+ * An unknown delivery as a tool result: the classification rides in
+ * `details`, so an MCP result or a direct ToolExecutorError tells callers
+ * Band may already hold the message.
+ */
+export function deliveryUnknownToolError(toolName: string, error: DeliveryUnknownError): ToolExecutorError {
+  return createToolExecutorError({
+    errorType: "ToolExecutionError",
+    toolName,
+    message: error.message,
+    legacyMessage: `Error executing ${toolName}: ${error.message}`,
+    details: { kind: DeliveryUnknownError.KIND, publicationId: error.publicationId },
+  });
+}
+
+/**
  * True when a tool or MCP result says delivery is unknown: Band may already
  * hold the post, so a same-content retry must not POST again.
  */
@@ -62,9 +77,9 @@ async function delivered(post: () => Promise<ToolOperationResult>): Promise<Tool
   try {
     return await post();
   } catch (error) {
-    // A classified unknown stays classified: flattening it into a plain
-    // DeliveryFailedError would let a caller retry the same content blindly.
-    if (error instanceof DeliveryUnknownError) throw error;
+    // A classified failure stays classified: rewrapping an unknown would let
+    // a caller retry the same content blindly.
+    if (error instanceof DeliveryFailedError) throw error;
     throw new DeliveryFailedError(error);
   }
 }

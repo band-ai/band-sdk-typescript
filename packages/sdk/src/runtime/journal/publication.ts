@@ -200,15 +200,10 @@ export class PublicationEngine {
    * room under an in-flight publication that has not yet called trackInflight.
    */
   private runTracked<T>(roomId: string, work: () => Promise<T>): Promise<T> {
-    let finish!: (value: T | PromiseLike<T>) => void;
-    let fail!: (reason?: unknown) => void;
-    const tracked = new Promise<T>((resolve, reject) => {
-      finish = resolve;
-      fail = reject;
-    });
-    this.generation?.trackInflight(tracked, roomId);
-    void work().then(finish, fail);
-    return tracked;
+    const tracked = Promise.withResolvers<T>();
+    this.generation?.trackInflight(tracked.promise, roomId);
+    void work().then(tracked.resolve, tracked.reject);
+    return tracked.promise;
   }
 }
 
