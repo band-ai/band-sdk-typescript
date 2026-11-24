@@ -11,12 +11,16 @@ import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
   OperationConflictError,
   OperationIdError,
+  OperationUnsupportedError,
+  UNKNOWN_OPERATION_MESSAGES,
   operationFingerprint,
   validateOperationId,
 } from "../src/runtime/journal/operations";
-import { PublicationEngine, UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/publication";
+import { PublicationEngine } from "../src/runtime/journal/publication";
 import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { AdmissionGuardError } from "../src/runtime/journal/journalTools";
+import { toolErrorResult } from "../src/runtime/messageDelivery";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { NO_REPLY_TOOL_NAME, OPERATION_ID_MAX_BYTES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { ROOM, diskFull, generationIn, holdJournalAppend, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
@@ -1031,6 +1035,16 @@ describe("a keyed refusal through the tool door", () => {
     });
     expect(logger.error).not.toHaveBeenCalled();
     await generation.close();
+  });
+
+  it.each([
+    ["an invalid id", new OperationIdError("empty")],
+    ["a room without a journal", new OperationUnsupportedError("no-journal")],
+    ["an admission that could not be read", new AdmissionGuardError()],
+  ])("answers a keyed call refused for %s as a routine refusal, never logged as unexpected", (_case, refusal) => {
+    const logger = makeLoggerSpy();
+    expect(toolErrorResult(SEND_MESSAGE_TOOL_NAME, refusal, logger)).toMatchObject({ ok: false, errorType: "ToolExecutionError", message: expect.stringContaining(refusal.message) });
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });
 

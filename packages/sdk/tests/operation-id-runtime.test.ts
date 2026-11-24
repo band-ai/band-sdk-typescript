@@ -13,7 +13,7 @@ import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { PlatformRuntime } from "../src/runtime";
 import { DeliveryUnknownError, DeliveryFailedError } from "../src/core/deliveryFailedError";
-import { UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/publication";
+import { UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/operations";
 import { OperationConflictError, OperationIdError, OperationUnsupportedError } from "../src/runtime/journal/operations";
 import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
@@ -108,8 +108,7 @@ async function recordsOf(journalDir: string, roomId: string = ROOM): Promise<str
 const reported = (events: RecordLog<AgentEvent>) =>
   events.entries.filter((event) => event.type === "delivery.unrecorded");
 
-/** The outcomes a platform has settled for `messageId`, as observed: a call that starts
- * after the settlement stands behind it, unlike a `next` waiter that only sees new ones. */
+/** The outcomes a platform has settled for `messageId`, as observed so far. */
 const settledOutcomes = (platform: BandPlatform, messageId: string) =>
   platform.rest.settled.entries.filter((entry) => entry.messageId === messageId).map((entry) => entry.outcome);
 
@@ -392,7 +391,7 @@ describe("a keyed operation's process boundary", () => {
     await conflictProcess.runtime.stop(KILL);
   }, 400000);
 
-  it("refuses keyed sends a backend without the once port, before any record or post", async () => {
+  it("refuses keyed sends on a backend without the once port, before any record or post", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     const journalDir = tmpRoot();
@@ -790,7 +789,10 @@ describe("the MCP bridge's keyed admission", () => {
     await first.runtime.stop(KILL);
     const second = await startProcess(platform, journalDir, async () => undefined);
     await announced(second.events, inbound, OP_ID);
-    expect(reported(second.events).some(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toBe(true);
+    // Counted once a successor turn settled: the operation was announced exactly once.
+    const next = await room.say(OWNER, `${MENTION} next`);
+    await platform.rest.settled.until(() => settledOutcomes(platform, next).length > 0);
+    expect(reported(second.events).filter(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toHaveLength(1);
   }, 120000);
 
   it("admits a keyed call in the room its room_id names only while that room has live tools: one naming a room without them is refused", async () => {

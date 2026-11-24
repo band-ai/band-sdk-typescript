@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

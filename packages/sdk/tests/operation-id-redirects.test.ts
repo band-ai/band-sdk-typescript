@@ -167,11 +167,8 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
  * The production wiring: `BandLink`'s default REST adapter installs the SDK's
  * once client (same endpoint and auth as the legacy client, no retries, a Fetch
  * that refuses redirects) behind `createChatMessageOnce`, and the operation
- * engine stands a keyed send on that port. The SDK declares a minimum of
- * Node 22.12: the once port's Fetch is the platform's global `fetch` with
- * `redirect: "error"`, and the journal's ownership lock stands on
- * `node:sqlite` — the minimum's consumer proof runs this suite's operation
- * suites on a Node 22.12 runtime.
+ * engine stands a keyed send on that port. The once port's Fetch is the
+ * platform's global `fetch` with `redirect: "error"`.
  */
 describe("the production BandLink's once port, through the operation engine", () => {
   for (const status of [307, 308] as const) {
