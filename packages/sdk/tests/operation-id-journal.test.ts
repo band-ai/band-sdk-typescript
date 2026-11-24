@@ -4,11 +4,9 @@ import { BandError } from "@band-ai/rest-client";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { NoopLogger } from "../src/core/logger";
 import type { ToolOperationResult } from "../src/contracts/dtos";
 import { DeliveryFailedError, DeliveryUnknownError } from "../src/core/deliveryFailedError";
 import type { OperationCheck } from "../src/runtime/journal/RoomJournal";
-import type { JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import {
   OperationConflictError,
   OperationIdError,
@@ -17,15 +15,13 @@ import {
   operationFingerprint,
   validateOperationId,
 } from "../src/runtime/journal/operations";
-import { PublicationEngine } from "../src/runtime/journal/publication";
 import { makeLoggerSpy, tmpRoot } from "./testUtils";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { AdmissionGuardError } from "../src/runtime/journal/journalTools";
 import { toolErrorResult } from "../src/runtime/messageDelivery";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { NO_REPLY_TOOL_NAME, OPERATION_ID_MAX_BYTES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import { ROOM, diskFull, generationIn, holdJournalAppend, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
-import type { Logger } from "../src/core/logger";
+import { ROOM, diskFull, engineFor, generationIn, holdJournalAppend, interceptJournalAppends, openRoom, recordTypes, roomFile, roomJournalIn } from "./turnJournalSupport";
 
 /** Band's answers, the way the generated client reports them. */
 const bandRefused = () =>
@@ -57,11 +53,6 @@ function heldPost(): {
       return answer.promise;
     },
   };
-}
-
-/** One engine over `generation`'s room: every keyed operation the tests admit runs through it. */
-function engineFor(generation: JournalGeneration, roomId = ROOM, logger: Logger = new NoopLogger()) {
-  return new PublicationEngine({ roomId, generation, logger });
 }
 
 /** Fails, like a full disk, every journal append whose line carries `record`. */
@@ -557,7 +548,7 @@ describe("a keyed send's outcomes", () => {
     await next.close();
   });
 
-it("stands a post Band answered but the file could not settle unknown, and poisons the writer", async () => {
+  it("stands a post Band answered but the file could not settle unknown, and poisons the writer", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const engine = engineFor(generation);
@@ -573,10 +564,7 @@ it("stands a post Band answered but the file could not settle unknown, and poiso
       .catch((error: unknown) => error);
     await post.started;
     // The settle's write, like a full disk, will not land.
-    await interceptJournalAppends(async (original, self, args) => {
-      if (typeof args[0] === "string" && args[0].includes("op.settled")) throw diskFull();
-      await original.apply(self, args);
-    });
+    await failAppendsOf("op.settled");
     post.resolve({ id: "posted-1" });
     const error = await failure;
     const room = await openRoom(generation, ROOM);
@@ -983,10 +971,7 @@ describe("the authority a journal file proves at load", () => {
       const dir = await settledFileWithAuthority(authority);
       const { generation } = await generationIn(dir);
       await expect(openRoom(generation, ROOM)).rejects.toMatchObject({ name: "JournalFileError", kind: "corrupt" });
-      const engine = new PublicationEngine({ roomId: ROOM,
-        generation,
-        logger: new NoopLogger(),
-      });
+      const engine = engineFor(generation);
       let posts = 0;
       await expect(
         engine.publishOperation({
@@ -1055,6 +1040,7 @@ describe("the operation index a restarted file rebuilds", () => {
     await reopened.close();
   });
 });
+
 describe("a keyed refusal through the tool door", () => {
   it("answers a keyed refusal, its replay, and a conflict as routine refusals, never logged as unexpected", async () => {
     const { generation } = await generationIn(tmpRoot());

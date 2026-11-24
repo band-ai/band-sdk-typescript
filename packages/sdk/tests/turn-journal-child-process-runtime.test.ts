@@ -1,5 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { onTestFinished, expect, it, describe } from "vitest";
@@ -10,6 +9,7 @@ import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import type { PlatformSnapshot } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
+import { driveChild } from "./support/childProcess";
 import { IDENTITY as JOURNAL_IDENTITY, journalLines, recordTypes, roomFile } from "./turnJournalSupport";
 
 const IDENTITY = JOURNAL_IDENTITY;
@@ -65,105 +65,16 @@ interface ChildState {
   secondInboundId?: string;
 }
 
-interface ChildMessage {
-  type: "boundary" | "failure";
-  name?: string;
-  message?: string;
-}
-
-interface ChildRun {
-  child: ChildProcess;
-  boundary: (name: string) => Promise<void>;
-  send: (message: { type: string }) => void;
-  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-}
-
-/** Starts the child process with an IPC pipe and watches it for its boundary messages. */
-function startChild(journalDir: string, mode: ChildMode, stateFile: string): ChildRun {
-  const child = spawn(process.execPath, ["--import", "tsx", CHILD, journalDir, mode, stateFile], {
-    cwd: path.join(__dirname, ".."),
-    stdio: ["ignore", "ignore", "pipe", "ipc"],
-    env: process.env,
-  });
-  const seen: string[] = [];
-  const waiters: Array<{ name: string; resolve: () => void }> = [];
-  const failers: Array<(error: Error) => void> = [];
-  let failed: Error | undefined;
-  child.on("message", (message: ChildMessage) => {
-    if (message.type === "failure") {
-      failed = new Error(`the child failed: ${message.message ?? "no message"}`);
-      for (const failer of failers.splice(0)) failer(failed);
-      return;
+function driveChildTo(journalDir: string, mode: ChildMode, stateFile: string): Promise<ChildState> {
+  return driveChild<ChildState>(CHILD, [journalDir, mode, stateFile], stateFile, async (run) => {
+    if (mode === "reset") {
+      // The child durably settles its reply, then the parent's stop command
+      // lands on it; the child starts the stop and is killed mid-stop.
+      await run.boundary("reply-settled");
+      run.send({ type: "stop" });
     }
-    if (message.type !== "boundary" || message.name === undefined) return;
-    seen.push(message.name);
-    for (const [index, waiter] of waiters.entries()) {
-      if (waiter.name === message.name) {
-        waiters.splice(index, 1);
-        waiter.resolve();
-      }
-    }
-  });
-  child.on("error", (error) => {
-    failed = error;
-    for (const failer of failers.splice(0)) failer(error);
-  });
-  let settled: { code: number | null; signal: NodeJS.Signals | null } | undefined;
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("exit", (code, signal) => {
-      settled = { code, signal };
-      if (failed === undefined) failed = new Error(`the child exited (${signal ?? code}) before its boundary`);
-      for (const failer of failers.splice(0)) failer(failed);
-      resolve(settled);
-    });
-  });
-  const boundary = (name: string): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      if (seen.includes(name)) return resolve();
-      if (failed !== undefined) return reject(failed);
-      if (settled !== undefined) return reject(new Error("the child exited without reporting " + name));
-      waiters.push({ name, resolve: () => resolve() });
-      failers.push(reject);
-      setTimeout(() => {
-        const due = waiters.findIndex((waiter) => waiter.name === name);
-        if (due !== -1) waiters.splice(due, 1);
-        const at = failers.indexOf(reject);
-        if (at !== -1) failers.splice(at, 1);
-        reject(new Error(`timed out waiting for the child to report ${name}`));
-      }, 90_000).unref();
-    });
-  return {
-    child,
-    boundary,
-    send: (message) => child.send(message),
-    exited,
-  };
-}
-
-async function driveChild(journalDir: string, mode: ChildMode, stateFile: string): Promise<ChildState> {
-  const run = startChild(journalDir, mode, stateFile);
-  onTestFinished(() => {
-    if (run.child.exitCode === null && !run.child.killed) run.child.kill("SIGKILL");
-  });
-
-  if (mode === "reset") {
-    // The child durably settles its reply, then the parent's stop command
-    // lands on it; the child starts the stop and is killed mid-stop.
-    await run.boundary("reply-settled");
-    run.send({ type: "stop" });
     await run.boundary(CHILD_BOUNDARY[mode]);
-  } else {
-    await run.boundary(CHILD_BOUNDARY[mode]);
-  }
-
-  // The child's liveness at the kill is the point: it was alive when the
-  // parent killed it, and only the OS is what released its locks afterwards.
-  run.child.kill("SIGKILL");
-  const exit = await run.exited;
-  expect(exit.signal, `the child was alive at its boundary, so its death is the SIGKILL's: got code=${exit.code} signal=${exit.signal}`).toBe("SIGKILL");
-  expect(exit.code).toBe(null);
-
-  return JSON.parse(await readFile(stateFile, "utf8")) as ChildState;
+  });
 }
 
 /** The messages the child's platform would still serve: added, and not processed. */
@@ -226,7 +137,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child posts "answer", settles it durably, and is killed while its turn still runs:
     // the message's processed mark never lands in the child's platform.
-    const state = await driveChild(journalDir, "settled-before-mark", stateFile);
+    const state = await driveChildTo(journalDir, "settled-before-mark", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["answer"]);
     // The child's turn never completed: its journal holds the reply but no turn end.
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
@@ -246,7 +157,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     const journalDir = tmpRoot();
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
-    const state = await driveChild(journalDir, "decline", stateFile);
+    const state = await driveChildTo(journalDir, "decline", stateFile);
     expect(state.platform.posted).toEqual([]);
     expect(await journalRecordsOf(journalDir)).toEqual(["decline.settled"]);
 
@@ -262,7 +173,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child durably settles "reply one" and is killed before its second reply's intent is recorded.
-    const state = await driveChild(journalDir, "multiple-replies", stateFile);
+    const state = await driveChildTo(journalDir, "multiple-replies", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply one"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
 
@@ -282,7 +193,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child's reply post sits at the platform's door: the journal stands on the intent,
     // and the platform has no reply at all.
-    const state = await driveChild(journalDir, "intent-only", stateFile);
+    const state = await driveChildTo(journalDir, "intent-only", stateFile);
     expect(state.platform.posted).toEqual([]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent"]);
 
@@ -306,7 +217,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child's reply is admitted by the platform; the settle record the journal would have
     // made of it was held, so the journal stands on the intent.
-    const state = await driveChild(journalDir, "remote-accept", stateFile);
+    const state = await driveChildTo(journalDir, "remote-accept", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["answer"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent"]);
 
@@ -336,7 +247,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     // The child's reply post stands admitted by the platform; its settle
     // record's write is held in flight at the journal when it is killed:
     // publication stands paused in its last durable step.
-    const state = await driveChild(journalDir, "before-tool-return", stateFile);
+    const state = await driveChildTo(journalDir, "before-tool-return", stateFile);
     // The platform admitted the reply; the journal never learned of it.
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["tool answer"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent"]);
@@ -367,7 +278,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     // The child durably settles "reset reply"; the parent's command runs the room's real
     // reset, whose budget cannot cancel the running turn — the reset fails, the turn
     // detaches, and the child is killed with the detached turn still running.
-    const state = await driveChild(journalDir, "reset", stateFile);
+    const state = await driveChildTo(journalDir, "reset", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reset reply"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
 
@@ -386,7 +297,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child settles reply A durably, then posts reply B to the platform with B's settle
     // record held: A stands settled, B stands admitted and unknown.
-    const state = await driveChild(journalDir, "ab-mixed", stateFile);
+    const state = await driveChildTo(journalDir, "ab-mixed", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled", "reply.intent"]);
 
@@ -408,7 +319,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child settles reply A durably, then posts reply B to the platform with B's settle
     // record held: both replies stand under the one inbound — A settled, B unresolved.
-    const state = await driveChild(journalDir, "ab-mixed", stateFile);
+    const state = await driveChildTo(journalDir, "ab-mixed", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
     const file = roomFile(journalDir, IDENTITY, AGENT_ID, state.room);
     expect(await recordTypes(file)).toEqual(["reply.intent", "reply.settled", "reply.intent"]);
@@ -465,7 +376,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     // The child's reply settles for real — append, datasync, in-memory settlement — and the
     // cut stands before the settle call returns to the engine: the reply is durably settled
     // on disk, and the turn does not end.
-    const state = await driveChild(journalDir, "durable-ack", stateFile);
+    const state = await driveChildTo(journalDir, "durable-ack", stateFile);
     // The reply stood settled in the child's journal at its boundary; the turn never ended.
     expect(state.answered).toBe(true);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["durable pending-tool reply"]);
@@ -490,7 +401,7 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     // The child settles reply A durably and lets A's turn complete — A's processed mark
     // lands in the child's platform — then posts reply B to the platform with B's settle
     // record held: A stands settled, B stands unresolved.
-    const state = await driveChild(journalDir, "ab-unresolved", stateFile);
+    const state = await driveChildTo(journalDir, "ab-unresolved", stateFile);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["reply A", "reply B"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled", "turn.done", "reply.intent"]);
 

@@ -1,5 +1,4 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { BandError } from "@band-ai/rest-client";
 
 import { describe, expect, it, onTestFinished } from "vitest";
@@ -9,7 +8,6 @@ import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/Gene
 import { isSyntheticTurn } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
 import { relayReply } from "../src/core/turn";
-import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
 import { PlatformRuntime } from "../src/runtime";
 import { DeliveryUnknownError, DeliveryFailedError } from "../src/core/deliveryFailedError";
@@ -19,6 +17,7 @@ import type { SessionConfig } from "../src/runtime/types";
 import type { AgentEvent } from "../src/contracts/events";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot } from "./testUtils";
+import { openBridge } from "./support/mcpBridges";
 import { hasErrorCode } from "../src/runtime/journal/records";
 import { IDENTITY, holdJournalAppend, landedJournalRecords, recordTypes, roomFile } from "./turnJournalSupport";
 
@@ -145,15 +144,11 @@ describe("a keyed operation's process boundary", () => {
       const accepted = await platform.rest.createChatMessage(roomId, message, options);
       await lostResponse.promise;
       if (failOnResponse) throw unavailable;
-      return { ...accepted, status: "ok" };
+      return accepted;
     };
 
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-restart-1", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         await client.callTool({
           name: "band_send_message",
@@ -189,11 +184,7 @@ describe("a keyed operation's process boundary", () => {
         await relayReply(tools, "next answered", [OWNER]);
         return;
       }
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-restart-2", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         // The retry joins the stored unknown: no post, the operation's stable text.
         const retry = await client.callTool({
@@ -226,7 +217,6 @@ describe("a keyed operation's process boundary", () => {
     // exactly once, with its id, and no later turn announced it again.
     const unrecorded = reported(second.events);
     expect(unrecorded.filter(({ messageId, operationId }) => messageId === inbound && operationId === OP_ID)).toHaveLength(1);
-    await first.runtime.stop(KILL).catch(() => undefined);
   }, 180000);
 
   it("re-admits a leftover operation the file proves was never posted, and says nothing to the operator", async () => {
@@ -240,11 +230,7 @@ describe("a keyed operation's process boundary", () => {
     // the in-flight operation, so the kill's drain completes.
     const held = await holdJournalAppend((line) => line.includes('"op.recipients"'), { drop: true });
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-pending-1", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         await client.callTool({
           name: "band_send_message",
@@ -266,11 +252,7 @@ describe("a keyed operation's process boundary", () => {
     let retryIsError: boolean | undefined;
     let retryText = "";
     const second = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-pending-2", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         const result = await client.callTool({
           name: "band_send_message",
@@ -285,10 +267,12 @@ describe("a keyed operation's process boundary", () => {
     await landed.until(() => landed.entries.includes("op.settled"));
     expect(await second.handlerOutcome).toEqual({ ok: true });
     // The provably unposted operation was never announced on either admission.
+    expect(reported(first.events)).toEqual([]);
     expect(reported(second.events)).toEqual([]);
     // The same id re-ran: it posted once and settled, and the call answered.
     expect(retryIsError).toBeFalsy();
-    expect(JSON.parse(retryText)).toMatchObject({ status: "ok" });
+    // The call answers with the receipt Band gave its post, the platform's latest.
+    expect(JSON.parse(retryText)).toEqual({ id: `posted-${platform.rest.posted.entries.length}` });
     expect(postedContents(platform)).toEqual(["pending never posted"]);
     await settledAs(platform, inbound, "processed");
     const records = await recordsOf(journalDir);
@@ -296,7 +280,6 @@ describe("a keyed operation's process boundary", () => {
     // then the new process's recipients and settlement.
     expect(records.filter((record) => record === "op.reserved")).toHaveLength(1);
     expect(records).toContain("op.settled");
-    await first.runtime.stop(KILL).catch(() => undefined);
   });
 
   it("settles a keyed no-reply durably without any post, and a later call joins the standing no-reply", async () => {
@@ -519,7 +502,7 @@ describe("a keyed send in a room Band stops", () => {
     platform.control("play", ROOM);
     await settledAs(platform, inbound, "processed");
     expect(agent.handled).toEqual([inbound, inbound]);
-    expect(outcomes[1]).toMatchObject({ status: "ok" });
+    expect(outcomes[1]).toEqual({ id: "posted-1" });
     expect(postedContents(platform, ROOM)).toEqual(["the answer"]);
     const records = await recordsOf(journalDir);
     expect(records.filter((record) => record === "op.reserved")).toHaveLength(1);
@@ -657,11 +640,7 @@ describe("the MCP bridge's keyed admission", () => {
         otherRelayed = await relayReply(tools, "other room answered", [OWNER]);
         return;
       }
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-mcp-1", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         // A numeric id cannot stand: the published schema refuses it at the bridge.
         invalid = await keyedCall(client, { room_id: ROOM, content: "x", mentions: [OWNER], operation_id: 123 });
@@ -696,11 +675,7 @@ describe("the MCP bridge's keyed admission", () => {
     const outcomes: Array<{ thrown: boolean; isError: boolean; text: string }> = [];
     let relayed: boolean | undefined;
     await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-mcp-2", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         // The id stands; content is not a string. The schema refuses the call; the
         // id still fenced the turn at admission.
@@ -761,11 +736,7 @@ describe("the MCP bridge's keyed admission", () => {
     let seen: Record<string, unknown> | undefined;
     let relayed = true;
     const first = await startProcess(platform, journalDir, async ({ tools }) => {
-      const bridge = createBandSdkMcpServer({ enableMemoryTools: false, enableOperationIds: true, getToolsForRoom: () => tools });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-mcp-3", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: () => tools });
       try {
         const result = await client.callTool({
           name: "band_send_message",
@@ -806,14 +777,7 @@ describe("the MCP bridge's keyed admission", () => {
     let rightRoom: { thrown: boolean; isError: boolean; text: string } | undefined;
     await startProcess(platform, journalDir, async ({ tools }) => {
       // The bridge resolves each room to its own tools: room-2 has no live turn here.
-      const bridge = createBandSdkMcpServer({
-        enableMemoryTools: false, enableOperationIds: true,
-        getToolsForRoom: (roomId: string) => (roomId === ROOM ? tools : undefined),
-      });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-mcp-4", version: "1.0.0" });
-      await client.connect(clientTransport);
+      const client = await openBridge("sdk", { enableOperationIds: true, getToolsForRoom: (roomId) => (roomId === ROOM ? tools : undefined) });
       try {
         // The turn stands in room-1; the call names room-2. Admission resolves the
         // origin from the call's room_id, and room-2 has no tools to resolve.
@@ -855,8 +819,8 @@ describe("the MCP bridge's keyed admission", () => {
     await startProcess(platform, journalDir, async ({ tools }) => {
       // A host tool that is not the canonical send or no-reply carries the
       // field on its own: it is not admitted, and the turn's reply stands.
-      const bridge = createBandSdkMcpServer({
-        enableMemoryTools: false, enableOperationIds: true,
+      const client = await openBridge("sdk", {
+        enableOperationIds: true,
         getToolsForRoom: () => tools,
         additionalTools: [
           {
@@ -871,10 +835,6 @@ describe("the MCP bridge's keyed admission", () => {
           },
         ],
       });
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await bridge.serverConfig.instance.connect(serverTransport);
-      const client = new Client({ name: "op-mcp-5", version: "1.0.0" });
-      await client.connect(clientTransport);
       try {
         const result = await client.callTool({ name: "not_a_band_publication_tool", arguments: { operation_id: "unrelated" } });
         unrelatedText = (result.content as Array<{ text: string }>)[0]?.text ?? "";

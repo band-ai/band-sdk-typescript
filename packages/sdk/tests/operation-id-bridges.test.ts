@@ -1,34 +1,22 @@
-import { PassThrough } from "node:stream";
-
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
-import type { AdapterToolsProtocol } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
 import { relayReply, type TurnTools } from "../src/core/turn";
 import { KEYED_ADMISSION_REFUSALS } from "../src/mcp/admission";
-import { createBandMcpBackend, type BandMcpBackend } from "../src/mcp/backends";
-import { createBandSdkMcpServer } from "../src/mcp/sdk";
-import { BandMcpStdioServer } from "../src/mcp/stdio";
+import { createBandMcpBackend } from "../src/mcp/backends";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { PlatformRuntime } from "../src/runtime";
 import type { SessionConfig } from "../src/runtime/types";
 import { FakeRestApi, tmpRoot } from "./testUtils";
 import { IDENTITY, recordTypes, roomFile } from "./turnJournalSupport";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person, type BandRoom } from "./flows/support/bandPlatform";
+import { BRIDGE_KINDS, connectClient, openBridge } from "./support/mcpBridges";
 
 const OWNER = "owner";
 const MENTION = `@[[${AGENT_ID}]]`;
 const KILL = 0;
-
-type NetworkKind = "http" | "sse";
 
 /**
  * Starts a runtime whose rooms each hold an inbound turn message, so a turn runs
@@ -62,63 +50,11 @@ async function runtimeWithInbounds(
   return { platform, runtime, journalDir, inbounds };
 }
 
-async function connectClient(backend: BandMcpBackend, name: string): Promise<Client> {
-  const server = backend.server as { url?: string; sseUrl?: string };
-  let transport: Transport;
-  if (backend.kind === "http") {
-    transport = new StreamableHTTPClientTransport(new URL(server.url!), {
-      requestInit: { headers: { authorization: `Bearer ${backend.authToken}` } },
-    });
-  } else {
-    transport = new SSEClientTransport(new URL(server.sseUrl!), {
-      requestInit: { headers: { authorization: `Bearer ${backend.authToken}` } },
-    });
-  }
-  const client = new Client({ name, version: "1.0.0" });
-  await client.connect(transport);
-  return client;
-}
-
 const postedContents = (platform: BandPlatform, roomId?: string) =>
   platform.rest.posted.entries
     .filter(({ messageType }) => messageType !== "error")
     .filter((entry) => roomId === undefined || entry.roomId === roomId)
     .map(({ content }) => content);
-
-type BridgeKind = NetworkKind | "stdio" | "sdk";
-
-const BRIDGE_KINDS: readonly BridgeKind[] = ["http", "sse", "stdio", "sdk"];
-
-interface BridgeOptions {
-  getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
-  multiRoom?: boolean;
-  enableOperationIds?: boolean;
-  admissionGuard?: () => boolean;
-}
-
-/** A connected client of a real bridge of `kind`, each over its own transport; stopped when the test ends. */
-async function openBridge(kind: BridgeKind, options: BridgeOptions): Promise<Client> {
-  const client = new Client({ name: `bridge-${kind}`, version: "1.0.0" });
-  if (kind === "stdio") {
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    const server = new BandMcpStdioServer({ ...options, tools: options.getToolsForRoom, multiRoom: options.multiRoom ?? true, stdin, stdout });
-    await server.start();
-    onTestFinished(() => server.stop());
-    await client.connect(new StdioServerTransport(stdout, stdin));
-    return client;
-  }
-  if (kind === "sdk") {
-    const server = createBandSdkMcpServer({ ...options, enableMemoryTools: false });
-    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-    await server.serverConfig.instance.connect(serverTransport);
-    await client.connect(clientTransport);
-    return client;
-  }
-  const backend = await createBandMcpBackend({ ...options, kind, enableMemoryTools: false });
-  onTestFinished(() => backend.stop());
-  return connectClient(backend, `bridge-${kind}`);
-}
 
 const textOf = (result: object) => ((result as { content?: unknown }).content as Array<{ text: string }> | undefined)?.[0]?.text ?? "";
 
@@ -178,11 +114,11 @@ for (const kind of ["http", "sse"] as const) {
             });
             const client = await connectClient(backend, `origin-${kind}`);
             switchAfterAdmission = true;
-            await client.callTool({
+            const result = await client.callTool({
               name: "band_send_message",
               arguments: { content: "must stay with original tools", mentions: [OWNER], operation_id: `origin-${kind}-key` },
             });
-            observed.resolve(undefined);
+            observed.resolve(result.isError ? new Error(`the keyed call was refused: ${textOf(result)}`) : undefined);
           } catch (error) {
             observed.resolve(error);
           } finally {
@@ -203,13 +139,17 @@ for (const kind of ["http", "sse"] as const) {
       let retiredError: boolean | undefined;
       let retiredText = "";
       let relayed: boolean | undefined;
+      let resolutions = 0;
       const done = createDeferred<void>();
       const { platform } = await runtimeWithInbounds(async ({ tools }) => {
         let live = true;
         const backend = await createBandMcpBackend({
           kind,
           enableMemoryTools: false, enableOperationIds: true,
-          getToolsForRoom: () => tools,
+          getToolsForRoom: () => {
+            resolutions += 1;
+            return tools;
+          },
           admissionGuard: () => live,
         });
         onTestFinished(async () => {
@@ -237,6 +177,7 @@ for (const kind of ["http", "sse"] as const) {
       // generation that retired before the call admits no origin and fences no turn.
       expect(retiredError).toBe(true);
       expect(retiredText).toBe(KEYED_ADMISSION_REFUSALS.noOrigin);
+      expect(resolutions).toBe(0);
       expect(relayed).toBe(true);
       expect(postedContents(platform)).toEqual(["closing reply stands"]);
     }, 90000);
@@ -335,7 +276,7 @@ describe("room-scoped no-reply over the wire", () => {
           expect(schema?.properties, "a roomless server advertises no room_id").not.toHaveProperty("room_id");
           settle();
         } finally {
-          await client.close().catch(() => undefined);
+          await client.close();
         }
       } catch (error) {
         settle(error);
@@ -369,7 +310,7 @@ describe("every bridge's keyed admission", () => {
         });
         const result = await outcome.promise;
         if ("error" in result) throw result.error;
-        expect(JSON.parse(result.first)).toMatchObject({ status: "ok" });
+        expect(JSON.parse(result.first)).toEqual({ id: "posted-1" });
         expect(result.retry).toBe(result.first);
         expect(result.relayed).toBe(false);
         expect(postedContents(platform)).toEqual(["keyed once"]);

@@ -12,8 +12,8 @@ import { RestFacade } from "../src/client/rest/RestFacade";
 import { classifyFailedAttempt } from "../src/client/rest/messageDelivery";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
-import { PublicationEngine } from "../src/runtime/journal/publication";
-import { ROOM, generationIn, openRoom } from "./turnJournalSupport";
+import { UNKNOWN_OPERATION_MESSAGES } from "../src/runtime/journal/operations";
+import { ROOM, engineFor, generationIn, openRoom } from "./turnJournalSupport";
 import { tmpRoot } from "./testUtils";
 
 const API_KEY = "fixture-key";
@@ -131,10 +131,7 @@ describe.each([307, 308] as const)("a %i redirect from the post's origin", (stat
       fetch: redirectErrorFetch(a),
     });
     const adapter = new FernRestAdapter(legacyClient, { onceClientFactory: () => onceClient, logger: new NoopLogger() });
-    const engine = new PublicationEngine({ roomId: ROOM,
-      generation,
-      logger: new NoopLogger(),
-    });
+    const engine = engineFor(generation);
     const message = { content: `a ${status} redirect`, mentions: [{ id: USER_ID }] };
     const run = () =>
       engine.publishOperation({
@@ -177,7 +174,7 @@ describe("the production BandLink's once port, through the operation engine", ()
       const { generation } = await generationIn(tmpRoot());
       const link = new BandLink({ agentId: "agent-1", apiKey: API_KEY, restUrl: a.origin, logger: new NoopLogger() });
       expect(link.rest.hasOnceCapability?.() ?? link.rest.createChatMessageOnce !== undefined, "the production link advertises the once port").toBe(true);
-      const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
+      const engine = engineFor(generation);
       const roster = new ParticipantRoster();
       roster.add({ id: USER_ID, handle: USER_ID });
       const tools = new AgentTools({ roomId: ROOM, rest: link.rest, roster, publication: engine, inboundMessageId: () => "inbound-1" });
@@ -192,7 +189,9 @@ describe("the production BandLink's once port, through the operation engine", ()
       // A same-id retry through the engine joins the stored unknown: it is
       // announced with its id and reposts nothing — zero new POSTs to either
       // origin. The SDK never issues a second attempt for a keyed send.
-      await expect(run()).rejects.toBeInstanceOf(DeliveryUnknownError);
+      const retry = await run().catch((error: unknown) => error);
+      expect(retry).toBeInstanceOf(DeliveryUnknownError);
+      expect(retry).toMatchObject({ publicationId: OP_ID, message: UNKNOWN_OPERATION_MESSAGES.send });
       expect(a.posts).toBe(1);
       expect(b.posts).toBe(0);
     }, 60000);
@@ -227,6 +226,10 @@ describe("a once port behind a RestFacade", () => {
     const failure = await serving.createChatMessageOnce(ROOM, { content: "through the facade", mentions: [{ id: USER_ID }] }).catch((error: unknown) => error);
     // The facade forwards to the once client: one POST, its redirect classified, never followed.
     expect(classifyFailedAttempt(failure)).toBe("uncertain");
+    expect(a.posts).toBe(1);
+    expect(b.posts).toBe(0);
+    // The facade over an adapter with no once client refuses before any request.
+    await expect(unserving.createChatMessageOnce(ROOM, { content: "no once port", mentions: [{ id: USER_ID }] })).rejects.toThrow(/no SDK-controlled client/);
     expect(a.posts).toBe(1);
     expect(b.posts).toBe(0);
   });

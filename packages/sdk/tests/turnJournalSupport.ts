@@ -3,11 +3,12 @@ import path from "node:path";
 import { onTestFinished, vi } from "vitest";
 
 import { createDeferred } from "../src/core/deferred";
-import type { Logger } from "../src/core/logger";
+import { NoopLogger, type Logger } from "../src/core/logger";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
 import { identityRoomFile, agentJournalDir, legacyAgentDir } from "../src/runtime/journal/records";
 import { TurnJournal, type JournalGeneration } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
+import { PublicationEngine } from "../src/runtime/journal/publication";
 import { RecordLog, tmpRoot } from "./testUtils";
 
 /** The canonical platform identity the tests bind their journals to. */
@@ -222,4 +223,9 @@ export function diskFull(): Error {
  */
 export function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** One engine over `generation`'s room: every keyed operation a test admits runs through it. */
+export function engineFor(generation: JournalGeneration, roomId = ROOM, logger: Logger = new NoopLogger()): PublicationEngine {
+  return new PublicationEngine({ roomId, generation, logger });
 }

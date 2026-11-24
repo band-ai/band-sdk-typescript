@@ -28,9 +28,7 @@
  *                  message's processed mark never lands in this process.
  */
 import { writeFileSync, renameSync } from "node:fs";
-import { open } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { canonicalPlatformIdentity } from "../src/runtime/journal/identity";
@@ -38,6 +36,7 @@ import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { PlatformRuntime } from "../src/runtime";
 import type { PlatformChatMessage } from "../src/client/rest/types";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
+import { holdFirstJournalAppend, never } from "./support/childJournalHold";
 
 const [journalDir, mode, stateFile] = process.argv.slice(2);
 if (journalDir === undefined || mode === undefined || stateFile === undefined) {
@@ -53,32 +52,6 @@ const OP_ID = "op-child-1";
 const IDENTITY = canonicalPlatformIdentity("https://band.example");
 
 type ChildMode = "reserve-only" | "post-unknown" | "settled-ack";
-
-const never = (): Promise<never> => new Promise(() => undefined);
-
-/**
- * Holds the first journal append whose line matches `match` until this process
- * dies. The same FileHandle.prototype patch the in-test fakes use, without
- * them: this process is not a test, and the hold is meant to outlive every
- * release — the process is the release.
- */
-async function holdFirstJournalAppend(match: (line: string) => boolean): Promise<{ entered: Promise<void> }> {
-  const probe = await open(path.join(path.dirname(stateFile), `op-append-probe-${randomUUID()}`), "w");
-  const proto = Object.getPrototypeOf(probe) as { appendFile: (...args: unknown[]) => Promise<void> };
-  await probe.close();
-  const original = proto.appendFile;
-  const entered = new Promise<void>((resolve) => {
-    proto.appendFile = async function (this: unknown, ...args: unknown[]) {
-      if (typeof args[0] === "string" && match(args[0])) {
-        proto.appendFile = original;
-        resolve();
-        await never();
-      }
-      return original.call(this, ...args);
-    };
-  });
-  return { entered };
-}
 
 async function main(): Promise<void> {
   const platform = BandPlatform.host([person(OWNER)]);
@@ -134,7 +107,7 @@ async function main(): Promise<void> {
 
   let recipientsEntered: Promise<void> | undefined;
   if (mode === "reserve-only") {
-    ({ entered: recipientsEntered } = await holdFirstJournalAppend((line) => line.includes('"op.recipients"')));
+    ({ entered: recipientsEntered } = await holdFirstJournalAppend(path.dirname(stateFile), (line) => line.includes('"op.recipients"')));
   }
 
   const runtime = new PlatformRuntime({
