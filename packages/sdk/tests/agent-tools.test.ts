@@ -486,8 +486,9 @@ describe("AgentTools", () => {
     expect(errorLogs[0]?.context).toMatchObject({ toolName: "band_list_memories" });
   });
 
-  it("converts a JournalPublicationError without logging it as unexpected", async () => {
+  it("converts a poisoned journal's refusal without logging it as unexpected, warning that the room's replies are muted", async () => {
     const errorLogs: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const warnLogs: Array<{ message: string; context?: Record<string, unknown> }> = [];
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
@@ -495,7 +496,7 @@ describe("AgentTools", () => {
       logger: {
         debug: () => {},
         info: () => {},
-        warn: () => {},
+        warn: (message, context) => warnLogs.push({ message, context }),
         error: (message, context) => errorLogs.push({ message, context }),
       },
       publication: {
@@ -519,6 +520,7 @@ describe("AgentTools", () => {
       details: { kind: "poisoned" },
     });
     expect(errorLogs).toEqual([]);
+    expect(warnLogs).toEqual([{ message: "the room's journal refused a tool call", context: { toolName: "band_send_message", kind: "poisoned" } }]);
   });
 
   it("leaves another handler's own {ok:false} business result untouched, unlike send_event", async () => {

@@ -735,10 +735,14 @@ function assertStartIdentityAttested(manifest: Manifest, identity: string, agent
  * manifest committed. It never initializes empty over a half-migrated journal.
  */
 async function resumeInterruptedMigration(agentDir: string, legacyDir: string, agentId: string, manifest: Manifest, now: () => number, logger: Logger): Promise<Manifest> {
+  const legacy = await legacyFiles(legacyDir);
+  const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
   for (const binding of manifest.bindings) {
     await checkSource(legacyDir, binding, logger);
+    // A copy whose surplus no binding attests is refused here as an apply
+    // refuses it, leaving the migration prepared for the amend that binds it.
+    await coalescedStaging(legacyDir, binding, legacy, explicit);
   }
-  const explicit = new Set(manifest.bindings.map((binding) => binding.sourceFile));
   for (const binding of manifest.bindings) {
     if (binding.stagesFrom !== binding.sourceFile) continue; // folded into the journal it is the output of
     // A prepared resume (an amend's crash included) restages a destination that fails validation.

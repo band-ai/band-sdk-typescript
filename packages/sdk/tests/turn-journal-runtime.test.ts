@@ -20,7 +20,7 @@ import { relayReply } from "../src/core/turn";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { DefaultPreprocessor, PlatformRuntime } from "../src/runtime";
 import { RECOVERY_SLOTS } from "../src/runtime/PlatformRuntime";
-import { agentJournalDir, identityDirectoryComponent } from "../src/runtime/journal/records";
+import { JOURNAL_FILE_EXTENSION, agentJournalDir, identityDirectoryComponent } from "../src/runtime/journal/records";
 import { TurnJournal } from "../src/runtime/journal/TurnJournal";
 import { RoomJournal } from "../src/runtime/journal/RoomJournal";
 import { JournalOwnershipError } from "../src/runtime/journal/ownership";
@@ -30,7 +30,7 @@ import type { ContactEventConfig, SessionConfig } from "../src/runtime/types";
 import { agentContactsTopic } from "@band-ai/band-sdk-core";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./flows/support/bandPlatform";
 import { RecordLog, tmpRoot, type HeldCall } from "./testUtils";
-import { IDENTITY, diskFull, flushMicrotasks, holdJournalAppend, interceptJournalAppends, journalLines, recordTypes, roomFile } from "./turnJournalSupport";
+import { IDENTITY, diskFull, flushMicrotasks, holdJournalAppend, interceptJournalAppends, journalLines, openRoom, recordTypes, roomFile } from "./turnJournalSupport";
 
 const OWNER = "owner";
 const ROOM = "room-1";
@@ -41,6 +41,15 @@ const KILL = 0;
 
 type Handler = GenericAdapterHandler;
 
+/** The message `ControlAwareAdapter` takes as a control message, run as a nested turn. */
+const CONTROL = "CONTROL: proceed";
+
+class ControlAwareAdapter extends GenericAdapter {
+  public isControlMessage(message: { content: string }): boolean {
+    return message.content === CONTROL;
+  }
+}
+
 /**
  * One process of the agent: a runtime on `platform` journaling to `journalDir`
  * under the platform's attested identity, or not journaling without one.
@@ -50,9 +59,15 @@ async function startProcess(
   platform: BandPlatform,
   journalDir: string | undefined,
   handler: Handler,
-  options: { sessionConfig?: Omit<SessionConfig, "journalDir">; contactConfig?: ContactEventConfig; withIdentity?: boolean; preprocessor?: Preprocessor<PlatformEvent> } = {},
+  options: {
+    sessionConfig?: Omit<SessionConfig, "journalDir">;
+    contactConfig?: ContactEventConfig;
+    withIdentity?: boolean;
+    preprocessor?: Preprocessor<PlatformEvent>;
+    adapter?: typeof GenericAdapter;
+  } = {},
 ) {
-  const { sessionConfig = {}, contactConfig, withIdentity = true, preprocessor } = options;
+  const { sessionConfig = {}, contactConfig, withIdentity = true, preprocessor, adapter: Adapter = GenericAdapter } = options;
   const handled: string[] = [];
   const events = new RecordLog<AgentEvent>();
   const runtime = new PlatformRuntime({
@@ -79,7 +94,7 @@ async function startProcess(
     if (runtime.state.status === "running") await runtime.stop(KILL);
   });
   await runtime.start(
-    new GenericAdapter(async (args) => {
+    new Adapter(async (args) => {
       handled.push(String(args.message.id));
       await handler(args);
     }),
@@ -130,7 +145,7 @@ function failJournalAppends(matches: (line: string) => boolean): Promise<void> {
 async function seedRoomRecords(journalDir: string, roomId: string, seed: (room: RoomJournal) => Promise<unknown> | unknown): Promise<void> {
   const journals = new TurnJournal(journalDir, AGENT_ID);
   const generation = await journals.activate(IDENTITY);
-  const room = await generation.room(roomId);
+  const room = await openRoom(generation, roomId);
   await seed(room);
   await generation.close();
 }
@@ -385,42 +400,15 @@ describe("the turn journal across a restart", () => {
     onTestFinished(() => parked.resolve());
     const late = createDeferred<unknown>();
     const controlDone = createDeferred();
-    const CONTROL = "CONTROL: proceed";
-
-    class ControlAwareAdapter extends GenericAdapter {
-      public isControlMessage(message: { content: string }): boolean {
-        return message.content === CONTROL;
+    const { events } = await startProcess(platform, journalDir, async ({ message, tools }) => {
+      if (message.content === CONTROL) {
+        await tools.turn.settle();
+        controlDone.resolve();
+        return;
       }
-    }
-
-    const events = new RecordLog<AgentEvent>();
-    const runtime = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: {
-        journalDir,
-        journalPlatformIdentity: IDENTITY,
-      },
-    });
-    runtime.observe((event) => {
-      events.record(event);
-    });
-    onTestFinished(async () => {
-      if (runtime.state.status === "running") await runtime.stop(KILL);
-    });
-    await runtime.start(
-      new ControlAwareAdapter(async ({ message, tools }) => {
-        if (message.content === CONTROL) {
-          await tools.turn.settle();
-          controlDone.resolve();
-          return;
-        }
-        await parked.promise;
-        await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
-      }),
-    );
+      await parked.promise;
+      await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
+    }, { adapter: ControlAwareAdapter });
 
     const inbound = await room.say(OWNER, `${MENTION} hello`);
     await events.next((event) => event.type === "turn.started");
@@ -453,48 +441,21 @@ describe("the turn journal across a restart", () => {
       nestedParked.resolve();
     });
     const late = createDeferred<unknown>();
-    const CONTROL = "CONTROL: proceed";
-
-    class ControlAwareAdapter extends GenericAdapter {
-      public isControlMessage(message: { content: string }): boolean {
-        return message.content === CONTROL;
-      }
-    }
-
-    const events = new RecordLog<AgentEvent>();
-    const runtime = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: {
-        journalDir,
-        journalPlatformIdentity: IDENTITY,
-      },
-    });
-    runtime.observe((event) => {
-      events.record(event);
-    });
-    onTestFinished(async () => {
-      if (runtime.state.status === "running") await runtime.stop(KILL);
-    });
 
     const nestedStarted = createDeferred();
-    await runtime.start(
-      new ControlAwareAdapter(async ({ message, tools }) => {
-        if (message.content === CONTROL) {
-          nestedStarted.resolve();
-          await nestedParked.promise;
-          return;
-        }
-        if (message.content.includes("fresh")) {
-          await tools.sendMessage("fresh reply", ["@owner"]);
-          return;
-        }
-        await outerParked.promise;
-        await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
-      }),
-    );
+    const { events } = await startProcess(platform, journalDir, async ({ message, tools }) => {
+      if (message.content === CONTROL) {
+        nestedStarted.resolve();
+        await nestedParked.promise;
+        return;
+      }
+      if (message.content.includes("fresh")) {
+        await tools.sendMessage("fresh reply", ["@owner"]);
+        return;
+      }
+      await outerParked.promise;
+      await tools.sendMessage("late", ["@owner"]).then(late.resolve, late.resolve);
+    }, { adapter: ControlAwareAdapter });
 
     await room.say(OWNER, `${MENTION} hello`);
     await events.next((event) => event.type === "turn.started");
@@ -529,29 +490,7 @@ describe("a detached turn's reply while a control turn runs", () => {
       controlParked.resolve();
     });
     const answered = createDeferred<unknown>();
-    const CONTROL = "CONTROL: proceed";
-
-    class ControlAwareAdapter extends GenericAdapter {
-      public isControlMessage(message: { content: string }): boolean {
-        return message.content === CONTROL;
-      }
-    }
-
-    const events = new RecordLog<AgentEvent>();
-    const runtime = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: { journalDir: tmpRoot(), journalPlatformIdentity: IDENTITY },
-    });
-    runtime.observe((event) => {
-      events.record(event);
-    });
-    onTestFinished(async () => {
-      if (runtime.state.status === "running") await runtime.stop(KILL);
-    });
-    await runtime.start(new ControlAwareAdapter(async ({ message, tools }) => {
+    const { events } = await startProcess(platform, tmpRoot(), async ({ message, tools }) => {
       if (message.content === CONTROL) {
         await controlParked.promise;
         return;
@@ -561,7 +500,7 @@ describe("a detached turn's reply while a control turn runs", () => {
         await decided.promise;
         await tools.sendMessage("answer", ["@owner"]).then(answered.resolve, answered.resolve);
       }, Promise.resolve(), new NoopLogger(), {}, () => undefined);
-    }));
+    }, { adapter: ControlAwareAdapter });
 
     const inbound = await room.say(OWNER, `${MENTION} hello`);
     await room.outcome(inbound);
@@ -644,7 +583,7 @@ describe("an unresolved publication through a restart", () => {
     ]);
     // An uncertain delivery's record leaves the writer admitting: only a lost owed write poisons.
     const afterUnknown = await new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY);
-    expect((await afterUnknown.room(ROOM)).accepting).toBe(true);
+    expect((await openRoom(afterUnknown, ROOM)).accepting).toBe(true);
     await afterUnknown.close();
 
     const second = await startProcess(platform, journalDir, async ({ tools }) => {
@@ -842,37 +781,33 @@ describe("an unresolved publication with no inbound to ride on", () => {
 
   it("admits rooms without journals, creating no file and holding no handle for them", async () => {
     const platform = BandPlatform.host([person(OWNER)]);
-    await platform.room(ROOM);
+    const room = await platform.room(ROOM);
     const idleRooms = [1, 2, 3, 4, 5].map((n) => `idle-${n}`);
     for (const id of idleRooms) await platform.room(id);
     const journalDir = tmpRoot();
-    const { runtime, events } = await startProcess(platform, journalDir, async () => undefined);
+    const inbound = room.postBeforeConnect(OWNER, `${MENTION} hello`);
+    const { runtime, events } = await startProcess(platform, journalDir, async ({ tools }) => {
+      await tools.sendMessage("answered", ["@owner"]);
+    });
     // Wait until every room's admission has been observed — not a fixed sleep.
     const expected = [ROOM, ...idleRooms];
     await events.until(() => {
       const joined = new Set(events.entries.flatMap((event) => (event.type === "room.joined" ? [event.roomId] : [])));
       return expected.every((roomId) => joined.has(roomId));
     });
+    expect(await room.outcome(inbound)).toBe("processed");
 
-    // None of these rooms ever recorded a journal: admission must not create the
-    // file to report from, and must not keep a handle open on one.
-    const files: string[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      const entries = await readdir(dir, { withFileTypes: true }).catch(() => [] as never);
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) await walk(full);
-        else if (entry.name.endsWith(".jsonl")) files.push(full);
-      }
+    // Opening a room's journal creates its file: the room that replied has one,
+    // so a room without one never had a handle opened on it.
+    const journalFiles = async (): Promise<string[]> => {
+      const agentDir = agentJournalDir(journalDir, AGENT_ID);
+      const names = await readdir(agentDir, { recursive: true });
+      return names.filter((name) => name.endsWith(JOURNAL_FILE_EXTENSION)).map((name) => path.join(agentDir, name));
     };
-    await walk(agentJournalDir(journalDir, AGENT_ID));
-    // Opening a room's journal creates its file: with none, no handle was ever opened.
-    expect(files).toEqual([]);
+    expect(await journalFiles()).toEqual([journalFile(journalDir)]);
 
     await runtime.stop(KILL);
-    files.length = 0;
-    await walk(agentJournalDir(journalDir, AGENT_ID));
-    expect(files).toEqual([]);
+    expect(await journalFiles()).toEqual([journalFile(journalDir)]);
   });
 });
 
@@ -2006,7 +1941,7 @@ describe("a reply's origin across turns", () => {
 
     const reopened = await new TurnJournal(journalDir, AGENT_ID).activate(IDENTITY);
     onTestFinished(() => reopened.close());
-    const journal = await reopened.room(ROOM);
+    const journal = await openRoom(reopened, ROOM);
     expect(journal.answered(one)).toBe(true);
     expect(journal.answered(two)).toBe(true);
   });

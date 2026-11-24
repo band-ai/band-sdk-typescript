@@ -19,21 +19,15 @@ describe("canonicalPlatformIdentity", () => {
     expect(canonicalPlatformIdentity("https://band.example")).toBe("https://band.example");
   });
 
-  it("refuses identities that would persist credentials or fold into another deployment", () => {
-    const refuse = (value: string) => {
-      try {
-        canonicalPlatformIdentity(value);
-        expect.fail(`expected ${value} to be refused`);
-      } catch (error) {
-        expect(error).toBeInstanceOf(ValidationError);
-      }
-    };
-    refuse("https://token@band.example");
-    refuse("https://token:secret@band.example");
-    refuse("https://band.example?api_key=secret");
-    refuse("https://band.example#fragment");
-    refuse("ftp://band.example");
-    refuse("not a url");
+  it.each([
+    "https://token@band.example",
+    "https://token:secret@band.example",
+    "https://band.example?api_key=secret",
+    "https://band.example#fragment",
+    "ftp://band.example",
+    "not a url",
+  ])("refuses %s, which would persist credentials or fold into another deployment", (value) => {
+    expect(() => canonicalPlatformIdentity(value)).toThrow(ValidationError);
   });
 
   it("refuses a hostless endpoint", () => {

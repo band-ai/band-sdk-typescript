@@ -28,6 +28,7 @@ import {
   holdJournalRewrite,
   interceptJournalAppends,
   journalLines,
+  openRoom,
   recordTypes,
   roomFile,
   seedLegacyFile,
@@ -46,7 +47,7 @@ describe("the v2 journal's file layout", () => {
   it("binds each room's file to its identity's directory and header", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     await room.turnDone("msg-1");
 
     const file = roomFile(dir);
@@ -60,16 +61,16 @@ describe("the v2 journal's file layout", () => {
     const dir = tmpRoot();
     const journals = new TurnJournal(dir, AGENT);
     const first = await journals.activate(IDENTITY);
-    await first.room("room-a");
-    await first.room("room/b");
+    await openRoom(first, "room-a");
+    await openRoom(first, "room/b");
     await first.close();
 
     const second = await journals.activate(OTHER_IDENTITY);
-    await second.room(ROOM);
+    await openRoom(second, ROOM);
     await second.close();
 
     const otherAgent = await new TurnJournal(dir, "agent/two").activate(IDENTITY);
-    await otherAgent.room(ROOM);
+    await openRoom(otherAgent, ROOM);
     await otherAgent.close();
 
     const entries = new Set((await readdir(agentJournalDir(dir, AGENT), { withFileTypes: true })).map((entry) => entry.name));
@@ -212,12 +213,12 @@ describe("the non-expiring authority", () => {
   it("keeps an old answered inbound answered again never, across generations", async () => {
     const dir = tmpRoot();
     const first = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await first.room(ROOM);
+    const room = await openRoom(first, ROOM);
     await room.turnDone("msg-1");
     await first.close();
 
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(reopened.answered("msg-1")).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
     await second.close();
@@ -228,7 +229,7 @@ describe("publications", () => {
   it("writes the intent durably before the post runs, and settles before the result returns", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
@@ -299,7 +300,7 @@ describe("publications", () => {
   it("records a cut-short refusal durably when the refuse append fails, so reopen does not announce pending", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
@@ -327,7 +328,7 @@ describe("publications", () => {
     await generation.close();
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => second.close());
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
   });
@@ -335,7 +336,7 @@ describe("publications", () => {
   it("keeps poison from A's failed settle when B's refuse rewrite lands", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const pubA = await room.beginReply("msg-A");
     const pubB = await room.beginReply("msg-B");
 
@@ -363,7 +364,7 @@ describe("publications", () => {
   it("surfaces cut-short markRefused rewrite failure instead of leaving only a cut error and reopen pending", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const engine = new PublicationEngine({
       roomId: ROOM,
       generation,
@@ -401,7 +402,7 @@ describe("publications", () => {
     await generation.close();
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => second.close());
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     // The refusal never landed: the reopened journal reports the intent rather than hide it.
     expect(await reopened.recoverUnresolved()).toEqual([expect.objectContaining({ messageId: "msg-cut", outcome: "pending" })]);
   });
@@ -437,7 +438,7 @@ describe("publications", () => {
 
     await expect(replyA).rejects.toBeInstanceOf(DeliveryUnknownError);
     await expect(replyB).rejects.toBe(refusedB);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     // A's acknowledged reply could not be settled: the writer admits nothing until it reopens.
     expect(room.accepting).toBe(false);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.intent", "reply.refused"]);
@@ -447,7 +448,7 @@ describe("publications", () => {
   it("syncs a refusal whose append reached the file but whose sync failed, recording it once", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
 
     // The refusal's line reaches the file, and its sync fails, as a failing disk does.
@@ -482,14 +483,14 @@ describe("publications", () => {
     await generation.close();
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => second.close());
-    expect(await (await second.room(ROOM)).recoverUnresolved()).toEqual([]);
+    expect(await (await openRoom(second, ROOM)).recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
   });
 
   it("stays poisoned when an intent append fails after part of it reached the file", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     await interceptJournalAppends(async (original, self, args) => {
       const line = typeof args[0] === "string" ? args[0] : "";
       if (line.includes("reply.intent")) {
@@ -509,7 +510,7 @@ describe("publications", () => {
   it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
     const beginA = room.beginReply("msg-1");
     await append.entered;
@@ -525,7 +526,7 @@ describe("publications", () => {
   it("refuses a queued beginReply after a mid-write poison so a torn settle cannot sit under a later intent (F2)", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
 
     const settleEntered = createDeferred();
@@ -561,7 +562,7 @@ describe("publications", () => {
     await generation.close();
     const reopened = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => reopened.close());
-    const journal = await reopened.room(ROOM);
+    const journal = await openRoom(reopened, ROOM);
     expect(journal.accepting).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
   });
@@ -569,7 +570,7 @@ describe("publications", () => {
   it("closes a released room's handle only once a reply admitted before the release settles on it", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const append = await holdJournalAppend((line) => line.includes('"t":"reply.intent"'));
     const publish = engine.publishReply("msg-1", async () => ({ success: true, id: "posted-1" }));
@@ -603,7 +604,7 @@ describe("publications", () => {
   it("keeps a refused reply's inbound unanswered, and it is not announced", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
     await room.markRefused("msg-1", publicationId);
     expect(room.answered("msg-1")).toBe(false);
@@ -611,7 +612,7 @@ describe("publications", () => {
     await generation.close();
 
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.refused"]);
     await second.close();
@@ -620,7 +621,7 @@ describe("publications", () => {
   it("announces an unknown publication on the same handle, then never again after reopen", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
     await room.markUnknown("msg-1", publicationId);
     // Same-handle recover must still return the unknown so stop/play can emit delivery.unrecorded.
@@ -632,7 +633,7 @@ describe("publications", () => {
     await generation.close();
 
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(await reopened.recoverUnresolved()).toEqual([]);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent", "reply.unknown", "publication.reported"]);
     await second.close();
@@ -641,7 +642,7 @@ describe("publications", () => {
   it("settles a decline durably before it counts as declined", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     await room.settleDecline("msg-1");
     expect(room.answered("msg-1")).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["decline.settled"]);
@@ -650,7 +651,7 @@ describe("publications", () => {
   it("refuses new publications once poisoned, until the handle reopens", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     room.poison();
     expect(room.accepting).toBe(false);
     await expect(room.beginReply("msg-1")).rejects.toMatchObject({ kind: "poisoned" });
@@ -658,7 +659,7 @@ describe("publications", () => {
 
     await generation.close();
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(reopened.accepting).toBe(true);
     await second.close();
   });
@@ -666,22 +667,22 @@ describe("publications", () => {
   it("refuses a write to a closed handle; a closed generation's rooms reject", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     await room.close();
     expect(room.accepting).toBe(false);
     await expect(room.beginReply("msg-1")).rejects.toMatchObject({ kind: "closed" });
     await expect(room.turnDone("msg-1")).rejects.toMatchObject({ kind: "closed" });
     // The generation hands back the closed handle: nothing it writes is admitted.
-    const again = await generation.room(ROOM);
+    const again = await openRoom(generation, ROOM);
     expect(again.accepting).toBe(false);
     await generation.close();
-    await expect(generation.room(ROOM)).rejects.toBeInstanceOf(BandSdkError);
+    await expect(openRoom(generation, ROOM)).rejects.toBeInstanceOf(BandSdkError);
   });
 
   it("keeps the durable intent when a disk will not take the settlement, and the writer stops admitting", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
     await interceptJournalAppends(async (original, self, args) =>
       typeof args[0] === "string" && args[0].includes("reply.settled") ? Promise.reject(diskFull()) : original.apply(self, args));
@@ -698,7 +699,7 @@ describe("publications", () => {
   it("poisons the writer when an append fails mid-write, and recovers the torn tail on reopen", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     const publicationId = await room.beginReply("msg-1");
     // A write that fails halfway: the file holds part of the settled line, so it no
     // longer stands as the writer read it.
@@ -725,7 +726,7 @@ describe("publications", () => {
     await generation.close();
     const reopened = await new TurnJournal(dir, AGENT).activate(IDENTITY);
     onTestFinished(() => reopened.close());
-    const journal = await reopened.room(ROOM);
+    const journal = await openRoom(reopened, ROOM);
     expect(journal.accepting).toBe(true);
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
     // The intent that stands is unresolved: the torn settlement is neither there nor trusted.
@@ -760,7 +761,7 @@ describe("ownership and generations", () => {
     expect(result.mode).toBe("committed");
 
     const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("m")).toBe(true);
     await generation.close();
   });
@@ -778,7 +779,7 @@ describe("ownership and generations", () => {
     );
 
     const generation = await new TurnJournal(dir, otherAgent).activate(IDENTITY);
-    const reopened = await generation.room(ROOM);
+    const reopened = await openRoom(generation, ROOM);
     expect(reopened.answered("old")).toBe(true);
     const state = JSON.parse(await readFile(path.join(manifestDir, "manifest.json"), "utf8"));
     expect(state.state).toBe("committed");
@@ -844,7 +845,7 @@ describe("ownership and generations", () => {
     );
 
     const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     expect(room.answered("only-in-copy")).toBe(true);
     const state = JSON.parse(await readFile(path.join(manifestDir, "manifest.json"), "utf8"));
@@ -855,16 +856,16 @@ describe("ownership and generations", () => {
   it("closes a superseded generation's rooms and ownership, never a successor's", async () => {
     const dir = tmpRoot();
     const first = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await first.room(ROOM);
+    const room = await openRoom(first, ROOM);
     await room.turnDone("msg-1");
     // The first start failed after activating: its cleanup closes its generation.
     await first.close();
 
     const second = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const reopened = await second.room(ROOM);
+    const reopened = await openRoom(second, ROOM);
     expect(reopened.answered("msg-1")).toBe(true);
     // The superseded generation cannot reach the successor's rooms.
-    await expect(first.room(ROOM)).rejects.toBeInstanceOf(BandSdkError);
+    await expect(openRoom(first, ROOM)).rejects.toBeInstanceOf(BandSdkError);
     expect(() => first.release(ROOM)).not.toThrow();
     await expect(first.close()).resolves.toBeUndefined();
     expect(reopened.accepting).toBe(true);
@@ -874,7 +875,7 @@ describe("ownership and generations", () => {
   it("opens the same room only after a release's close, with every record the closing handle wrote", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     let opens = 0;
     const open = RoomJournal.open.bind(RoomJournal);
     const spy = vi.spyOn(RoomJournal, "open").mockImplementation(async (...args) => {
@@ -886,7 +887,7 @@ describe("ownership and generations", () => {
     const done = room.turnDone("msg-1");
     await append.entered;
     generation.release(ROOM);
-    const reopening = generation.room(ROOM);
+    const reopening = openRoom(generation, ROOM);
     await flushMicrotasks();
     // The closing handle still owes its write: the room's next handle has not begun to open.
     expect(opens).toBe(0);
@@ -952,7 +953,7 @@ describe("ownership and generations", () => {
     turn.end();
     expect(held.isClosed).toBe(true);
     // The room's next open is a fresh, live handle.
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room).toBe(opened[1]);
     expect(room.accepting).toBe(true);
     await room.turnDone("after-open-race");
@@ -964,7 +965,7 @@ describe("ownership and generations", () => {
     const { journals, generation } = await generationIn(dir);
     const rewrite = await holdJournalRewrite();
     // A turn opens the room's journal; the new file's header is still being written when the generation closes.
-    const opening = generation.room(ROOM);
+    const opening = openRoom(generation, ROOM);
     await rewrite.entered;
     const closing = generation.close();
     await flushMicrotasks();
@@ -975,14 +976,14 @@ describe("ownership and generations", () => {
     expect((await opening).isClosed).toBe(true);
 
     const { generation: successor } = await generationIn(dir);
-    await (await successor.room(ROOM)).turnDone("msg-1");
+    await (await openRoom(successor, ROOM)).turnDone("msg-1");
     expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
   });
 
   it("finishes a release whose room's publications use the room meanwhile", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
-    await generation.room(ROOM);
+    await openRoom(generation, ROOM);
     const engine = new PublicationEngine({ roomId: ROOM, generation, logger: new NoopLogger() });
     const posting = createDeferred();
     const postEntered = createDeferred();
@@ -1030,7 +1031,7 @@ describe("ownership and generations", () => {
     await first;
     // m2's reply still posts: only m1's publications are waited for.
     await waiting;
-    expect((await generation.room(ROOM)).answered("m1")).toBe(true);
+    expect((await openRoom(generation, ROOM)).answered("m1")).toBe(true);
     posts.m2.resolve({ success: true, id: "posted-2" });
     await second;
   });

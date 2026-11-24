@@ -139,6 +139,16 @@ export async function generationIn(
   return { journals, generation };
 }
 
+/** `roomId`'s journal opened through `generation`, held only while it opens. */
+export async function openRoom(generation: JournalGeneration, roomId: string): Promise<RoomJournal> {
+  const hold = generation.holdRoom(roomId);
+  try {
+    return await hold.journal;
+  } finally {
+    hold.end();
+  }
+}
+
 /** A room's journal opened directly against its file, under `identity`. */
 export function roomJournalIn(
   dir: string,

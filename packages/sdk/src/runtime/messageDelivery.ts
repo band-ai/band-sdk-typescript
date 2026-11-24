@@ -74,9 +74,12 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
       legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
     });
   }
-  // A journal that will not admit the reply is a routine refusal, not an unexpected break.
+  // A journal that will not admit the reply is a refusal, not an unexpected
+  // break; a poisoned or closed one mutes the room's replies, so it is visible.
   if (error instanceof JournalPublicationError) {
-    logger?.debug("the room's journal refused a tool call", { toolName, kind: error.kind });
+    const context = { toolName, kind: error.kind };
+    if (error.kind === "fenced") logger?.debug("the room's journal refused a tool call", context);
+    else logger?.warn("the room's journal refused a tool call", context);
     return toolExecutionError(toolName, error.message, { kind: error.kind });
   }
   logger?.error("unexpected tool execution error", { toolName, error });

@@ -23,8 +23,6 @@ export async function bestEffort(operation: () => Promise<unknown>, logger: Logg
 export interface JournalGeneration {
   /** The identity the generation's rooms' journals are bound to. */
   readonly identity: string;
-  /** The room's journal, opened on first use and kept open until the room is released. */
-  room(roomId: string): Promise<RoomJournal>;
   /**
    * A turn's hold on `roomId`'s journal: the handle stays open until the hold
    * ends, and the room counts as in use again. Only the generation's close
@@ -159,15 +157,6 @@ class Generation implements JournalGeneration {
     private readonly ownership: JournalOwnership,
   ) {
     this.identity = identity;
-  }
-
-  public async room(roomId: string): Promise<RoomJournal> {
-    const hold = this.holdRoom(roomId);
-    try {
-      return await hold.journal;
-    } finally {
-      hold.end();
-    }
   }
 
   public holdRoom(roomId: string): RoomHold {

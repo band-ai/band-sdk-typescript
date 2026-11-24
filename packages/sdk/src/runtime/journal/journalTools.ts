@@ -5,22 +5,19 @@ import { Serializer } from "../../core/singleFlight";
 import { bandToolOverrides } from "../../core/turn";
 import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../../core/deliveryFailedError";
 import type { Logger } from "../../core/logger";
-import { cutShort } from "../turnRevocation";
 import { JournalPublicationError } from "./errors";
 
 /**
  * Wraps the tools a turn runs on, keeping the turn's side of the runtime's
- * durable publications honest:
- *
- * - a reply or decline made after the turn was cut short is refused before
- *   any post, so a reply a turn lost cannot still go out;
- * - a classified delivery-unknown (thrown, or surfaced as a tool-executor
- *   error) fences this turn: its later replies and closing text are refused
- *   rather than posted beside a reply Band may hold. Replies run one at a
- *   time, so one made while another is in flight waits for its outcome. The
- *   fence stands on the wrapper itself — the adapter's turn object reads it
- *   through `unknownDeliveryFenced` — so a late result fences the turn it ran
- *   on and cannot reach a successor, which wraps its own tools.
+ * durable publications honest: a classified delivery-unknown (thrown, or
+ * surfaced as a tool-executor error) fences this turn, so its later replies
+ * and closing text are refused rather than posted beside a reply Band may
+ * hold. Replies run one at a time, so one made while another is in flight
+ * waits for its outcome. The fence stands on the wrapper itself — the
+ * adapter's turn object reads it through `unknownDeliveryFenced` — so a late
+ * result fences the turn it ran on and cannot reach a successor, which wraps
+ * its own tools. A cut-short turn's calls are refused by the runtime's
+ * `revokedOnStop` wrapper around this one.
  *
  * The durable intent and settlement themselves live in the runtime's
  * publication engine, which the context's tools already carry; this wrapper
@@ -28,7 +25,6 @@ import { JournalPublicationError } from "./errors";
  */
 export function journalingTools<T extends AdapterToolsProtocol>(
   tools: T,
-  stopped: AbortSignal,
   logger?: Logger,
 ): T {
   // Set once this turn had a reply whose delivery stands unknown; the adapter's
@@ -65,15 +61,10 @@ export function journalingTools<T extends AdapterToolsProtocol>(
     return observe(call);
   });
 
-  const wrapCall = (call: () => Promise<unknown>, effect: "reply" | "decline"): Promise<unknown> => {
-    const refused = cutShort(stopped);
-    if (refused) throw refused;
-    return effect === "reply" ? reply(call) : observe(call);
-  };
-
   const overrides = bandToolOverrides(tools, (toolName, call) => {
     const effect = BAND_TOOL_EFFECTS[toolName];
-    return effect === "reply" || effect === "decline" ? wrapCall(call, effect) : call();
+    if (effect === "reply") return reply(call);
+    return effect === "decline" ? observe(call) : call();
   });
 
   return overrideTools(tools, {

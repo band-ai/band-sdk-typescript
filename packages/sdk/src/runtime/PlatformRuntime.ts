@@ -1084,10 +1084,9 @@ export class PlatformRuntime implements AsyncDisposable {
         // the room is turning to next.
         const pinned = pinTurnInbound(input.tools, input.message);
         const cycled = lease ? bindWorkingCycle(pinned, lease) : pinned;
-        // The turn's own side of the runtime's publications: a reply the turn
-        // lost is refused at its call, and a delivery-unknown fences this
-        // turn's closing text, never a successor's.
-        const journaled = journalingTools(cycled, stopped, this.logger);
+        // The turn's own side of the runtime's publications: a delivery-unknown
+        // fences this turn's closing text, never a successor's.
+        const journaled = journalingTools(cycled, this.logger);
         const delivering = message.settles
           ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
           : journaled;

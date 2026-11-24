@@ -4,11 +4,11 @@ import { expect, it } from "vitest";
 import { JournalPublicationError } from "../src/runtime/journal/errors";
 import { PublicationEngine } from "../src/runtime/journal/publication";
 import { makeLoggerSpy, tmpRoot } from "./testUtils";
-import { ROOM, generationIn } from "./turnJournalSupport";
+import { ROOM, generationIn, openRoom } from "./turnJournalSupport";
 
 it("logs Band's refusal of a reply when the refusal's record cannot land", async () => {
   const { generation } = await generationIn(tmpRoot());
-  const journal = await generation.room(ROOM);
+  const journal = await openRoom(generation, ROOM);
   const logger = makeLoggerSpy();
   const engine = new PublicationEngine({ roomId: ROOM, generation, logger });
   const refusal = new BandError({ statusCode: 422, body: { error: { code: "invalid", message: "Unprocessable" } } });

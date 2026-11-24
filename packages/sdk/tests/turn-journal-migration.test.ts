@@ -18,6 +18,7 @@ import {
   generationIn,
   holdJournalRewrite,
   journalRewriteFaults,
+  openRoom,
   legacyRoomFile,
   recordTypes,
   roomFile,
@@ -129,7 +130,7 @@ describe("migrateTurnJournals apply", () => {
 
     // A start over the committed migration runs, and the staged file is its authority.
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     expect(await room.recoverUnresolved()).toEqual([
       { messageId: "a", publicationId: intent.publicationId, outcome: "unknown", at: expect.any(Number) },
@@ -273,7 +274,7 @@ describe("migrateTurnJournals apply", () => {
     held.release();
     expect((await first).mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    expect((await generation.room(ROOM)).answered("m")).toBe(true);
+    expect((await openRoom(generation, ROOM)).answered("m")).toBe(true);
   });
 
   it("keeps records appended after the commit on a reapply, and reports nothing to do", async () => {
@@ -283,7 +284,7 @@ describe("migrateTurnJournals apply", () => {
 
     // A process answers one more turn after the migration; its record stands on the journal.
     const { generation } = await generationIn(dir);
-    await (await generation.room(ROOM)).turnDone("later");
+    await (await openRoom(generation, ROOM)).turnDone("later");
     const withLater = await readFile(roomFile(dir), "utf8");
     await generation.close();
 
@@ -357,7 +358,7 @@ describe("migration phases survive interruption", () => {
     const stood = await readFile(staged, "utf8");
 
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("old")).toBe(true);
     // The resume restaged nothing: the record the earlier process settled is still the authority's.
     expect(await readFile(staged, "utf8")).toBe(stood);
@@ -399,11 +400,28 @@ describe("migration phases survive interruption", () => {
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     // The amended prepare restaged through the bound surplus: the copy-only
     // settlement stands answered, not left behind by the journal-only staging.
     expect(room.answered("only-in-copy")).toBe(true);
+  });
+
+  it("refuses a start over a prepared migration while a surplus remnant stands unbound, leaving it for the amend", async () => {
+    const dir = tmpRoot();
+    const faults = await journalRewriteFaults();
+    const legacy = [JSON.stringify({ t: "turn.done", messageId: "b", at: 2 })];
+    const { bindings } = await seedAgent(dir, { [V1_ROOM_FILE]: legacy });
+    await crashedApply(faults, dir, bindings, commitWrite);
+    const remnant = await seedSurplusRemnant(dir, legacy, bindings[0].provenance);
+
+    // A start refuses as an apply resume would: committing would drop the copy's surplus.
+    await expect(generationIn(dir)).rejects.toMatchObject({ name: "JournalFileError", kind: "corrupt" });
+
+    const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] });
+    expect(result.mode).toBe("committed");
+    const { generation } = await generationIn(dir);
+    expect((await openRoom(generation, ROOM)).answered("only-in-copy")).toBe(true);
   });
 
   it("resumes after a crash between amend rewrite and restage, restaging the surplus under sameBindings", async () => {
@@ -425,7 +443,7 @@ describe("migration phases survive interruption", () => {
     // The overwrite of the standing destination is visible to the operator.
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Restaging"), expect.objectContaining({ destination: roomFile(dir), kind: "corrupt" }));
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     expect(room.answered("only-in-copy")).toBe(true);
   });
@@ -469,7 +487,7 @@ describe("migration identity and imported authority", () => {
     const staged = roomFile(dir);
     expect(JSON.parse((await readFile(staged, "utf8")).split("\n")[0])).toMatchObject({ t: "header", platformIdentity: IDENTITY });
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
@@ -528,7 +546,7 @@ describe("migration identity and imported authority", () => {
     const dir = tmpRoot();
     // A v2 process served the room: its reply settled and its turn ended.
     const first = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await first.room(ROOM);
+    const room = await openRoom(first, ROOM);
     const publicationId = await room.beginReply("live");
     await room.settleReply("live", publicationId, "post-live");
     await room.turnDone("live");
@@ -623,7 +641,7 @@ describe("migration identity and imported authority", () => {
     // durable, its settlement append is a torn tail.
     const destination = roomFile(dir);
     const generation = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     await room.beginReply("b");
     await generation.close();
     await appendFile(destination, `{"t":`);
@@ -632,7 +650,7 @@ describe("migration identity and imported authority", () => {
     // migration's validation stands on that same policy, so the destination
     // activates and the unresolved publication is recovered on admission.
     const restarted = await new TurnJournal(dir, AGENT).activate(IDENTITY);
-    const revived = await restarted.room(ROOM);
+    const revived = await openRoom(restarted, ROOM);
     expect(await revived.recoverUnresolved()).toEqual([
       expect.objectContaining({ messageId: "b", outcome: "pending" }),
     ]);
@@ -665,7 +683,7 @@ describe("v1 compaction remnants", () => {
     // A start over the committed migration runs: the remnant stands bound with its
     // journal, and no operator is asked to delete it.
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
@@ -711,7 +729,7 @@ describe("v1 compaction remnants", () => {
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [...bindings, remnant] });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
@@ -751,7 +769,7 @@ describe("v1 compaction remnants", () => {
     expect(await readFile(source, "utf8")).toBe(legacy.join("\n") + "\n");
     expect(await readFile(compacting, "utf8")).toBe(`${legacy[1]}\n`);
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
@@ -807,7 +825,7 @@ describe("v1 compaction remnants", () => {
     expect(await readFile(source, "utf8")).toBe(`${legacy.join("\n")}\n`);
     expect(await readFile(compacting, "utf8")).toBe(copyText);
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     // The copy-only settlement stands answered in the destination: a restart does
     // not answer it again.
@@ -830,7 +848,7 @@ describe("v1 compaction remnants", () => {
 
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    expect((await generation.room(ROOM)).answered("only-in-copies")).toBe(true);
+    expect((await openRoom(generation, ROOM)).answered("only-in-copies")).toBe(true);
   });
 
   it("coalesces multiple surplus remnants in lexicographic name order for a stable stagingSha256", async () => {
@@ -881,7 +899,7 @@ describe("v1 compaction remnants", () => {
     const primary = manifest.bindings.find((binding: { sourceFile: string }) => binding.sourceFile === V1_ROOM_FILE);
     expect(primary.stagingSha256).toBe(sha256(expectedStaging));
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("from-a")).toBe(true);
     expect(room.answered("from-z")).toBe(true);
     await generation.close();
@@ -923,7 +941,7 @@ describe("v1 compaction remnants", () => {
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     // The finished record stands; the fragment never became a settlement.
     expect(room.answered("b")).toBe(true);
     expect(room.answered("cut")).toBe(false);
@@ -947,7 +965,7 @@ describe("v1 compaction remnants", () => {
     const result = await migrateTurnJournals({ journalDir: dir, agentId: AGENT, apply: true, bindings: [binding] });
     expect(result.mode).toBe("committed");
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
   });
 
@@ -1053,7 +1071,7 @@ describe("v1 compaction remnants", () => {
     expect(await readFile(primary, "utf8")).toBe(legacy.join("\n"));
     expect(await readFile(compacting, "utf8")).toBe(copyText);
     const { generation } = await generationIn(dir);
-    const room = await generation.room(ROOM);
+    const room = await openRoom(generation, ROOM);
     expect(room.answered("b")).toBe(true);
     expect(room.answered("only-in-copy")).toBe(true);
   });
@@ -1100,7 +1118,7 @@ describe("v1 compaction remnants", () => {
       // The surplus the second copy holds stands answered under the journal,
       // whatever order the three attestations arrived in.
       const { generation } = await generationIn(dir);
-      const room = await generation.room(ROOM);
+      const room = await openRoom(generation, ROOM);
       expect(room.answered("b")).toBe(true);
       expect(room.answered("only-in-copy")).toBe(true);
       await generation.close();
