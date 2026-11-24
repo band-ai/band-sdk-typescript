@@ -535,7 +535,7 @@ describe("publications", () => {
     await expect(room.beginReply("msg-2")).rejects.toMatchObject({ kind: "poisoned" });
   });
 
-  it("refuses a beginReply queued behind a write once the journal is poisoned (F1)", async () => {
+  it("refuses a beginReply queued behind a write once the journal is poisoned", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await openRoom(generation, ROOM);
@@ -551,7 +551,7 @@ describe("publications", () => {
     expect(await recordTypes(roomFile(dir))).toEqual(["reply.intent"]);
   });
 
-  it("refuses a queued beginReply after a mid-write poison so a torn settle cannot sit under a later intent (F2)", async () => {
+  it("refuses a queued beginReply after a mid-write poison so a torn settle cannot sit under a later intent", async () => {
     const dir = tmpRoot();
     const { generation } = await generationIn(dir);
     const room = await openRoom(generation, ROOM);

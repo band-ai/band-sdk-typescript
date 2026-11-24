@@ -381,7 +381,7 @@ async function coalescedStaging(
   const primaryText = await readTextIfExists(primaryPath);
   if (primaryText === null) {
     throw new JournalFileError(
-      `The journal ${primary} the migration stages ${binding.sourceFile} through is gone from the journal; its import can no longer be checked against it. Restore it from backup before re-running the migration.`,
+      `The journal ${primary} the migration stages ${binding.sourceFile} through is missing from the agent's legacy journal directory; its import can no longer be checked against it. Restore it from backup before re-running the migration.`,
       "io",
       primaryPath,
     );
@@ -410,7 +410,7 @@ async function coalescedStaging(
       // A copy gone since the directory read: it held no record this staging
       // can claim, and the hash check against what stood refuses it below.
       throw new JournalFileError(
-        `The compaction copy ${file} beside the journal ${primary} is gone from the journal; the migration's staging can no longer be checked against what it held. Restore it from backup before re-running the migration.`,
+        `The compaction copy ${file} beside the journal ${primary} is missing from the agent's legacy journal directory; the migration's staging can no longer be checked against what it held. Restore it from backup before re-running the migration.`,
         "io",
         copyPath,
       );
@@ -530,7 +530,7 @@ async function validateDestination(
       });
       if (sourceSha256 === null) {
         throw new JournalFileError(
-          `The migration's preserved source ${binding.sourceFile} is gone from the journal; the import it recorded can no longer be checked against it. Restore the source from backup before re-running the migration.`,
+          `The migration's preserved source ${binding.sourceFile} is missing from the agent's legacy journal directory; the import it recorded can no longer be checked against it. Restore the source from backup before re-running the migration.`,
           "io",
           sourceFile,
         );
@@ -792,7 +792,7 @@ async function checkSource(legacyDir: string, binding: PreparedBinding, logger: 
   const source = path.join(legacyDir, binding.sourceFile);
   await stat(source).catch(() => {
     throw new JournalFileError(
-      `The migration's source ${binding.sourceFile} is gone from the journal; its records cannot be re-staged. Restore the source from backup and re-run the migration.`,
+      `The migration's source ${binding.sourceFile} is missing from the agent's legacy journal directory; its records cannot be re-staged. Restore the source from backup and re-run the migration.`,
       "io",
       source,
     );
