@@ -62,27 +62,6 @@ export function validateOperationId(id: unknown): string {
 }
 
 /**
- * A promise that settles one way or the other: a joiner to an in-flight
- * operation must learn an outcome the call refused, not wait forever for a
- * success.
- */
-export interface SettledOperation<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (error: unknown) => void;
-}
-
-export function createSettledOperation<T>(): SettledOperation<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = (error) => innerReject(error instanceof Error ? error : new Error(String(error)));
-  });
-  return { promise, resolve, reject };
-}
-
-/**
  * The mention inputs as strings, the way the fingerprint admits them: a
  * reference mention binds by its identity, its handle, then its name, in
  * that order — the roster's resolution of the input stands outside the
@@ -100,7 +79,7 @@ export function mentionInputsAsStrings(mentions: readonly (string | MentionRefer
  * in any order bind to the same operation, and a call that names a different
  * set does not.
  */
-export function canonicalMentions(mentions: readonly string[]): string[] {
+function canonicalMentions(mentions: readonly string[]): string[] {
   return [...mentions]
     .map((mention) => mention.trim())
     .filter((mention) => mention.length > 0)

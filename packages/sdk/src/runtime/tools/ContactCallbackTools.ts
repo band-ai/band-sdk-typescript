@@ -35,7 +35,7 @@ import {
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
-import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME } from "../../contracts/toolSchemas";
+import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME, carriesOperationIdArg } from "../../contracts/toolSchemas";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -297,11 +297,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
       case "band_send_message":
-        // The refusal stands on the field's presence, before any endpoint or
-        // room is resolved: a keyed call earns no post and no credit here.
-        if (Object.hasOwn(toolArgs, "operation_id")) {
-          throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
-        }
+        // No turn journal stands behind a contact callback: a keyed call earns no post.
+        if (carriesOperationIdArg(toolArgs)) throw keyedOperationsUnsupported();
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
@@ -313,12 +310,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           toolArgs.metadata as MetadataMap | undefined,
         );
       case NO_REPLY_TOOL_NAME:
-        // The decline's result is itself the turn's credit: a keyed decline
-        // could not be recorded in this context, so it is refused before the
-        // credit stands.
-        if (Object.hasOwn(toolArgs, "operation_id")) {
-          throw new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
-        }
+        if (carriesOperationIdArg(toolArgs)) throw keyedOperationsUnsupported();
         return NO_REPLY_RESULT;
       case "band_get_participants":
         return this.getParticipants();
@@ -377,4 +369,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);
     }
   }
+}
+
+function keyedOperationsUnsupported(): UnsupportedFeatureError {
+  return new UnsupportedFeatureError("keyed operations are unsupported for contact callbacks: no turn journal stands behind this context to reserve, settle, or replay the operation");
 }

@@ -4,7 +4,7 @@ import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../contracts/toolSchemas";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME, carriesOperationIdArg } from "../contracts/toolSchemas";
 import { fenceTurnForKeyedAdmission } from "../runtime/journal/journalTools";
 
 /** The actual tools of the turn a keyed call was admitted on, and the room it names. */
@@ -40,17 +40,6 @@ const admissionStorage = new AsyncLocalStorage<Admission>();
 /** The admission standing in this async scope: a keyed call's, or nothing elsewhere. */
 export function currentAdmission(): Admission | undefined {
   return admissionStorage.getStore();
-}
-
-/**
- * Whether the raw call's arguments carry an operation id under any value
- * type: presence admits the call, not validity — the journal decides what the
- * id stands for after the framework's own validation has had its say. A
- * `tools/call`'s arguments stand under `params.arguments`, per the protocol.
- */
-export function hasKeyedOperation(params: unknown): boolean {
-  const arguments_ = keyedArguments(params);
-  return arguments_ !== undefined && Object.hasOwn(arguments_, "operation_id");
 }
 
 /** The `tools/call`'s arguments, when the params carry an object of them. */
@@ -161,7 +150,7 @@ public setProtocolVersion?: (version: string) => void;
       return undefined;
     }
     const params = message.params;
-    if (!hasKeyedOperation(params)) {
+    if (!carriesOperationIdArg(keyedArguments(params))) {
       return undefined;
     }
     // Only the canonical publication tools admit: an unrelated tool or event

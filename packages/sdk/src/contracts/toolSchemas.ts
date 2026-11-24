@@ -57,6 +57,23 @@ const OPERATION_ID_PROPERTY = {
 /** The tools that take an optional `operation_id`, advertised only where keyed operations are served. */
 export const KEYED_OPERATION_TOOL_NAMES: ReadonlySet<string> = new Set([SEND_MESSAGE_TOOL_NAME, NO_REPLY_TOOL_NAME]);
 
+/** The tool argument that keys an operation. */
+export const OPERATION_ID_ARG = "operation_id";
+
+/**
+ * Whether a tool call's arguments carry an operation id, under any value:
+ * presence keys the call, and the journal validates the value, so an explicit
+ * `undefined` is a supplied, invalid id rather than a legacy call.
+ */
+export function carriesOperationIdArg(args: unknown): boolean {
+  return typeof args === "object" && args !== null && Object.hasOwn(args, OPERATION_ID_ARG);
+}
+
+/** Whether `sendMessage` options carry an `operationId`, under any value, as for {@link carriesOperationIdArg}. */
+export function carriesOperationIdOption(options: unknown): boolean {
+  return typeof options === "object" && options !== null && Object.hasOwn(options, "operationId");
+}
+
 /**
  * `name`'s published input properties: a keyed-operation tool gains the
  * optional `operation_id` only when `operationIds` says the runtime serves it
@@ -68,7 +85,7 @@ export function toolInputProperties(
   properties: Record<string, unknown>,
   operationIds: boolean,
 ): Record<string, unknown> {
-  return operationIds && KEYED_OPERATION_TOOL_NAMES.has(name) ? { ...properties, operation_id: OPERATION_ID_PROPERTY } : properties;
+  return operationIds && KEYED_OPERATION_TOOL_NAMES.has(name) ? { ...properties, [OPERATION_ID_ARG]: OPERATION_ID_PROPERTY } : properties;
 }
 
 export const TOOL_MODELS = {

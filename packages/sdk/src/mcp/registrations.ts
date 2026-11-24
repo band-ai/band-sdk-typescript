@@ -130,14 +130,9 @@ export function scopeToRoom<T extends AdapterToolsProtocol>(
     inputSchema: withRoomId(tool.inputSchema),
     execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
       const keyed = keyedDispatch(roomIdArg);
-      // A keyed call runs on the tools its admission pinned, in the room it
-      // was admitted in: it is never re-resolved against whatever the room
-      // stands for now, and naming another room is refused rather than
-      // rerouted. With no standing origin, a turn fence that did not stand,
-      // or an admission lookup that cannot run, it is refused outright: no
-      // re-resolution, no post, no settlement, no turn selected, and never a
-      // dispatch against a turn it did not fence.
-      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+      // A keyed call runs on the tools its admission pinned, never on
+      // whatever the room resolves to now.
+      if (keyed.status === "refused") {
         return Promise.resolve(errorResult(keyed.text));
       }
       if (keyed.status === "admitted") {
@@ -154,29 +149,22 @@ function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
 }
 
 /**
- * The refusal a keyed call earns when its bridge stands no origin for it, or
- * its turn fence did not stand: no standing turn's tools can run it. The
- * call is refused cleanly — no re-resolution against a successor turn, no
- * post, no settlement, and no turn selected or fenced for it. What the bridge
- * itself stands — open, retired, or replaced — is not claimed: the refusal
- * names only what the call's own admission proved, and nothing more.
+ * The refusal a keyed call earns when no admitted origin or fenced turn can
+ * run it. It names only what the call's own admission proved.
  */
 function originlessKeyedResult(): string {
   return "The call's operation was admitted with no origin that can run it, or on a turn whose fence did not stand: the call is refused. Nothing was re-resolved, posted, settled, or fenced.";
 }
 
 /**
- * What a keyed call's dispatch stands on, read under one guard: the
- * admission's standing, its origin, and its fence, looked up in a scope where
- * a lookup that cannot run stands as no origin at all — the call is refused
- * rather than run against an origin that cannot be read, or unfenced. A call
- * the admission does not carry keyed dispatches as usual.
+ * How a keyed call dispatches: on its admitted origin's tools, or refused
+ * when that origin, its fence, or its room does not stand. A lookup that
+ * throws refuses too, rather than run unfenced. An unkeyed call is `none`.
  */
 type KeyedDispatch =
   | { status: "none" }
   | { status: "refused"; text: string }
-  | { status: "wrong-room"; text: string }
-  | { status: "admitted"; tools: AdapterToolsProtocol; roomId: string | undefined };
+  | { status: "admitted"; tools: AdapterToolsProtocol };
 
 function keyedDispatch(roomIdArg: unknown): KeyedDispatch {
   try {
@@ -188,15 +176,11 @@ function keyedDispatch(roomIdArg: unknown): KeyedDispatch {
     if (origin === undefined || !admission.fenced) {
       return { status: "refused", text: originlessKeyedResult() };
     }
-    const tools = origin.tools;
-    const roomId = origin.roomId;
-    if (roomId !== undefined && roomIdArg !== roomId) {
-      return { status: "wrong-room", text: wrongRoomResult(roomIdArg, roomId) };
+    if (origin.roomId !== undefined && roomIdArg !== origin.roomId) {
+      return { status: "refused", text: wrongRoomResult(roomIdArg, origin.roomId) };
     }
-    return { status: "admitted", tools, roomId };
+    return { status: "admitted", tools: origin.tools };
   } catch {
-    // The call's admission stood, but its lookup did not: it is refused
-    // rather than run against an origin that cannot be read.
     return { status: "refused", text: originlessKeyedResult() };
   }
 }
@@ -275,7 +259,7 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
       inputSchema: withRoomId(tool.inputSchema),
       execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) => {
         const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-        if (keyed.status === "refused" || keyed.status === "wrong-room") {
+        if (keyed.status === "refused") {
           return Promise.resolve(errorResult(keyed.text));
         }
         if (keyed.status === "admitted") {
@@ -297,7 +281,7 @@ function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): M
     ...tool,
     execute: (args, _tools, signal) => {
       const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+      if (keyed.status === "refused") {
         return Promise.resolve(errorResult(keyed.text));
       }
       return tool.execute(args, keyed.status === "admitted" ? keyed.tools : tools, signal);
@@ -359,7 +343,7 @@ function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegi
     ...tool,
     execute: (args) => {
       const keyed = keyedDispatch(args[ROOM_ID_ARG]);
-      if (keyed.status === "refused" || keyed.status === "wrong-room") {
+      if (keyed.status === "refused") {
         return Promise.resolve(errorResult(keyed.text));
       }
       return executeToolCall(keyed.status === "admitted" ? keyed.tools : tools, tool.name, args);

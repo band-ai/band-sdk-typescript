@@ -1,5 +1,11 @@
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { BAND_TOOL_EFFECTS, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../contracts/toolSchemas";
+import {
+  BAND_TOOL_EFFECTS,
+  NO_REPLY_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  carriesOperationIdArg,
+  carriesOperationIdOption,
+} from "../../contracts/toolSchemas";
 import type { BandToolName } from "@band-ai/band-sdk-core";
 import { overrideTools } from "../../core/overrideTools";
 import { Serializer } from "../../core/singleFlight";
@@ -9,44 +15,21 @@ import type { Logger } from "../../core/logger";
 import { JournalPublicationError } from "./errors";
 
 /**
- * A canonical publication call carrying an `operation_id`, on the field's
- * presence rather than its parsed value: a direct `sendMessage` carries it in
- * its options, a `band_no_reply` in its arguments. An explicit
- * `operation_id: undefined` stands as a supplied, invalid id.
+ * A canonical publication call keyed by an operation id: a direct
+ * `sendMessage` carries it in its options, a call by name in its arguments.
  */
-export function carriesOperationId(toolName: BandToolName, args: readonly unknown[]): boolean {
-  if (toolName === SEND_MESSAGE_TOOL_NAME) {
-    // A direct `sendMessage` carries the id in its options; the same call
-    // through `executeToolCall` carries it in the arguments object.
-    const options = args.length > 2 ? args[2] : undefined;
-    if (typeof options === "object" && options !== null && Object.hasOwn(options, "operationId")) {
-      return true;
-    }
-    const arguments_ = args[0];
-    return typeof arguments_ === "object" && arguments_ !== null && Object.hasOwn(arguments_, "operation_id");
-  }
-  if (toolName !== NO_REPLY_TOOL_NAME) {
-    return false;
-  }
-  const arguments_ = args[0];
-  return typeof arguments_ === "object" && arguments_ !== null && Object.hasOwn(arguments_, "operation_id");
+function carriesOperationId(toolName: BandToolName, args: readonly unknown[]): boolean {
+  if (toolName === SEND_MESSAGE_TOOL_NAME && carriesOperationIdOption(args[2])) return true;
+  return (toolName === SEND_MESSAGE_TOOL_NAME || toolName === NO_REPLY_TOOL_NAME) && carriesOperationIdArg(args[0]);
 }
 
 /**
- * The mark a keyed call's admission leaves on the turn it fences: the MCP
- * transport decorator resolves the turn's tools at the raw call and sets this
- * flag before the framework's validation, so a keyed call — valid or not —
- * fences the turn it was admitted on the same way a delivery-unknown reply
- * would, and the turn's closing text is never relayed as an unkeyed
- * replacement.
+ * The fence a turn's tools expose to the MCP admission decorator, which
+ * fences the turn at the raw call, before the framework validates it.
  */
 export const KEYED_ADMISSION_FENCE = Symbol("band.keyedAdmissionFence");
 
-/**
- * A keyed call whose admission could not be established: the accessor that
- * would fence the turn it stands on threw, so the call is refused before
- * dispatch — never dispatched unfenced.
- */
+/** A keyed call whose admission could not be read: it is refused rather than dispatched unfenced. */
 export class AdmissionGuardError extends Error {
   public constructor() {
     super("The keyed call's admission could not be established; the dispatch is refused rather than run unfenced");
@@ -55,28 +38,18 @@ export class AdmissionGuardError extends Error {
 }
 
 /**
- * Fences the turn standing behind `tools`, when its wrappers carry the fence.
- * Answers whether the fence stood: an accessor that cannot be run has not
- * fenced, and the caller must refuse the dispatch rather than run it
- * unfenced.
+ * Fences the turn standing behind `tools`, and answers whether the fence
+ * stood; when it did not, the caller refuses the dispatch.
  */
 export function fenceTurnForKeyedAdmission(tools: unknown): boolean {
-  let marker: { fence: () => void } | undefined;
   try {
-    marker = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } | undefined } | undefined)?.[KEYED_ADMISSION_FENCE];
-  } catch {
-    // The turn's fence could not be read: it did not stand.
-    return false;
-  }
-  if (marker === undefined) {
-    return false;
-  }
-  try {
+    const marker = (tools as { [KEYED_ADMISSION_FENCE]?: { fence: () => void } } | undefined)?.[KEYED_ADMISSION_FENCE];
+    if (marker === undefined) return false;
     marker.fence();
+    return true;
   } catch {
     return false;
   }
-  return true;
 }
 
 /**
@@ -149,15 +122,8 @@ export function journalingTools<T extends AdapterToolsProtocol>(
   });
 
   const overrides = bandToolOverrides(tools, (toolName, call, args) => {
-    // A canonical publication call carrying an `operation_id` — on the field's
-    // presence, not its parsed value — commits this wrapper's turn to keyed
-    // delivery before any validation or capability check: whatever the call
-    // ends up, accepted, refused, or unsupported, the turn's closing text is
-    // not relayed as an unkeyed replacement on top of it. The stand is on the
-    // wrapper itself, so a late call made through a completed turn's tools
-    // fences that turn and never reaches a successor, which wraps its own
-    // tools. The admission accessor is guarded: if it cannot run, the call is
-    // refused before dispatch rather than run unfenced.
+    // A keyed call commits this wrapper's turn before any validation, whatever
+    // it ends up as; an arguments object that cannot be read refuses the call.
     let admitted: boolean;
     try {
       admitted = carriesOperationId(toolName, args);

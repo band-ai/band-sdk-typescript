@@ -64,6 +64,9 @@ import {
   NO_REPLY_TOOL_NAME,
   getToolDescription,
   TOOL_MODELS,
+  OPERATION_ID_ARG,
+  carriesOperationIdArg,
+  carriesOperationIdOption,
   toolInputProperties,
 } from "../../contracts/toolSchemas";
 import {
@@ -264,10 +267,7 @@ export class AgentTools implements AgentToolsProtocol {
     kind: "reply" | "notice",
     options?: SendMessageOptions,
   ): Promise<ToolOperationResult> {
-    // Presence, not a parsed value: an explicit `operationId: undefined` is a
-    // keyed call the journal refuses for its invalid id, never a legacy post
-    // the turn would relay on top of.
-    if (options !== undefined && Object.hasOwn(options, "operationId")) {
+    if (options !== undefined && carriesOperationIdOption(options)) {
       if (kind !== "reply") {
         throw new OperationUnsupportedError("no-once-transport");
       }
@@ -919,17 +919,13 @@ export class AgentTools implements AgentToolsProtocol {
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
       band_send_message: async (arguments_) => {
-        // Presence admits the call, not a parsed string: an id of any value
-        // type rides the keyed path and is validated there — a dropped
-        // non-string id would fall to the legacy delivery and post. The
-        // turn's fence for the call stands on the turn's own wrapper, so a
-        // late call through a completed turn's tools fences that turn, not
-        // the successor it runs on.
+        // An id of any value type rides the keyed path and is validated
+        // there: a dropped non-string id would fall to the legacy post.
         return this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
-          Object.hasOwn(arguments_, "operation_id")
-            ? { operationId: arguments_.operation_id as string | undefined }
+          carriesOperationIdArg(arguments_)
+            ? { operationId: arguments_[OPERATION_ID_ARG] as string | undefined }
             : undefined,
         );
       },
@@ -944,23 +940,15 @@ export class AgentTools implements AgentToolsProtocol {
           this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
           return NO_REPLY_RESULT;
         };
-        // A keyed no-reply runs the same journal rules as a keyed send: the id
-        // is validated, an invalid one refused before any record or post, and
-        // the decline's result settled durably under the turn — no POST is
-        // ever made by a decline. Admission stands on the field's presence,
-        // before those checks: whatever the decline ends up as, the turn's
-        // own wrapper fences it, and its closing text is never relayed as an
-        // unkeyed replacement.
-        if (Object.hasOwn(arguments_, "operation_id")) {
-          if (this.publication === undefined) {
-            throw new OperationUnsupportedError("no-journal");
-          }
+        // A keyed no-reply runs the keyed send's journal rules; a decline
+        // never posts.
+        if (carriesOperationIdArg(arguments_)) {
           const messageId = this.publicationInboundId();
-          if (messageId === undefined) {
+          if (this.publication === undefined || messageId === undefined) {
             throw new OperationUnsupportedError("no-journal");
           }
           return this.publication.publishOperation({
-            operationId: arguments_.operation_id,
+            operationId: arguments_[OPERATION_ID_ARG],
             kind: "decline",
             reason: typeof arguments_.reason === "string" ? arguments_.reason : undefined,
             messageId,
