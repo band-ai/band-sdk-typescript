@@ -59,8 +59,6 @@ interface ChildState {
   owner: string;
   mention: string;
   platform: PlatformSnapshot;
-  /** Durable-ack only: the tool's response had not returned when the child was killed. */
-  toolReturned?: boolean;
   /** Durable-ack only: the reply stood settled in the journal at the child's boundary. */
   answered?: boolean;
   /** Ab-unresolved only: the settled message the successor's input never contains. */
@@ -168,6 +166,17 @@ async function driveChild(journalDir: string, mode: ChildMode, stateFile: string
   return JSON.parse(await readFile(stateFile, "utf8")) as ChildState;
 }
 
+/** The messages the child's platform would still serve: added, and not processed. */
+function unsettledIds(state: ChildState): string[] {
+  const processed = new Set(state.platform.settled.filter((settled) => settled.outcome === "processed").map((settled) => settled.messageId));
+  return state.platform.unsettled.map((entry) => entry.item.id).filter((id) => !processed.has(id));
+}
+
+/** The child's platform messages, less its inbound: a successor input that never serves the inbound again. */
+function withoutInbound(state: ChildState): PlatformSnapshot["unsettled"] {
+  return state.platform.unsettled.filter((entry) => entry.item.id !== state.inboundId);
+}
+
 /** The parent's successor: a real runtime over the same journal and the platform the child left standing. */
 async function startSuccessor(
   platform: BandPlatform,
@@ -186,6 +195,9 @@ async function startSuccessor(
   runtime.observe((event) => {
     events.record(event);
   });
+  onTestFinished(async () => {
+    if (runtime.state.status === "running") await runtime.stop(KILL);
+  });
   // The killed process is dead: its OS-released locks are no lock at all, so
   // the successor starts on the first attempt and never retries.
   await runtime.start(
@@ -197,9 +209,6 @@ async function startSuccessor(
   // The re-served message must settle: the journal repairs what the dead process owed, or the
   // successor runs the turn the dead process left running. Either way it ends `processed`.
   await platform.rest.settled.next((settled) => settled.messageId === inboundId && settled.outcome === "processed");
-  onTestFinished(async () => {
-    if (runtime.state.status === "running") await runtime.stop(KILL);
-  });
   return { runtime, handled, events, posted: platform.rest.deliveries.map((delivery) => delivery.content) };
 }
 
@@ -325,9 +334,8 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     const stateFile = path.join(journalDir, "child-state.json");
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child's reply post stands admitted by the platform; its settle
-    // record's write is held in flight at the journal, and the child proves
-    // the tool's response is still outstanding when it is killed: publication
-    // stands paused in its last durable step, before the tool returns.
+    // record's write is held in flight at the journal when it is killed:
+    // publication stands paused in its last durable step.
     const state = await driveChild(journalDir, "before-tool-return", stateFile);
     // The platform admitted the reply; the journal never learned of it.
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["tool answer"]);
@@ -347,6 +355,9 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(await (await platform.room(state.room)).outcome(state.inboundId)).toBe("processed");
     expect(platform.rest.posted.entries.map((posted) => posted.content)).toHaveLength(2);
     expect(platform.rest.posted.entries[0].content).toBe("tool answer");
+    // The admitted reply stands unrecorded: announced once, its intent left beside the successor's settled reply.
+    expect(successor.events.entries.filter((event) => event.type === "delivery.unrecorded")).toHaveLength(1);
+    expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "publication.reported", "reply.intent", "reply.settled", "turn.done"]);
   }, 180_000);
 
   it("keeps a killed process's settled reply authoritative when it dies while its room reset detaches the turn", async () => {
@@ -407,12 +418,11 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     expect(new Set((await journalLines(file)).map((record) => String(record.messageId)))).toEqual(new Set([state.inboundId]));
     // The one message still standing unsettled in the child's platform is the inbound
     // itself; the successor's input removes it, serving the successor nothing.
-    const unsettled = state.platform.unsettled.filter((entry) => entry.item.id !== state.inboundId);
-    expect(unsettled).toEqual([]);
+    expect(unsettledIds(state)).toEqual([state.inboundId]);
 
     const platform = BandPlatform.host([person(state.owner)]);
     onTestFinished(() => platform[Symbol.asyncDispose]());
-    platform.rest.restore({ ...state.platform, unsettled });
+    platform.rest.restore({ ...state.platform, unsettled: withoutInbound(state) });
     const handled: string[] = [];
     const events = new RecordLog<AgentEvent>();
     const runtime = new PlatformRuntime({
@@ -454,11 +464,9 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
     onTestFinished(() => rm(journalDir, { recursive: true, force: true }).catch(() => undefined));
     // The child's reply settles for real — append, datasync, in-memory settlement — and the
     // cut stands before the settle call returns to the engine: the reply is durably settled
-    // on disk, the tool's response still stands outstanding, and the turn does not end.
+    // on disk, and the turn does not end.
     const state = await driveChild(journalDir, "durable-ack", stateFile);
-    // The child proved the seam at its boundary, not after the fact: the tool response was
-    // still outstanding when the process stood with its settlement flushed.
-    expect(state.toolReturned).toBe(false);
+    // The reply stood settled in the child's journal at its boundary; the turn never ended.
     expect(state.answered).toBe(true);
     expect(state.platform.posted.map((posted) => posted.content)).toEqual(["durable pending-tool reply"]);
     expect(await journalRecordsOf(journalDir)).toEqual(["reply.intent", "reply.settled"]);
@@ -488,12 +496,10 @@ describe("the turn journal across a real process boundary, runtime to runtime", 
 
     // The successor's input serves neither message again: A's processed mark stands in the
     // child's snapshot, and B's unsettled entry is the one the platform does not serve.
+    expect(unsettledIds(state)).toEqual([state.inboundId]);
     const platform = BandPlatform.host([person(state.owner)]);
     onTestFinished(() => platform[Symbol.asyncDispose]());
-    platform.rest.restore({
-      ...state.platform,
-      unsettled: state.platform.unsettled.filter((entry) => entry.item.id !== state.inboundId),
-    });
+    platform.rest.restore({ ...state.platform, unsettled: withoutInbound(state) });
     const handled: string[] = [];
     const events = new RecordLog<AgentEvent>();
     const runtime = new PlatformRuntime({

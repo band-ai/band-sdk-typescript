@@ -203,8 +203,9 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
             return { found };
           }
           unsettled = null;
-        } catch {
+        } catch (error) {
           // Unreadable: every attempt so far may hold, and stays unsettled.
+          logger.warn("Message post read-back failed; the post stays uncertain", { roomId, attempt, error });
         }
       }
     }

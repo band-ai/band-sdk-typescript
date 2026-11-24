@@ -87,7 +87,7 @@ describe("journal ownership", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("acquires an empty lock file and a contender in the same process is refused", async () => {
+  it("acquires an empty lock file, refuses a contender in the same process without handing it the lock, and frees it on release", async () => {
     const file = path.join(dir, "owner.sqlite");
     const owner = await JournalOwnership.acquire(file);
     try {
@@ -95,22 +95,11 @@ describe("journal ownership", () => {
       expectKind(error, "contention");
       // Actionable: it names the file, and never steals the lock.
       expect(error.message).toContain(file);
+      // The loser holds nothing: the owner's lock still refuses the next contender.
+      await expectContention(file);
     } finally {
       await owner.release();
     }
-    const next = await JournalOwnership.acquire(file);
-    await next.release();
-  });
-
-  it("a contender that loses never holds a lock, and releasing it frees nothing", async () => {
-    const file = path.join(dir, "loser.sqlite");
-    const owner = await JournalOwnership.acquire(file);
-    const lost = await JournalOwnership.acquire(file).catch((e: unknown) => e);
-    expectKind(lost, "contention");
-    // Still locked by the owner: another contender is still refused.
-    await expectContention(file);
-    await owner.release();
-    // Free exactly once the owner released.
     const next = await JournalOwnership.acquire(file);
     await next.release();
   });

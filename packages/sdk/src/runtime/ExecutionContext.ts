@@ -66,8 +66,6 @@ export class ExecutionContext {
 
   private workingReporter?: WorkingStateReporter;
   private readonly sessionConfig: ResolvedSessionConfig;
-  /** Each standing turn's stop, by the inbound it answers: a reply is refused only when its own turn is cut short. */
-  private readonly publicationStops = new Map<string, AbortSignal>();
 
   private _state: ExecutionState = "starting";
   private readonly retryTrackerInstance: RetryTracker;
@@ -95,7 +93,6 @@ export class ExecutionContext {
       logger: this.logger,
       publication: options.publication,
       inboundMessageId: options.inboundMessageId,
-      publicationStop: (inboundMessageId) => this.publicationStops.get(inboundMessageId),
     });
     this.adapterTools = this.tools.getAdapterTools();
   }
@@ -117,16 +114,6 @@ export class ExecutionContext {
 
   public setState(state: ExecutionState): void {
     this._state = state;
-  }
-
-  /** Installs the stop of the turn answering `inboundMessageId`, until {@link releasePublicationStop}. */
-  public setPublicationStop(inboundMessageId: string, signal: AbortSignal): void {
-    this.publicationStops.set(inboundMessageId, signal);
-  }
-
-  /** Ends the turn's ownership of its stop; a later turn answering the same inbound keeps its own. */
-  public releasePublicationStop(inboundMessageId: string, signal: AbortSignal): void {
-    if (this.publicationStops.get(inboundMessageId) === signal) this.publicationStops.delete(inboundMessageId);
   }
 
   public getRetryTracker(): RetryTracker {

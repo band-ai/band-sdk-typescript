@@ -146,23 +146,24 @@ function manifestPath(agentDir: string): string {
   return path.join(agentDir, MIGRATION_DIR, MANIFEST_FILE);
 }
 
-function parseManifest(text: string): Manifest {
+function parseManifest(file: string, text: string): Manifest {
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new JournalFileError("The journal's migration manifest is not readable JSON; it cannot be trusted or resumed.", "corrupt", manifestPath(""));
+    throw new JournalFileError("The journal's migration manifest is not readable JSON; it cannot be trusted or resumed.", "corrupt", file);
   }
   const check = manifestSchema.safeParse(json);
   if (!check.success) {
-    throw new JournalFileError(`The journal's migration manifest is in a shape this version does not understand: ${check.error.issues.map((issue) => issue.message).join(", ")}.`, "unsupported", manifestPath(""));
+    throw new JournalFileError(`The journal's migration manifest is in a shape this version does not understand: ${check.error.issues.map((issue) => issue.message).join(", ")}.`, "unsupported", file);
   }
   return check.data;
 }
 
 async function readManifest(agentDir: string): Promise<Manifest | null> {
-  const text = await readTextIfExists(manifestPath(agentDir));
-  return text === null ? null : parseManifest(text);
+  const file = manifestPath(agentDir);
+  const text = await readTextIfExists(file);
+  return text === null ? null : parseManifest(file, text);
 }
 
 async function sha256File(file: string): Promise<string> {

@@ -7,7 +7,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 
 import { assertMigrationStartable } from "./migration";
 import { OWNERSHIP_FILE, agentJournalDir, identityDirectoryComponent, identityRoomFile, legacyAgentDir } from "./records";
-import { RoomJournal, type RoomJournalOptions } from "./RoomJournal";
+import { RoomJournal, removeOrphanedCopies, type RoomJournalOptions } from "./RoomJournal";
 import { JournalOwnership } from "./ownership";
 
 /** A journal operation (a write, a close) whose failure must not stop the runtime: it is logged where it happens. */
@@ -111,6 +111,7 @@ export class TurnJournal {
       await assertMigrationStartable(this.dir, legacyAgentDir(this.root, this.agentId), this.agentId, identity, { now: this.now, logger: this.logger });
       const identityDir = path.join(this.dir, identityDirectoryComponent(identity));
       await mkdir(identityDir, { recursive: true });
+      await removeOrphanedCopies(identityDir);
       return new Generation(this, identity, ownership);
     } catch (error) {
       await bestEffort(() => ownership.release(), this.logger, "Failed to release the journal's ownership after its activation failed", { agentId: this.agentId });

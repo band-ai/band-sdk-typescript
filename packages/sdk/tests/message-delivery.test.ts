@@ -4,6 +4,7 @@ import { BandError } from "@band-ai/rest-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AttributedPosts, contextCursorAfter, sortsAfterAnchor, type MessageDelivery } from "../src/client/rest/messageDelivery";
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
 import { MAX_SETTIMEOUT_DELAY_MS } from "../src/core/deadline";
 import { RoomExecutionStoppedError } from "../src/core/errors";
 import { FakeBandRoom, SELF_ID, type PostStep } from "./support/fakeBandRoom";
@@ -117,6 +118,21 @@ describe("message delivery", () => {
       await expect(settleThroughRetries(send([{ kind: "committedThen", status: UNAVAILABLE }, stopped]))).rejects.toMatchObject({ statusCode: UNAVAILABLE });
       expect(ownPosts()).toEqual(["stored-1"]);
     });
+
+    it("stays uncertain when the read-back's walk stopped at its page cap before reaching the newest message", async () => {
+      // A long-lived room whose anchored cursor Band refuses: the fallback walks from the room's
+      // start and runs out of pages before it reaches the trigger, let alone the first attempt.
+      room = new FakeBandRoom(ROOM, { [REPLY]: STORED_REPLY });
+      for (let i = 0; i < DEFAULT_MAX_PAGES * DEFAULT_PAGE_SIZE; i += 1) {
+        room.seed({ id: `old-${String(i).padStart(6, "0")}`, content: `chat ${i}`, senderId: USER, mentionIds: [SELF_ID] });
+      }
+      const trigger = room.seed({ id: "trigger", content: "hi", senderId: USER, mentionIds: [SELF_ID] });
+      delivery = { selfId: SELF_ID, anchor: { id: trigger.id, createdAt: new Date(trigger.inserted_at) }, attributed: new AttributedPosts() };
+      room.refuseForeignCursors();
+
+      await expect(settleThroughRetries(send([{ kind: "committedThen", status: UNAVAILABLE }, { kind: "refused", status: 409 }]))).rejects.toMatchObject({ statusCode: UNAVAILABLE });
+      expect(ownPosts()).toEqual(["stored-1"]);
+    }, 60_000);
 
     it("surfaces the refusal once a read-back showed the first attempt absent", async () => {
       await expect(settleThroughRetries(send([{ kind: "refused", status: UNAVAILABLE }, stopped]))).rejects.toBeInstanceOf(RoomExecutionStoppedError);

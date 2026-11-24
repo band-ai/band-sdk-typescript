@@ -37,13 +37,8 @@ export function currentDelivery(): MessageDelivery | undefined {
 /**
  * `tools` whose message posts settle under `delivery`: every Band tool call,
  * by name (an MCP call arriving from another async context included) or by
- * direct method, and every notice runs in its scope. A model/MCP
- * `band_send_message` that repeats while the first is in flight, or after it
- * posted (or settled delivery_unknown), returns the first one's result
- * instead of posting again. A direct `sendMessage` (GenericAdapter /
- * deliverReply) still posts each successful call; it only joins a standing
- * same-content promise while that call is in flight or already
- * delivery_unknown, so an uncertain post cannot be resent blindly.
+ * direct method, and every notice runs in its scope. Repeated sends coalesce
+ * as {@link coalesceSendMessage} says.
  */
 export function deliveringMessages<T extends AdapterToolsProtocol>(tools: T, delivery: MessageDelivery): T {
   const inScope = <R>(call: () => Promise<R>): Promise<R> => deliveryScope.run(delivery, call);
@@ -87,18 +82,12 @@ export function toolErrorResult(toolName: string, error: unknown, logger?: Logge
 }
 
 /**
- * One coalesce map for `executeToolCall(band_send_message)` and direct
- * `sendMessage`. In-flight and delivery_unknown (resolved tool error or
- * thrown DeliveryUnknownError) keep the key so a same-content retry cannot
- * POST again; a definite refusal clears. Tool-door successes also keep the
- * key (model/MCP dedupe). Send-door successes clear it so intentional
- * repeated direct replies each post. The send door joins only in-flight or
- * delivery_unknown standings — never a retained tool-door success.
- *
- * The map stores the raw first-call promise. Each door adapts at exit so the
- * other door's contract still holds: send never resolves a failed tool result
- * as a post (it rejects, DeliveryUnknownError for an unknown delivery); tool
- * never throws (it resolves the ToolExecutorError the call would have).
+ * One coalesce map for the tool door (`executeToolCall(band_send_message)`)
+ * and the send door (`sendMessage`): a same-content send joins one in flight
+ * or delivery_unknown, so an uncertain post is never resent blindly; a
+ * refusal clears. The tool door also keeps its successes (model/MCP dedupe);
+ * the send door's clear, so repeated direct replies each post. Each door
+ * adapts a joined result to its own contract: send rejects, tool resolves.
  */
 function coalesceSendMessage(
   execute: AdapterToolsProtocol["executeToolCall"],
@@ -171,15 +160,9 @@ function coalesceSendMessage(
 }
 
 /**
- * Same logical send → same key: empty mentions (omitted / null / []) collapse;
- * mention tokens are shape-normalized, deduped, and stable-sorted so order,
- * duplicates (`['@a','@a']` vs `['@a']`), or string vs `{handle}` cannot miss a
- * standing delivery_unknown.
- *
- * An object mention keys by what names one peer: its handle, else its id. A
- * display name (`name`, `username`) is not unique, so it keys only a mention
- * with neither — two peers sharing one must not coalesce. This layer has no
- * room roster, so `{id}` and a bare `@handle` naming the same peer stay distinct.
+ * Same logical send → same key, whatever the mentions' order, duplicates or
+ * shape. An object mention keys by its handle, else its id; a display name is
+ * not unique, so it keys only a mention with neither.
  */
 function coalesceKey(content: unknown, mentions: unknown): string {
   return JSON.stringify([content, coalesceMentionTokens(mentions)]);

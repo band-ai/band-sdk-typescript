@@ -1,6 +1,6 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { currentDelivery, toolErrorResult } from "../messageDelivery";
-import { currentTurnInbound } from "../../core/turnScope";
+import { currentTurn } from "../../core/turnScope";
 import { SCOPED_TOOL_EXECUTOR, withToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { PublicationEngine } from "../journal/publication";
@@ -97,8 +97,6 @@ interface AgentToolsOptions {
   publication?: PublicationEngine;
   /** The room's in-flight inbound message, if any: the publication a reply settles. */
   inboundMessageId?: () => string | undefined;
-  /** The stop of the turn answering an inbound, while it stands: that turn's reply is refused once it is cut short. */
-  publicationStop?: (inboundMessageId: string) => AbortSignal | undefined;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -161,7 +159,6 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly logger: Logger;
   private readonly publication: PublicationEngine | undefined;
   private readonly inboundMessageId: (() => string | undefined) | undefined;
-  private readonly publicationStop: AgentToolsOptions["publicationStop"];
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
@@ -170,7 +167,6 @@ export class AgentTools implements AgentToolsProtocol {
     this.logger = resolveLogger(options.logger);
     this.publication = options.publication;
     this.inboundMessageId = options.inboundMessageId;
-    this.publicationStop = options.publicationStop;
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -200,7 +196,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   /** The inbound a reply or decline settles under: the turn's scope, else the tools' bound id. */
   private publicationInboundId(): string | undefined {
-    return currentTurnInbound() ?? this.inboundMessageId?.();
+    return currentTurn()?.inbound ?? this.inboundMessageId?.();
   }
 
   private async postMessage(
@@ -208,9 +204,7 @@ export class AgentTools implements AgentToolsProtocol {
     mentions: MentionInput,
     kind: "reply" | "notice",
   ): Promise<ToolOperationResult> {
-    // Read before any await: a turn cut short while the mentions resolve must still refuse this reply.
     const messageId = kind === "reply" && this.publication ? this.publicationInboundId() : undefined;
-    const stopped = messageId === undefined ? undefined : this.publicationStop?.(messageId);
     // Resolved before the post: a failed participants lookup is no post attempt, so it never stands a reply unknown.
     const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
     const post = async (): Promise<ToolOperationResult> => {
@@ -228,7 +222,7 @@ export class AgentTools implements AgentToolsProtocol {
     // A reply settles under the turn's inbound scope, refused once that turn
     // is cut short; a notice (and a reply with nothing in flight) posts unrecorded.
     if (messageId !== undefined && this.publication) {
-      return this.publication.publishReply(messageId, post, stopped);
+      return this.publication.publishReply(messageId, post, currentTurn()?.stopped);
     }
     return post();
   }

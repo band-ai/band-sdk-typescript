@@ -231,7 +231,8 @@ export interface CursorFirstOptions<T> {
 /**
  * The first item passing `where` from a forward cursor walk. Stops paging as
  * soon as one matches, so a settle that only needs existence does not pay a
- * full walk to the newest end.
+ * full walk to the newest end. Null only once the walk reached the newest end;
+ * a walk stopped short of it throws `ValidationError`, since it shows no absence.
  */
 export async function fetchCursorFirst<T>(
   fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
@@ -243,10 +244,13 @@ export async function fetchCursorFirst<T>(
     const hit = data.find(where);
     if (hit !== undefined) return hit;
     const next = nextCursorOf(metadata);
-    if (next === null) return null;
+    if (next === null) {
+      if (metadata?.has_more === true) throw new ValidationError("Band reported more items without a cursor");
+      return null;
+    }
     cursor = next;
   }
-  return null;
+  throw new ValidationError(`Cursor walk stopped after maxPages=${DEFAULT_MAX_PAGES} before reaching the newest item`);
 }
 
 /** The cursor of the page after this one; null when Band has no more, or has more but handed back no cursor. */

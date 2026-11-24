@@ -85,6 +85,30 @@ describe("the v2 journal's file layout", () => {
     await writeFile(file, "not a directory");
     await expect(new TurnJournal(file, AGENT).prepare()).rejects.toBeInstanceOf(BandSdkError);
   });
+
+  it("removes a rewrite copy a crash left behind when the journal next activates, keeping the room's file", async () => {
+    const dir = tmpRoot();
+    const journals = new TurnJournal(dir, AGENT);
+    const first = await journals.activate(IDENTITY);
+    await (await openRoom(first, ROOM)).turnDone("msg-1");
+    await first.close();
+    await writeFile(`${roomFile(dir)}.${randomUUID()}.compacting`, "a copy never renamed over its file\n");
+
+    const second = await journals.activate(IDENTITY);
+    onTestFinished(() => second.close());
+
+    expect(await readdir(path.dirname(roomFile(dir)))).toEqual([roomFileName(ROOM)]);
+    expect(await recordTypes(roomFile(dir))).toEqual(["turn.done"]);
+  });
+
+  it("names the agent's migration manifest when it cannot be read", async () => {
+    const dir = tmpRoot();
+    const manifest = path.join(agentJournalDir(dir, AGENT), "migration", "manifest.json");
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, "{ torn");
+
+    await expect(new TurnJournal(dir, AGENT).activate(IDENTITY)).rejects.toMatchObject({ kind: "corrupt", file: manifest });
+  });
 });
 
 describe("strict validation refuses, and never resets", () => {
@@ -424,16 +448,20 @@ describe("publications", () => {
 
     // Two parallel replies: A is accepted and its settlement's write held; B is refused meanwhile.
     const bRefused = createDeferred();
+    const bPosting = createDeferred<{ attempt: Promise<never> }>();
     const refusedB = new ValidationError("mention cannot be resolved");
     const replyA = engine.publishReply("msg-A", async () => ({ success: true, id: "post-A" }));
-    const replyB = engine.publishReply("msg-B", async () => {
-      await bRefused.promise;
-      throw refusedB;
+    const replyB = engine.publishReply("msg-B", () => {
+      const attempt = bRefused.promise.then(() => Promise.reject(refusedB));
+      bPosting.resolve({ attempt });
+      return attempt;
     });
     await settleEntered.promise;
+    const { attempt: bAttempt } = await bPosting.promise;
     bRefused.resolve();
-    // B's refusal queues behind A's settlement, which the disk then fails.
-    await flushMicrotasks();
+    // The engine reacts to B's refusal before this test does, and queues its record
+    // synchronously from that reaction: behind A's settlement, which the disk then fails.
+    await bAttempt.catch(() => undefined);
     failSettle.resolve();
 
     await expect(replyA).rejects.toBeInstanceOf(DeliveryUnknownError);

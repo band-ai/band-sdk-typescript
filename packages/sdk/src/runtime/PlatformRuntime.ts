@@ -1068,10 +1068,6 @@ export class PlatformRuntime implements AsyncDisposable {
     let stopMode: TurnStopMode | null = null;
     // The adapter handed the turn's reply to work that outlives it (a decision wait).
     let detached = false;
-    const publicationStop = holdPublicationStop(
-      holdRoomUntil,
-      () => context.releasePublicationStop(messageId, stopped),
-    );
     try {
       await lease?.ready;
       if (!admitted()) return false;
@@ -1090,19 +1086,18 @@ export class PlatformRuntime implements AsyncDisposable {
         const delivering = message.settles
           ? deliveringMessages(journaled, this.messageDelivery(context, input, stopped))
           : journaled;
-        // A call settles under this turn's inbound however it reaches the tools.
+        // A call settles under this turn's inbound however it reaches the tools, and
+        // a reply still in flight when this turn is cut short is refused.
         const tools = scopeTurnTools(
           revokedOnStop(delivering, stopped),
-          message.settles ? messageId : undefined,
+          { inbound: message.settles ? messageId : undefined, stopped },
         );
-        // The turn's replies refuse to post if the turn is cut short while one is in flight.
-        context.setPublicationStop(messageId, stopped);
         const turn = adapter.onEvent({
           ...input,
           tools,
           holdRoomUntil: (ended) => {
             detached = true;
-            publicationStop.hold(ended);
+            holdRoomUntil(ended);
           },
         });
         const cut = await untilStopped(
@@ -1113,14 +1108,13 @@ export class PlatformRuntime implements AsyncDisposable {
         stopMode = cut ? stopModeOf(stopped) : null;
         if (stopMode) {
           // An adapter that cannot cancel keeps working: no other turn starts in the room until it ends.
-          publicationStop.hold(turn.then(() => undefined, () => undefined));
+          holdRoomUntil(turn.then(() => undefined, () => undefined));
         }
       }
     } catch (error) {
       succeeded = false;
       caughtError = error;
     } finally {
-      publicationStop.turnEnded();
       await lease?.end();
     }
     if (!started) {
@@ -1346,31 +1340,4 @@ function pinTurnInbound(tools: AdapterToolsProtocol, inbound: PlatformMessageLik
 function journalFailureKind(error: unknown): string {
   if (error instanceof JournalFileError) return error.kind;
   return error instanceof Error ? error.name : "unknown";
-}
-
-/**
- * Keeps a turn's publication stop installed while work that outlives the turn
- * holds its room (a detach, or a cut-short adapter that cannot cancel), so a
- * late reply still sees the cut. The stop is released once every hold has
- * ended — before the room wakes — or when the turn ends with none. Nothing
- * awaits the release: a stop or idle wait never waits on it.
- */
-function holdPublicationStop(holdRoomUntil: (ended: Promise<void>) => void, release: () => void) {
-  let held: Promise<void> | null = null;
-  let latestHold = 0;
-  return {
-    hold(ended: Promise<void>): void {
-      const settled = ended.then(() => undefined, () => undefined);
-      const all = held ? Promise.all([held, settled]).then(() => undefined) : settled;
-      held = all;
-      const hold = ++latestHold;
-      // Only the latest hold releases: it waits on every earlier one too.
-      holdRoomUntil(all.then(() => {
-        if (hold === latestHold) release();
-      }));
-    },
-    turnEnded(): void {
-      if (!held) release();
-    },
-  };
 }

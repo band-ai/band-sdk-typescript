@@ -1115,6 +1115,48 @@ describe("a stopped message whose first reply is still posting", () => {
     expect(reported(events)).toEqual([{ type: "delivery.unrecorded", roomId: ROOM, messageId: inbound }]);
     expect(room.messages.map((posted) => posted.content)).toEqual(["reply from run 2"]);
   });
+
+  it("refuses a reply queued behind the first once the turn is cut short, so the replay's answer is the only one", async () => {
+    const platform = BandPlatform.host([person(OWNER)]);
+    const room = await platform.room(ROOM);
+    // Band refuses run 1's first reply, so the message stands unanswered and replays.
+    const firstPost = room.holdMessage((content) => content === "run 1 first", {
+      error: new BandError({ statusCode: 422, body: { error: { code: "validation_error", message: "refused" } } }),
+    });
+    const cancelled = createDeferred();
+    onTestFinished(() => cancelled.resolve());
+    const queued = createDeferred<unknown>();
+    let runs = 0;
+    const { events } = await startProcess(platform, tmpRoot(), async ({ tools }) => {
+      runs += 1;
+      if (runs === 1) {
+        // Two parallel replies, as MCP calls a cancelled query leaves running: the second,
+        // admitted before the stop, waits behind the first.
+        void tools.sendMessage("run 1 first", ["@owner"]).catch(() => undefined);
+        void tools.sendMessage("run 1 second", ["@owner"]).then(queued.resolve, queued.resolve);
+        await cancelled.promise;
+        return;
+      }
+      await tools.sendMessage("run 2", ["@owner"]);
+    });
+    const inbound = await room.say(OWNER, `${MENTION} hello`);
+    await firstPost.sending;
+    platform.control("stop", ROOM);
+    const stoppedAt = events.entries.length;
+    await events.next((event) => event.type === "turn.stopped");
+    cancelled.resolve();
+
+    const served = platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM);
+    platform.control("play", ROOM);
+    await served.sending;
+    served.release();
+    firstPost.release();
+
+    expect(await room.outcome(inbound)).toBe("processed");
+    await events.next((event) => event.type === "turn.completed", stoppedAt);
+    expect(String(await queued.promise)).toContain("cut short");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["run 2"]);
+  });
 });
 
 describe("a reply still resolving its mentions when its turn is cut short", () => {
@@ -1254,9 +1296,15 @@ describe("a room left while work in it still needs its journal", () => {
     await held.sending;
     void room.remove();
     await events.next((event) => event.type === "room.stopped" && event.roomId === ROOM);
-    // The room's release drains the held reply; the decline is admitted meanwhile.
+    // The room's release drains the held reply; the decline is admitted meanwhile,
+    // its record entering the journal's write queue ahead of the reply's settlement.
+    const declineAppending = createDeferred();
+    await interceptJournalAppends(async (original, self, args) => {
+      if (typeof args[0] === "string" && args[0].includes('"t":"decline.settled"')) declineAppending.resolve();
+      return original.apply(self, args);
+    });
     declining.resolve();
-    await flushMicrotasks();
+    await declineAppending.promise;
     held.release();
     await replied.promise;
     await declined.promise;

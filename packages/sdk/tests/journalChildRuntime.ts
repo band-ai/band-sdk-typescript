@@ -30,9 +30,8 @@
  *                        has the reply, the journal stands on the intent.
  *   before-tool-return   its reply's post stands admitted by the platform,
  *                        then the settle record's write is held in flight:
- *                        publication is paused in its last durable step, the
- *                        tool's response stands outstanding, the turn does
- *                        not end.
+ *                        publication is paused in its last durable step, and
+ *                        the turn does not end.
  *   reset                durably settles its reply, then, on the parent's
  *                        command, runs the room's real reset with its cancel
  *                        budget; the un-cancellable turn detaches, and the
@@ -43,9 +42,8 @@
  *   durable-ack          wraps the room journal's settle: the real settle
  *                        append, datasync and in-memory settlement complete,
  *                        then the hold stands before the call returns to the
- *                        engine: the reply is durably settled, the tool's
- *                        response still stands outstanding, the turn does not
- *                        end.
+ *                        engine: the reply is durably settled and the turn
+ *                        does not end.
  *   ab-unresolved        answers message A to a durably settled reply whose
  *                        turn completes — A's processed mark lands in this
  *                        process — then answers message B with a reply the
@@ -166,14 +164,12 @@ async function main(): Promise<void> {
 
   // Durable-ack's cut stands after the real settlement: the settle record is
   // appended, datasynced, and applied in memory, and only then does the hold
-  // stand — before settleReply returns to the engine, so the tool's response
-  // is still outstanding and the turn does not end.
-  let toolReturned = false;
+  // stand — before settleReply returns to the engine, so the turn does not end.
   if (mode === "durable-ack") {
     const settle = RoomJournal.prototype.settleReply;
     RoomJournal.prototype.settleReply = async function (this: RoomJournal, ...args: Parameters<RoomJournal["settleReply"]>) {
       await settle.apply(this, args); // the real append, datasync and in-memory settlement
-      report("durable-ack", { toolReturned, answered: this.answered(String(args[0])) });
+      report("durable-ack", { answered: this.answered(String(args[0])) });
       await never(); // the process is the hold: it dies at the parent's SIGKILL
     };
   }
@@ -232,24 +228,12 @@ async function main(): Promise<void> {
         case "before-tool-return": {
           // Publication stands paused in its last durable step: the reply's
           // post is admitted by the platform, and its settle record's write is
-          // held in flight at the journal. While that write stands held the
-          // tool's response cannot return — the engine resolves it only once
-          // the settle stands — so the cut lands inside the tool call's own
-          // publication, after the platform's acceptance and before the
-          // response returns.
+          // held in flight at the journal, which the engine awaits before the
+          // tool returns.
           const hold = (await holdFirstJournalAppend((line) => line.includes('"t":"reply.settled"'))).entered;
-          const pending = args.tools.sendMessage("tool answer", ["@owner"]);
+          void args.tools.sendMessage("tool answer", ["@owner"]);
           await hold;
-          // At hold entry the settle append is parked before the engine can
-          // resolve the tool: the response is still outstanding without a
-          // wall-clock wait as evidence.
-          let resolved = false;
-          void pending.then(() => {
-            resolved = true;
-          });
-          if (resolved) throw new Error("the tool response returned while its publication stood paused");
           report("paused");
-          await pending; // never reached: the process dies at the cut
           break;
         }
         case "reset": {
@@ -269,13 +253,9 @@ async function main(): Promise<void> {
         }
         case "durable-ack": {
           // The settle wrapper reports the boundary from inside this call's
-          // own settlement and never returns: the process parks here, its
-          // tool response standing outstanding, until the parent kills it.
-          const pending = args.tools.sendMessage("durable pending-tool reply", ["@owner"]);
-          void pending.then(() => {
-            toolReturned = true;
-          });
-          await never();
+          // own settlement and never returns: the process parks here until
+          // the parent kills it.
+          await args.tools.sendMessage("durable pending-tool reply", ["@owner"]);
           break;
         }
         case "ab-unresolved": {

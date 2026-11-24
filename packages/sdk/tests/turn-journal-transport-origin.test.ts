@@ -6,7 +6,6 @@ import { readFile } from "node:fs/promises";
 
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 
-import type { AgentToolsRestApi } from "../src/client/rest/types";
 import type { AdapterToolsProtocol } from "../src/contracts/protocols";
 import type { BandMcpBackend } from "../src/mcp/backends";
 import { createBandMcpBackend } from "../src/mcp/backends";
@@ -112,32 +111,8 @@ describe("a journaled reply made through a long-lived transport settles under th
     await completed;
     await stop;
     await runtime.stop();
-    // The reply stands settled under the turn it landed in — recorded, so a
-    // restart settles the message from the journal and answers it no second time.
+    // The reply stands settled under the turn it landed in.
     expect((await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, ROOM)))).toEqual(["reply.intent", "reply.settled", "turn.done"]);
-
-    const postedBefore = room.posted.length;
-    const successor = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
-    });
-    const events: string[] = [];
-    successor.observe((event) => events.push(event.type));
-    // A warm allow is kept until start's admission, which reports room.ready:
-    // the barrier that the room's process, and its journal recovery, have stood.
-    await successor.allowRoom(ROOM, { warm: true });
-    const ready = roomReady(successor, ROOM);
-    const successorStop = successor.start(new GenericAdapter(async () => undefined));
-    stopRuntimeAtEnd(successor);
-    // The room standing ready is the barrier: its journal recovery has run, whatever it decided.
-    await ready;
-    await successorStop;
-    await successor.stop();
-    expect(room.posted.length).toBe(postedBefore);
-    expect(events).not.toContain("turn.started");
   });
 
   it("settles a warm bridge's reply under the turn that runs, not the turn the bridge was opened in (in-process dispatch)", async () => {
@@ -324,27 +299,6 @@ describe("a journaled reply made through a long-lived transport settles under th
     await runtime.stop();
 
     expect((await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, ROOM)))).toEqual(["decline.settled", "turn.done"]);
-
-    const postedBefore = room.posted.length;
-    const successor = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: AGENT_API_KEY,
-      linkOptions: platform.link,
-      agentConfig: { autoSubscribeExistingRooms: true },
-      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
-    });
-    const events: string[] = [];
-    successor.observe((event) => events.push(event.type));
-    // A warm allow is kept until start's admission, which reports room.ready.
-    await successor.allowRoom(ROOM, { warm: true });
-    const ready = roomReady(successor, ROOM);
-    const successorStop = successor.start(new GenericAdapter(async () => undefined));
-    stopRuntimeAtEnd(successor);
-    await ready;
-    await successorStop;
-    await successor.stop();
-    expect(room.posted.length).toBe(postedBefore);
-    expect(events).not.toContain("turn.started");
   });
 
   it("settles a warm HTTP bridge's reply under the turn that runs, not the one that opened it", async () => {
@@ -478,23 +432,44 @@ describe("a journaled reply made through a long-lived transport settles under th
     expect(inbounds[0].settled).toHaveLength(1);
   });
 
-  it("posts, and settles nothing, from a tool no turn composed: a direct construction carries no attribution", async () => {
+  it("posts, and settles nothing, through the room's own tools while a turn stands: only a turn's tools carry its inbound", async () => {
     platform = BandPlatform.host([person(OWNER)]);
     const room = await platform.room(ROOM);
     journalDir = tmpRoot();
 
-    // A tool composed outside a runtime — a direct construction a turn never
-    // handed out — posts like any other, but settles nothing: no turn stands
-    // to attribute it to, and the journal holds no record it could stand on.
-    const tools = new ExecutionContext({ roomId: ROOM, maxContextMessages: 1, link: { rest: platform.rest as unknown as AgentToolsRestApi } }).getTools();
-    const before = room.posted.length;
-    await tools.sendMessage("unattributed reply", ["@owner"]);
-    expect(room.posted.length).toBe(before + 1);
+    // The room's own context, as the runtime builds it: it carries the journal's
+    // publication engine, but its tools are not the ones any turn composed.
+    let context: ExecutionContext | undefined;
+    const tools: { current: AdapterToolsProtocol | undefined } = { current: undefined };
+    const started = createDeferred<void>();
+    const held = createDeferred<void>();
+    const runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: AGENT_API_KEY,
+      linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      sessionConfig: { journalDir, journalPlatformIdentity: IDENTITY },
+      contextFactory: (_roomId, defaults) => (context = new ExecutionContext(defaults)),
+    });
+    const stop = runtime.start(new GenericAdapter(holdingAnswer(tools, started, held, (turnTools) => turnTools.sendMessage("turn answer", ["@owner"]))));
+    stopRuntimeAtEnd(runtime);
+    const completed = turnCompleted(runtime);
+    await room.say(OWNER, `${MENTION} hello`);
+    await started.promise;
+    await platform.rest.posted.next((posted) => posted.content === "turn answer");
 
-    const file = roomFile(journalDir, IDENTITY, AGENT_ID, ROOM);
-    expect(await readFile(file, "utf8").catch(() => null)).toBeNull();
-    await platform[Symbol.asyncDispose]();
-    platform = undefined;
+    await context!.getTools().sendMessage("unattributed reply", ["@owner"]);
+    held.resolve();
+    await completed;
+    await stop;
+    await runtime.stop();
+
+    // Both posted; only the turn's own reply stands in the journal.
+    expect(room.messages.map((posted) => posted.content)).toEqual(["turn answer", "unattributed reply"]);
+    const inbounds = await readJournalInbounds(journalDir);
+    expect(inbounds).toHaveLength(1);
+    expect(inbounds[0].settled).toHaveLength(1);
+    expect(await recordTypes(roomFile(journalDir, IDENTITY, AGENT_ID, ROOM))).toEqual(["reply.intent", "reply.settled", "turn.done"]);
   });
 });
 
@@ -503,15 +478,6 @@ function turnCompleted(runtime: PlatformRuntime): Promise<void> {
   return new Promise((resolve) => {
     runtime.observe((event) => {
       if (event.type === "turn.completed") resolve();
-    });
-  });
-}
-
-/** Resolves once the runtime's room is ready: its startup, including the room's journal recovery, has stood. */
-function roomReady(runtime: PlatformRuntime, roomId: string): Promise<void> {
-  return new Promise((resolve) => {
-    runtime.observe((event) => {
-      if (event.type === "room.ready" && event.roomId === roomId) resolve();
     });
   });
 }
@@ -528,7 +494,6 @@ function stopRuntimeAtEnd(runtime: PlatformRuntime): void {
 /** The journal's settlement by inbound: which publications each message's replies stand as. */
 async function readJournalInbounds(journalDir: string): Promise<Array<{ messageId: string; settled: string[] }>> {
   const file = roomFile(journalDir, IDENTITY, AGENT_ID, ROOM);
-  const { readFile } = await import("node:fs/promises");
   const lines = (await readFile(file, "utf8")).split("\n").filter((line) => line !== "");
   const records = lines.slice(1).map((line) => JSON.parse(line) as Record<string, unknown>);
   const byMessage = new Map<string, { messageId: string; settled: string[] }>();

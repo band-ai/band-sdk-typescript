@@ -45,12 +45,14 @@ async function syncDirectory(dir: string): Promise<void> {
   }
 }
 
-/** Removes the copies of `file` a crash left mid-rewrite; they never replaced it. */
-async function removeOrphanedCopies(file: string): Promise<void> {
-  const dir = path.dirname(file);
-  const base = path.basename(file);
+/**
+ * Removes the rewrite copies a crash left in `dir`; they never replaced their
+ * file. Only while nothing in `dir` is rewriting: under the journal's ownership,
+ * before any room opens.
+ */
+export async function removeOrphanedCopies(dir: string): Promise<void> {
   for (const name of await readdir(dir)) {
-    if (compactingCopyTarget(name) === base) {
+    if (compactingCopyTarget(name) !== undefined) {
       await rm(path.join(dir, name), { force: true });
     }
   }
@@ -165,7 +167,6 @@ export class RoomJournal {
     const now = options.now ?? Date.now;
     try {
       await mkdir(path.dirname(file), { recursive: true });
-      await removeOrphanedCopies(file);
       const expectedComponent = identityDirectoryComponent(options.platformIdentity);
       if (path.basename(path.dirname(file)) !== expectedComponent) {
         throw new JournalFileError(
