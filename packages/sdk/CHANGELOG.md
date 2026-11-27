@@ -1,6 +1,17 @@
 # Changelog
 
 
+## [4.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v3.0.0...sdk-v4.0.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **adapters:** remove the Kiro ACP adapter ([#460](https://github.com/band-ai/band-sdk-typescript/issues/460))
+
+### Features
+
+* **adapters:** remove the Kiro ACP adapter ([#460](https://github.com/band-ai/band-sdk-typescript/issues/460)) ([b00e716](https://github.com/band-ai/band-sdk-typescript/commit/b00e716dd7125bc7d80ba651d62357ff588a2e32))
+
 ## [3.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.3.0...sdk-v3.0.0) (2026-11-24)
 
 
