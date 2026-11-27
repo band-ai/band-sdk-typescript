@@ -5856,7 +5856,7 @@ const CONTRACT_TURNS: Record<TurnScript, (agent: AgentTurn) => Promise<void>> = 
 
 describe("ACPClientAdapter turn outcome", () => {
   describeTurnOutcomeContract([{
-    adapter: "ACPClientAdapter (shared by Copilot, Kiro and Omp)",
+    adapter: "ACPClientAdapter (shared by Copilot and Omp)",
     turn: (script, tools) => judgedTurn(scriptedAgent(CONTRACT_TURNS[script]), tools),
   }])
 

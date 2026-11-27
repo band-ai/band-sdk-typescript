@@ -67,7 +67,7 @@ Copilot CLI authentication and BYOK remain CLI configuration; supply their envir
 
 ### Coding agents: one process per room
 
-The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ClaudeCliAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
+The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ClaudeCliAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
 
 - **Lazy start.** Nothing is spawned when the agent starts. A room's process starts on its first message, so a missing binary or bad credentials are reported in that room. The process stops when the room is left, and every process stops when the agent stops.
 - **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
