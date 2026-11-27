@@ -87,8 +87,8 @@ importers:
         version: 4.6.7
     devDependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^1.4.0
-        version: 1.4.0(zod@4.6.7)
+        specifier: ^2.11.0
+        version: 2.11.0(zod@4.6.7)
       '@ai-sdk/anthropic':
         specifier: ^4.0.107
         version: 4.0.107(zod@4.6.7)
@@ -234,6 +234,15 @@ packages:
     resolution: {integrity: sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
+
+  '@agentclientprotocol/sdk@2.11.0':
+    resolution: {integrity: sha512-B4MQTHjaP11lsc82XTm4rHcHl7CP3jfjAappFIXTs3gYwTTHdq4HtxSFOCKZSWD46FtW2Q9uF7wveKC62wEIvg==}
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.4.0
+      zod: ^3.25.76 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/server':
+        optional: true
 
   '@ai-sdk/anthropic@4.0.107':
     resolution: {integrity: sha512-7morlNCmT6Qt3Af/QgxAGaeAUXu+W3LvGIvtxL+P8jRs+5Sq7kfH9A8M8FCB9wibzuhDqtLdy6I8tb9qJqGOug==}
@@ -5027,7 +5036,7 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
-  '@agentclientprotocol/sdk@1.4.0(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.11.0(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
