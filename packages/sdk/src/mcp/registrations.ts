@@ -1,6 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { DeliveryUnknownError, isDeliveryUnknownOutput } from "../core/deliveryFailedError";
 import { UnsupportedFeatureError } from "../core/errors";
 import { forwardTools } from "../core/overrideTools";
 import {
@@ -14,9 +15,14 @@ import {
   TASK_TOOL_NAMES,
   ROOM_TOOL_NAMES,
   TOOL_MODELS,
+  toolInputProperties,
   getToolDescription,
+  ROOM_ID_ARG,
 } from "../contracts/toolSchemas";
 import { buildZodShape } from "./zod";
+import { buildOriginResolver, currentAdmission, roomIdOf, type OriginResolver } from "./admission";
+
+export { ROOM_ID_ARG };
 
 export interface McpToolRegistration {
   name: string;
@@ -59,6 +65,13 @@ export interface BuildRegistrationsOptions {
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
   enableContactTools?: boolean;
+  /**
+   * Advertise the optional `operation_id` on `band_send_message` and
+   * `band_no_reply`. Enable it only when every room the tools resolve to
+   * journals its replies and posts through the single-attempt transport;
+   * elsewhere a keyed call is refused.
+   */
+  enableOperationIds?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
    * What room-scoped registrations run the tools outside `ROOM_TOOL_NAMES` on;
@@ -69,8 +82,6 @@ export interface BuildRegistrationsOptions {
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
 
-/** The argument a room-scoped tool takes to name the room it runs in. */
-export const ROOM_ID_ARG = "room_id";
 const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
 
 type McpToolSchema = Omit<McpToolRegistration, "execute">;
@@ -109,7 +120,7 @@ export function registerTools(
  * call runs `execute` with that room's tools and its other arguments. A call
  * naming no known room is refused without running anything.
  */
-export function scopeToRoom<T>(
+export function scopeToRoom<T extends AdapterToolsProtocol>(
   tool: McpToolSchema,
   resolver: (roomId: string) => T | undefined,
   execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
@@ -117,8 +128,43 @@ export function scopeToRoom<T>(
   return {
     ...tool,
     inputSchema: withRoomId(tool.inputSchema),
-    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => inRoom(roomIdArg, resolver, (tools) => execute(tools, args)),
+    execute: ({ [ROOM_ID_ARG]: roomIdArg, ...args }) =>
+      dispatchKeyed(
+        roomIdArg,
+        (admitted) => execute(admitted as T, args),
+        () => inRoom(roomIdArg, resolver, (roomTools) => execute(roomTools, args)),
+      ),
   };
+}
+
+/** The refusal a keyed call earns for naming a room other than the one it was admitted in. */
+function wrongRoomResult(roomIdArg: unknown, admittedRoomId: string): string {
+  return `The call's ${ROOM_ID_ARG} ${JSON.stringify(roomIdArg)} names a different room than the one its operation was admitted in (${admittedRoomId}); it is refused rather than rerouted`;
+}
+
+/**
+ * Runs a call: a keyed one on the tools its admission pinned, never on
+ * whatever the room resolves to now, and refused with what its admission
+ * recorded or when it names another room; an unkeyed one through `unkeyed`.
+ */
+function dispatchKeyed(
+  roomIdArg: unknown,
+  admitted: (tools: AdapterToolsProtocol) => Promise<McpToolResult>,
+  unkeyed: () => Promise<McpToolResult>,
+): Promise<McpToolResult> {
+  const admission = currentAdmission();
+  if (admission === undefined) {
+    return unkeyed();
+  }
+  if (admission.refusal !== undefined) {
+    return Promise.resolve(errorResult(admission.refusal));
+  }
+  const { origin } = admission;
+  if (origin.roomId !== undefined && roomIdOf(roomIdArg) !== origin.roomId) {
+    admission.logger.debug("a keyed call naming another room than its admission was refused", { roomId: origin.roomId });
+    return Promise.resolve(errorResult(wrongRoomResult(roomIdArg, origin.roomId)));
+  }
+  return admitted(origin.tools);
 }
 
 /** Whether a tool's input properties declare {@link ROOM_ID_ARG}. */
@@ -136,12 +182,12 @@ function withRoomId({ properties, required }: McpToolInputSchema): McpToolInputS
 }
 
 /** Runs `run` with the tools of the room `roomIdArg` names, refusing a call that names no known room. */
-async function inRoom<T>(
+async function inRoom<T extends AdapterToolsProtocol>(
   roomIdArg: unknown,
   resolver: (roomId: string) => T | undefined,
   run: (tools: T, roomId: string) => Promise<McpToolResult>,
 ): Promise<McpToolResult> {
-  const roomId = asNonEmptyString(roomIdArg);
+  const roomId = roomIdOf(roomIdArg);
   if (!roomId) {
     return errorResult(`Missing required ${ROOM_ID_ARG}`);
   }
@@ -165,7 +211,7 @@ export function buildRoomScopedRegistrations(
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
   const { roomlessTools } = options;
-  const registrations = toolSchemas(resolveToolNames(options)).map((tool) =>
+  const registrations = toolSchemas(resolveToolNames(options), options.enableOperationIds ?? false).map((tool) =>
     roomlessTools && !ROOM_TOOL_NAMES.has(tool.name)
       ? bindTool(tool, roomlessTools)
       : scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
@@ -194,7 +240,11 @@ export function scopeHostTools(hostTools: McpToolRegistration[], resolver: ToolR
       ...tool,
       inputSchema: withRoomId(tool.inputSchema),
       execute: (args: Record<string, unknown>, _tools?: AdapterToolsProtocol, signal?: AbortSignal) =>
-        inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
+        dispatchKeyed(
+          args[ROOM_ID_ARG],
+          (admitted) => tool.execute(args, admitted, signal),
+          () => inRoom(args[ROOM_ID_ARG], resolver, (tools, roomId) => tool.execute(args, whileCurrent(roomId, tools, resolver), signal)),
+        ),
     };
   });
 }
@@ -207,7 +257,10 @@ export function bindHostTools(hostTools: McpToolRegistration[], tools: AdapterTo
 function bindHostTool(tool: McpToolRegistration, tools: AdapterToolsProtocol): McpToolRegistration {
   return {
     ...tool,
-    execute: (args, _tools, signal) => tool.execute(args, tools, signal),
+    execute: (args, _tools, signal) => {
+      const run = (runTools: AdapterToolsProtocol) => tool.execute(args, runTools, signal);
+      return dispatchKeyed(args[ROOM_ID_ARG], run, () => run(tools));
+    },
   };
 }
 
@@ -245,13 +298,46 @@ export function buildSingleContextRegistrations(
   tools: AdapterToolsProtocol,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
-  const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
+  const registrations = toolSchemas(resolveToolNames(options), options.enableOperationIds ?? false).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
     registrations.push(...bindHostTools(options.additionalTools, tools));
   }
 
   return wrapExecution(registrations, options.execute);
+}
+
+/** What a bridge needs to stand: its registrations, and the origin its keyed calls admit through. */
+export interface BridgeRegistrations {
+  registrations: McpToolRegistration[];
+  /** Absent unless the bridge serves operation ids: its keyed calls are then refused at admission. */
+  originResolver: OriginResolver | undefined;
+  /** Binds host tools added later under the same room scope as `registrations`. */
+  bindAddedTools: (hostTools: McpToolRegistration[]) => McpToolRegistration[];
+}
+
+/**
+ * The bridge over `tools`, and the one owner of its room scope: room-scoped
+ * for a resolver unless `multiRoom` is false, else single-context. Only a
+ * bridge built with `enableOperationIds` resolves origins, consulting
+ * `admissionGuard` first.
+ */
+export function buildBridgeRegistrations(
+  tools: AdapterToolsProtocol | ToolResolver,
+  multiRoom: boolean | undefined,
+  options: BuildRegistrationsOptions & { admissionGuard?: () => boolean },
+): BridgeRegistrations {
+  const { admissionGuard, ...registrationOptions } = options;
+  const resolver: ToolResolver = typeof tools === "function" ? tools : () => tools;
+  const roomScoped = typeof tools === "function" && multiRoom !== false;
+  const singleTools = typeof tools === "function" ? resolveSingleRoomTools(tools) : tools;
+  return {
+    registrations: roomScoped
+      ? buildRoomScopedRegistrations(resolver, registrationOptions)
+      : buildSingleContextRegistrations(singleTools, registrationOptions),
+    originResolver: options.enableOperationIds ? buildOriginResolver(resolver, roomScoped, admissionGuard) : undefined,
+    bindAddedTools: (hostTools) => (roomScoped ? scopeHostTools(hostTools, resolver) : bindHostTools(hostTools, singleTools)),
+  };
 }
 
 function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegistrationsOptions["execute"]): McpToolRegistration[] {
@@ -261,7 +347,13 @@ function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegi
 }
 
 function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegistration {
-  return { ...tool, execute: (args) => executeToolCall(tools, tool.name, args) };
+  return {
+    ...tool,
+    execute: (args) => {
+      const run = (runTools: AdapterToolsProtocol) => executeToolCall(runTools, tool.name, args);
+      return dispatchKeyed(args[ROOM_ID_ARG], run, () => run(tools));
+    },
+  };
 }
 
 function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
@@ -283,7 +375,7 @@ function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
   return names;
 }
 
-function toolSchemas(toolNames: Set<string>): McpToolSchema[] {
+function toolSchemas(toolNames: Set<string>, operationIds: boolean): McpToolSchema[] {
   const schemas: McpToolSchema[] = [];
   for (const toolName of toolNames) {
     const model = TOOL_MODELS[toolName as keyof typeof TOOL_MODELS];
@@ -291,7 +383,7 @@ function toolSchemas(toolNames: Set<string>): McpToolSchema[] {
       schemas.push({
         name: toolName,
         description: getToolDescription(toolName),
-        inputSchema: { type: "object", properties: { ...model.properties }, required: [...model.required] },
+        inputSchema: { type: "object", properties: { ...toolInputProperties(toolName, model.properties, operationIds) }, required: [...model.required] },
       });
     }
   }
@@ -306,20 +398,45 @@ async function executeToolCall(
   try {
     const result = await tools.executeToolCall(toolName, args);
     if (isToolExecutorError(result)) {
+      // A classified delivery-unknown keeps its classification across the MCP
+      // boundary: the result says the delivery is unknown and Band may
+      // already hold it — nothing to call a plain tool failure, and no
+      // adapter text or recovery advice is carried with it. A keyed
+      // operation's unknown stands under the operation's own text.
+      if (isDeliveryUnknownOutput(result)) {
+        return unknownDeliveryResult(result.details.keyed === true ? result.message : undefined);
+      }
       return errorResult(toLegacyToolExecutorErrorMessage(result) ?? result.message);
     }
     return successResult(result);
   } catch (error) {
+    if (error instanceof DeliveryUnknownError) {
+      return unknownDeliveryResult(error.keyed ? error.message : undefined);
+    }
     return errorResult(error instanceof Error ? error.message : String(error));
   }
 }
 
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+/**
+ * The MCP result for a delivery that stands unknown: the stable sanitized
+ * `delivery_unknown` discriminator, and the one guidance a caller can act on
+ * safely — do not resend. A keyed operation's unknown carries the operation's
+ * own text; a reply's keeps the generic post text. No adapter text, no
+ * status, no cause: the delivery may already stand in the room, and a resend
+ * could post it twice. Callers that need more than the discriminator get it
+ * from the SDK, not from this result.
+ */
+function unknownDeliveryResult(operationDetail?: string): McpToolResult {
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        kind: DeliveryUnknownError.KIND,
+        detail: operationDetail ?? "The post's delivery is unknown: Band may already hold it. Do not resend it.",
+      }),
+    }],
+    isError: true,
+  };
 }
 
 export function successResult(value: unknown): McpToolResult {

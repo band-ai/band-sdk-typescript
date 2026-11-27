@@ -58,10 +58,19 @@ export interface HistoryLike {
   readonly length: number;
 }
 
+export interface SendMessageOptions {
+  /**
+   * The keyed operation's id; README "Keyed operations (`operation_id`)" states
+   * its rules. Without it, the call keeps the legacy at-least-once delivery.
+   */
+  operationId?: string;
+}
+
 export interface MessagingTools {
   sendMessage(
     content: string,
     mentions?: MentionInput,
+    options?: SendMessageOptions,
   ): Promise<ToolOperationResult>;
   /**
    * Posts text the adapter writes itself (a prompt, a busy or status note)
@@ -186,6 +195,31 @@ export interface RoomContextTools {
   fetchRoomContext(args?: FetchRoomContextArgs): Promise<RoomContextPage>;
 }
 
+export interface ReadRoomHistoryArgs {
+  /** `nextCursor` from the previous page; omit for the newest page. */
+  cursor?: string;
+  /** History messages per page, at most `MAX_ROOM_HISTORY_PAGE`; `DEFAULT_ROOM_HISTORY_PAGE` by default. */
+  limit?: number;
+  /**
+   * Put first on every page, and only there. During a turn the runtime pins
+   * the turn's own inbound message, so the agent always sees what it is
+   * answering, whichever page it reads.
+   */
+  pinned?: PlatformMessageLike;
+}
+
+export interface RoomHistoryPage {
+  /** Newest first, after the pinned message when there is one. */
+  messages: PlatformMessageLike[];
+  /** Pass back as `cursor` for the next older page; null at the room's first message. */
+  nextCursor: string | null;
+}
+
+export interface RoomHistoryTools {
+  /** One page of the room's history, newest first. */
+  readRoomHistory(args?: ReadRoomHistoryArgs): Promise<RoomHistoryPage>;
+}
+
 export interface TaskTools {
   getBoard(args?: GetBoardArgs): Promise<WireBoard>;
   setBoard(args: SetBoardArgs): Promise<WireBoard>;
@@ -243,6 +277,17 @@ export function createToolExecutorError(input: {
     legacyMessage: input.legacyMessage ?? input.message,
     ...(input.details ? { details: input.details } : {}),
   };
+}
+
+/** A tool call that ran and failed, with the legacy `Error executing …` text. */
+export function toolExecutionError(toolName: string, message: string, details?: MetadataMap): ToolExecutorError {
+  return createToolExecutorError({
+    errorType: "ToolExecutionError",
+    toolName,
+    message,
+    legacyMessage: `Error executing ${toolName}: ${message}`,
+    details,
+  });
 }
 
 export function isToolExecutorError(value: unknown): value is ToolExecutorError {
@@ -314,14 +359,39 @@ export interface AdapterToolsProtocol
     Partial<ContactTools>,
     Partial<MemoryTools>,
     Partial<TaskTools>,
-    Partial<RoomContextTools> {
+    Partial<RoomContextTools>,
+    Partial<RoomHistoryTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
+  /**
+   * When the runtime journals replies: true once this turn had a delivery whose
+   * outcome stands unknown, so closing text must not be relayed as a replacement.
+   * A probe, not an acting call — stop/scope wrappers leave it readable.
+   */
+  readonly unknownDeliveryFenced?: () => boolean;
+  /**
+   * When the runtime journals replies: true once this turn admitted a keyed call (whatever its
+   * outcome) or had a delivery whose outcome stands unknown. A probe, like `unknownDeliveryFenced`.
+   */
+  readonly relayProhibitedFenced?: () => boolean;
+  /**
+   * When the runtime journals replies: commits this turn to keyed delivery, so the MCP admission
+   * decorator fences the turn before the framework validates a keyed call. Bookkeeping, not an acting call.
+   */
+  readonly keyedAdmissionFence?: () => void;
+  readonly executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
-export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
+/** Members read as values, never called as acting tools: stop and turn-scope wrappers pass them through. */
+const NON_ACTING_TOOL_MEMBERS = ["capabilities", "unknownDeliveryFenced", "relayProhibitedFenced", "keyedAdmissionFence"] as const satisfies ReadonlyArray<keyof AdapterToolsProtocol>;
+
+export type NonActingToolKey = (typeof NON_ACTING_TOOL_MEMBERS)[number];
+
+export const NON_ACTING_TOOL_KEYS: ReadonlySet<PropertyKey> = new Set(NON_ACTING_TOOL_MEMBERS);
+
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, NonActingToolKey>;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

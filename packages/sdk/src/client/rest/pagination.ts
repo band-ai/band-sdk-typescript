@@ -2,7 +2,7 @@ import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { ChatMessageType } from "../../contracts/chatEvents";
 import type { RestRequestOptions } from "./requestOptions";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
-import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
+import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage, RoomHistoryRestApi } from "./types";
 import type { PeerRecord } from "../../contracts/dtos";
 
 interface FetchPageRequest {
@@ -231,7 +231,8 @@ export interface CursorFirstOptions<T> {
 /**
  * The first item passing `where` from a forward cursor walk. Stops paging as
  * soon as one matches, so a settle that only needs existence does not pay a
- * full walk to the newest end.
+ * full walk to the newest end. Null only once the walk reached the newest end;
+ * a walk stopped short of it throws `ValidationError`, since it shows no absence.
  */
 export async function fetchCursorFirst<T>(
   fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
@@ -243,10 +244,13 @@ export async function fetchCursorFirst<T>(
     const hit = data.find(where);
     if (hit !== undefined) return hit;
     const next = nextCursorOf(metadata);
-    if (next === null) return null;
+    if (next === null) {
+      if (metadata?.has_more === true) throw new ValidationError("Band reported more items without a cursor");
+      return null;
+    }
     cursor = next;
   }
-  return null;
+  throw new ValidationError(`Cursor walk stopped after maxPages=${DEFAULT_MAX_PAGES} before reaching the newest item`);
 }
 
 /** The cursor of the page after this one; null when Band has no more, or has more but handed back no cursor. */
@@ -307,8 +311,41 @@ export async function fetchContextPage(
   return { messages: data, nextCursor };
 }
 
+/** History messages per room-history page by default. */
+export const DEFAULT_ROOM_HISTORY_PAGE = 20;
+/** At most Band serves on one room-history page; same ceiling as other cursor pages. */
+export const MAX_ROOM_HISTORY_PAGE = MAX_CURSOR_PAGE;
+
+/**
+ * One page of a room's messages of every type and status, newest first, and
+ * the cursor of the next older page: null once the page reaches the room's
+ * first message. Unlike `getRecentMessages`, this is the room's history, not
+ * the agent's context, and it pages without a cap.
+ * Throws `ValidationError` when Band reports more without a cursor, since a null
+ * `nextCursor` would then wrongly claim the room's first message was reached.
+ */
+export async function readRoomHistoryPage(
+  rest: RoomHistoryRestApi,
+  chatId: string,
+  { cursor, limit = DEFAULT_ROOM_HISTORY_PAGE }: Partial<CursorPageRequest> = {},
+  options?: RestRequestOptions,
+): Promise<{ messages: PlatformChatMessage[]; nextCursor: string | null }> {
+  assertCursorLimit(limit);
+  const listRoomHistory = rest.listRoomHistory?.bind(rest);
+  if (!listRoomHistory) {
+    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory);
+  }
+  const { data, metadata } = await listRoomHistory({ chatId, ...(cursor === undefined ? {} : { cursor }), limit }, options);
+  const nextCursor = nextCursorOf(metadata);
+  if (nextCursor === null && metadata?.has_more === true) {
+    throw new ValidationError("Band reported more room history without a cursor");
+  }
+  return { messages: data, nextCursor };
+}
+
 /** Band's chat message type for ordinary agent text posts. */
 export const TEXT_MESSAGE: ChatMessageType = "text";
+
 /** How many messages `getRecentMessages` returns by default; `MAX_CURSOR_PAGE` at most. */
 export const DEFAULT_RECENT_MESSAGES = 20;
 

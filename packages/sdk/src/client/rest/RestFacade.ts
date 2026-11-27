@@ -17,7 +17,6 @@ import type {
   ListMemoriesArgs,
   MemoryRecord,
   MetadataMap,
-  MentionReference,
   PeerRecord,
   RemoveContactArgs,
   RespondContactRequestArgs,
@@ -28,6 +27,7 @@ import { fetchPaginated, normalizePaginationMetadata, type PaginationOptions } f
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   AgentIdentity,
+  ChatMessageInput,
   ChatParticipant,
   ChatRoom,
   CreateChatRequest,
@@ -37,6 +37,7 @@ import type {
   RestApi,
 } from "./types";
 import type { ReportActivityOptions, RestRequestOptions } from "./requestOptions";
+import { servesOncePost } from "./messageDelivery";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 
 export { FernRestAdapter } from "./FernRestAdapter";
@@ -67,12 +68,7 @@ export class RestFacade implements RestApi {
 
   public async createChatMessage(
     chatId: string,
-    message: {
-      content: string;
-      messageType?: string;
-      metadata?: MetadataMap;
-      mentions?: MentionReference[];
-    },
+    message: ChatMessageInput,
     options?: MessagePostOptions,
   ): Promise<ToolOperationResult> {
     return this.forward("createChatMessage", () => this.api.createChatMessage(chatId, message, options), {
@@ -80,6 +76,24 @@ export class RestFacade implements RestApi {
       messageType: message.messageType ?? "text",
       mentionCount: message.mentions?.length ?? 0,
     });
+  }
+
+  public async createChatMessageOnce(
+    chatId: string,
+    message: ChatMessageInput,
+    options?: RestRequestOptions,
+  ): Promise<ToolOperationResult> {
+    return this.callOptional(
+      "createChatMessageOnce",
+      OPTIONAL_UNSUPPORTED_MESSAGES.createChatMessageOnce,
+      (method) => method(chatId, message, options),
+      { chatId, mentionCount: message.mentions?.length ?? 0 },
+    );
+  }
+
+  /** The wrapped adapter's once capability: a facade never stands one its adapter lacks. */
+  public hasOnceCapability(): boolean {
+    return servesOncePost(this.api);
   }
 
   public async createChatEvent(
@@ -288,6 +302,18 @@ export class RestFacade implements RestApi {
     return this.callOptional(
       "listMessages",
       OPTIONAL_UNSUPPORTED_MESSAGES.listMessages,
+      (method) => method(request, options),
+      request,
+    );
+  }
+
+  public async listRoomHistory(
+    request: { chatId: string; cursor?: string; limit: number },
+    options?: RestRequestOptions,
+  ): Promise<PaginatedResponse<PlatformChatMessage>> {
+    return this.callOptional(
+      "listRoomHistory",
+      OPTIONAL_UNSUPPORTED_MESSAGES.listRoomHistory,
       (method) => method(request, options),
       request,
     );

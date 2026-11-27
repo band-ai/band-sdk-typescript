@@ -6,6 +6,8 @@ import { copyWasm, CORE_WASM_FILENAME } from "./copy-wasm.mjs";
  */
 export const inlinedSdkBundleOptions = {
   shims: true,
+  // Keep `node:`: a builtin without it (node:sqlite) resolves as an npm package.
+  removeNodeProtocol: false,
   banner: {
     js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
   },

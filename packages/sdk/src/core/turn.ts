@@ -13,6 +13,7 @@ import type { MentionInput } from "../contracts/dtos";
 import { isBlankEventContent } from "../contracts/chatEvents";
 import { isFailedToolOutput, type AdapterToolMethodName, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
 import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS, type ToolName } from "../contracts/toolSchemas";
+import { asOptionalRecord } from "./coercion";
 import { deliverReply } from "./deliveryFailedError";
 import { resolveLogger, type Logger } from "./logger";
 import { overrideTools } from "./overrideTools";
@@ -39,8 +40,18 @@ export class Turn {
   private endedSignal: Promise<void> | undefined;
   private declineCount = 0;
 
-  /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
-  public constructor(public readonly judged = true) {}
+  /**
+   * `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn.
+   * `fenceSource`: the runtime's side of the turn, when it runs on the runtime's tools; it fences
+   * the turn once a reply's delivery stands unknown.
+   * `relayFenceSource`: the runtime's keyed-admission fence; a turn that made a keyed call, whatever
+   * its outcome, is committed to keyed delivery.
+   */
+  public constructor(
+    public readonly judged = true,
+    private readonly fenceSource?: () => boolean,
+    private readonly relayFenceSource?: () => boolean,
+  ) {}
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
@@ -109,6 +120,19 @@ export class Turn {
     return this.isDetached;
   }
 
+  /**
+   * The turn's closing text must not be relayed as a reply: a reply whose delivery stands unknown
+   * may already be in the room, and a turn that made a keyed call is committed to keyed delivery.
+   */
+  public get relayProhibited(): boolean {
+    return this.hasUnknownDelivery || (this.relayFenceSource?.() ?? false);
+  }
+
+  /** This turn's reply delivery stands unknown: the reply may already be in the room. A keyed call that was definitely refused does not claim this. */
+  public get hasUnknownDelivery(): boolean {
+    return this.fenceSource?.() ?? false;
+  }
+
   /** Settles when a turn detached with its end has really ended; never rejects. */
   public get ended(): Promise<void> | undefined {
     return this.endedSignal;
@@ -122,6 +146,13 @@ export class Turn {
 export type TurnTools<T = AdapterToolsProtocol> = T & { readonly turn: Turn };
 
 type ToolMethod = (...args: unknown[]) => Promise<unknown>;
+
+/** The wrap a turn-side wrapper applies to one Band tool call: the tool, the call to make, and the call's raw arguments. */
+export type BandToolCallWrap = (
+  toolName: BandToolName,
+  call: () => Promise<unknown>,
+  args: readonly unknown[],
+) => Promise<unknown>;
 
 /** Records a Band tool call on `turn` if it landed: not a failed result, and for a send, not a blank one. */
 function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, result: unknown): void {
@@ -147,7 +178,7 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
  */
 export function bandToolOverrides<T extends AdapterToolsProtocol>(
   tools: T,
-  wrap: (toolName: BandToolName, call: () => Promise<unknown>, content: unknown) => Promise<unknown>,
+  wrap: BandToolCallWrap,
 ): Record<string, unknown> {
   const overrides: Record<string, unknown> = {};
 
@@ -156,21 +187,30 @@ export function bandToolOverrides<T extends AdapterToolsProtocol>(
     if (!method) {
       continue;
     }
-    overrides[methodName] = (...args: unknown[]) => wrap(toolName, () => method(...args), args[0]);
+    overrides[methodName] = (...args: unknown[]) => wrap(toolName, () => method(...args), args);
   }
 
   const executeToolCall = tools.executeToolCall.bind(tools);
   overrides.executeToolCall = (toolName: string, args: Record<string, unknown>) =>
-    isBandToolName(toolName) ? wrap(toolName, () => executeToolCall(toolName, args), args.content) : executeToolCall(toolName, args);
+    isBandToolName(toolName) ? wrap(toolName, () => executeToolCall(toolName, args), [args]) : executeToolCall(toolName, args);
 
   return overrides;
 }
 
+/** The message text of a landed send: the method's content argument, or the send's `content` field through `executeToolCall`. */
+function sentContentOf(args: readonly unknown[]): unknown {
+  const first = args[0];
+  if (typeof first === "string") {
+    return first;
+  }
+  return asOptionalRecord(first)?.content;
+}
+
 /** Wrappers for `tools`' Band tool calls that record each one that lands on `turn`, via {@link bandToolOverrides}. */
 export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: () => Turn): Partial<T> {
-  const overrides = bandToolOverrides(tools, async (toolName, call, content) => {
+  const overrides = bandToolOverrides(tools, async (toolName, call, args) => {
     const result = await call();
-    recordLanded(turn(), toolName, content, result);
+    recordLanded(turn(), toolName, sentContentOf(args), result);
     return result;
   });
 
@@ -188,17 +228,19 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
-  const turn = new Turn(judged);
+  // A journaling runtime fences the turn once a reply's delivery stands unknown or a keyed call lands.
+  const turn = new Turn(judged, tools.unknownDeliveryFenced, tools.relayProhibitedFenced);
   return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }
 
-/** Relays the model's closing `text` as the reply, unless the turn already replied or declined. */
+/** Relays the model's closing `text` as the reply, unless the turn already replied or declined — or its closing text must not be relayed. */
 export async function relayReply(
   tools: TurnTools<MessagingTools>,
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  if (tools.turn.replied || !text || isBlankEventContent(text)) {
+  // An unknown delivery may already be in the room, and a keyed call commits the turn to keyed delivery: neither is relayed over.
+  if (tools.turn.relayProhibited || tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }
   await deliverReply(tools, text, mentions);
@@ -207,6 +249,14 @@ export async function relayReply(
 
 export function missingReplyFailure(): AgentFailure {
   return agentFailure(TURN_FAILURE_PROVIDER, missingReplyMessage());
+}
+
+/** The verdict for a turn whose reply delivery is unknown: not a missing reply — Band may already hold it. */
+export function unknownDeliveryFailure(): AgentFailure {
+  return agentFailure(
+    TURN_FAILURE_PROVIDER,
+    "The reply's delivery is unknown: Band may already hold it. It was not re-posted, and no replacement reply was sent.",
+  );
 }
 
 /**
@@ -231,9 +281,12 @@ export async function finishTurn(
   logContext: Record<string, unknown> = {},
 ): Promise<void> {
   if (tools.turn.detached !== (mode === "detached") || !tools.turn.unanswered) return;
+  // A delivery-unknown turn reports that classification, not a missing reply:
+  // the reply may already be in the room, and nothing was re-posted for it.
+  const failure = tools.turn.hasUnknownDelivery ? unknownDeliveryFailure() : missingReplyFailure();
   if (mode === "attached") {
-    await reportTurnFailure(tools, missingReplyFailure(), logger, logContext);
+    await reportTurnFailure(tools, failure, logger, logContext);
   } else {
-    await safeSendFailure(tools, missingReplyFailure(), resolveLogger(logger), logContext);
+    await safeSendFailure(tools, failure, resolveLogger(logger), logContext);
   }
 }

@@ -10,6 +10,14 @@ export function normalizeConversationRole(
   return null;
 }
 
+/**
+ * A mid-conversation system notice as user text. Anthropic and Gemini reject a system role there,
+ * and the base prompt tells the model that `[System]:` marks platform updates.
+ */
+export function systemNoticeAsUserText(content: string): string {
+  return `[System]: ${content}`;
+}
+
 export function mapConversationMessages(
   request: ToolCallingModelRequest,
   mapper: (entry: Record<string, unknown>) => Record<string, unknown> | null,

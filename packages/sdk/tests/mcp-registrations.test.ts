@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { buildCustomMcpRegistrations } from "../src/mcp/customTools";
 import { trackTurn } from "../src/core/turn";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   buildRoomScopedRegistrations,
@@ -9,10 +12,13 @@ import {
   successResult,
   errorResult,
   ROOM_ID_ARG,
+  registerTools,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
+import { AdmissionTransport, KEYED_ADMISSION_REFUSALS, buildOriginResolver } from "../src/mcp/admission";
 import { NO_REPLY_TOOL_NAME, ROOM_TOOL_NAMES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
-import { FakeTools } from "./testUtils";
+import { FakeTools, makeLoggerSpy } from "./testUtils";
+import type { Logger } from "../src/core/logger";
 
 describe("MCP registrations", () => {
   describe("buildSingleContextRegistrations", () => {
@@ -139,14 +145,16 @@ describe("MCP registrations", () => {
 
       const byName = (name: string) => registrations.find((reg) => reg.name === name)!;
       expect((await byName("band_create_chatroom").execute({})).content[0].text).toBe(JSON.stringify({ id: "room-new" }));
-      await byName(NO_REPLY_TOOL_NAME).execute({});
+      // A room-scoped no-reply takes a room_id and runs on that room's tools.
+      await byName(NO_REPLY_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", reason: "fyi only" });
+      expect(resolver).toHaveBeenCalledWith("room-1");
+      expect(roomTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, { reason: "fyi only" });
       expect(roomlessTools.executeToolCall).toHaveBeenCalledWith("band_create_chatroom", {});
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, {});
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(1);
 
       await byName(SEND_MESSAGE_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", content: "hello" });
       expect(resolver).toHaveBeenCalledWith("room-1");
       expect(roomTools.executeToolCall).toHaveBeenCalledWith(SEND_MESSAGE_TOOL_NAME, { content: "hello" });
-      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -249,5 +257,57 @@ describe("shared portable MCP registrations", () => {
     expect(buildCustomMcpRegistrations([def, def], () => undefined)).toHaveLength(2);
     expect(() => buildCustomMcpRegistrations([{ ...def, effect: "bad" } as never], () => undefined)).not.toThrow();
     expect(() => buildCustomMcpRegistrations([{ ...def, schema: z.object({ room_id: z.string() }) }], () => undefined)).toThrow(/routing/);
+  });
+});
+
+describe("the keyed admission guard at dispatch", () => {
+  /** A real client of one room's tools behind the admission decorator, over an in-memory transport pair. */
+  async function keyedClient(
+    tools: FakeTools,
+    guard: () => boolean,
+    { logger, resolver = (roomId: string) => (roomId === "room-1" ? tools : undefined) }: { logger?: Logger; resolver?: (roomId: string) => FakeTools | undefined } = {},
+  ): Promise<Client> {
+    const server = new McpServer({ name: "keyed", version: "1.0.0" });
+    registerTools(server, z, buildRoomScopedRegistrations(resolver, { enableOperationIds: true }));
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(new AdmissionTransport(serverTransport, buildOriginResolver(resolver, true, guard), logger));
+    const client = new Client({ name: "keyed-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    onTestFinished(() => client.close());
+    return client;
+  }
+
+  const keyedSend = (client: Client, operationId: string) =>
+    client.callTool({ name: SEND_MESSAGE_TOOL_NAME, arguments: { room_id: "room-1", content: "keyed", mentions: ["owner"], operation_id: operationId } });
+
+  it("refuses a keyed call on tools that do not journal replies, before any dispatch", async () => {
+    // Tools outside a journaling runtime carry no turn fence to stand.
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const result = await keyedSend(await keyedClient(tools, () => true), "op-unfenced");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.notFenced }] });
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyed call whose room resolver throws, and logs the failure by class only", async () => {
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const logger = makeLoggerSpy();
+    const resolver = () => {
+      throw new TypeError("resolver broke on secret-room-state");
+    };
+    const result = await keyedSend(await keyedClient(tools, () => true, { logger, resolver }), "op-throwing");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.noOrigin }] });
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("origin resolver threw"), { tool: SEND_MESSAGE_TOOL_NAME, errorClass: "TypeError" });
+    expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining("refused at admission"), { tool: SEND_MESSAGE_TOOL_NAME, reason: "noOrigin" });
+  });
+
+  it("refuses a keyed call whose origin no longer stands, without claiming what the bridge stands", async () => {
+    const tools = new FakeTools();
+    tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+    const result = await keyedSend(await keyedClient(tools, () => false), "op-retired");
+    expect(result).toMatchObject({ isError: true, content: [{ text: KEYED_ADMISSION_REFUSALS.noOrigin }] });
+    expect(tools.executeToolCall).not.toHaveBeenCalled();
   });
 });

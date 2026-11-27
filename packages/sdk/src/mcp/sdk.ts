@@ -2,17 +2,15 @@ import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anth
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  resolveSingleRoomTools,
-  type McpToolRegistration,
-} from "./registrations";
+import type { Logger } from "../core/logger";
+import { buildBridgeRegistrations, type McpToolRegistration } from "./registrations";
 import { createSdkMcpBridge } from "./sdkTools";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
    * called once during init with `""` — must return the tools instance regardless of the argument.
@@ -21,6 +19,10 @@ export interface CreateBandSdkMcpServerOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
+  /** See `BandMcpServerOptions.admissionGuard`. */
+  admissionGuard?: () => boolean;
+  /** See `BandMcpServerOptions.logger`. */
+  logger?: Logger;
 }
 
 export interface GetSystemPromptContextResult {
@@ -63,18 +65,16 @@ export interface BandSdkMcpServer {
 export function createBandSdkMcpServer(
   options: CreateBandSdkMcpServerOptions,
 ): BandSdkMcpServer {
-  const registrationOptions = {
+  const { registrations, originResolver } = buildBridgeRegistrations(options.getToolsForRoom, options.multiRoom, {
     enableMemoryTools: options.enableMemoryTools,
     enableTaskTools: options.enableTaskTools,
+    enableOperationIds: options.enableOperationIds,
     enableContactTools: true,
     additionalTools: options.additionalTools,
-  };
+    admissionGuard: options.admissionGuard,
+  });
 
-  const registrations = options.multiRoom === false
-    ? buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions)
-    : buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions);
-
-  const bridge = createSdkMcpBridge(registrations);
+  const bridge = createSdkMcpBridge(registrations, { originResolver, logger: options.logger });
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 

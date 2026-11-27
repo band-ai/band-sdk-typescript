@@ -125,6 +125,7 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly peerCalls = new RecordLog<number>();
   public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
+  public readonly historyRequests = new RecordLog<{ chatId: string; cursor?: string; limit: number }>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -340,6 +341,13 @@ export class RecordingRestApi extends FakeRestApi {
     return { id: `posted-${this.posted.entries.length}` };
   }
 
+  /** The single-attempt post keyed operations make: the same post, but no retry, resend, or redirect. */
+  public createChatMessageOnce = (
+    roomId: string,
+    message: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[1],
+    options?: Parameters<NonNullable<RestApi["createChatMessageOnce"]>>[2],
+  ) => this.createChatMessage(roomId, message, options);
+
   public override async createChatEvent(roomId: string, event: EventBody) {
     const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
     this.assertMember(roomId, "createChatEvent", posted);
@@ -406,6 +414,16 @@ export class RecordingRestApi extends FakeRestApi {
     return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
   }
 
+  /** The room's messages newest first, as Band's agent message list serves `status=all&sort_order=desc`: keyset pages. */
+  public async listRoomHistory(request: { chatId: string; cursor?: string; limit: number }): Promise<PaginatedResponse<PlatformChatMessage>> {
+    this.historyRequests.record(request);
+    const newestFirst = this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item).reverse();
+    const start = request.cursor === undefined ? 0 : newestFirst.findIndex((message) => message.id === request.cursor) + 1;
+    const data = newestFirst.slice(start, start + request.limit);
+    const hasMore = start + request.limit < newestFirst.length;
+    return { data, metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: data.at(-1)!.id } : {}) } };
+  }
+
   public remember(roomId: string, item: PlatformChatMessage): void {
     this.history.push({ roomId, item });
     const room = this.rooms.get(roomId);
@@ -469,11 +487,6 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settled.entries.some((settled) => settled.messageId === messageId && settled.outcome === "processed");
   }
 
-  private settle(messageId: string, outcome: Outcome, error?: string) {
-    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
-    return {};
-  }
-
   private record(posted: Posted): void {
     this.posted.record(posted);
     this.remember(posted.roomId, {
@@ -481,6 +494,73 @@ export class RecordingRestApi extends FakeRestApi {
       message_type: posted.messageType, metadata: posted.metadata ?? {}, inserted_at: now(), updated_at: now(),
     });
   }
+
+  private settle(messageId: string, outcome: Outcome, error?: string) {
+    this.settled.record({ messageId, outcome, ...(error !== undefined ? { error } : {}) });
+    return {};
+  }
+
+  /** The platform's standing state: what a test rebuilds in another process, byte for byte, after this process dies. */
+  public snapshot(): PlatformSnapshot {
+    return {
+      rooms: [...this.rooms.entries()].map(([roomId, room]) => ({
+        roomId,
+        title: room.title,
+        owned: room.owned,
+        updatedAt: room.updatedAt,
+        participants: room.participants.filter(({ id }) => id !== AGENT_ID),
+      })),
+      history: this.history.map(({ roomId, item }) => ({ roomId, item: { ...item, metadata: { ...item.metadata } } })),
+      unsettled: this.unsettled.map(({ roomId, item }) => ({ roomId, item })),
+      settled: [...this.settled.entries],
+      processing: [...this.processing.entries],
+      posted: [...this.posted.entries],
+      deliveries: this.deliveries.map(({ content, delivery }) => ({ content, delivery })),
+      stoppedRooms: [...this.stoppedRooms],
+    };
+  }
+
+  /** Rebuilds this platform from a snapshot a process of its own took before it died. */
+  public restore(snapshot: PlatformSnapshot): void {
+    for (const room of snapshot.rooms) {
+      if (this.rooms.has(room.roomId)) continue;
+      this.rooms.set(room.roomId, {
+        participants: [AGENT_PARTICIPANT, ...room.participants],
+        title: room.title,
+        tasks: [],
+        board: {
+          chat_room_id: room.roomId,
+          goal_title: null,
+          goal_summary: null,
+          created_by: null,
+          updated_by: null,
+          inserted_at: null,
+          updated_at: null,
+        },
+        ...(room.owned ? { owned: true } : {}),
+        updatedAt: room.updatedAt,
+      });
+    }
+    for (const entry of snapshot.history) this.history.push({ roomId: entry.roomId, item: entry.item });
+    for (const entry of snapshot.unsettled) this.unsettled.push({ roomId: entry.roomId, item: entry.item });
+    for (const settled of snapshot.settled) this.settled.record(settled);
+    for (const messageId of snapshot.processing) this.processing.record(messageId);
+    for (const posted of snapshot.posted) this.posted.record(posted);
+    for (const delivery of snapshot.deliveries) this.deliveries.push(delivery);
+    for (const roomId of snapshot.stoppedRooms) this.stoppedRooms.add(roomId);
+  }
+}
+
+/** What a process of the platform's own reports before it dies, so a test rebuilds the platform in another process. */
+export interface PlatformSnapshot {
+  readonly rooms: Array<{ roomId: string; title?: string; owned?: boolean; updatedAt: string; participants: readonly PlatformParticipant[] }>;
+  readonly history: Array<{ roomId: string; item: PlatformChatMessage }>;
+  readonly unsettled: Array<{ roomId: string; item: PlatformChatMessage }>;
+  readonly settled: Array<Settled>;
+  readonly processing: readonly string[];
+  readonly posted: readonly Posted[];
+  readonly deliveries: Array<{ content: string; delivery?: MessageDelivery }>;
+  readonly stoppedRooms: readonly string[];
 }
 
 /** A room the agent was added to: people speak in it, and it shows what the agent posted back. */
@@ -673,22 +753,31 @@ export class BandPlatform implements AsyncDisposable {
   /**
    * Band stops, plays or interrupts the agent's turns in `roomId`, or in all
    * its rooms for null, as its `agent.control` push does; a stopped room's
-   * `/messages/next` serves nothing until a play, as on Band. With
-   * `delivered: false` the agent misses the push. Returns its correlation id.
+   * `/messages/next` serves nothing until a play, as on Band. A push that
+   * names an `executionId` and no room is per-execution only: the control
+   * frame is sent, but durable stop/play is not fan-out across rooms (callers
+   * that need a room served again keep using room-scoped control, optionally
+   * with `delivered: false`). With `delivered: false` the agent misses the
+   * push. Returns its correlation id.
    */
   public control(
     mode: AgentControlMode,
     roomId: string | null,
-    options: { delivered?: boolean; correlationId?: string } = {},
+    options: { delivered?: boolean; correlationId?: string; executionId?: string | null } = {},
   ): string {
-    for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
-      if (mode === "stop") this.rest.stoppedRooms.add(room);
-      if (mode === "play") this.rest.stoppedRooms.delete(room);
+    // Per-execution pushes name an execution and no room; Band does not stop
+    // or play every room for that shape, so neither does the fake.
+    const executionAddressed = roomId === null && options.executionId != null;
+    if (!executionAddressed) {
+      for (const room of roomId === null ? this.rest.roomIds() : [roomId]) {
+        if (mode === "stop") this.rest.stoppedRooms.add(room);
+        if (mode === "play") this.rest.stoppedRooms.delete(room);
+      }
     }
     const correlationId = options.correlationId ?? randomUUID();
     if (options.delivered !== false) {
       this.transport.pushControl({
-        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: null,
+        mode, scope: roomId === null ? "agent" : "room", agent_id: AGENT_ID, room_id: roomId, correlation_id: correlationId, execution_id: options.executionId ?? null,
       });
     }
     return correlationId;

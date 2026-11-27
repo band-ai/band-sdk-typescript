@@ -67,12 +67,13 @@ Copilot CLI authentication and BYOK remain CLI configuration; supply their envir
 
 ### Coding agents: one process per room
 
-The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ClaudeCliAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
+The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `OmpACPAdapter`, `OmpRpcAdapter`, `ClaudeCliAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band tools: a Band MCP server, or for `OmpRpcAdapter` host tools bound to the room. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
 
 - **Lazy start.** Nothing is spawned when the agent starts. A room's process starts on its first message, so a missing binary or bad credentials are reported in that room. The process stops when the room is left, and every process stops when the agent stops.
 - **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
 - **Not a sandbox.** A workspace is the process's working directory, not an OS boundary. With Codex's `sandboxMode: "workspace-write"`, the writable workspace is now the room's folder rather than one shared `cwd`.
 - **Factories.** `connectionFactory` (ACP), `spawnProcess` (OMP RPC) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
+- **Session settings (ACP).** `sessionMeta` is sent as `_meta` on every `session/new`, `session/load` and `session/resume` the adapter makes. Its contents are the agent's to define: claude-agent-acp reads `claudeCode.options` as Claude Agent SDK options, so `sessionMeta: { claudeCode: { options: { model: "opus", effort: "high" } } }` applies to each session it creates or restores. Without `sessionMeta`, no `_meta` is sent. A mode chosen by `resolveSessionMode` is otherwise best effort; with `requireSessionMode: true`, a session whose agent offers no modes, does not offer the chosen one, or refuses to switch fails its turn with `AcpSessionConfigError` before its first prompt, instead of keeping the agent's own mode. `requireSessionMode` without `resolveSessionMode` is rejected when the adapter is built. If a session fails to configure or the agent rejects the first prompt on a fresh session, the adapter closes that session with `session/close` when the agent supports it.
 - **Cancelling a turn.** `agent.cancelTurn(roomId)` stops the room's running turn and keeps its process and session, so the room's next message continues the same conversation. With `ACPClientAdapter` and its subclasses, a prompt in flight gets ACP `session/cancel`, and the turn's permission requests, pending or later, are answered `cancelled`; a later one never reaches `resolvePermission`. With `OmpRpcAdapter`, a prompt in flight gets OMP's `abort`, and its tool approvals are answered the same way; the turn still ends only when OMP reports the prompt `aborted` and its session settles, not when OMP acknowledges the `abort`. A turn still starting its process or session stops waiting at once and never sends its prompt; that start carries on, and what it establishes serves the room's next message. A turn the agent ends as cancelled posts nothing and its message counts as handled. It resolves `false` when the room has no running turn, and rejects with `UnsupportedFeatureError` for an adapter that cannot cancel a turn, which today is every other adapter. `resetRoomSession` is the call that also discards the session.
 - **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
@@ -116,6 +117,21 @@ const stop = agent.observe((event) => {
 ```
 
 Every adapter reports `turn.started`, `turn.completed` and `turn.failed`, `room.joined` (the room's handling started, again after `resetRoomSession`), `room.left` (membership lost) and `room.stopped` (the room's handling stopped, including when the agent stops), `turn.stopped`, `room.paused` and `room.resumed` when Band stops, interrupts or plays a room, `room.ready` for a room allowed with `warm`, and `link.connected` and `link.disconnected` (`dropped` while the socket retries on its own, `closed` on a local disconnect, `terminal` when it ended for good). `ACPClientAdapter` and its subclasses also report what their agent streams as it arrives: `thought` and `message` text, `tool.call` and `tool.result`, and `approval.requested` and `approval.resolved`. They also report `room.failed` when a room's agent process cannot start or exits on its own. Each tool call is reported once, when its arguments arrive (or just before its result, for a call that has none), and named as `AgentEvent`'s `tool.call` describes — never by its display title, which can hold a whole command line. Arguments and results are passed through as the agent sent them, so redact them before logging. `AgentEventListener` documents delivery: ordering, when a listener may call back into the agent (for example `agent.cancelTurn`), and how a failing listener is handled.
+
+### Reading a room's history
+
+`tools.readRoomHistory({ cursor?, limit? })` returns one page of the room's messages of every type, newest first, and a `nextCursor` for the next older page (`null` at the room's first message). A page holds `limit` fetched history messages: `DEFAULT_ROOM_HISTORY_PAGE` by default and at most `MAX_ROOM_HISTORY_PAGE`, both exported from `@band-ai/sdk/rest`. The pinned message does not count against that limit — when it is outside the fetched page it is prepended to the page, so a full `MAX_ROOM_HISTORY_PAGE`-message page plus its pin can return one more message in total. During a turn the runtime pins the turn's own inbound message first on every page, so the agent always sees what it is answering, and never repeats it within the page that holds it. The read calls Band's agent message list with `status=all&sort_order=desc`. A REST client without that endpoint throws `UnsupportedFeatureError`; it never returns an empty page instead. Band reporting more history without a usable cursor throws `ValidationError`, matching `fetchRoomContext`.
+
+It is not a Band tool, so the model does not see it unless a host serves it. On a single-room MCP server, such as each ACP room's own, a host's own MCP tool in `additionalMcpTools` gets that room's tools as the second argument of `execute`, so it can call `readRoomHistory` for that room and turn:
+
+```ts
+const readRoom: McpToolRegistration = {
+  name: "read_room",
+  description: "Read this room's history, newest first.",
+  inputSchema: { type: "object", properties: { cursor: { type: "string" }, limit: { type: "integer" } }, required: [] },
+  execute: async (args, tools) => ({ content: [{ type: "text", text: JSON.stringify(await tools!.readRoomHistory!(args)) }] }),
+};
+```
 
 ### Generic
 
@@ -577,6 +593,70 @@ failed, as ToolNode reports it. Graphs passed as `graph` or `graphFactory`,
 and agents that run their own loop (Letta's server, Claude SDK, Codex, ACP,
 OpenCode), keep their own control flow.
 
+### Keyed operations (`operation_id`)
+
+A caller that passes `operation_id` (a string) to `band_send_message` or
+`band_no_reply` makes that post an *operation*: a durable, named unit whose
+delivery the SDK stands behind across turns and processes. The guarantee is
+**at most one SDK-issued attempt per operation** — never a second POST from
+the SDK — with honest uncertainty where the outcome cannot be known; it is not
+exactly-once delivery.
+
+**Opt-in requirements.** Models see `operation_id` only where it can be served:
+`AgentTools` advertises it when the room journals replies (`journalDir`) and
+posts through the single-attempt client, and MCP servers advertise it only with
+`enableOperationIds` (default off), which you should set only when every room
+the server resolves meets both. A server without it refuses a call that carries
+`operation_id` rather than post it unkeyed, and fences nothing. A synthetic turn
+(a contact hub's) has no inbound to settle, so its tools neither advertise nor
+serve keyed operations. Keyed delivery stands only where the SDK
+controls the post's transport: `BandLink`'s default REST wiring installs a once client with
+the same endpoint and auth as the legacy client, transport retries disabled,
+and a Fetch that refuses redirects. An injected REST client that has no
+SDK-controlled once client refuses keyed posts before any request; the SDK
+never infers the capability from an injected client, and the legacy post's
+redirect policy stands unchanged.
+
+**Outcomes.**
+- *Settled.* The post's answer stood committed: a same-`operation_id` call —
+  in any later process — replays the stored original result and posts nothing.
+- *Refused.* Band's definite refusal of the post itself (an application 4xx
+  such as a validation or permission error), or the harness's refusal of a
+  no-reply, stands stored and is **terminal by design**: the SDK never resets
+  or retries it, and a same-id call replays the refusal. A same-id call with a
+  *changed* payload conflicts with the standing operation and is refused
+  before any post.
+- *Released.* A send that provably committed nothing — its turn was cut short
+  before the post, infrastructure in front of Band answered 408 or 429, or
+  Band answered that it has stopped the agent in the room — fails for that
+  call but burns nothing: a later same-id call (for example, the answer to an
+  inbound Band serves again after a play) is admitted and posts.
+- *Unknown.* The attempt's report is ambiguous — a redirect away from the
+  post's origin, an unanswered 5xx, or a process killed between the post and
+  its answer. On restart the SDK announces the operation with its id (a
+  `delivery.unrecorded` report) and never reposts it; a same-id retry joins
+  the stored unknown, and the next turn proceeds. Recovery beyond that is the
+  operator's: the stored unknown is never guessed back into a success.
+
+**Admission.** The field's *presence* — not a parsed value — admits the call.
+A turn in which a keyed call stood is fenced against relaying its closing text
+as an unkeyed replacement, whether the call succeeded, was refused, or carried
+an invalid id; the fence grants no settlement. Invalid ids (non-strings) and
+unsupported contexts are refused without a reservation, a post, or a
+reply/decline credit. Unrelated tools carrying their own `operation_id` are
+not admitted and fence nothing; an omitted id preserves the ordinary,
+unkeyed delivery.
+
+**Room scoping.** A room-scoped tool server advertises `room_id` on both
+tools; a keyed call routes to the room it names, and a keyed `band_no_reply`
+settles the selected room's turn under the key. A roomless (single-context)
+server advertises no `room_id`: its tools serve the bound room.
+
+**Reader compatibility.** The operation's records are strict v2 journal
+additions. A reader that does not know them refuses the journal rather than
+guessing; no format-number bump accompanies these unpublished additions, and
+no reader silently skips an unsupported record.
+
 ### What counts
 
 The tools a turn receives (`TurnTools`, so `tools.turn` is its `Turn`) record
@@ -889,17 +969,45 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
 
 ## Turn journal
 
-With `sessionConfig.journalDir` set, the runtime records, per room, which messages' turns ended, under `<journalDir>/<agent id>/<room id>.jsonl`. It covers one gap: a turn that finished and replied, in a process that died before Band heard the message was processed. Band serves that message again after the restart, and without the journal it is answered a second time.
+With `sessionConfig.journalDir` set, the runtime journals each room's replies and turn endings durably, under `<journalDir>/<hash of agent id>/<hash of platform identity>/<hash of room id>.jsonl` (each component is the SHA-256 hex of its value; the readable names stand in every record's v2 header), and holds exclusive ownership of the agent's journal directory for the start's lifetime. Every record is flushed to disk before the runtime acts on it. The journal directory must stand on a local filesystem: the ownership it holds is a file lock, and a start whose directory it cannot lock fails rather than run unowned.
 
-- **A turn's end is recorded before its message is marked processed.** That holds for a turn that completes and for one Band interrupts. After a restart, a message Band serves again whose turn the journal shows ended is marked processed without a new turn.
-- **Anything else runs again, as without the journal.** A turn that failed, was stopped, or was killed midway has no recorded end, so its message is answered again when Band serves it.
-- **A repeat that may duplicate replies is reported.** Just before each reply posts, once its arguments and mentions are accepted (`band_send_message`, any other reply tool, or a plain `sendMessage`, including calls an in-process Band MCP server makes on the turn's tools), the journal records that a reply began. When a message is answered again and an earlier, unfinished turn for it began replies, those may already be in the room. The turn that answers it again reports this as one `delivery.unrecorded` event, covering every reply begun since the last report, so each begun reply is reported once. Notices (`sendNotice`) are not replies and are not recorded, and neither are replies an external Band MCP process posts. Nor is a reply reported when a turn left running past a timed-out reset posts it after the message was answered again.
-- **A turn that hands its reply to later work records no end.** An adapter that detaches a turn (a decision wait the reply follows) ends it before the reply posts, so its message runs again after a restart, as without the journal.
-- **Every journal failure falls back to the behaviour without a journal.** A room journal that cannot be opened leaves that turn unjournaled, and a record that cannot be written is logged and skipped. The worst outcome is a message answered again, never one left unanswered. `start()` fails when `journalDir` is not a usable directory.
+- **A reply is journaled before it posts.** Once a reply's arguments and mentions are accepted (`band_send_message`, any other reply tool, or a plain `sendMessage`, including calls an in-process Band MCP server makes on the turn's tools), the journal records that the reply began, then its outcome — accepted, refused, or unknown — before the tool call returns. A file that will not admit new records — poisoned by a journal-write failure, or unable to open at all — refuses the post rather than deliver it unrecorded: a room whose journal is unavailable serves no reply it cannot record.
+- **A turn's end is recorded before its message is marked processed.** That holds for a turn that completes and for one Band interrupts. After a restart, a message Band serves again whose turn the journal shows ended — or whose reply stands settled — is marked without running a new turn; if the processed mark never landed, the journal repairs it.
+- **Anything else runs again, as without the journal.** A turn that failed, was stopped, was killed midway, or handed its reply to later work records no end, so its message is answered again when Band serves it.
+- **An uncertain delivery is unknown, and fences the turn that made it.** A reply whose post cannot be confirmed is recorded as unknown, and the call throws `DeliveryUnknownError`. The uncertainty fences the original turn's automatic relay — its closing text is not relayed, so no replacement post is attempted — while the room's journal keeps admitting new records, and the writer admits other replies it can record. Where it is the outcome record itself that cannot be written, the reply is not recorded unknown at all — the journal cannot say whether Band holds it, and nothing in it claims it does — and that write failure poisons the file, which stops admitting new records until the process reopens it. A process that reopens the room reports the unresolved reply (`delivery.unrecorded`) without reposting it.
+- **A repeat that may duplicate replies is reported.** When a message is answered again and an earlier, unfinished turn for it began replies, the turn that answers it again reports them as `delivery.unrecorded` events, each begun reply once. Notices (`sendNotice`) are not replies and are not recorded, and neither are replies an external Band MCP process posts.
+- **The journal binds to a platform identity, and a room's file to its room.** With a standard link the identity is the canonical form of the link's REST endpoint; a runtime that speaks through a custom REST adapter must name one in `sessionConfig.journalPlatformIdentity`, and a value set that names another platform than the link speaks to refuses the start. A room file bound to a different identity is refused, and a file whose records, header, or path do not name the same room is refused as well: a file copied from another room's journal stands for nothing, in either direction.
+- **Legacy journal files are migrated, never reinterpreted.** A directory holding legacy (pre-v2) journal files refuses to start until they are migrated: run the exported `migrateTurnJournals` against them, binding each file with its room, SHA-256, operator-attested provenance, and platform identity. Run it with the agent's old writer processes stopped and their auto-restart disabled: a legacy process writes its v1 files without honoring the ownership lock the v2 journals hold. A binding's platform identity is the identity the runtime will serve: it must be a strict canonical HTTP(S) URL, which is canonicalized (an explicit default port or trailing slash names the same deployment) — and a value that is not one, such as a label or a URL with credentials or a query, refuses the migration, because the runtime refuses to serve it. It previews by default and writes nothing; `apply: true` requires a binding for every legacy file and writes through durable prepared → stage → commit phases, with the v1 originals preserved. Deleting the v2 tree and manifest afterwards is an authority reset — the migrated settlements are gone — not a rollback, and the journal does not support rolling its upgrade back. A v1 compaction that crashed mid-write left its output beside its journal, named `<journal>.<uuid>.compacting`; that output is the journal it was being rewritten from. The migration stages a byte-identical output once, as the journal it is, and stages a differing one through the journal — which holds every record the copy holds — as the room's authority: in either case both files are preserved and nothing is deleted. A copy whose journal is gone stands attested on its own — bound to the room, hashed, and provenance- and identity-attested like any file — and a settlement only that copy holds is imported under the copy's own binding; a copy no binding attests carries no authority, however its name reads. A migration a crash interrupts is resumed on the next apply or start, never reset; a prepared migration may be amended by binding additional sources the earlier prepare lacked (for example a surplus remnant) without rewriting attestations already prepared; re-applying a finished one reports the journal already migrated, keeping any records appended after the commit. The journal's ownership lock uses `node:sqlite` (Node.js 22.13 or newer, or 22.12 with `--experimental-sqlite`); a runtime without it keeps the journal closed rather than running without ownership.
+- **A committed migration's output is validated at start.** A start revalidates the complete history of the files its committed migration records — header, records, and the room and identity each binds to — and a destination that stands by its header alone refuses the start, whether or not the preserved source still stands: reopening an empty journal over a lost authority would settle no one. A staged journal whose final line a crash tore activates under the journal's own recovery policy, which stands for the reader it is.
+- **A stop settles its replies first.** A `stop()` with no timeout waits indefinitely for the start generation's in-flight replies to stand on disk before it returns; a `stop(timeoutMs)` that times out stays in its stopping state and holds the journal's ownership while those replies run to their durable outcomes, so the journal closes only when every admitted reply's outcome stands on disk.
 
-Each record is flushed to disk, with its directory entry, before the runtime acts on it. One agent's directory belongs to one running process of that agent. A room's file is closed when the room is left or reset, and reopened on its next turn; a reply from a turn left running past that reopens it until the room's next execution or the runtime stops. Once the runtime stopped, such a reply posts unrecorded, unless the same runtime was started again, when it records into that run's journal.
+A room's file is closed when the room is left or reset, and reopened on its next turn; a reply from a turn left running past that reopens it until the room's next execution or the runtime stops. Admitting a room whose process records no journal creates no file and holds no handle for it; only a room whose journal stands, or whose turn records into one, has a file at all. The journal keeps a message's records for the life of the deployment, and a room's file only grows — nothing compacts or expires its records — so plan the directory's filesystem for unbounded growth. `sessionConfig.journalRetentionSeconds` is accepted for compatibility with earlier journal versions but no longer expires anything.
 
-The journal remembers a message for `sessionConfig.journalRetentionSeconds` (three hours by default) after its last record; an older one is answered again if Band still serves it. A message's records expire together, and are dropped from a room's file when the file opens, on the room's first turn after start, a rejoin, or a reset. Until then they stay in the file, which grows with a room that is never left or reset while the process runs.
+A migration against a journal root, run once from an ordinary Node script:
+
+```ts
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { migrateTurnJournals } from "@band-ai/sdk";
+
+// The agent's legacy directory holds the v1 files; the binding names each with the
+// room its file's name encodes, its bytes, its provenance, and the identity it stood for.
+const source = "/var/lib/band/journals/<agent dir>/room%2Fwith%3Aodd%20chars.jsonl";
+await migrateTurnJournals({
+  journalDir: "/var/lib/band/journals",
+  agentId: "agent/one",
+  apply: true,
+  bindings: [
+    {
+      sourceFile: "room%2Fwith%3Aodd%20chars.jsonl",
+      roomId: "room/with:odd chars",
+      sourceSha256: createHash("sha256").update(await readFile(source, "utf8")).digest("hex"),
+      platformIdentity: "https://band.example",
+      provenance: "operator-attested: written by 2.0.x against staging",
+    },
+  ],
+});
+```
 
 ## Automatic working state
 

@@ -1,5 +1,5 @@
 import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
-import type { MessagingTools } from "../contracts/protocols";
+import { isToolExecutorError, toolExecutionError, type MessagingTools, type SendMessageOptions, type ToolExecutorError } from "../contracts/protocols";
 import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
@@ -20,21 +20,93 @@ export class DeliveryFailedError extends RecoverableTurnError {
   }
 }
 
+/**
+ * A reply whose delivery is unknown: the transport neither accepted nor
+ * refused it (a 5xx, no response, or an unreadable response). It extends the
+ * delivery failure so direct call sites and failure reports keep working, but
+ * its own text states what the state means: Band may already hold the message,
+ * so resending it blindly could post it twice.
+ */
+export class DeliveryUnknownError extends DeliveryFailedError {
+  public static readonly KIND = "delivery_unknown" as const;
+
+  public readonly kind: typeof DeliveryUnknownError.KIND = DeliveryUnknownError.KIND;
+  /** The delivery is a keyed operation's, standing under its own text rather than a reply's. */
+  public readonly keyed: boolean;
+
+  constructor(
+    cause: unknown,
+    public readonly publicationId?: string,
+    /** The delivery that stands unknown: a reply by default, a keyed operation when its text is supplied. */
+    message?: string,
+  ) {
+    super(cause);
+    this.name = "DeliveryUnknownError";
+    this.keyed = message !== undefined;
+    this.message = message ?? unknownDeliveryText("reply");
+  }
+}
+
+/** The text a delivery that stands unknown is reported under, naming what (`reply`, `operation`) stands unknown. */
+export function unknownDeliveryText(subject: string): string {
+  return `The ${subject}'s delivery is unknown: Band may already hold it, so it must not be resent. The turn journal records the ${subject} as unknown; a process that reopens the room reports it without reposting it.`;
+}
+
+/**
+ * An unknown delivery as a tool result: the classification rides in
+ * `details`, so an MCP result or a direct ToolExecutorError tells callers
+ * Band may already hold the message.
+ */
+export function deliveryUnknownToolError(toolName: string, error: DeliveryUnknownError): ToolExecutorError {
+  return toolExecutionError(toolName, error.message, {
+    kind: DeliveryUnknownError.KIND,
+    publicationId: error.publicationId,
+    ...(error.keyed ? { keyed: true } : {}),
+  });
+}
+
+/** A tool result whose `details` classify the delivery as unknown. */
+type DeliveryUnknownOutput = ToolExecutorError & { details: { kind: typeof DeliveryUnknownError.KIND } };
+
+/**
+ * True when a tool or MCP result says delivery is unknown: Band may already
+ * hold the post, so a same-content retry must not POST again.
+ */
+export function isDeliveryUnknownOutput(value: unknown): value is DeliveryUnknownOutput {
+  return isToolExecutorError(value) && value.details?.kind === DeliveryUnknownError.KIND;
+}
+
+/** Publication id carried on a delivery_unknown tool result, when present. */
+export function deliveryUnknownPublicationId(value: unknown): string | undefined {
+  if (!isDeliveryUnknownOutput(value)) return undefined;
+  const publicationId = value.details?.publicationId;
+  return typeof publicationId === "string" ? publicationId : undefined;
+}
+
 async function delivered(post: () => Promise<ToolOperationResult>): Promise<ToolOperationResult> {
   try {
     return await post();
   } catch (error) {
+    // A classified failure stays classified: rewrapping an unknown would let
+    // a caller retry the same content blindly.
+    if (error instanceof DeliveryFailedError) throw error;
     throw new DeliveryFailedError(error);
   }
 }
 
-/** Posts the turn's reply; on a judged turn it counts as the reply. */
+/**
+ * Posts the turn's reply; on a judged turn it counts as the reply. With
+ * `options.operationId`, the reply rides the keyed path: the journal decides
+ * the operation's identity, a same-id call replays the settled result
+ * without a new post, and an invalid id is refused before any post.
+ */
 export async function deliverReply(
   tools: MessagingTools,
   content: string,
   mentions: MentionInput,
+  options?: SendMessageOptions,
 ): Promise<ToolOperationResult> {
-  return delivered(() => tools.sendMessage(content, mentions));
+  return delivered(() => tools.sendMessage(content, mentions, options));
 }
 
 /** Posts text the adapter writes itself; it never counts as the turn's reply. */

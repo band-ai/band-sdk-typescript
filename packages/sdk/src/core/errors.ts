@@ -98,3 +98,14 @@ export function statusCodeOf(error: unknown): number | undefined {
     ? error.statusCode
     : undefined;
 }
+
+/** A failure's class, never its message, which can carry a body. */
+export function errorClassOf(failure: unknown): { errorClass?: string } {
+  if (failure === undefined) return {};
+  return { errorClass: failure instanceof Error ? failure.name : typeof failure };
+}
+
+/** Fails a switch the type checker proved exhaustive, should an unchecked value reach it at runtime. */
+export function assertNever(value: never, subject: string): never {
+  throw new Error(`Unhandled ${subject}: ${JSON.stringify(value)}`);
+}

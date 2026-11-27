@@ -8,6 +8,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { anthropic as aiSdkAnthropic } from "@ai-sdk/anthropic";
 import { MemorySaver } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
 
@@ -20,12 +21,10 @@ import {
   DEFAULT_COPILOT_ACP_COMMAND,
   DEFAULT_CURSOR_ACP_COMMAND,
   DEFAULT_GEMINI_MODEL,
-  DEFAULT_KIRO_ACP_COMMAND,
   DEFAULT_OMP_ACP_COMMAND,
   DEFAULT_OMP_RPC_COMMAND,
   GeminiAdapter,
   GoogleADKAdapter,
-  KiroACPAdapter,
   LangGraphAdapter,
   LettaAdapter,
   OmpACPAdapter,
@@ -33,6 +32,7 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  VercelAISDKAdapter,
   type ClaudeSDKAdapterOptions,
   type LettaAdapterOptions,
   type OmpACPAdapterOptions,
@@ -49,7 +49,6 @@ const ENV = {
   googleKey: "GOOGLE_API_KEY",
   geminiKey: "GEMINI_API_KEY",
   cursorKey: "CURSOR_API_KEY",
-  kiroKey: "KIRO_API_KEY",
   openaiKey: "OPENAI_API_KEY",
   lettaUrl: "LETTA_BASE_URL",
   lettaKey: "LETTA_API_KEY",
@@ -158,13 +157,6 @@ function reportsTools({ customTools, memory, reportToolCalls }: Pick<BuildOption
  */
 const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: 90_000 };
 
-/** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
-function unbuildable(reason: string): () => never {
-  return () => {
-    throw new Error(`this adapter cannot be built: ${reason}`);
-  };
-}
-
 /** Keyed by handle; each spec's `id` is its directory under `src/adapters/`. */
 const SPECS = {
   anthropic: {
@@ -192,7 +184,6 @@ const SPECS = {
     id: "codex",
     requires: [requires.peerPackage("@openai/codex-sdk"), requires.cli("codex")],
     supports: [],
-    pending: "needs Codex CLI authentication provisioned in CI",
     build: ({ prompt, workDir }) => new CodexAdapter({ config: { cwd: workDir, customSection: prompt, approvalPolicy: "never" } }),
   },
   copilotAcp: {
@@ -248,13 +239,6 @@ const SPECS = {
         enableMemoryTools: memory,
         ...reportsTools({ customTools, memory, reportToolCalls }),
       }),
-  },
-  kiroAcp: {
-    id: "kiro-acp",
-    requires: [ACP_SDK, requires.cli(DEFAULT_KIRO_ACP_COMMAND[0]), requires.envVar(ENV.kiroKey)],
-    supports: [],
-    pending: "needs the Kiro CLI and a KIRO_API_KEY provisioned in CI",
-    build: ({ prompt, workDir }) => new KiroACPAdapter({ cwd: workDir, customSection: prompt }),
   },
   langgraph: {
     id: "langgraph",
@@ -328,10 +312,17 @@ const SPECS = {
   },
   vercelAiSdk: {
     id: "vercel-ai-sdk",
-    requires: [requires.peerPackage("ai")],
-    supports: [],
-    pending: "needs an AI SDK model-provider package as a devDependency",
-    build: unbuildable("no AI SDK model-provider package is installed"),
+    requires: [ANTHROPIC_KEY, requires.peerPackage("ai"), requires.peerPackage("@ai-sdk/anthropic")],
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory, reportToolCalls }) =>
+      new VercelAISDKAdapter({
+        model: aiSdkAnthropic(ANTHROPIC_MODEL),
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory, reportToolCalls }),
+        ...TOOL_CALLING_TURN_TIMEOUT,
+      }),
   },
 } as const satisfies Record<string, AdapterSpec>;
 

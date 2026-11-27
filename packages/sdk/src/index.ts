@@ -24,6 +24,26 @@ export {
   sessionConfigSchema,
 } from "./runtime/types";
 export type { CustomToolDef } from "./runtime/tools/customTools";
+
+export { DeliveryUnknownError } from "./core/deliveryFailedError";
+export { JournalFileError, JournalPublicationError } from "./runtime/journal/errors";
+export { JournalOwnershipError } from "./runtime/journal/ownership";
+export { migrateTurnJournals } from "./runtime/journal/migration";
+export { OPERATION_ID_MAX_BYTES } from "./contracts/toolSchemas";
+export {
+  OperationConflictError,
+  OperationIdError,
+  OperationUnsupportedError,
+  operationFingerprint,
+  validateOperationId,
+} from "./runtime/journal/operations";
+export type {
+  MigrateTurnJournalsOptions,
+  MigrationBinding,
+  MigrationResult,
+} from "./runtime/journal/migration";
+export type { KeyedSendPreparation, OperationInput } from "./runtime/journal/publication";
+export type { SendMessageOptions } from "./contracts/protocols";
 export type {
   AgentConfig,
   AgentInput,
@@ -85,7 +105,6 @@ export {
 } from "./adapters/acp";
 export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
 export { CursorACPAdapter, DEFAULT_CURSOR_ACP_COMMAND } from "./adapters/cursor-acp";
-export { KiroACPAdapter, DEFAULT_KIRO_ACP_COMMAND, type KiroACPAdapterOptions } from "./adapters/kiro-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -105,6 +124,9 @@ export type {
   RoomContextTools,
   FetchRoomContextArgs,
   RoomContextPage,
+  RoomHistoryTools,
+  ReadRoomHistoryArgs,
+  RoomHistoryPage,
   ToolExecutor,
   AgentEvent,
   AgentEventListener,

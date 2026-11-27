@@ -1,0 +1,958 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readdir, readFile, rename, rm, type FileHandle } from "node:fs/promises";
+import path from "node:path";
+
+import { resolveLogger, type Logger } from "../../core/logger";
+import { Serializer } from "../../core/singleFlight";
+
+import { JournalFileError, JournalPublicationError, closedJournalError, poisonedJournalError } from "./errors";
+import { storedSendResult } from "./operations";
+import {
+  JOURNAL_FORMAT_VERSION,
+  compactingCopyName,
+  compactingCopyTarget,
+  identityDirectoryComponent,
+  journalHeaderSchema,
+  journalRecordSchema,
+  readTextIfExists,
+  roomFileName,
+  toLine,
+  type JournalHeader,
+  type JournalRecord,
+  type OperationKind,
+  type PublicationOutcome,
+  type PublicationState,
+} from "./records";
+
+/** What an operator does with a journal file this version cannot trust. */
+const UNTRUSTED_JOURNAL_REMEDIATION = "Restore it from backup or run the offline journal migration; deleting it discards the journal's authority.";
+
+/** A journal read or write failure; `file` is the path that failed. */
+function journalFileFailure(error: unknown, file: string): JournalFileError {
+  if (error instanceof JournalFileError) return error;
+  return new JournalFileError("Turn journal I/O failed", "io", file, error);
+}
+
+/**
+ * Flushes `dir`'s entries, so a file created or renamed in it survives an OS
+ * crash, not only a process one. Windows cannot open a directory for this.
+ */
+async function syncDirectory(dir: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await open(dir, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Removes the rewrite copies a crash left in `dir`; they never replaced their
+ * file. Only while nothing in `dir` is rewriting: under the journal's ownership,
+ * before any room opens.
+ */
+export async function removeOrphanedCopies(dir: string): Promise<void> {
+  for (const name of await readdir(dir)) {
+    if (compactingCopyTarget(name) !== undefined) {
+      await rm(path.join(dir, name), { force: true });
+    }
+  }
+}
+
+/** Replaces `file` with `text`, through a renamed copy so a crash leaves the old file or the new one. */
+export async function rewriteFile(file: string, text: string): Promise<void> {
+  const copy = compactingCopyName(file);
+  try {
+    const handle = await open(copy, "w");
+    try {
+      await handle.writeFile(text, "utf8");
+      await handle.datasync();
+    } finally {
+      await handle.close();
+    }
+    await rename(copy, file);
+  } catch (error) {
+    await rm(copy, { force: true });
+    throw error;
+  }
+  await syncDirectory(path.dirname(file));
+}
+
+export interface RoomJournalOptions {
+  /** What the file's directory and header must both say the journal is bound to. */
+  platformIdentity: string;
+  /** What the agent's directory and header must both say the journal belongs to. */
+  agentId: string;
+  /** The room whose handling the file records; names the file, not the header. */
+  roomId: string;
+  /** The clock records are stamped by; `Date.now` by default. */
+  now?: () => number;
+  logger?: Logger;
+  /** Whether the generation already announced what `key` names, on any of the room's handles. */
+  hasAnnounced?: (key: string) => boolean;
+  /** Registers what `key` names as announced by the generation, so no later handle announces it again. */
+  markAnnounced?: (key: string) => void;
+}
+
+/**
+ * What a reopen found unresolved: a reply (`pending`: nothing says whether Band
+ * has it; `unknown`: whether it has it is uncertain) or a keyed operation.
+ */
+export type UnresolvedPublication =
+  | { kind: "reply"; messageId: string; publicationId: string; outcome: "pending" | "unknown"; at: number }
+  | { kind: "operation"; messageId: string; operationId: string; outcome: "unknown"; at: number };
+
+/** An operation's key in the generation's announced set: namespaced, so an operation id never stands for a publication id. */
+function operationAnnouncementKey(operationId: string): string {
+  return `op:${operationId}`;
+}
+
+/** The key the generation records an unresolved publication's announcement under. */
+function announcementKey(unresolved: UnresolvedPublication): string {
+  return unresolved.kind === "reply" ? unresolved.publicationId : operationAnnouncementKey(unresolved.operationId);
+}
+
+/** A record that says nothing was posted: it must land, or a reopen reads a post that never ran as one Band may hold. */
+type UnpostedRecord = Extract<JournalRecord, { t: "reply.refused" | "op.refused" | "op.released" }>;
+
+type OperationRecord = Extract<JournalRecord, { t: `op.${string}` }>;
+
+/** What a settled keyed operation stores for its replays. */
+export type OperationSettlement = Pick<Extract<JournalRecord, { t: "op.settled" }>, "receiptId" | "resultJson">;
+
+/** How one keyed operation stands in the journal, by its id. */
+export interface OperationIndex {
+  /** The first caller's inbound: the turn the operation was admitted in. */
+  messageId: string;
+  kind: OperationKind;
+  fingerprint: string;
+  /** The first send's resolved recipient identities, when they stood. */
+  recipients?: string[];
+  outcome: "pending" | "settled" | "refused" | "unknown";
+  receiptId?: string;
+  /** The settled send's stored public result, as JSON. */
+  resultJson?: string;
+  /** The stored refusal's public text, when the file kept one. */
+  reasonText?: string;
+  reported: boolean;
+  at: number;
+}
+
+/**
+ * What `checkAndReserveOperation` found: a new id to reserve and run, an
+ * in-flight call to join, a stored outcome to replay or re-throw, or a
+ * conflict that refuses the call before any post.
+ */
+export type OperationCheck =
+  | { status: "reserved" }
+  | { status: "inflight"; promise: Promise<unknown> }
+  | ({ status: "settled" } & OperationSettlement)
+  | { status: "refused"; reasonText?: string }
+  | { status: "unknown" }
+  | { status: "conflict" };
+
+/** The in-flight mark of the call running a keyed operation: same-id calls join its promise. */
+export interface OperationInflight {
+  promise: Promise<unknown>;
+}
+
+/** The keyed-operation fields a check-and-reserve call carries. */
+interface OperationReservation {
+  operationId: string;
+  fingerprint: string;
+  kind: OperationKind;
+  messageId: string;
+  inflight?: OperationInflight;
+}
+
+interface InboundIndex {
+  answered: boolean;
+  publications: Map<string, PublicationState>;
+}
+
+/** The durable header line a v2 journal opens with, bound to its identity, agent and room. */
+export function headerLine(identity: string, agentId: string, roomId: string, at: number): string {
+  return toLine({ t: "header", v: JOURNAL_FORMAT_VERSION, platformIdentity: identity, agentId, roomId, at });
+}
+
+/**
+ * One room's v2 journal: its identity-bound file of what Band acknowledged,
+ * what it refused, and what is unknown, plus which inbounds settled.
+ *
+ * Every record that says a reply landed or an inbound settled is durable on
+ * disk before the call that wrote it resolves, and none of it ever expires:
+ * the journal is the authority that a restarted runtime does not answer a
+ * settled message again or re-post a reply Band already has. A file it cannot
+ * validate strictly is refused — the room stays closed — never reset to empty.
+ */
+export class RoomJournal {
+  private inbounds = new Map<string, InboundIndex>();
+  /**
+   * The publications whose delivery stands unresolved — admitted in the file
+   * with no recorded outcome (a process died mid-post) or recorded as unknown.
+   * Publications this handle admits itself are tracked by the generation, not
+   * here: they are in flight, not a delivery mystery.
+   */
+  private unresolved = new Map<string, { messageId: string; at: number }>();
+  /** The keyed operations this file records, by operation id. */
+  private operations = new Map<string, OperationIndex>();
+  /** The operations whose delivery stands unresolved: the post may have run, with no outcome recorded, or recorded unknown. */
+  private unresolvedOps = new Map<string, { messageId: string; at: number }>();
+  /** The operations this handle admitted: an in-flight call later calls join the same promise. */
+  private inflightOps = new Map<string, OperationInflight>();
+  /** Recoveries run one at a time: one in flight marks what it reports before the next looks. */
+  private readonly recoveries = new Serializer();
+  private readonly writes = new Serializer();
+  private readonly now: () => number;
+  private readonly logger: Logger;
+  private closed = false;
+  /**
+   * Set once an outcome the journal could not record followed a result it
+   * already owed (an acknowledged reply whose settlement write failed): new
+   * publications are refused until the handle closes and the room's journal
+   * reopens, rather than carried on half-recorded.
+   */
+  private poisoned = false;
+
+  private constructor(
+    private handle: FileHandle,
+    private readonly options: RoomJournalOptions,
+    private readonly file: string,
+  ) {
+    this.now = options.now ?? Date.now;
+    this.logger = resolveLogger(options.logger);
+  }
+
+  /**
+   * Opens the room's file, validating it strictly: its header must bind the
+   * journal to `platformIdentity` and `agentId` and sit under the directory
+   * its identity hashes to, and every whole record must parse and keep the
+   * journal's state coherent. A torn final line is kept when it is itself a
+   * whole valid record; otherwise the valid prefix is kept and the torn tail
+   * dropped, so a crash mid-append never erases an earlier unresolved intent.
+   */
+  public static async open(file: string, options: RoomJournalOptions): Promise<RoomJournal> {
+    const now = options.now ?? Date.now;
+    try {
+      await mkdir(path.dirname(file), { recursive: true });
+      const expectedComponent = identityDirectoryComponent(options.platformIdentity);
+      if (path.basename(path.dirname(file)) !== expectedComponent) {
+        throw new JournalFileError(
+          `The journal directory for ${options.platformIdentity} is not where its identity hashes it: ${path.dirname(file)}`,
+          "corrupt",
+          file,
+        );
+      }
+      if (path.basename(file) !== roomFileName(options.roomId)) {
+        throw new JournalFileError(
+          `The room's journal must live at the file its room id hashes to; this file is not that file, so its records are not this room's`,
+          "corrupt",
+          file,
+        );
+      }
+      const text = await readTextIfExists(file);
+      if (text === null) {
+        // A new file: its header is durable before its directory entry is not.
+        await rewriteFile(file, headerLine(options.platformIdentity, options.agentId, options.roomId, now()));
+        const handle = await open(file, "a");
+        try {
+          await syncDirectory(path.dirname(file));
+        } catch (error) {
+          await handle.close();
+          throw error;
+        }
+        return new RoomJournal(handle, options, file);
+      }
+
+      const lines = text.split("\n");
+      // A crash may have cut the final line short of its newline.
+      const complete = text.endsWith("\n");
+      const tornTail = complete ? null : (lines.pop() ?? null);
+      const wholeLines = complete ? lines.slice(0, -1) : lines;
+
+      const header = parseHeader(file, wholeLines[0], options);
+      const records: Array<{ line: string; record: JournalRecord }> = [];
+      for (const line of wholeLines.slice(1)) {
+        if (line === "") continue;
+        const record = parseRecord(file, line);
+        records.push({ line, record });
+      }
+
+      let keptTail: { line: string; record: JournalRecord } | null = null;
+      if (tornTail !== null) {
+        try {
+          const record = parseRecord(file, tornTail);
+          // The tail is a whole record a crash left without its newline; keep it, newline and all.
+          keptTail = { line: tornTail, record };
+        } catch (error) {
+          if (!(error instanceof JournalFileError)) throw error;
+          // A torn tail that is not a whole record: the valid prefix stands.
+        }
+      }
+
+      const index = new Map<string, InboundIndex>();
+      const operations = new Map<string, OperationIndex>();
+      for (const { record } of keptTail !== null ? [...records, keptTail] : records) {
+        if (isOperationRecord(record)) {
+          operations.set(record.operationId, applyOperation(operations.get(record.operationId), record, file));
+        }
+        index.set(record.messageId, applyRecord(index.get(record.messageId), record, file));
+      }
+
+      if (tornTail !== null) {
+        // The tail was dropped, or kept without its newline: rewrite the file
+        // whole, records byte-for-byte, so the next append starts a line.
+        const kept = keptTail !== null ? [...records, keptTail] : records;
+        await rewriteFile(
+          file,
+          headerLine(header.platformIdentity, header.agentId, header.roomId, header.at) + kept.map(({ line }) => `${line}\n`).join(""),
+        );
+      }
+
+      const handle = await open(file, "a");
+      const journal = new RoomJournal(handle, options, file);
+      journal.inbounds = index;
+      journal.operations = operations;
+      // A leftover pending operation whose recipients the file recorded may
+      // already be in the room: it stands unknown. One with no recipients
+      // recorded stands provably unposted — the post runs only after that
+      // record — and is re-admissible, not announced.
+      for (const [operationId, operation] of operations) {
+        if (operation.outcome === "unknown" || (operation.outcome === "pending" && operation.recipients !== undefined)) {
+          journal.unresolvedOps.set(operationId, { messageId: operation.messageId, at: operation.at });
+        }
+      }
+      // Every publication the file left without an outcome is unresolved: this
+      // handle admitted none of them, so each is the leftover of an earlier
+      // process's post that may already be in the room.
+      for (const [messageId, inbound] of index) {
+        for (const [publicationId, publication] of inbound.publications) {
+          if (publication.outcome === "pending" || publication.outcome === "unknown") {
+            journal.unresolved.set(publicationId, { messageId, at: publication.at });
+          }
+        }
+      }
+      return journal;
+    } catch (error) {
+      throw journalFileFailure(error, file);
+    }
+  }
+
+  /** Whether this handle closed: its room's handling stopped, and the room's next turn opens a new one. */
+  public get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** The room this file records. */
+  public get roomId(): string {
+    return this.options.roomId;
+  }
+
+  /** Whether the room's publications are admitted at all. */
+  public get accepting(): boolean {
+    return !this.closed && !this.poisoned;
+  }
+
+  /** Whether a turn ended, or a reply or decline settled, for `messageId`. */
+  public answered(messageId: string): boolean {
+    return this.inbounds.get(messageId)?.answered ?? false;
+  }
+
+  /**
+   * The publication the file records under `publicationId`, whichever outcome
+   * it stands in; `undefined` when the file admits no such publication. A
+   * read-only view for the offline checks that stand on the file's recorded
+   * authority (the migration's validation of what it imported).
+   */
+  public publication(publicationId: string): { messageId: string; outcome: PublicationOutcome } | undefined {
+    for (const [messageId, inbound] of this.inbounds) {
+      const record = inbound.publications.get(publicationId);
+      if (record !== undefined) return { messageId, outcome: record.outcome };
+    }
+    return undefined;
+  }
+
+  /**
+   * The room's publications whose delivery stands unresolved — the file left
+   * one admitted with no recorded outcome, or recorded it as unknown — that
+   * this handle has not announced yet. Announces each, recording the
+   * announcement best-effort so this handle does not announce it again; a
+   * record it cannot write is logged, and the announcement stands in memory.
+   * Publications this handle admitted itself are in flight, not unresolved,
+   * and never announced here.
+   */
+  public recoverUnresolved(): Promise<UnresolvedPublication[]> {
+    return this.recoveries.run(() => this.runRecovery());
+  }
+
+  private async runRecovery(): Promise<UnresolvedPublication[]> {
+    if (this.closed) return [];
+    const found: UnresolvedPublication[] = [];
+    for (const [publicationId, info] of this.unresolved) {
+      const publication = this.inbounds.get(info.messageId)?.publications.get(publicationId);
+      // A publication this generation already announced on another handle of the
+      // room stands announced: this handle reopens the same file after one of its
+      // earlier handles closed, and the operator hears each recovery once.
+      if (publication === undefined || publication.reported || this.announcedByGeneration(publicationId)) continue;
+      found.push({ kind: "reply", messageId: info.messageId, publicationId, outcome: publication.outcome === "pending" ? "pending" : "unknown", at: publication.at });
+    }
+    // A keyed operation the file left unresolved stands unknown the same way, announced once per generation alike.
+    for (const [operationId, info] of this.unresolvedOps) {
+      if (this.operations.get(operationId)?.reported !== false || this.announcedByGeneration(operationAnnouncementKey(operationId))) continue;
+      found.push({ kind: "operation", messageId: info.messageId, operationId, outcome: "unknown", at: info.at });
+    }
+    if (found.length === 0) return found;
+    this.logger.warn(
+      "Recovering publications whose outcome the journal cannot confirm; a reply or send among them may already be in the room",
+      { roomId: this.options.roomId, publications: found.length },
+    );
+    for (const publication of found) {
+      // Stands announced across the room's handles before the record is owed, so a
+      // handle that reopens the file later does not announce it again.
+      this.options.markAnnounced?.(announcementKey(publication));
+      await this.recordBestEffort(
+        publication.kind === "operation"
+          ? { t: "op.reported", messageId: publication.messageId, operationId: publication.operationId, at: this.now() }
+          : { t: "publication.reported", messageId: publication.messageId, publicationId: publication.publicationId, at: this.now() },
+      );
+    }
+    return found;
+  }
+
+  private announcedByGeneration(key: string): boolean {
+    return this.options.hasAnnounced?.(key) ?? false;
+  }
+
+  /**
+   * Records that a reply is about to begin posting; the post does not run until
+   * this is durable. A failed append leaves the writer poisoned: part of the
+   * intent may stand in the file.
+   */
+  public async beginReply(messageId: string): Promise<string> {
+    this.assertAdmitting();
+    const publicationId = randomUUID();
+    await this.write({ t: "reply.intent", messageId, publicationId, at: this.now() });
+    return publicationId;
+  }
+
+  /** Records that Band acknowledged the reply; the reply is settled and the inbound answered. */
+  public async settleReply(messageId: string, publicationId: string, receiptId?: string): Promise<void> {
+    this.assertAdmitting();
+    await this.write({ t: "reply.settled", messageId, publicationId, ...(receiptId !== undefined ? { receiptId } : {}), at: this.now() });
+  }
+
+  /**
+   * Records that Band answered and saved nothing, or that a cut-short reply
+   * never posted: the reply is definitely not in the room. The refusal must
+   * stand, or a reopen announces a reply that never posted: when the writer
+   * does not admit, or the append fails, it lands through a synced rewrite.
+   * Neither path clears poison: a writer that lost a write it owed admits
+   * again only once it reopens.
+   */
+  public async markRefused(messageId: string, publicationId: string): Promise<void> {
+    await this.landRefusal({ t: "reply.refused", messageId, publicationId, at: this.now() });
+  }
+
+  /**
+   * Lands a refusal: when the writer does not admit, or the append fails, it
+   * lands through a synced rewrite. A refusal that did not stand would be
+   * announced on reopen as a publication Band may hold.
+   */
+  private async landRefusal(record: UnpostedRecord): Promise<void> {
+    if (this.closed) {
+      throw closedJournalError();
+    }
+    this.transition(record);
+    if (this.accepting) {
+      try {
+        await this.append(record);
+        this.commit(record);
+        return;
+      } catch (error) {
+        this.logger.warn("Failed to append a refusal; rewriting the journal to land it", { roomId: this.roomId, file: this.file, error });
+      }
+    }
+    await this.rewriteRefused(record);
+    this.commit(record);
+  }
+
+  /**
+   * Records that whether Band has the reply is unknown: it may already be in
+   * the room. It stands unresolved, so a recovery on this same handle (a
+   * stop and play) still announces it.
+   */
+  public async markUnknown(messageId: string, publicationId: string): Promise<void> {
+    this.assertAdmitting();
+    await this.write({ t: "reply.unknown", messageId, publicationId, at: this.now() });
+  }
+
+  /** Records that the inbound's no-reply was accepted: it is answered and answered again never. */
+  public async settleDecline(messageId: string): Promise<void> {
+    this.assertAdmitting();
+    await this.write({ t: "decline.settled", messageId, at: this.now() });
+  }
+
+  /** Records that the inbound's turn ended, before it is marked processed. */
+  public async turnDone(messageId: string): Promise<void> {
+    this.assertAdmitting();
+    await this.write({ t: "turn.done", messageId, at: this.now() });
+  }
+
+  /**
+   * The keyed operation the file records under `operationId`, whichever
+   * outcome it stands in; `undefined` when the file admits no such operation.
+   */
+  public operation(operationId: string): OperationIndex | undefined {
+    return this.operations.get(operationId);
+  }
+
+  /**
+   * Atomically checks `operationId` against the file and, when the file holds
+   * it for no operation, reserves it: the reservation is durable before the
+   * method returns, and the write queue is released before any network I/O
+   * the caller then runs. A call this handle is already running for the id
+   * joins that call's promise; a call the file already decided replays or
+   * refuses its stored outcome; a known id bound to a different fingerprint
+   * is a conflict, refused before any post.
+   */
+  public checkAndReserveOperation(input: OperationReservation): Promise<OperationCheck> {
+    return this.writes.run(() => this.checkAndReserveNow(input));
+  }
+
+  private async checkAndReserveNow(input: OperationReservation): Promise<OperationCheck> {
+    this.assertAdmitting();
+    const existing = this.operations.get(input.operationId);
+    if (existing === undefined) {
+      const record: JournalRecord = { t: "op.reserved", operationId: input.operationId, fingerprint: input.fingerprint, kind: input.kind, messageId: input.messageId, at: this.now() };
+      this.transition(record);
+      await this.appendNow(record);
+      this.commit(record);
+      return this.admitOperation(input);
+    }
+    if (existing.fingerprint !== input.fingerprint) return { status: "conflict" };
+    const inflight = this.inflightOps.get(input.operationId);
+    if (inflight !== undefined) return { status: "inflight", promise: inflight.promise };
+    switch (existing.outcome) {
+      // No recipients standing (never recorded, or dropped by a release) proves
+      // the post never ran, or committed nothing: it is re-admitted.
+      // Otherwise the post ran, or may have, and stands unknown on every retry.
+      case "pending":
+        return existing.recipients === undefined ? this.admitOperation(input) : { status: "unknown" };
+      case "unknown":
+        return { status: "unknown" };
+      case "settled":
+        return { status: "settled", receiptId: existing.receiptId, resultJson: existing.resultJson };
+      case "refused":
+        return { status: "refused", reasonText: existing.reasonText };
+    }
+  }
+
+  private admitOperation(input: OperationReservation): OperationCheck {
+    if (input.inflight !== undefined) this.inflightOps.set(input.operationId, input.inflight);
+    return { status: "reserved" };
+  }
+
+  /**
+   * Records the first send's resolved recipient identities, durably, before
+   * the post runs: a retry stands for the recipients the roster resolved when
+   * the operation was admitted, not for whoever the roster names later.
+   */
+  public async storeOperationRecipients(operationId: string, recipients: string[]): Promise<void> {
+    this.assertAdmitting();
+    const operation = this.requireOperation(operationId);
+    if (operation.recipients !== undefined) {
+      throw this.poisonOver(operationId, "The journal already records this operation's recipients; a second record is a conflict");
+    }
+    await this.write({ t: "op.recipients", operationId, recipients, messageId: operation.messageId, at: this.now() });
+  }
+
+  /**
+   * Records that Band acknowledged the keyed send; the stored result stands
+   * for every later same-id call, and the operation's original inbound is
+   * answered.
+   */
+  public async settleOperation(operationId: string, settlement: OperationSettlement): Promise<void> {
+    this.assertAdmitting();
+    const operation = this.requireOperation(operationId);
+    await this.write({
+      t: "op.settled",
+      operationId,
+      messageId: operation.messageId,
+      ...(settlement.receiptId !== undefined ? { receiptId: settlement.receiptId } : {}),
+      ...(settlement.resultJson !== undefined ? { resultJson: settlement.resultJson } : {}),
+      at: this.now(),
+    });
+  }
+
+  /** Records that the keyed operation definitely did not stand; it lands as a reply's refusal does. */
+  public async refuseOperation(operationId: string, reasonText?: string): Promise<void> {
+    const operation = this.requireOperation(operationId);
+    await this.landRefusal({ t: "op.refused", operationId, messageId: operation.messageId, ...(reasonText !== undefined ? { reasonText } : {}), at: this.now() });
+  }
+
+  /**
+   * Records that the keyed send provably committed nothing: its recipients are
+   * dropped and a same-id call is admitted again. It lands as a refusal does.
+   */
+  public async releaseOperation(operationId: string): Promise<void> {
+    const operation = this.requireOperation(operationId);
+    await this.landRefusal({ t: "op.released", operationId, messageId: operation.messageId, at: this.now() });
+  }
+
+  /**
+   * Records that whether Band has the keyed send is unknown: it may already
+   * be in the room. The caller that hit it hears it; a reopen announces it.
+   */
+  public async markOperationUnknown(operationId: string): Promise<void> {
+    this.assertAdmitting();
+    const operation = this.requireOperation(operationId);
+    await this.write({ t: "op.unknown", operationId, messageId: operation.messageId, at: this.now() });
+  }
+
+  /**
+   * Releases `inflight`'s mark once its call has run to its outcome. A mark
+   * that is no longer `inflight` is another call's: a release re-admitted it.
+   */
+  public clearOperationInflight(operationId: string, inflight: OperationInflight): void {
+    if (this.inflightOps.get(operationId) === inflight) this.inflightOps.delete(operationId);
+  }
+
+  private requireOperation(operationId: string): OperationIndex {
+    const operation = this.operations.get(operationId);
+    if (operation === undefined) {
+      throw this.poisonOver(operationId, "The journal holds no such keyed operation; its record cannot be written");
+    }
+    return operation;
+  }
+
+  /** Poisons the journal over a keyed operation's broken record invariant, logged with its id, and returns the error to throw. */
+  private poisonOver(operationId: string, message: string): JournalPublicationError {
+    this.poison();
+    this.logger.error("a keyed operation's record invariant broke; the room's journal no longer admits records", { roomId: this.roomId, operationId, reason: message });
+    return new JournalPublicationError(message, "poisoned");
+  }
+
+  /**
+   * The journal owed an outcome it could not record (an acknowledged reply
+   * whose settlement write failed): from here on it refuses new publications
+   * until its handle closes and the room's journal reopens.
+   */
+  public poison(): void {
+    this.poisoned = true;
+  }
+
+  public async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    // Queued after every write already accepted.
+    await this.writes.run(() => this.handle.close());
+  }
+
+  private assertAdmitting(): void {
+    if (this.closed) {
+      throw closedJournalError();
+    }
+    if (this.poisoned) {
+      throw poisonedJournalError();
+    }
+  }
+
+  /** Checks `record`'s transition before anything is written; throws on one the journal's state forbids. */
+  private transition(record: JournalRecord): void {
+    if (isOperationRecord(record)) applyOperation(this.operations.get(record.operationId), record, this.file);
+    applyRecord(this.inbounds.get(record.messageId), record, this.file);
+  }
+
+  /** Appends `record` and, once it stands, applies it. */
+  private async write(record: JournalRecord): Promise<void> {
+    this.transition(record);
+    await this.append(record);
+    this.commit(record);
+  }
+
+  /**
+   * Applies a written record to the state as it stands now (another write
+   * of the inbound may have landed meanwhile), and to what stands unresolved.
+   * A publication this handle admitted is in flight, not unresolved, until
+   * its delivery is recorded unknown.
+   */
+  private commit(record: JournalRecord): void {
+    this.inbounds.set(record.messageId, applyRecord(this.inbounds.get(record.messageId), record, this.file));
+    if (isOperationRecord(record)) this.commitOperation(record);
+    switch (record.t) {
+      case "reply.settled":
+      case "reply.refused":
+        this.unresolved.delete(record.publicationId);
+        break;
+      case "reply.unknown":
+        this.unresolved.set(record.publicationId, { messageId: record.messageId, at: record.at });
+        break;
+    }
+  }
+
+  private commitOperation(record: OperationRecord): void {
+    const operation = applyOperation(this.operations.get(record.operationId), record, this.file);
+    // A live unknown's caller hears it, so it stands reported in the same step it stands unresolved.
+    this.operations.set(record.operationId, record.t === "op.unknown" ? { ...operation, reported: true } : operation);
+    switch (record.t) {
+      case "op.settled":
+      case "op.refused":
+      case "op.released":
+        this.inflightOps.delete(record.operationId);
+        this.unresolvedOps.delete(record.operationId);
+        break;
+      case "op.unknown":
+        this.inflightOps.delete(record.operationId);
+        this.unresolvedOps.set(record.operationId, { messageId: record.messageId, at: record.at });
+        break;
+    }
+  }
+
+  /** Records an announcement best-effort: it stands in memory whether or not its record lands. */
+  private async recordBestEffort(record: JournalRecord): Promise<void> {
+    this.transition(record);
+    await this.appendBestEffort(record);
+    this.commit(record);
+  }
+
+  /**
+   * Rewrites the file's whole lines plus `record`, synced, then reopens the
+   * append handle. The handle is closed first: a file cannot be renamed over
+   * while it is open on Windows. A last line equal to `record` is the
+   * refusal's own failed append, unsynced (a failed append stops every later
+   * one); the rewrite carries it once. An earlier equal line is a record of
+   * its own, such as a re-admitted operation's earlier release.
+   */
+  private rewriteRefused(record: UnpostedRecord): Promise<void> {
+    return this.writes.run(async () => {
+      if (this.closed) {
+        throw closedJournalError();
+      }
+      const line = JSON.stringify(record);
+      try {
+        const text = await readFile(this.file, "utf8");
+        const lines = text.split("\n");
+        // Only whole lines stand: a torn tail has no newline after it.
+        lines.pop();
+        const kept = lines.filter((whole) => whole !== "");
+        if (kept.at(-1) === line) kept.pop();
+        await this.closeHandle();
+        try {
+          await rewriteFile(this.file, [...kept, line].map((whole) => `${whole}\n`).join(""));
+        } finally {
+          await this.reopenHandle();
+        }
+      } catch (error) {
+        this.poisoned = true;
+        throw journalFileFailure(error, this.file);
+      }
+    });
+  }
+
+  /** Closes the append handle, logging a failure: the rewrite that follows owns the file's state. */
+  private async closeHandle(): Promise<void> {
+    try {
+      await this.handle.close();
+    } catch (error) {
+      this.logger.warn("Failed to close a room journal's handle before rewriting it", { roomId: this.roomId, file: this.file, error });
+    }
+  }
+
+  /**
+   * Opens the append handle again after a rewrite. One that will not open
+   * leaves the writer poisoned, its closed handle in place for `close()`.
+   */
+  private async reopenHandle(): Promise<void> {
+    try {
+      this.handle = await open(this.file, "a");
+    } catch (error) {
+      this.poisoned = true;
+      this.logger.warn("Failed to reopen a room journal after rewriting it; it admits no records until it reopens", { roomId: this.roomId, file: this.file, error });
+    }
+  }
+
+  private append(record: JournalRecord): Promise<void> {
+    return this.writes.run(() => this.appendNow(record));
+  }
+
+  private async appendNow(record: JournalRecord): Promise<void> {
+    // Re-check inside the queue: a caller may have passed assertAdmitting
+    // before a concurrent write poisoned the handle, and must not append
+    // beneath a torn or half-recorded line.
+    this.assertAdmitting();
+    try {
+      await this.handle.appendFile(toLine(record), "utf8");
+      await this.handle.datasync();
+    } catch (error) {
+      // The write or its sync failed: the file may hold a torn record, and the
+      // writer that lost the write it owes stops admitting. No later append may
+      // stand beneath an uncertain write; the writer is fresh again on reopen.
+      this.poisoned = true;
+      throw journalFileFailure(error, this.file);
+    }
+  }
+
+  /** Like `append`, for records whose failure the caller reports rather than throws. */
+  private async appendBestEffort(record: JournalRecord): Promise<void> {
+    try {
+      await this.append(record);
+    } catch (error) {
+      this.logger.warn("Failed to record a journal record", { roomId: this.options.roomId, t: record.t, error });
+    }
+  }
+}
+
+function parseHeader(file: string, line: string | undefined, options: RoomJournalOptions): JournalHeader {
+  let json: unknown;
+  try {
+    json = JSON.parse(line ?? "");
+  } catch {
+    throw new JournalFileError(
+      `The journal at ${file} has no readable header line; it is not a journal this version can trust. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
+      "corrupt",
+      file,
+    );
+  }
+  const check = journalHeaderSchema.safeParse(json);
+  if (!check.success) {
+    throw new JournalFileError(
+      `The journal at ${file} has a header this version does not understand. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
+      "unsupported",
+      file,
+    );
+  }
+  if (check.data.platformIdentity !== options.platformIdentity) {
+    throw new JournalFileError(
+      `The journal at ${file} is bound to a different platform identity (${check.data.platformIdentity}) than the one configured (${options.platformIdentity}); a changed deployment identity is a different journal, not a migration of this one.`,
+      "corrupt",
+      file,
+    );
+  }
+  if (check.data.agentId !== options.agentId) {
+    throw new JournalFileError(
+      `The journal at ${file} belongs to a different agent (${check.data.agentId}) than the one running (${options.agentId}).`,
+      "corrupt",
+      file,
+    );
+  }
+  if (check.data.roomId !== options.roomId) {
+    throw new JournalFileError(
+      `The journal at ${file} records the room ${check.data.roomId}, not the room it is asked to journal (${options.roomId}); a room's records are not another room's authority, so the file is refused rather than adopted.`,
+      "corrupt",
+      file,
+    );
+  }
+  return check.data;
+}
+
+function parseRecord(file: string, line: string): JournalRecord {
+  let json: unknown;
+  try {
+    json = JSON.parse(line);
+  } catch {
+    throw new JournalFileError(
+      `The journal at ${file} holds a line that is not a record; it may be corrupt. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
+      "corrupt",
+      file,
+    );
+  }
+  const check = journalRecordSchema.safeParse(json);
+  if (!check.success) {
+    throw new JournalFileError(
+      `The journal at ${file} holds a record this version does not understand. It may be corrupt, or it was written by another version or tool. ${UNTRUSTED_JOURNAL_REMEDIATION}`,
+      "unsupported",
+      file,
+    );
+  }
+  return check.data;
+}
+
+/**
+ * The inbound `record` leaves behind, its transition checked; `inbound` is
+ * never changed. The one state machine of a room's records: replayed on open,
+ * and applied after each live write.
+ */
+function applyRecord(inbound: InboundIndex | undefined, record: JournalRecord, file: string): InboundIndex {
+  const next: InboundIndex = { answered: inbound?.answered ?? false, publications: new Map(inbound?.publications) };
+  switch (record.t) {
+    case "reply.intent":
+      if (next.publications.has(record.publicationId)) {
+        throw new JournalFileError(`The journal at ${file} holds a publication's intent twice; its state is in conflict.`, "corrupt", file);
+      }
+      next.publications.set(record.publicationId, { outcome: "pending", reported: false, at: record.at });
+      break;
+    case "reply.settled":
+    case "reply.refused":
+    case "reply.unknown": {
+      const publication = next.publications.get(record.publicationId);
+      if (publication === undefined) {
+        throw new JournalFileError(`The journal at ${file} records an outcome for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
+      }
+      if (publication.outcome !== "pending") {
+        throw new JournalFileError(`The journal at ${file} records ${record.t} twice for ${record.publicationId}; its state is in conflict.`, "corrupt", file);
+      }
+      const outcome = record.t === "reply.settled" ? "settled" : record.t === "reply.refused" ? "refused" : "unknown";
+      const receipt = record.t === "reply.settled" && record.receiptId !== undefined ? { receiptId: record.receiptId } : {};
+      next.publications.set(record.publicationId, { ...publication, outcome, at: record.at, ...receipt });
+      if (record.t === "reply.settled") next.answered = true;
+      break;
+    }
+    case "decline.settled":
+    case "turn.done":
+    // A durable keyed settlement answers the operation's original inbound.
+    case "op.settled":
+      next.answered = true;
+      break;
+    case "publication.reported": {
+      const publication = next.publications.get(record.publicationId);
+      if (publication === undefined) {
+        throw new JournalFileError(`The journal at ${file} records a report for ${record.publicationId} without its intent; its state is in conflict.`, "corrupt", file);
+      }
+      next.publications.set(record.publicationId, { ...publication, reported: true });
+      break;
+    }
+  }
+  return next;
+}
+
+function isOperationRecord(record: JournalRecord): record is OperationRecord {
+  return record.t.startsWith("op.");
+}
+
+/**
+ * The operation `record` leaves behind, its transition checked; `operation`
+ * is never changed. Replayed on open, and applied after each live write.
+ */
+function applyOperation(operation: OperationIndex | undefined, record: OperationRecord, file: string): OperationIndex {
+  const conflict = (what: string): JournalFileError =>
+    new JournalFileError(`The journal at ${file} ${what} operation ${record.operationId}; its state is in conflict.`, "corrupt", file);
+  if (record.t === "op.reserved") {
+    if (operation !== undefined) throw conflict(`reserves${operation.fingerprint === record.fingerprint ? "" : " with a different fingerprint"} an already reserved`);
+    return { messageId: record.messageId, kind: record.kind, fingerprint: record.fingerprint, outcome: "pending", reported: false, at: record.at };
+  }
+  if (operation === undefined) throw conflict(`records ${record.t} without the reservation of`);
+  switch (record.t) {
+    case "op.recipients":
+      if (operation.recipients !== undefined) throw conflict("records recipients twice for");
+      if (operation.outcome !== "pending") throw conflict("records recipients for the finished");
+      return { ...operation, recipients: record.recipients, at: record.at };
+    case "op.settled":
+    case "op.refused":
+    case "op.unknown": {
+      if (operation.outcome !== "pending") throw conflict(`records ${record.t} twice for`);
+      if (record.t === "op.refused") return { ...operation, outcome: "refused", at: record.at, reasonText: record.reasonText };
+      if (record.t === "op.unknown") return { ...operation, outcome: "unknown", at: record.at };
+      // A settled send's stored result is the authority every later same-id
+      // caller replays: a file whose result does not stand is refused at load,
+      // so no inbound is answered on authority the file cannot prove.
+      if (operation.kind === "send" && storedSendResult(record.resultJson) === undefined) throw conflict("settles with authority that does not stand");
+      return { ...operation, outcome: "settled", at: record.at, receiptId: record.receiptId, resultJson: record.resultJson };
+    }
+    case "op.released":
+      if (operation.outcome !== "pending") throw conflict("releases the finished");
+      return { ...operation, recipients: undefined, at: record.at };
+    case "op.reported":
+      return { ...operation, reported: true };
+  }
+}

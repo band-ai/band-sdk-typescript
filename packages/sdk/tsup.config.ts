@@ -44,5 +44,7 @@ export default defineConfig({
   },
   external: EXTERNAL,
   format: ["esm", "cjs"],
+  // Keep `node:`: a builtin without it (node:sqlite) resolves as an npm package.
+  removeNodeProtocol: false,
   target: "es2022",
 });

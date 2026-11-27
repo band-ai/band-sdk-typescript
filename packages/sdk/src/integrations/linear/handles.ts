@@ -1,6 +1,6 @@
-export function stripHandlePrefix(handle: string): string {
-  return handle.trim().replace(/^@+/, "").toLowerCase();
-}
+import { normalizeMentionHandle as stripHandlePrefix } from "../../runtime/formatters";
+
+export { stripHandlePrefix };
 
 export function dedupeHandles(handles: Iterable<string>): string[] {
   const deduped: string[] = [];

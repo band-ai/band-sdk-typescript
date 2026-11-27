@@ -1,15 +1,13 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import type {
   BuildRegistrationsOptions,
   McpToolRegistration,
 } from "./registrations";
-import {
-  buildRoomScopedRegistrations,
-  buildSingleContextRegistrations,
-  registerTools,
-} from "./registrations";
+import { buildBridgeRegistrations, registerTools } from "./registrations";
 import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
+import { AdmissionTransport, type OriginResolver } from "./admission";
 
 export interface BandMcpServerOptions {
   /** @internal */
@@ -24,6 +22,8 @@ export interface BandMcpServerOptions {
   enableMemoryTools?: boolean;
   /** Enable board and task tools. */
   enableTaskTools?: boolean;
+  /** Advertise `operation_id` on keyed-operation tools; see `BuildRegistrationsOptions.enableOperationIds`. */
+  enableOperationIds?: boolean;
   /** Enable contact tools. */
   enableContactTools?: boolean;
   /** Additional MCP tool registrations to expose alongside the built-in tools. */
@@ -34,6 +34,19 @@ export interface BandMcpServerOptions {
    * prior behavior for callers that don't opt in.
    */
   authToken?: string;
+  /**
+   * With `enableOperationIds`, consulted before a keyed call's origin resolves:
+   * once it reports false, no call pins an origin or fences a turn.
+   */
+  admissionGuard?: () => boolean;
+  /** Where keyed-call admission logs its refusals, by class only; silent by default. */
+  logger?: Logger;
+  /**
+   * With a `tools` resolver, whether the server scopes its tools to the call's
+   * `room_id` (the default): `false` stands a single-context server on the
+   * resolver's `""` result.
+   */
+  multiRoom?: boolean;
 }
 
 const PORT_RANGE_START = 50000;
@@ -69,16 +82,21 @@ export class BandMcpServer {
       execute: options.execute,
       enableMemoryTools: options.enableMemoryTools,
       enableTaskTools: options.enableTaskTools,
+      enableOperationIds: options.enableOperationIds,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
     };
 
-    if (typeof options.tools === "function") {
-      this.registrations = buildRoomScopedRegistrations(options.tools, regOptions);
-    } else {
-      this.registrations = buildSingleContextRegistrations(options.tools, regOptions);
-    }
+    const { tools } = options;
+    const bridge = buildBridgeRegistrations(tools, options.multiRoom, {
+      ...regOptions,
+      admissionGuard: options.admissionGuard,
+    });
+    this.registrations = bridge.registrations;
+    this.originResolver = bridge.originResolver;
   }
+
+  private readonly originResolver: OriginResolver | undefined;
 
   /** Port the server is listening on. Null if not started. */
   public get port(): number | null {
@@ -148,7 +166,7 @@ export class BandMcpServer {
 
         session.lastSeenAt = Date.now();
         await session.transport.handleRequest(req, res, req.body);
-      } catch (error) {
+      } catch {
         if (!res.headersSent) {
           sendMcpError(res, 500, "Internal server error");
         }
@@ -238,7 +256,9 @@ export class BandMcpServer {
       }
     };
 
-    await mcpServer.connect(transport);
+    // The admission decorator stands between the client and the framework on
+    // every session: a keyed call is fenced and pinned before any validation.
+    await mcpServer.connect(new AdmissionTransport(transport, this.originResolver, this.options.logger));
     record = {
       mcpServer,
       transport,

@@ -8,6 +8,7 @@ import {
 
 import { TASK_LIST_STATES, TASK_LIFECYCLE_STATES, TASK_ASSIGNMENT_STATUSES, TASK_INCLUDE } from "./tasks";
 import { CHAT_EVENT_TYPES } from "./chatEvents";
+import type { SendMessageOptions } from "./protocols";
 import {
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
@@ -36,6 +37,66 @@ function toolModelFromSpec(spec: ToolSpec) {
     ),
     required: spec.parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name),
   };
+}
+
+/**
+ * The longest an operation id may be, in encoded UTF-8 bytes. Ids are opaque
+ * to the SDK: they are never trimmed into aliases, interpreted, or used as
+ * file system paths — the bound is a storage guarantee, not a shape rule.
+ */
+export const OPERATION_ID_MAX_BYTES = 256;
+
+/** Advertised as a string; any other type is refused by validation, after admission has fenced the raw call. */
+const OPERATION_ID_PROPERTY = {
+  type: "string",
+  description:
+    `Optional operation id: an opaque, untrimmed id of at most ${OPERATION_ID_MAX_BYTES} bytes; it is not a path, a handle, or an alias. ` +
+    "A later call with the same id and the same content (or no-reply reason) stands for the same operation: a settled " +
+    "operation replays its stored result without a new post, one Band refused replays its refusal, and an unknown one stays " +
+    "unknown — Band may already hold it, so do not resend it. A send that committed nothing (rate-limited, timed out at the " +
+    "edge, cut short, or answered while Band stopped the agent) fails but may be retried under the same id. " +
+    "Changed content or a different tool under the same id is " +
+    "refused. A different id names a different operation.",
+} as const;
+
+/** The tools that take an optional `operation_id`, advertised only where keyed operations are served. */
+export const KEYED_OPERATION_TOOL_NAMES: ReadonlySet<string> = new Set([SEND_MESSAGE_TOOL_NAME, NO_REPLY_TOOL_NAME]);
+
+/** The tool argument that keys an operation. */
+export const OPERATION_ID_ARG = "operation_id";
+
+/** The `sendMessage` option that keys an operation. */
+const OPERATION_ID_OPTION = "operationId" satisfies keyof SendMessageOptions;
+
+/** The argument a room-scoped tool takes to name the room it runs in. */
+export const ROOM_ID_ARG = "room_id";
+
+/**
+ * Whether a tool call's arguments carry an operation id, under any value:
+ * presence keys the call, and the journal validates the value, so an explicit
+ * `undefined` is a supplied, invalid id rather than a legacy call.
+ */
+export function carriesOperationIdArg(args: unknown): boolean {
+  return typeof args === "object" && args !== null && Object.hasOwn(args, OPERATION_ID_ARG);
+}
+
+/** Whether `sendMessage` options carry an `operationId`, under any value, as for {@link carriesOperationIdArg}. */
+export function carriesOperationIdOption(options: unknown): boolean {
+  return typeof options === "object" && options !== null && Object.hasOwn(options, OPERATION_ID_OPTION);
+}
+
+/**
+ * `name`'s published input properties: a keyed-operation tool gains the
+ * optional `operation_id` only when `operationIds` says the runtime serves it
+ * (a journal and the single-attempt transport); otherwise a model would be
+ * offered an input whose every use is refused.
+ */
+export function toolInputProperties(
+  name: string,
+  properties: Record<string, unknown>,
+  operationIds: boolean,
+): Record<string, unknown> {
+  return operationIds && KEYED_OPERATION_TOOL_NAMES.has(name) ? { ...properties, [OPERATION_ID_ARG]: OPERATION_ID_PROPERTY } : properties;
 }
 
 export const TOOL_MODELS = {
@@ -511,11 +572,12 @@ export const CONTACT_TOOL_NAMES = new Set<string>([
   "band_respond_contact_request",
 ]);
 
-/** The tools that act on a room, and so take its id; every other tool is roomless. */
+/** The tools that act on a room, and so take its id; every other tool is roomless. A no-reply declines the turn standing in that room, so it is room-scoped like a send. */
 export const ROOM_TOOL_NAMES = new Set<string>([
   ...TASK_TOOLS,
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
+  NO_REPLY_TOOL_NAME,
   "band_add_participant",
   "band_remove_participant",
   "band_get_participants",

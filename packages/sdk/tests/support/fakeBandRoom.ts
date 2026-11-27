@@ -76,9 +76,13 @@ export class FakeBandRoom {
     return new Promise((resolve) => this.postWaiters.push({ count, resolve }));
   }
 
-  /** A `FernRestAdapter` whose requests reach this room, built as a caller supplying its own REST client would. */
-  public adapter(): FernRestAdapter {
-    const client = new BandClient({ apiKey: "test-key", baseUrl: "http://fake-band.test", fetch: this.fetch }) as unknown as FernBandClientLike;
+  /**
+   * A `FernRestAdapter` whose requests reach this room, built as a caller
+   * supplying its own REST client would, from `Client` (another copy of the
+   * generated client, when given).
+   */
+  public adapter(Client: typeof BandClient = BandClient): FernRestAdapter {
+    const client = new Client({ apiKey: "test-key", baseUrl: "http://fake-band.test", fetch: this.fetch }) as unknown as FernBandClientLike;
     return new FernRestAdapter(client);
   }
 

@@ -1,6 +1,38 @@
 # Changelog
 
 
+## [3.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.3.0...sdk-v3.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** the turn journal format is v2: files stand at <journalDir>/<sha256(agentId)>/<sha256(platformIdentity)>/<sha256(roomId)>.jsonl and every record and header carries the room. Users of 2.2.0 who set sessionConfig.journalDir must run the exported migrateTurnJournals with apply: true and a binding ({sourceFile, roomId, sourceSha256, platformIdentity, provenance}) for every legacy file before starting; unbound v1 files refuse the start.
+
+### Features
+
+* **runtime:** durably settle turn replies, keeping what a restart cannot confirm unsettled ([#443](https://github.com/band-ai/band-sdk-typescript/issues/443)) ([4d99aa0](https://github.com/band-ai/band-sdk-typescript/commit/4d99aa0040e0402b9a227f6ff50b6f196ed431ad))
+* **sdk:** publish a keyed send at most once, admitted on raw operation-id presence ([#444](https://github.com/band-ai/band-sdk-typescript/issues/444)) ([6007bf0](https://github.com/band-ai/band-sdk-typescript/commit/6007bf00eb2e396263b081261cdd5a58c308554e))
+
+## [2.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.2.0...sdk-v2.3.0) (2026-11-23)
+
+
+### Features
+
+* **adapters:** run Claude rooms under the CLI's own auto review ([#448](https://github.com/band-ai/band-sdk-typescript/issues/448)) ([035f9d0](https://github.com/band-ai/band-sdk-typescript/commit/035f9d03bdb6f16ce5a376ceacc48a8a3561aebd))
+* **adapters:** send ACP session settings as _meta, and bind the session mode ([#438](https://github.com/band-ai/band-sdk-typescript/issues/438)) ([fdac71c](https://github.com/band-ai/band-sdk-typescript/commit/fdac71cb9ca87d77535bf3d453878189add62ad6))
+* **adapters:** send ACP session settings as _meta, and bind the session mode ([#450](https://github.com/band-ai/band-sdk-typescript/issues/450)) ([f9b1229](https://github.com/band-ai/band-sdk-typescript/commit/f9b1229c8a76fafd394960eb9046cd77449aeb1d))
+* **runtime:** page a room's history newest first, pinning the turn's message ([#442](https://github.com/band-ai/band-sdk-typescript/issues/442)) ([420f86a](https://github.com/band-ai/band-sdk-typescript/commit/420f86a1d418f0757c18b31a61ddfe58ec92710c))
+
+
+### Bug Fixes
+
+* **adapters:** close an ACP session the agent rejected on its first prompt ([#453](https://github.com/band-ai/band-sdk-typescript/issues/453)) ([3f44444](https://github.com/band-ai/band-sdk-typescript/commit/3f44444ab2fafbcd967e7a9a1bc9daf6ea9920bd))
+* **adapters:** preserve cancellation across OpenCode session startup ([#454](https://github.com/band-ai/band-sdk-typescript/issues/454)) ([a7f210c](https://github.com/band-ai/band-sdk-typescript/commit/a7f210c31f5ddecb2d7dc0792184c68c112fbed0))
+* **adapters:** refuse server requests from another thread or turn ([#455](https://github.com/band-ai/band-sdk-typescript/issues/455)) ([125a6ec](https://github.com/band-ai/band-sdk-typescript/commit/125a6ec13188ec0525e22640e8684b9c118aa541))
+* **adapters:** replay a room's history after a dropped restored ACP session ([#451](https://github.com/band-ai/band-sdk-typescript/issues/451)) ([50f251e](https://github.com/band-ai/band-sdk-typescript/commit/50f251ed541f5c16dbc3364e116b438c1541f229))
+* **adapters:** retire the ACP connection when a cancelled session setup times out ([#452](https://github.com/band-ai/band-sdk-typescript/issues/452)) ([5241176](https://github.com/band-ai/band-sdk-typescript/commit/5241176b3e6937df677bb78c3262d1475c463d8f))
+* **runtime:** drop control signals addressed to one execution ([#441](https://github.com/band-ai/band-sdk-typescript/issues/441)) ([c84cb36](https://github.com/band-ai/band-sdk-typescript/commit/c84cb36bc5365700ef4a3dd5eaff332a46ea63a8))
+
 ## [2.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v2.1.0...sdk-v2.2.0) (2026-11-15)
 
 
@@ -186,8 +218,6 @@
 
 ### Features
 
-* add KiroACPAdapter for AWS Kiro CLI (ACP) ([b518d57](https://github.com/band-ai/band-sdk-typescript/commit/b518d570e3b0c1df00ef0cde58cb474aa0c4ed2e))
-* add KiroACPAdapter for AWS Kiro CLI (ACP) ([c470779](https://github.com/band-ai/band-sdk-typescript/commit/c470779d7844481876461416dc95189a7c2915a7))
 * **sdk:** adopt band-sdk-core's isSelfEcho and evaluateAdapterResult ([bca5780](https://github.com/band-ai/band-sdk-typescript/commit/bca57801ee895bb3d958dea1c7036f604e1e35fd))
 * **sdk:** adopt band-sdk-core's isSelfEcho and evaluateAdapterResult ([33a931f](https://github.com/band-ai/band-sdk-typescript/commit/33a931fe53d8e31f48acc673a0c51cda39af4dcf))
 
@@ -197,7 +227,6 @@
 * abandon a session with a still-in-flight prompt on cleanup ([b965081](https://github.com/band-ai/band-sdk-typescript/commit/b9650811c04601dd63160ddc232f2c1e3e1d22ad))
 * add per-room workspace resolution and resume-failure replay to ACPClientAdapter ([5b94dad](https://github.com/band-ai/band-sdk-typescript/commit/5b94dadcfc217c94649aabdc01df49fa525b22f2))
 * compare full session ownership, drop dead notification-attribution path ([5a0019f](https://github.com/band-ai/band-sdk-typescript/commit/5a0019fa488210805f22e413279766de5120cff9))
-* drop the live Kiro CLI ACP E2E script ([#251](https://github.com/band-ai/band-sdk-typescript/issues/251)) ([ef860b3](https://github.com/band-ai/band-sdk-typescript/commit/ef860b37d5eb81ee01df554f68a4dbd370ef6243))
 * guard resume-replay debt against a stale turn racing onCleanup ([a669572](https://github.com/band-ai/band-sdk-typescript/commit/a6695720008dcd499ac1ba62fb2ca12acaeee796))
 * keep ACP resume replay until a prompt is accepted ([61aa11b](https://github.com/band-ai/band-sdk-typescript/commit/61aa11b042e5614caf926d9b967a9184bfae221b))
 * keep replay across a cancelled turn and a reused session id ([7059435](https://github.com/band-ai/band-sdk-typescript/commit/70594350122606bf8de2de7c2324747aca918280))

@@ -24,7 +24,6 @@ describe("root import boundary", () => {
     expect(typeof sdk.ACPClientAdapter).toBe("function");
     expect(typeof sdk.CopilotACPAdapter).toBe("function");
     expect(typeof sdk.CursorACPAdapter).toBe("function");
-    expect(typeof sdk.KiroACPAdapter).toBe("function");
   });
 
   it("exposes websocket disconnect errors from the core entrypoint", async () => {

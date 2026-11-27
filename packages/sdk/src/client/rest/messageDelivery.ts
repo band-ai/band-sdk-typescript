@@ -6,7 +6,9 @@
  * means resend. A commit landing after the read-back costs a duplicate, never
  * a loss. No decision here reads a clock.
  */
+
 import {
+  BandSdkError,
   HTTP_BAD_REQUEST,
   HTTP_REQUEST_TIMEOUT,
   HTTP_SERVER_ERROR,
@@ -18,7 +20,7 @@ import {
 import { MAX_SETTIMEOUT_DELAY_MS, MS_PER_SECOND } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { MESSAGE_SEND_MAX_RETRIES } from "./requestOptions";
-import type { PlatformChatMessage } from "./types";
+import type { ChatMessagingRestApi, PlatformChatMessage } from "./types";
 
 /** The first pause before a resend; each later one doubles. Latency only, never a decision. */
 const MESSAGE_RESEND_BASE_DELAY_MS = MS_PER_SECOND;
@@ -120,18 +122,34 @@ export interface MessageDelivery {
   stopped?: AbortSignal;
 }
 
+type OncePort = Pick<ChatMessagingRestApi, "createChatMessageOnce" | "hasOnceCapability">;
+
+/** Whether `api` serves the single-attempt post on SDK-controlled transport: the method stands, and the adapter does not report otherwise. */
+export function servesOncePost<T extends OncePort>(api: T): api is T & Required<Pick<OncePort, "createChatMessageOnce">> {
+  return api.createChatMessageOnce !== undefined && (api.hasOnceCapability?.() ?? true);
+}
+
 /**
  * - `refused`: Band answered and saved nothing (an app 4xx, or the room is stopped).
  * - `notCommitted`: 408 or 429, which only infrastructure in front of Band sends.
  * - `uncertain`: a 5xx, no response, or a response that could not be read.
  */
-type FailedAttempt = "refused" | "notCommitted" | "uncertain";
+export type FailedAttempt = "refused" | "notCommitted" | "uncertain";
 
-function classifyFailedAttempt(error: unknown): FailedAttempt {
+export function classifyFailedAttempt(error: unknown): FailedAttempt {
   if (error instanceof RoomExecutionStoppedError) return "refused";
+  // Read structurally: a caller's REST client may be another copy of the generated one.
   const status = statusCodeOf(error);
-  if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
-  if (status !== undefined && status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR) return "refused";
+  if (status !== undefined) {
+    if (status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS) return "notCommitted";
+    return status >= HTTP_BAD_REQUEST && status < HTTP_SERVER_ERROR ? "refused" : "uncertain";
+  }
+  // A failure the platform never answered (a mention it cannot resolve, an
+  // invalid argument): the post was never sent, so it is a refusal, not an
+  // uncertainty, and the room's journal keeps admitting records.
+  if (error instanceof BandSdkError) return "refused";
+  // A raw transport failure the client did not wrap: the request may have
+  // been committed, and only the read-back settles it.
   return "uncertain";
 }
 
@@ -140,7 +158,7 @@ type Delivered<T> = { posted: T } | { found: PlatformChatMessage };
 interface DeliverMessageOptions<T> {
   /** One attempt, with no retries of its own. */
   post: () => Promise<T>;
-  /** The post's own message in the room, or null when not found or not readable. Absent: no read-back. */
+  /** The post's own message in the room, or null when absent; throws when the room cannot be read. Absent: no read-back. */
   findPosted?: () => Promise<PlatformChatMessage | null>;
   stopped?: AbortSignal;
   logger: Logger;
@@ -149,9 +167,17 @@ interface DeliverMessageOptions<T> {
 
 /**
  * Posts until a status or a read-back shows the message in the room, within
- * `MESSAGE_SEND_MAX_RETRIES` resends; then the last failure surfaces.
+ * `MESSAGE_SEND_MAX_RETRIES` resends; then the last failure surfaces, unless
+ * an earlier attempt may have committed and no read-back showed it absent:
+ * that attempt's failure surfaces instead, so the post stands uncertain.
  */
 export async function deliverMessage<T>({ post, findPosted, stopped, logger, roomId }: DeliverMessageOptions<T>): Promise<Delivered<T>> {
+  let unsettled: { failure: unknown } | null = null;
+  const surfaced = (failure: unknown): unknown => {
+    if (!unsettled || unsettled.failure === failure) return failure;
+    logger.warn("Message post failed after an earlier attempt Band may hold; the post stays uncertain", { roomId, error: failure });
+    return unsettled.failure;
+  };
   for (let attempt = 0; ; attempt += 1) {
     let failure: unknown;
     try {
@@ -161,19 +187,38 @@ export async function deliverMessage<T>({ post, findPosted, stopped, logger, roo
     }
     const outcome = classifyFailedAttempt(failure);
     const resendsLeft = attempt < MESSAGE_SEND_MAX_RETRIES;
-    if (outcome === "refused" || (outcome === "notCommitted" && !resendsLeft)) throw failure;
+    if (outcome === "refused" || (outcome === "notCommitted" && !resendsLeft)) throw surfaced(failure);
 
     logger.warn("Message post failed; settling it before any resend", { roomId, attempt, outcome, status: statusCodeOf(failure) });
     // Before the read-back too: a commit still in flight gets the pause to land.
-    await pause(resendDelayMs(attempt, failure), stopped);
-    if (outcome === "uncertain" && findPosted) {
-      const found = await findPosted();
-      if (found) {
-        logger.info("Message post found in the room; not resending", { roomId, attempt, messageId: found.id });
-        return { found };
+    let cutShort = false;
+    try {
+      await pause(resendDelayMs(attempt, failure), stopped);
+    } catch {
+      // The turn was cut short mid-pause. The cut is not the post's outcome:
+      // the failure it interrupted stands, and the read-back still settles a
+      // commit that may have landed in the pause.
+      cutShort = true;
+    }
+    if (outcome === "uncertain") {
+      unsettled = { failure };
+      if (findPosted) {
+        try {
+          const found = await findPosted();
+          if (found) {
+            logger.info("Message post found in the room; not resending", { roomId, attempt, messageId: found.id });
+            return { found };
+          }
+          unsettled = null;
+        } catch (error) {
+          // Unreadable: every attempt so far may hold, and stays unsettled.
+          logger.warn("Message post read-back failed; the post stays uncertain", { roomId, attempt, error });
+        }
       }
     }
-    if (!resendsLeft) throw failure;
+    // Cut short: surface the transport's failure, never the cut — so the
+    // publication settles on the post's actual outcome.
+    if (cutShort || !resendsLeft) throw surfaced(failure);
     logger.warn("Resending a message post", { roomId, attempt: attempt + 1 });
   }
 }

@@ -49,8 +49,10 @@ concurrency:
 
 jobs:
   coverage:
-    # Drafts get no CI; ready_for_review above fires the first real run.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Fork PRs cannot access the secret for the private Core checkout.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -145,7 +147,7 @@ jobs:
           token: ${{ secrets.CORE_SDK_READ_KEY }}
 
       - name: Install just and wasm-pack
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: just,wasm-pack
 
